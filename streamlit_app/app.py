@@ -310,24 +310,28 @@ elif section == "History Log":
 
 
 
-def highlight_trends(val, base):
-    if val > base:
-        return "color: green; font-weight: bold"
-    elif val < base:
-        return "color: red; font-weight: bold"
+def highlight_trends(row):
+    """Apply color styles row-wise for trend comparison"""
+    styles = []
+    # Compare This Week vs Last Week
+    if row["This Week"] > row["Last Week"]:
+        styles.append("color: green; font-weight: bold")
+    elif row["This Week"] < row["Last Week"]:
+        styles.append("color: red; font-weight: bold")
     else:
-        return "color: gray"
+        styles.append("color: gray")
 
-styled_trend = trend_df.style
+    styles.append("color: gray")  # for Last Week itself (baseline, no highlight)
 
-# Compare Week-over-Week
-styled_trend = styled_trend.apply(
-    lambda row: [highlight_trends(row["This Week"], row["Last Week"]),
-                 highlight_trends(row["Last Week"], row["Last Week"]),
-                 highlight_trends(row["This Month"], row["Last Month"]),
-                 highlight_trends(row["Last Month"], row["Last Month"])],
-    axis=1
-)
+    # Compare This Month vs Last Month
+    if row["This Month"] > row["Last Month"]:
+        styles.append("color: green; font-weight: bold")
+    elif row["This Month"] < row["Last Month"]:
+        styles.append("color: red; font-weight: bold")
+    else:
+        styles.append("color: gray")
 
-st.subheader("📈 Trend Comparison (Color-Coded)")
-st.dataframe(styled_trend, width="stretch")
+    styles.append("color: gray")  # for Last Month itself
+    return styles
+
+styled_trend = trend_df.style.apply(highlight_trends, axis=1)
