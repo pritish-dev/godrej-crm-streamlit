@@ -82,6 +82,8 @@ def get_trend_comparison(df, date_col, label):
 # ==========================
 # CRM Overview
 # ==========================
+from datetime import datetime, timedelta
+
 if section == "CRM Overview":
     crm_df = get_df("CRM")
     leads_df = get_df("New Leads")
@@ -91,85 +93,129 @@ if section == "CRM Overview":
     st.subheader("📋 Master CRM Data")
     st.dataframe(crm_df, width="stretch")
 
-    # --- Status Distribution Charts ---
-    col1, col2, col3 = st.columns(3)
-    if not leads_df.empty and "Status" in leads_df.columns:
+    # ===============================
+    # 🔎 Date Filter
+    # ===============================
+    st.markdown("## 📅 Date Range Filter")
+    filter_option = st.radio(
+        "Choose Timeframe:",
+        ["All Time", "Weekly", "Monthly", "Quarterly", "Custom Range"],
+        horizontal=True
+    )
+    
+    today = datetime.today()
+    start_date, end_date = None, today
+    
+    if filter_option == "All Time":
+        start_date, end_date = None, None
+    elif filter_option == "Weekly":
+        start_date = today - timedelta(days=7)
+    elif filter_option == "Monthly":
+        start_date = today - timedelta(days=30)
+    elif filter_option == "Quarterly":
+        start_date = today - timedelta(days=90)
+    elif filter_option == "Custom Range":
+        col1, col2 = st.columns(2)
         with col1:
-            st.subheader("Leads by Status")
-            st.plotly_chart(px.pie(leads_df, names="Status"), width="stretch")
-
-    if not del_df.empty and "Delivery Status" in del_df.columns:
+            start_date = st.date_input("Start Date", today - timedelta(days=30))
         with col2:
-            st.subheader("Deliveries by Status")
-            st.plotly_chart(px.pie(del_df, names="Delivery Status"), width="stretch")
+            end_date = st.date_input("End Date", today)
+        start_date = datetime.combine(start_date, datetime.min.time())
+        end_date = datetime.combine(end_date, datetime.max.time())
+    
+    # ✅ Apply date filter function
+    def filter_by_date(df, date_col):
+        if df.empty or date_col not in df.columns or filter_option == "All Time":
+            return df
+        df[date_col] = pd.to_datetime(df[date_col], errors="coerce", dayfirst=True)
+        df = df.dropna(subset=[date_col])
+        if start_date:
+            df = df[df[date_col].between(start_date, end_date)]
+        return df
+    
+    # Apply filters
+    leads_df = filter_by_date(leads_df, "Lead Date")
+    del_df = filter_by_date(del_df, "Delivery Date")
+    sr_df = filter_by_date(sr_df, "Request Date")
+    
+    # Show info message
+    if filter_option == "All Time":
+        st.info("Showing **All Time** CRM metrics")
+    else:
+        st.info(f"Showing metrics from **{start_date.date()}** to **{end_date.date()}**")
+    
 
-    if not sr_df.empty and "Status" in sr_df.columns:
-        with col3:
-            st.subheader("Service Requests by Status")
-            st.plotly_chart(px.pie(sr_df, names="Status"), width="stretch")
+    leads_df = filter_by_date(leads_df, "Lead Date")
+    del_df = filter_by_date(del_df, "Delivery Date")
+    sr_df = filter_by_date(sr_df, "Request Date")
 
-    # --- Weekly & Monthly Reports ---
-    st.subheader("📈 Weekly & Monthly CRM Metrics")
+    st.info(f"Showing metrics from **{start_date.date()}** to **{end_date.date()}**")
+
+    # ===============================
+    # Leads
+    # ===============================
+    st.markdown("## 👤 Leads Metrics")
 
     lw, lm = summarize_by_period(leads_df, "Lead Date")
-    dw, dm = summarize_by_period(del_df, "Delivery Date")
-    sw, sm = summarize_by_period(sr_df, "Request Date")
+    st.markdown("### 📈 Weekly Leads")
+    st.table(lw.rename(columns={"Count": "Leads"}))
+    st.markdown("### 📈 Monthly Leads")
+    st.table(lm.rename(columns={"Count": "Leads"}))
 
-    col1, col2 = st.columns(2)
-    with col1:
-        if not lw.empty:
-            st.markdown("#### Leads Per Week")
-            st.bar_chart(lw.set_index("Period")["Count"])
-        if not dw.empty:
-            st.markdown("#### Deliveries Per Week")
-            st.bar_chart(dw.set_index("Period")["Count"])
-        if not sw.empty:
-            st.markdown("#### Service Requests Per Week")
-            st.bar_chart(sw.set_index("Period")["Count"])
-
-    with col2:
-        if not lm.empty:
-            st.markdown("#### Leads Per Month")
-            st.line_chart(lm.set_index("Period")["Count"])
-        if not dm.empty:
-            st.markdown("#### Deliveries Per Month")
-            st.line_chart(dm.set_index("Period")["Count"])
-        if not sm.empty:
-            st.markdown("#### Service Requests Per Month")
-            st.line_chart(sm.set_index("Period")["Count"])
-    st.subheader("📊 CRM Metrics Summary")
-
-
-    metrics = {
-        "Leads": {
-            "Total": len(leads_df),
-            "Open Leads": (leads_df["Status"] == "New Lead").sum() if "Status" in leads_df else 0,
-            "In Progress": (leads_df["Status"] == "Followup-scheduled").sum() if "Status" in leads_df else 0,
-            "Converted": (leads_df["Status"] == "Converted").sum() if "Status" in leads_df else 0,
-            "Won": (leads_df["Status"] == "Won").sum() if "Status" in leads_df else 0,
-            "Lost": (leads_df["Status"] == "Lost").sum() if "Status" in leads_df else 0,
-        },
-        "Delivery": {
-            "Total": len(del_df),
-            "Pending": (del_df["Delivery Status"] == "Pending").sum() if "Delivery Status" in del_df else 0,
-            "Scheduled": (del_df["Delivery Status"] == "Scheduled").sum() if "Delivery Status" in del_df else 0,
-            "Delivered": (del_df["Delivery Status"] == "Delivered").sum() if "Delivery Status" in del_df else 0,
-        },
-        "Service Requests": {
-            "Total": len(sr_df),
-            "Open": (sr_df["Status"] == "Open").sum() if "Status" in sr_df else 0,
-            "In Progress": (sr_df["Status"] == "In Progress").sum() if "Status" in sr_df else 0,
-            "Resolved": (sr_df["Status"] == "Resolved").sum() if "Status" in sr_df else 0,
-            "Closed": (sr_df["Status"] == "Closed").sum() if "Status" in sr_df else 0,
-        }
+    lead_metrics = {
+        "Total": len(leads_df),
+        "Open Leads": (leads_df["Status"] == "New Lead").sum() if "Status" in leads_df else 0,
+        "In Progress": (leads_df["Status"] == "Followup-scheduled").sum() if "Status" in leads_df else 0,
+        "Converted": (leads_df["Status"] == "Converted").sum() if "Status" in leads_df else 0,
+        "Won": (leads_df["Status"] == "Won").sum() if "Status" in leads_df else 0,
+        "Lost": (leads_df["Status"] == "Lost").sum() if "Status" in leads_df else 0,
     }
+    st.markdown("### 📊 Leads Status Summary")
+    st.table(pd.DataFrame.from_dict(lead_metrics, orient="index", columns=["Count"]).astype(int))
+
+    # ===============================
+    # Delivery
+    # ===============================
+    st.markdown("## 🚚 Delivery Metrics")
+
+    dw, dm = summarize_by_period(del_df, "Delivery Date")
+    st.markdown("### 📈 Weekly Deliveries")
+    st.table(dw.rename(columns={"Count": "Deliveries"}))
+    st.markdown("### 📈 Monthly Deliveries")
+    st.table(dm.rename(columns={"Count": "Deliveries"}))
+
+    delivery_metrics = {
+        "Total": len(del_df),
+        "Pending": (del_df["Delivery Status"] == "Pending").sum() if "Delivery Status" in del_df else 0,
+        "Scheduled": (del_df["Delivery Status"] == "Scheduled").sum() if "Delivery Status" in del_df else 0,
+        "Delivered": (del_df["Delivery Status"] == "Delivered").sum() if "Delivery Status" in del_df else 0,
+    }
+    st.markdown("### 📊 Delivery Status Summary")
+    st.table(pd.DataFrame.from_dict(delivery_metrics, orient="index", columns=["Count"]).astype(int))
+
+    # ===============================
+    # Service Requests
+    # ===============================
+    st.markdown("## 🛠 Service Request Metrics")
+
+    sw, sm = summarize_by_period(sr_df, "Request Date")
+    st.markdown("### 📈 Weekly Service Requests")
+    st.table(sw.rename(columns={"Count": "Requests"}))
+    st.markdown("### 📈 Monthly Service Requests")
+    st.table(sm.rename(columns={"Count": "Requests"}))
+
+    service_metrics = {
+        "Total": len(sr_df),
+        "Open": (sr_df["Status"] == "Open").sum() if "Status" in sr_df else 0,
+        "In Progress": (sr_df["Status"] == "In Progress").sum() if "Status" in sr_df else 0,
+        "Resolved": (sr_df["Status"] == "Resolved").sum() if "Status" in sr_df else 0,
+        "Closed": (sr_df["Status"] == "Closed").sum() if "Status" in sr_df else 0,
+    }
+    st.markdown("### 📊 Service Request Status Summary")
+    st.table(pd.DataFrame.from_dict(service_metrics, orient="index", columns=["Count"]).astype(int))
+
     
-    metrics_df = pd.DataFrame(metrics).T.fillna(0).astype(int)
-    st.table(metrics_df)
-    
-    # --- Trend Comparison ---
-    st.subheader("📈 Trend Comparison")
-    
+       
     lead_trend = get_trend_comparison(leads_df, "Lead Date", "Leads")
     del_trend = get_trend_comparison(del_df, "Delivery Date", "Delivery")
     sr_trend = get_trend_comparison(sr_df, "Request Date", "Service")
@@ -327,10 +373,13 @@ elif section == "Service Request":
 # ==========================
 elif section == "History Log":
     st.subheader("📝 Change History")
-    log_df = get_df("History Log")
-    if log_df.empty:
-        st.info("No history recorded yet.")
-    else:
-        st.dataframe(log_df, width="stretch")
+    try:
+        log_df = get_df("History Log")
+        if log_df.empty:
+            st.info("No history recorded yet.")
+        else:
+            st.dataframe(log_df, width="stretch")
+    except:
+        st.info("History Log sheet not found. It will be created after the first update/insert.")
 
 

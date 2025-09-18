@@ -17,10 +17,18 @@ SPREADSHEET_ID = "1wFpK-WokcZB6k1vzG7B6JO5TdGHrUwdgvVm_-UQse54"
 sh = gc.open_by_key(SPREADSHEET_ID)
 
 
-@st.cache_data(ttl=60)  # cache sheet data for 60 seconds
+@st.cache_data(ttl=60)
 def get_df(sheet_name: str):
-    """Fetch worksheet as DataFrame (handles duplicate headers)"""
-    ws = sh.worksheet(sheet_name)
+    """Fetch worksheet as DataFrame (handles duplicate headers, creates if missing)"""
+    try:
+        ws = sh.worksheet(sheet_name)
+    except gspread.exceptions.WorksheetNotFound:
+        # Auto-create empty sheet with just headers
+        ws = sh.add_worksheet(title=sheet_name, rows=1000, cols=20)
+        if sheet_name == "History Log":
+            ws.append_row(["Timestamp", "Action", "Sheet", "Customer Name", "Contact Number", "Old Data", "New Data"])
+        return pd.DataFrame()
+
     all_values = ws.get_all_values()
     if not all_values:
         return pd.DataFrame()
@@ -38,6 +46,7 @@ def get_df(sheet_name: str):
 
     df = pd.DataFrame(all_values[1:], columns=unique_headers)
     return df
+
 
 
 def log_history(action: str, sheet_name: str, unique_fields: dict, old_data: dict, new_data: dict):
