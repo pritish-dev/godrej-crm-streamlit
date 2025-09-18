@@ -28,31 +28,50 @@ if section == "CRM Overview":
     if not leads_df.empty and "Status" in leads_df.columns:
         with col1:
             st.subheader("Leads by Status")
-            st.plotly_chart(px.pie(leads_df, names="Status"), use_container_width=True)
+            st.plotly_chart(px.pie(leads_df, names="Status"), width="stretch")
 
     if not del_df.empty and "Delivery Status" in del_df.columns:
         with col2:
             st.subheader("Deliveries by Status")
-            st.plotly_chart(px.pie(del_df, names="Delivery Status"), use_container_width=True)
+            st.plotly_chart(px.pie(del_df, names="Delivery Status"), width="stretch")
 
     if not sr_df.empty and "Status" in sr_df.columns:
         with col3:
             st.subheader("Service Requests by Status")
-            st.plotly_chart(px.pie(sr_df, names="Status"), use_container_width=True)
+            st.plotly_chart(px.pie(sr_df, names="Status"), width="stretch")
 
     # --- Weekly & Monthly Reports ---
     st.subheader("📈 Weekly & Monthly CRM Metrics")
 
-    def summarize_by_period(df, date_col, label):
+    def summarize_by_period(df, date_col):
+        """Return weekly and monthly summary counts for a given date column"""
         if df.empty or date_col not in df.columns:
-            return pd.DataFrame(columns=["Period", "Count"])
+            return pd.DataFrame(columns=["Period", "Count"]), pd.DataFrame(columns=["Period", "Count"])
+        
         df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
         df = df.dropna(subset=[date_col])
-        monthly = df.groupby(df[date_col].dt.to_period("M")).size().reset_index(name="Count")
-        monthly["Period"] = monthly[date_col].astype(str)
-        weekly = df.groupby(df[date_col].dt.to_period("W")).size().reset_index(name="Count")
+        
+        if df.empty:
+            return pd.DataFrame(columns=["Period", "Count"]), pd.DataFrame(columns=["Period", "Count"])
+        
+        # Weekly summary
+        weekly = (
+            df.groupby(df[date_col].dt.to_period("W"))
+            .size()
+            .reset_index(name="Count")
+        )
         weekly["Period"] = weekly[date_col].astype(str)
+        
+        # Monthly summary
+        monthly = (
+            df.groupby(df[date_col].dt.to_period("M"))
+            .size()
+            .reset_index(name="Count")
+        )
+        monthly["Period"] = monthly[date_col].astype(str)
+        
         return weekly, monthly
+
 
     # Leads
     lw, lm = summarize_by_period(leads_df, "Lead Date", "Leads")
