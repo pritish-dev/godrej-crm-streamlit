@@ -1,7 +1,7 @@
 import streamlit as st
 import plotly.express as px
 import pandas as pd
-from sheets import get_df, append_row, upsert_record
+from sheets import get_df, upsert_record
 
 st.set_page_config(page_title="Godrej CRM Dashboard", layout="wide")
 
