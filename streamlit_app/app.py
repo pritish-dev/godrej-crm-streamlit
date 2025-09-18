@@ -137,7 +137,50 @@ if section == "CRM Overview":
         if not sm.empty:
             st.markdown("#### Service Requests Per Month")
             st.line_chart(sm.set_index("Period")["Count"])
+    st.subheader("📊 CRM Metrics Summary")
 
+
+    metrics = {
+        "Leads": {
+            "Total": len(leads_df),
+            "Open Leads": (leads_df["Status"] == "New Lead").sum() if "Status" in leads_df else 0,
+            "In Progress": (leads_df["Status"] == "Followup-scheduled").sum() if "Status" in leads_df else 0,
+            "Converted": (leads_df["Status"] == "Converted").sum() if "Status" in leads_df else 0,
+            "Won": (leads_df["Status"] == "Won").sum() if "Status" in leads_df else 0,
+            "Lost": (leads_df["Status"] == "Lost").sum() if "Status" in leads_df else 0,
+        },
+        "Delivery": {
+            "Total": len(del_df),
+            "Pending": (del_df["Delivery Status"] == "Pending").sum() if "Delivery Status" in del_df else 0,
+            "Scheduled": (del_df["Delivery Status"] == "Scheduled").sum() if "Delivery Status" in del_df else 0,
+            "Delivered": (del_df["Delivery Status"] == "Delivered").sum() if "Delivery Status" in del_df else 0,
+        },
+        "Service Requests": {
+            "Total": len(sr_df),
+            "Open": (sr_df["Status"] == "Open").sum() if "Status" in sr_df else 0,
+            "In Progress": (sr_df["Status"] == "In Progress").sum() if "Status" in sr_df else 0,
+            "Resolved": (sr_df["Status"] == "Resolved").sum() if "Status" in sr_df else 0,
+            "Closed": (sr_df["Status"] == "Closed").sum() if "Status" in sr_df else 0,
+        }
+    }
+    
+    metrics_df = pd.DataFrame(metrics).T.fillna(0).astype(int)
+    st.table(metrics_df)
+    
+    # --- Trend Comparison ---
+    st.subheader("📈 Trend Comparison")
+    
+    lead_trend = get_trend_comparison(leads_df, "Lead Date", "Leads")
+    del_trend = get_trend_comparison(del_df, "Delivery Date", "Delivery")
+    sr_trend = get_trend_comparison(sr_df, "Request Date", "Service")
+    
+    trend_df = pd.DataFrame(
+        [lead_trend, del_trend, sr_trend],
+        index=["Leads", "Delivery", "Service Requests"]
+    ).fillna(0).astype(int)
+    
+    
+    
 
 # ==========================
 # 2) New Leads
@@ -266,48 +309,6 @@ elif section == "History Log":
         st.dataframe(log_df, width="stretch")
 
 
-
-st.subheader("📊 CRM Metrics Summary")
-
-
-metrics = {
-    "Leads": {
-        "Total": len(leads_df),
-        "Open Leads": (leads_df["Status"] == "New Lead").sum() if "Status" in leads_df else 0,
-        "In Progress": (leads_df["Status"] == "Followup-scheduled").sum() if "Status" in leads_df else 0,
-        "Converted": (leads_df["Status"] == "Converted").sum() if "Status" in leads_df else 0,
-        "Won": (leads_df["Status"] == "Won").sum() if "Status" in leads_df else 0,
-        "Lost": (leads_df["Status"] == "Lost").sum() if "Status" in leads_df else 0,
-    },
-    "Delivery": {
-        "Total": len(del_df),
-        "Pending": (del_df["Delivery Status"] == "Pending").sum() if "Delivery Status" in del_df else 0,
-        "Scheduled": (del_df["Delivery Status"] == "Scheduled").sum() if "Delivery Status" in del_df else 0,
-        "Delivered": (del_df["Delivery Status"] == "Delivered").sum() if "Delivery Status" in del_df else 0,
-    },
-    "Service Requests": {
-        "Total": len(sr_df),
-        "Open": (sr_df["Status"] == "Open").sum() if "Status" in sr_df else 0,
-        "In Progress": (sr_df["Status"] == "In Progress").sum() if "Status" in sr_df else 0,
-        "Resolved": (sr_df["Status"] == "Resolved").sum() if "Status" in sr_df else 0,
-        "Closed": (sr_df["Status"] == "Closed").sum() if "Status" in sr_df else 0,
-    }
-}
-
-metrics_df = pd.DataFrame(metrics).T.fillna(0).astype(int)
-st.table(metrics_df)
-
-# --- Trend Comparison ---
-st.subheader("📈 Trend Comparison")
-
-lead_trend = get_trend_comparison(leads_df, "Lead Date", "Leads")
-del_trend = get_trend_comparison(del_df, "Delivery Date", "Delivery")
-sr_trend = get_trend_comparison(sr_df, "Request Date", "Service")
-
-trend_df = pd.DataFrame(
-    [lead_trend, del_trend, sr_trend],
-    index=["Leads", "Delivery", "Service Requests"]
-).fillna(0).astype(int)
 
 def highlight_trends(val, base):
     if val > base:
