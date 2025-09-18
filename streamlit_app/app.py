@@ -123,7 +123,7 @@ elif section == "New Leads":
         status = st.selectbox("Status", ["New", "In Progress", "Converted", "Won", "Lost"])
         next_follow = st.date_input("Next Follow-up Date")
         follow_time = st.time_input("Follow-up Time")
-        assigned_to = st.selectbox("Assigned To (Name)", ["Archita", "Jitendra", "Smruti", "Swati", "Nazrin", "Krupa", "Other")
+        assigned_to = st.selectbox("Assigned To (Name)", ["Archita", "Jitendra", "Smruti", "Swati", "Nazrin", "Krupa", "Other"])
         staff_email = st.text_input("Staff Email")
         reminder = st.selectbox("Reminder Needed?", ["Y", "N"])
         submit = st.form_submit_button("Save Lead")
