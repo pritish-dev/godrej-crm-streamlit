@@ -77,70 +77,7 @@ def get_trend_comparison(df, date_col, label):
         "This Month": int(month_counts.get(this_month, 0)),
         "Last Month": int(month_counts.get(last_month, 0)),
     }
- 
-st.subheader("📊 CRM Metrics Summary")
 
-
-metrics = {
-    "Leads": {
-        "Total": len(leads_df),
-        "Open Leads": (leads_df["Status"] == "New Lead").sum() if "Status" in leads_df else 0,
-        "In Progress": (leads_df["Status"] == "Followup-scheduled").sum() if "Status" in leads_df else 0,
-        "Converted": (leads_df["Status"] == "Converted").sum() if "Status" in leads_df else 0,
-        "Won": (leads_df["Status"] == "Won").sum() if "Status" in leads_df else 0,
-        "Lost": (leads_df["Status"] == "Lost").sum() if "Status" in leads_df else 0,
-    },
-    "Delivery": {
-        "Total": len(del_df),
-        "Pending": (del_df["Delivery Status"] == "Pending").sum() if "Delivery Status" in del_df else 0,
-        "Scheduled": (del_df["Delivery Status"] == "Scheduled").sum() if "Delivery Status" in del_df else 0,
-        "Delivered": (del_df["Delivery Status"] == "Delivered").sum() if "Delivery Status" in del_df else 0,
-    },
-    "Service Requests": {
-        "Total": len(sr_df),
-        "Open": (sr_df["Status"] == "Open").sum() if "Status" in sr_df else 0,
-        "In Progress": (sr_df["Status"] == "In Progress").sum() if "Status" in sr_df else 0,
-        "Resolved": (sr_df["Status"] == "Resolved").sum() if "Status" in sr_df else 0,
-        "Closed": (sr_df["Status"] == "Closed").sum() if "Status" in sr_df else 0,
-    }
-}
-
-metrics_df = pd.DataFrame(metrics).T
-st.table(metrics_df)
-
-# --- Trend Comparison ---
-st.subheader("📈 Trend Comparison")
-
-lead_trend = get_trend_comparison(leads_df, "Lead Date", "Leads")
-del_trend = get_trend_comparison(del_df, "Delivery Date", "Delivery")
-sr_trend = get_trend_comparison(sr_df, "Request Date", "Service")
-
-trend_df = pd.DataFrame(
-    [lead_trend, del_trend, sr_trend],
-    index=["Leads", "Delivery", "Service Requests"]
-)
-
-def highlight_trends(val, base):
-    if val > base:
-        return "color: green; font-weight: bold"
-    elif val < base:
-        return "color: red; font-weight: bold"
-    else:
-        return "color: gray"
-
-styled_trend = trend_df.style.format("{:.0f}")
-
-# Compare Week-over-Week
-styled_trend = styled_trend.apply(
-    lambda row: [highlight_trends(row["This Week"], row["Last Week"]),
-                 highlight_trends(row["Last Week"], row["Last Week"]),
-                 highlight_trends(row["This Month"], row["Last Month"]),
-                 highlight_trends(row["Last Month"], row["Last Month"])],
-    axis=1
-)
-
-st.subheader("📈 Trend Comparison (Color-Coded)")
-st.dataframe(styled_trend, width="stretch")
 
 # ==========================
 # CRM Overview
@@ -330,3 +267,66 @@ elif section == "History Log":
 
 
 
+st.subheader("📊 CRM Metrics Summary")
+
+
+metrics = {
+    "Leads": {
+        "Total": len(leads_df),
+        "Open Leads": (leads_df["Status"] == "New Lead").sum() if "Status" in leads_df else 0,
+        "In Progress": (leads_df["Status"] == "Followup-scheduled").sum() if "Status" in leads_df else 0,
+        "Converted": (leads_df["Status"] == "Converted").sum() if "Status" in leads_df else 0,
+        "Won": (leads_df["Status"] == "Won").sum() if "Status" in leads_df else 0,
+        "Lost": (leads_df["Status"] == "Lost").sum() if "Status" in leads_df else 0,
+    },
+    "Delivery": {
+        "Total": len(del_df),
+        "Pending": (del_df["Delivery Status"] == "Pending").sum() if "Delivery Status" in del_df else 0,
+        "Scheduled": (del_df["Delivery Status"] == "Scheduled").sum() if "Delivery Status" in del_df else 0,
+        "Delivered": (del_df["Delivery Status"] == "Delivered").sum() if "Delivery Status" in del_df else 0,
+    },
+    "Service Requests": {
+        "Total": len(sr_df),
+        "Open": (sr_df["Status"] == "Open").sum() if "Status" in sr_df else 0,
+        "In Progress": (sr_df["Status"] == "In Progress").sum() if "Status" in sr_df else 0,
+        "Resolved": (sr_df["Status"] == "Resolved").sum() if "Status" in sr_df else 0,
+        "Closed": (sr_df["Status"] == "Closed").sum() if "Status" in sr_df else 0,
+    }
+}
+
+metrics_df = pd.DataFrame(metrics).T
+st.table(metrics_df)
+
+# --- Trend Comparison ---
+st.subheader("📈 Trend Comparison")
+
+lead_trend = get_trend_comparison(leads_df, "Lead Date", "Leads")
+del_trend = get_trend_comparison(del_df, "Delivery Date", "Delivery")
+sr_trend = get_trend_comparison(sr_df, "Request Date", "Service")
+
+trend_df = pd.DataFrame(
+    [lead_trend, del_trend, sr_trend],
+    index=["Leads", "Delivery", "Service Requests"]
+)
+
+def highlight_trends(val, base):
+    if val > base:
+        return "color: green; font-weight: bold"
+    elif val < base:
+        return "color: red; font-weight: bold"
+    else:
+        return "color: gray"
+
+styled_trend = trend_df.style.format("{:.0f}")
+
+# Compare Week-over-Week
+styled_trend = styled_trend.apply(
+    lambda row: [highlight_trends(row["This Week"], row["Last Week"]),
+                 highlight_trends(row["Last Week"], row["Last Week"]),
+                 highlight_trends(row["This Month"], row["Last Month"]),
+                 highlight_trends(row["Last Month"], row["Last Month"])],
+    axis=1
+)
+
+st.subheader("📈 Trend Comparison (Color-Coded)")
+st.dataframe(styled_trend, width="stretch")
