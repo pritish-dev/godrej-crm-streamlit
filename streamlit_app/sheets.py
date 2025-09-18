@@ -17,9 +17,10 @@ else:
     CREDS = service_account.Credentials.from_service_account_file(
         "config/credentials.json", scopes=SCOPES
     )
-
+gc = gspread.authorize(CREDS)
 # Replace with your real spreadsheet ID
 SPREADSHEET_ID = "1wFpK-WokcZB6k1vzG7B6JO5TdGHrUwdgvVm_-UQse54"
+
 sh = gc.open_by_key(SPREADSHEET_ID)
 
 
