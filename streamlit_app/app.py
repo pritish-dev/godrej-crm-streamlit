@@ -309,7 +309,7 @@ elif section == "Service Request":
                 "Product Type": product, "Complaint/Service Request": complaint,
                 "Status": status, "Warranty": warranty, "Notes": notes,
                 "Service Assigned To (Name)": assigned_to, "Staff Email": staff_email,
-                "Complaint Registered By":complaint_registered_by
+                "Complaint Registered By":complaint_registered_by,
                 "SERVICE CHARGE": charges
             }
             msg = upsert_record("Service Request", unique_fields, new_data)
