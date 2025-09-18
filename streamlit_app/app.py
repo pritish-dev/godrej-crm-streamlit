@@ -77,67 +77,7 @@ def get_trend_comparison(df, date_col, label):
         "This Month": int(month_counts.get(this_month, 0)),
         "Last Month": int(month_counts.get(last_month, 0)),
     }
-
-# ==========================
-# CRM Overview
-# ==========================
-if section == "CRM Overview":
-    crm_df = get_df("CRM")
-    leads_df = get_df("New Leads")
-    del_df = get_df("Delivery")
-    sr_df = get_df("Service Request")
-
-    st.subheader("📋 Master CRM Data")
-    st.dataframe(crm_df, width="stretch")
-
-    # --- Status Distribution Charts ---
-    col1, col2, col3 = st.columns(3)
-    if not leads_df.empty and "Status" in leads_df.columns:
-        with col1:
-            st.subheader("Leads by Status")
-            st.plotly_chart(px.pie(leads_df, names="Status"), width="stretch")
-
-    if not del_df.empty and "Delivery Status" in del_df.columns:
-        with col2:
-            st.subheader("Deliveries by Status")
-            st.plotly_chart(px.pie(del_df, names="Delivery Status"), width="stretch")
-
-    if not sr_df.empty and "Status" in sr_df.columns:
-        with col3:
-            st.subheader("Service Requests by Status")
-            st.plotly_chart(px.pie(sr_df, names="Status"), width="stretch")
-
-    # --- Weekly & Monthly Reports ---
-    st.subheader("📈 Weekly & Monthly CRM Metrics")
-
-    lw, lm = summarize_by_period(leads_df, "Lead Date")
-    dw, dm = summarize_by_period(del_df, "Delivery Date")
-    sw, sm = summarize_by_period(sr_df, "Request Date")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        if not lw.empty:
-            st.markdown("#### Leads Per Week")
-            st.bar_chart(lw.set_index("Period")["Count"])
-        if not dw.empty:
-            st.markdown("#### Deliveries Per Week")
-            st.bar_chart(dw.set_index("Period")["Count"])
-        if not sw.empty:
-            st.markdown("#### Service Requests Per Week")
-            st.bar_chart(sw.set_index("Period")["Count"])
-
-    with col2:
-        if not lm.empty:
-            st.markdown("#### Leads Per Month")
-            st.line_chart(lm.set_index("Period")["Count"])
-        if not dm.empty:
-            st.markdown("#### Deliveries Per Month")
-            st.line_chart(dm.set_index("Period")["Count"])
-        if not sm.empty:
-            st.markdown("#### Service Requests Per Month")
-            st.line_chart(sm.set_index("Period")["Count"])
-
-
+ 
 st.subheader("📊 CRM Metrics Summary")
 
 metrics = {
@@ -200,7 +140,64 @@ styled_trend = styled_trend.apply(
 st.subheader("📈 Trend Comparison (Color-Coded)")
 st.dataframe(styled_trend, width="stretch")
 
+# ==========================
+# CRM Overview
+# ==========================
+if section == "CRM Overview":
+    crm_df = get_df("CRM")
+    leads_df = get_df("New Leads")
+    del_df = get_df("Delivery")
+    sr_df = get_df("Service Request")
 
+    st.subheader("📋 Master CRM Data")
+    st.dataframe(crm_df, width="stretch")
+
+    # --- Status Distribution Charts ---
+    col1, col2, col3 = st.columns(3)
+    if not leads_df.empty and "Status" in leads_df.columns:
+        with col1:
+            st.subheader("Leads by Status")
+            st.plotly_chart(px.pie(leads_df, names="Status"), width="stretch")
+
+    if not del_df.empty and "Delivery Status" in del_df.columns:
+        with col2:
+            st.subheader("Deliveries by Status")
+            st.plotly_chart(px.pie(del_df, names="Delivery Status"), width="stretch")
+
+    if not sr_df.empty and "Status" in sr_df.columns:
+        with col3:
+            st.subheader("Service Requests by Status")
+            st.plotly_chart(px.pie(sr_df, names="Status"), width="stretch")
+
+    # --- Weekly & Monthly Reports ---
+    st.subheader("📈 Weekly & Monthly CRM Metrics")
+
+    lw, lm = summarize_by_period(leads_df, "Lead Date")
+    dw, dm = summarize_by_period(del_df, "Delivery Date")
+    sw, sm = summarize_by_period(sr_df, "Request Date")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if not lw.empty:
+            st.markdown("#### Leads Per Week")
+            st.bar_chart(lw.set_index("Period")["Count"])
+        if not dw.empty:
+            st.markdown("#### Deliveries Per Week")
+            st.bar_chart(dw.set_index("Period")["Count"])
+        if not sw.empty:
+            st.markdown("#### Service Requests Per Week")
+            st.bar_chart(sw.set_index("Period")["Count"])
+
+    with col2:
+        if not lm.empty:
+            st.markdown("#### Leads Per Month")
+            st.line_chart(lm.set_index("Period")["Count"])
+        if not dm.empty:
+            st.markdown("#### Deliveries Per Month")
+            st.line_chart(dm.set_index("Period")["Count"])
+        if not sm.empty:
+            st.markdown("#### Service Requests Per Month")
+            st.line_chart(sm.set_index("Period")["Count"])
 
 
 # ==========================
