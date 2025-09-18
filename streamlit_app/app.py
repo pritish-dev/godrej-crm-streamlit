@@ -6,10 +6,43 @@ from sheets import get_df, upsert_record
 st.set_page_config(page_title="Godrej CRM Dashboard", layout="wide")
 st.title("📊 Godrej Interio Patia – CRM Dashboard")
 
+# Sidebar navigation
 section = st.sidebar.radio(
     "Choose Section",
     ["CRM Overview", "New Leads", "Delivery", "Service Request", "History Log"]
 )
+
+# ==========================
+# Helper: Summarize Weekly & Monthly
+# ==========================
+def summarize_by_period(df, date_col):
+    """Return weekly and monthly summary counts for a given date column"""
+    if df.empty or date_col not in df.columns:
+        return pd.DataFrame(columns=["Period", "Count"]), pd.DataFrame(columns=["Period", "Count"])
+
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+    df = df.dropna(subset=[date_col])
+
+    if df.empty:
+        return pd.DataFrame(columns=["Period", "Count"]), pd.DataFrame(columns=["Period", "Count"])
+
+    # Weekly summary
+    weekly = (
+        df.groupby(df[date_col].dt.to_period("W"))
+        .size()
+        .reset_index(name="Count")
+    )
+    weekly["Period"] = weekly[date_col].astype(str)
+
+    # Monthly summary
+    monthly = (
+        df.groupby(df[date_col].dt.to_period("M"))
+        .size()
+        .reset_index(name="Count")
+    )
+    monthly["Period"] = monthly[date_col].astype(str)
+
+    return weekly, monthly
 
 # ==========================
 # CRM Overview
@@ -21,7 +54,7 @@ if section == "CRM Overview":
     sr_df = get_df("Service Request")
 
     st.subheader("📋 Master CRM Data")
-    st.dataframe(crm_df, use_container_width=True)
+    st.dataframe(crm_df, width="stretch")
 
     # --- Status Distribution Charts ---
     col1, col2, col3 = st.columns(3)
@@ -43,40 +76,9 @@ if section == "CRM Overview":
     # --- Weekly & Monthly Reports ---
     st.subheader("📈 Weekly & Monthly CRM Metrics")
 
-    def summarize_by_period(df, date_col):
-        """Return weekly and monthly summary counts for a given date column"""
-        if df.empty or date_col not in df.columns:
-            return pd.DataFrame(columns=["Period", "Count"]), pd.DataFrame(columns=["Period", "Count"])
-        
-        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
-        df = df.dropna(subset=[date_col])
-        
-        if df.empty:
-            return pd.DataFrame(columns=["Period", "Count"]), pd.DataFrame(columns=["Period", "Count"])
-        
-        # Weekly summary
-        weekly = (
-            df.groupby(df[date_col].dt.to_period("W"))
-            .size()
-            .reset_index(name="Count")
-        )
-        weekly["Period"] = weekly[date_col].astype(str)
-        
-        # Monthly summary
-        monthly = (
-            df.groupby(df[date_col].dt.to_period("M"))
-            .size()
-            .reset_index(name="Count")
-        )
-        monthly["Period"] = monthly[date_col].astype(str)
-        
-        return weekly, monthly
-
-
-    # Leads
-    lw, lm = summarize_by_period(leads_df, "Lead Date", "Leads")
-    dw, dm = summarize_by_period(del_df, "Delivery Date", "Deliveries")
-    sw, sm = summarize_by_period(sr_df, "Request Date", "Service Requests")
+    lw, lm = summarize_by_period(leads_df, "Lead Date")
+    dw, dm = summarize_by_period(del_df, "Delivery Date")
+    sw, sm = summarize_by_period(sr_df, "Request Date")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -100,46 +102,6 @@ if section == "CRM Overview":
         if not sm.empty:
             st.markdown("#### Service Requests Per Month")
             st.line_chart(sm.set_index("Period")["Count"])
-
-# ==========================
-# History Log
-# ==========================
-elif section == "History Log":
-    st.subheader("📝 Change History")
-    log_df = get_df("History Log")
-    if log_df.empty:
-        st.info("No history recorded yet.")
-    else:
-        st.dataframe(log_df, use_container_width=True)
-
-
-
-    # Leads Summary
-    lead_summary = summarize_by_period(leads_df, "Lead Date", "Leads")
-    if not lead_summary["weekly"].empty:
-        st.markdown("#### Leads Added Per Week")
-        st.bar_chart(lead_summary["weekly"].set_index("Period")["Count"])
-    if not lead_summary["monthly"].empty:
-        st.markdown("#### Leads Added Per Month")
-        st.line_chart(lead_summary["monthly"].set_index("Period")["Count"])
-
-    # Delivery Summary
-    delivery_summary = summarize_by_period(del_df, "Delivery Date", "Delivery")
-    if not delivery_summary["weekly"].empty:
-        st.markdown("#### Deliveries Per Week")
-        st.bar_chart(delivery_summary["weekly"].set_index("Period")["Count"])
-    if not delivery_summary["monthly"].empty:
-        st.markdown("#### Deliveries Per Month")
-        st.line_chart(delivery_summary["monthly"].set_index("Period")["Count"])
-
-    # Service Request Summary
-    sr_summary = summarize_by_period(sr_df, "Request Date", "Service")
-    if not sr_summary["weekly"].empty:
-        st.markdown("#### Service Requests Per Week")
-        st.bar_chart(sr_summary["weekly"].set_index("Period")["Count"])
-    if not sr_summary["monthly"].empty:
-        st.markdown("#### Service Requests Per Month")
-        st.line_chart(sr_summary["monthly"].set_index("Period")["Count"])
 
 # ==========================
 # 2) New Leads
@@ -252,3 +214,14 @@ elif section == "Service Request":
             }
             msg = upsert_record("Service Request", unique_fields, new_data)
             st.success(f"✅ {msg}")
+
+# ==========================
+# History Log
+# ==========================
+elif section == "History Log":
+    st.subheader("📝 Change History")
+    log_df = get_df("History Log")
+    if log_df.empty:
+        st.info("No history recorded yet.")
+    else:
+        st.dataframe(log_df, width="stretch")
