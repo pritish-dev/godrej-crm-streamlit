@@ -198,7 +198,7 @@ elif section == "Service Request":
         notes = st.text_area("Notes")
         assigned_to = st.selectbox("Service Assigned To", ["4sinteriors", "Frunicare", "ArchanaTraders", "Others"])
         staff_email = st.selectbox("Staff Email", ["4sinteriorsbbsr@gmail.com"])
-        charges= st.selectbox("SERVICE CHARGE")
+        charges= st.text_area("SERVICE CHARGE")
         submit = st.form_submit_button("Add Service Request")
 
         if submit:
