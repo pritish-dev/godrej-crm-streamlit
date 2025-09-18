@@ -178,7 +178,32 @@ if section == "CRM Overview":
         [lead_trend, del_trend, sr_trend],
         index=["Leads", "Delivery", "Service Requests"]
     ).fillna(0).astype(int)
-    
+    # 🎨 Apply color coding
+    def highlight_trends(row):
+        styles = []
+        # Compare This Week vs Last Week
+        if row["This Week"] > row["Last Week"]:
+            styles.append("color: green; font-weight: bold")
+        elif row["This Week"] < row["Last Week"]:
+            styles.append("color: red; font-weight: bold")
+        else:
+            styles.append("color: gray")
+        styles.append("color: gray")  # baseline for Last Week
+
+        # Compare This Month vs Last Month
+        if row["This Month"] > row["Last Month"]:
+            styles.append("color: green; font-weight: bold")
+        elif row["This Month"] < row["Last Month"]:
+            styles.append("color: red; font-weight: bold")
+        else:
+            styles.append("color: gray")
+        styles.append("color: gray")  # baseline for Last Month
+        return styles
+
+    styled_trend = trend_df.style.apply(highlight_trends, axis=1)
+
+    st.subheader("📈 Trend Comparison (Color-Coded)")
+    st.dataframe(styled_trend, width="stretch")
     
     
 
@@ -309,29 +334,3 @@ elif section == "History Log":
         st.dataframe(log_df, width="stretch")
 
 
-
-def highlight_trends(row):
-    """Apply color styles row-wise for trend comparison"""
-    styles = []
-    # Compare This Week vs Last Week
-    if row["This Week"] > row["Last Week"]:
-        styles.append("color: green; font-weight: bold")
-    elif row["This Week"] < row["Last Week"]:
-        styles.append("color: red; font-weight: bold")
-    else:
-        styles.append("color: gray")
-
-    styles.append("color: gray")  # for Last Week itself (baseline, no highlight)
-
-    # Compare This Month vs Last Month
-    if row["This Month"] > row["Last Month"]:
-        styles.append("color: green; font-weight: bold")
-    elif row["This Month"] < row["Last Month"]:
-        styles.append("color: red; font-weight: bold")
-    else:
-        styles.append("color: gray")
-
-    styles.append("color: gray")  # for Last Month itself
-    return styles
-
-styled_trend = trend_df.style.apply(highlight_trends, axis=1)
