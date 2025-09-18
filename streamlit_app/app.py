@@ -294,7 +294,7 @@ metrics = {
     }
 }
 
-metrics_df = pd.DataFrame(metrics).T
+metrics_df = pd.DataFrame(metrics).T.astype(int)  # ✅ force integers
 st.table(metrics_df)
 
 # --- Trend Comparison ---
@@ -307,7 +307,7 @@ sr_trend = get_trend_comparison(sr_df, "Request Date", "Service")
 trend_df = pd.DataFrame(
     [lead_trend, del_trend, sr_trend],
     index=["Leads", "Delivery", "Service Requests"]
-)
+).astype(int)
 
 def highlight_trends(val, base):
     if val > base:
@@ -317,7 +317,7 @@ def highlight_trends(val, base):
     else:
         return "color: gray"
 
-styled_trend = trend_df.style.format("{:.0f}")
+styled_trend = trend_df.style
 
 # Compare Week-over-Week
 styled_trend = styled_trend.apply(
