@@ -294,7 +294,7 @@ metrics = {
     }
 }
 
-metrics_df = pd.DataFrame(metrics).T.astype(int)  # ✅ force integers
+metrics_df = pd.DataFrame(metrics).T.fillna(0).astype(int)
 st.table(metrics_df)
 
 # --- Trend Comparison ---
@@ -307,7 +307,7 @@ sr_trend = get_trend_comparison(sr_df, "Request Date", "Service")
 trend_df = pd.DataFrame(
     [lead_trend, del_trend, sr_trend],
     index=["Leads", "Delivery", "Service Requests"]
-).astype(int)
+).fillna(0).astype(int)
 
 def highlight_trends(val, base):
     if val > base:
