@@ -80,13 +80,15 @@ def get_trend_comparison(df, date_col, label):
  
 st.subheader("📊 CRM Metrics Summary")
 
+
 metrics = {
     "Leads": {
         "Total": len(leads_df),
-        "Open Leads": (leads_df["Status"] == "New").sum() if "Status" in leads_df else 0,
-        "In Progress": (leads_df["Status"] == "In Progress").sum() if "Status" in leads_df else 0,
+        "Open Leads": (leads_df["Status"] == "New Lead").sum() if "Status" in leads_df else 0,
+        "In Progress": (leads_df["Status"] == "Followup-scheduled").sum() if "Status" in leads_df else 0,
         "Converted": (leads_df["Status"] == "Converted").sum() if "Status" in leads_df else 0,
-        "Closed": (leads_df["Status"] == "Closed").sum() if "Status" in leads_df else 0,
+        "Won": (leads_df["Status"] == "Won").sum() if "Status" in leads_df else 0,
+        "Lost": (leads_df["Status"] == "Lost").sum() if "Status" in leads_df else 0,
     },
     "Delivery": {
         "Total": len(del_df),

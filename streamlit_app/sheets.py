@@ -54,7 +54,6 @@ def log_history(action: str, sheet_name: str, unique_fields: dict, old_data: dic
         str(old_data), str(new_data)
     ])
 
-
 def upsert_record(sheet_name: str, unique_fields: dict, new_data: dict, sync_to_crm=True):
     """
     Update a record if (Customer Name + Contact Number) exists, else insert.
