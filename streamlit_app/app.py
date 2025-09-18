@@ -4,17 +4,15 @@ import pandas as pd
 from sheets import get_df, upsert_record
 
 st.set_page_config(page_title="Godrej CRM Dashboard", layout="wide")
-
 st.title("📊 Godrej Interio Patia – CRM Dashboard")
 
-# Sidebar navigation
 section = st.sidebar.radio(
     "Choose Section",
-    ["CRM Overview", "New Leads", "Delivery", "Service Request"]
+    ["CRM Overview", "New Leads", "Delivery", "Service Request", "History Log"]
 )
 
 # ==========================
-# 1) CRM Overview Dashboard
+# CRM Overview
 # ==========================
 if section == "CRM Overview":
     crm_df = get_df("CRM")
@@ -25,54 +23,76 @@ if section == "CRM Overview":
     st.subheader("📋 Master CRM Data")
     st.dataframe(crm_df, use_container_width=True)
 
-    # Lead status distribution
-    if not crm_df.empty and "Status" in crm_df.columns:
-        st.subheader("Lead Status Distribution")
-        fig = px.pie(crm_df, names="Status", title="Leads by Status")
-        st.plotly_chart(fig, use_container_width=True)
+    # --- Status Distribution Charts ---
+    col1, col2, col3 = st.columns(3)
+    if not leads_df.empty and "Status" in leads_df.columns:
+        with col1:
+            st.subheader("Leads by Status")
+            st.plotly_chart(px.pie(leads_df, names="Status"), use_container_width=True)
 
-    # ======================
-    # Weekly / Monthly Trends
-    # ======================
+    if not del_df.empty and "Delivery Status" in del_df.columns:
+        with col2:
+            st.subheader("Deliveries by Status")
+            st.plotly_chart(px.pie(del_df, names="Delivery Status"), use_container_width=True)
 
-    st.subheader("📈 Weekly & Monthly Summary")
+    if not sr_df.empty and "Status" in sr_df.columns:
+        with col3:
+            st.subheader("Service Requests by Status")
+            st.plotly_chart(px.pie(sr_df, names="Status"), use_container_width=True)
 
-    # Helper to process dates
+    # --- Weekly & Monthly Reports ---
+    st.subheader("📈 Weekly & Monthly CRM Metrics")
+
     def summarize_by_period(df, date_col, label):
-        """Return weekly and monthly summary counts for a given date column"""
         if df.empty or date_col not in df.columns:
-            return {
-                "weekly": pd.DataFrame(columns=["Period", "Count"]),
-                "monthly": pd.DataFrame(columns=["Period", "Count"])
-            }
-
-        # Convert dates
+            return pd.DataFrame(columns=["Period", "Count"])
         df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
         df = df.dropna(subset=[date_col])
-
-        if df.empty:
-            return {
-                "weekly": pd.DataFrame(columns=["Period", "Count"]),
-                "monthly": pd.DataFrame(columns=["Period", "Count"])
-            }
-
-        # Weekly summary
-        weekly = (
-            df.groupby(df[date_col].dt.to_period("W"))
-            .size()
-            .reset_index(name="Count")
-        )
-        weekly["Period"] = weekly[date_col].astype(str)
-        
-        # Monthly summary
-        monthly = (
-            df.groupby(df[date_col].dt.to_period("M"))
-            .size()
-            .reset_index(name="Count")
-        )
+        monthly = df.groupby(df[date_col].dt.to_period("M")).size().reset_index(name="Count")
         monthly["Period"] = monthly[date_col].astype(str)
-        
-        return {"weekly": weekly, "monthly": monthly}
+        weekly = df.groupby(df[date_col].dt.to_period("W")).size().reset_index(name="Count")
+        weekly["Period"] = weekly[date_col].astype(str)
+        return weekly, monthly
+
+    # Leads
+    lw, lm = summarize_by_period(leads_df, "Lead Date", "Leads")
+    dw, dm = summarize_by_period(del_df, "Delivery Date", "Deliveries")
+    sw, sm = summarize_by_period(sr_df, "Request Date", "Service Requests")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if not lw.empty:
+            st.markdown("#### Leads Per Week")
+            st.bar_chart(lw.set_index("Period")["Count"])
+        if not dw.empty:
+            st.markdown("#### Deliveries Per Week")
+            st.bar_chart(dw.set_index("Period")["Count"])
+        if not sw.empty:
+            st.markdown("#### Service Requests Per Week")
+            st.bar_chart(sw.set_index("Period")["Count"])
+
+    with col2:
+        if not lm.empty:
+            st.markdown("#### Leads Per Month")
+            st.line_chart(lm.set_index("Period")["Count"])
+        if not dm.empty:
+            st.markdown("#### Deliveries Per Month")
+            st.line_chart(dm.set_index("Period")["Count"])
+        if not sm.empty:
+            st.markdown("#### Service Requests Per Month")
+            st.line_chart(sm.set_index("Period")["Count"])
+
+# ==========================
+# History Log
+# ==========================
+elif section == "History Log":
+    st.subheader("📝 Change History")
+    log_df = get_df("History Log")
+    if log_df.empty:
+        st.info("No history recorded yet.")
+    else:
+        st.dataframe(log_df, use_container_width=True)
+
 
 
     # Leads Summary
