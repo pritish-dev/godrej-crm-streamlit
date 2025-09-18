@@ -1,7 +1,7 @@
 import streamlit as st
 import plotly.express as px
 import pandas as pd
-from sheets import get_df, append_row
+from sheets import get_df, append_row, upsert_record
 
 st.set_page_config(page_title="Godrej CRM Dashboard", layout="wide")
 
@@ -110,31 +110,36 @@ elif section == "New Leads":
     leads_df = get_df("New Leads")
     st.dataframe(leads_df, use_container_width=True)
 
-    st.subheader("➕ Add New Lead")
-    with st.form("add_lead_form"):
+    st.subheader("➕ Add or Update Lead")
+    with st.form("lead_form"):
         date = st.date_input("Lead Date")
         name = st.text_input("Customer Name")
         phone = st.text_input("Contact Number")
         email = st.text_input("Email")
         address = st.text_area("Address/Location")
-        lead_source = st.selectbox("Lead Source", ["Showroom Visit", "Phone Inquiry", "Website", "Referral", "Other"])
-        product = st.text_input("Product Type")
+        lead_source = st.selectbox("Lead Source", ["Showroom Visit", "Phone Inquiry", "Website", "Referral", "Facebook", "Instagram", "Other"])
+        product = st.selectbox("product_type", ["Sofa", "Bed", "STEEL STORAGE", "Wardrobe", "Dining Table", "Kreation X2", "Kreation X3", "Recliners", "Dresser Unit", "Display Unit", "TV Unit", "Study Table/Office table", "Chairs", "Coffee Table", "Bedside Table", "Shoe Cabinet", "Bedsheet/Pillow/Covers", "Mattress", "Other")
         budget = st.text_input("Budget Range")
-        status = st.selectbox("Status", ["New", "In Progress", "Converted", "Closed"])
+        status = st.selectbox("Status", ["New", "In Progress", "Converted", "Won", "Lost"])
         next_follow = st.date_input("Next Follow-up Date")
         follow_time = st.time_input("Follow-up Time")
-        assigned_to = st.text_input("Assigned To (Name)")
+        assigned_to = st.selectbox("Assigned To (Name)", ["Archita", "Jitendra", "Smruti", "Swati", "Nazrin", "Krupa", "Other")
         staff_email = st.text_input("Staff Email")
         reminder = st.selectbox("Reminder Needed?", ["Y", "N"])
-        submit = st.form_submit_button("Add Lead")
+        submit = st.form_submit_button("Save Lead")
 
         if submit:
-            append_row("New Leads", [
-                str(date), name, phone, email, address, lead_source,
-                product, budget, status, str(next_follow), str(follow_time),
-                assigned_to, staff_email, reminder
-            ])
-            st.success(f"✅ Lead for {name} added!")
+            unique_fields = {"Customer Name": name, "Contact Number": phone}
+            new_data = {
+                "Lead Date": str(date), "Customer Name": name, "Contact Number": phone,
+                "Email": email, "Address/Location": address, "Lead Source": lead_source,
+                "Product Type": product, "Budget Range": budget, "Status": status,
+                "Next Follow-up Date": str(next_follow), "Follow-up Time": str(follow_time),
+                "Assigned To (Name)": assigned_to, "Staff Email": staff_email,
+                "Reminder Needed? (Y/N)": reminder
+            }
+            msg = upsert_record("New Leads", unique_fields, new_data)
+            st.success(f"✅ {msg}")
 
 # ==========================
 # 3) Delivery
@@ -151,19 +156,25 @@ elif section == "Delivery":
         phone = st.text_input("Contact Number")
         email = st.text_input("Email")
         address = st.text_area("Address/Location")
-        product = st.text_input("Product Type")
-        status = st.selectbox("Delivery Status", ["Pending", "Scheduled", "Delivered"])
+        product = st.selectbox("product_type", ["Sofa", "Bed", "STEEL STORAGE", "Wardrobe", "Dining Table", "Kreation X2", "Kreation X3", "Recliners", "Dresser Unit", "Display Unit", "TV Unit", "Study Table/Office table", "Chairs", "Coffee Table", "Bedside Table", "Shoe Cabinet", "Bedsheet/Pillow/Covers", "Mattress", "Other")
+        status = st.selectbox("Delivery Status", ["Pending", "Scheduled", "Delivered", "Installation Done"])
         notes = st.text_area("Notes")
-        assigned_to = st.text_input("Delivery Assigned To (Name)")
+        assigned_to = st.selectbox("Delivery Assigned To", ["4sinteriors", "Frunicare", "ArchanaTraders", "Others"])
         staff_email = st.text_input("Staff Email")
+        delivery_instruction = st.text_input("Delivery Instruction / Floor / LIFT")
         submit = st.form_submit_button("Add Delivery")
 
         if submit:
-            append_row("Delivery", [
-                str(date), name, phone, email, address,
-                product, status, notes, assigned_to, staff_email
-            ])
-            st.success(f"✅ Delivery for {name} added!")
+            unique_fields = {"Customer Name": name, "Contact Number": phone}
+            new_data = {
+                "Delivery Date": str(date), "Customer Name": name, "Contact Number": phone,
+                "Email": email, "Address/Location": address,
+                "Product Type": product, "Delivery Status": status,
+                "Notes": notes, "Delivery Assigned To (Name)": assigned_to,
+                "Staff Email": staff_email, "Delivery Instruction / Floor / LIFT": delivery_instruction
+            }
+            msg = upsert_record("Delivery", unique_fields, new_data)
+            st.success(f"✅ {msg}")
 
 # ==========================
 # 4) Service Requests
@@ -180,19 +191,25 @@ elif section == "Service Request":
         phone = st.text_input("Contact Number")
         email = st.text_input("Email")
         address = st.text_area("Address/Location")
-        product = st.text_input("Product Type")
+        product = st.selectbox("product_type", ["Sofa", "Bed", "STEEL STORAGE", "Wardrobe", "Dining Table", "Kreation X2", "Kreation X3", "Recliners", "Dresser Unit", "Display Unit", "TV Unit", "Study Table/Office table", "Chairs", "Coffee Table", "Bedside Table", "Shoe Cabinet", "Bedsheet/Pillow/Covers", "Mattress", "Other")
         complaint = st.text_area("Complaint/Service Request")
         status = st.selectbox("Status", ["Open", "In Progress", "Resolved", "Closed"])
         warranty = st.selectbox("Warranty", ["Yes", "No"])
         notes = st.text_area("Notes")
-        assigned_to = st.text_input("Service Assigned To (Name)")
-        staff_email = st.text_input("Staff Email")
+        assigned_to = st.selectbox("Service Assigned To", ["4sinteriors", "Frunicare", "ArchanaTraders", "Others"])
+        staff_email = st.selectbox("Staff Email", ["4sinteriorsbbsr@gmail.com"])
+        charges= st.selectbox("Service Charge")
         submit = st.form_submit_button("Add Service Request")
 
         if submit:
-            append_row("Service Request", [
-                str(date), name, phone, email, address,
-                product, complaint, status, warranty, notes,
-                assigned_to, staff_email
-            ])
-            st.success(f"✅ Service Request for {name} added!")
+            unique_fields = {"Customer Name": name, "Contact Number": phone}
+            new_data = {
+                "Request Date": str(date), "Customer Name": name, "Contact Number": phone,
+                "Email": email, "Address/Location": address,
+                "Product Type": product, "Complaint/Service Request": complaint,
+                "Status": status, "Warranty": warranty, "Notes": notes,
+                "Service Assigned To (Name)": assigned_to, "Staff Email": staff_email,
+                "Service Charge": charges
+            }
+            msg = upsert_record("Service Request", unique_fields, new_data)
+            st.success(f"✅ {msg}")

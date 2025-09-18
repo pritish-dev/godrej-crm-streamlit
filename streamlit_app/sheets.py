@@ -45,8 +45,32 @@ def get_df(sheet_name: str):
     df = pd.DataFrame(all_values[1:], columns=unique_headers)
     return df
 
-
-def append_row(sheet_name: str, row_values: list):
-    """Append a row to a worksheet"""
+def upsert_record(sheet_name: str, unique_fields: dict, new_data: dict):
+    """
+    Update a record if (Customer Name + Contact Number) exists, else insert a new row.
+    unique_fields: {"Customer Name": "John Doe", "Contact Number": "9999999999"}
+    new_data: full row as {col_name: value}
+    """
     ws = sh.worksheet(sheet_name)
-    ws.append_row(row_values)
+    headers = ws.row_values(1)
+
+    # Convert worksheet to DataFrame for easier search
+    df = get_df(sheet_name)
+
+    # Check if record exists
+    mask = (df["Customer Name"] == unique_fields["Customer Name"]) & \
+           (df["Contact Number"] == unique_fields["Contact Number"])
+
+    if mask.any():
+        # Update existing record
+        row_index = mask[mask].index[0] + 2  # +2 because DataFrame is 0-based and row 1 is header
+        for col, val in new_data.items():
+            if col in headers:
+                col_index = headers.index(col) + 1
+                ws.update_cell(row_index, col_index, val)
+        return f"Updated existing record for {unique_fields['Customer Name']} ({unique_fields['Contact Number']})"
+    else:
+        # Insert new record
+        row_values = [new_data.get(col, "") for col in headers]
+        ws.append_row(row_values)
+        return f"Inserted new record for {unique_fields['Customer Name']} ({unique_fields['Contact Number']})"
