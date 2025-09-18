@@ -2,10 +2,21 @@ import gspread
 from google.oauth2.service_account import Credentials
 import pandas as pd
 
-# Google Sheets setup
+import streamlit as st
+from google.oauth2 import service_account
+
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-CREDS = Credentials.from_service_account_file("config/credentials.json", scopes=SCOPES)
-gc = gspread.authorize(CREDS)
+
+if "google" in st.secrets:
+    # ✅ Use Streamlit secrets in the cloud
+    CREDS = service_account.Credentials.from_service_account_info(
+        st.secrets["google"], scopes=SCOPES
+    )
+else:
+    # ✅ Local development fallback
+    CREDS = service_account.Credentials.from_service_account_file(
+        "config/credentials.json", scopes=SCOPES
+    )
 
 # Replace with your real spreadsheet ID
 SPREADSHEET_ID = "1wFpK-WokcZB6k1vzG7B6JO5TdGHrUwdgvVm_-UQse54"
