@@ -198,7 +198,7 @@ elif section == "Service Request":
         notes = st.text_area("Notes")
         assigned_to = st.selectbox("Service Assigned To", ["4sinteriors", "Frunicare", "ArchanaTraders", "Others"])
         staff_email = st.selectbox("Staff Email", ["4sinteriorsbbsr@gmail.com"])
-        charges= st.selectbox("Service Charge")
+        charges= st.selectbox("SERVICE CHARGE")
         submit = st.form_submit_button("Add Service Request")
 
         if submit:
@@ -209,7 +209,7 @@ elif section == "Service Request":
                 "Product Type": product, "Complaint/Service Request": complaint,
                 "Status": status, "Warranty": warranty, "Notes": notes,
                 "Service Assigned To (Name)": assigned_to, "Staff Email": staff_email,
-                "Service Charge": charges
+                "SERVICE CHARGE": charges
             }
             msg = upsert_record("Service Request", unique_fields, new_data)
             st.success(f"✅ {msg}")
