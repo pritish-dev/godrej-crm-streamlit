@@ -1,18 +1,23 @@
 import gspread
 from google.oauth2.service_account import Credentials
 import pandas as pd
-from datetime import datetime
 import streamlit as st
-# Google Sheets setup
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-CREDS = Credentials.from_service_account_info(st.secrets["google"], scopes=SCOPES)
-gc = gspread.authorize(CREDS)
+from datetime import datetime
 
-# Spreadsheet ID
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+
+# ✅ Auto-detect: Local (credentials.json) or Streamlit Cloud (st.secrets)
+try:
+    CREDS = Credentials.from_service_account_info(st.secrets["google"], scopes=SCOPES)
+except Exception:
+    CREDS = Credentials.from_service_account_file("config/credentials.json", scopes=SCOPES)
+
+gc = gspread.authorize(CREDS)
 SPREADSHEET_ID = "1wFpK-WokcZB6k1vzG7B6JO5TdGHrUwdgvVm_-UQse54"
 sh = gc.open_by_key(SPREADSHEET_ID)
 
 
+@st.cache_data(ttl=60)  # cache sheet data for 60 seconds
 def get_df(sheet_name: str):
     """Fetch worksheet as DataFrame (handles duplicate headers)"""
     ws = sh.worksheet(sheet_name)
@@ -33,12 +38,6 @@ def get_df(sheet_name: str):
 
     df = pd.DataFrame(all_values[1:], columns=unique_headers)
     return df
-
-
-def append_row(sheet_name: str, row_values: list):
-    """Append a row to a worksheet"""
-    ws = sh.worksheet(sheet_name)
-    ws.append_row(row_values)
 
 
 def log_history(action: str, sheet_name: str, unique_fields: dict, old_data: dict, new_data: dict):
@@ -65,12 +64,14 @@ def upsert_record(sheet_name: str, unique_fields: dict, new_data: dict, sync_to_
     headers = ws.row_values(1)
     df = get_df(sheet_name)
 
+    # ✅ Clear cache so Streamlit reloads fresh next time
+    get_df.clear()
+
     mask = (df["Customer Name"] == unique_fields["Customer Name"]) & \
            (df["Contact Number"] == unique_fields["Contact Number"])
 
     if mask.any():
-        # Update existing record
-        row_index = mask[mask].index[0] + 2  # account for header row
+        row_index = mask[mask].index[0] + 2  # account for header
         old_data = df.iloc[mask[mask].index[0]].to_dict()
         for col, val in new_data.items():
             if col in headers:
@@ -79,7 +80,6 @@ def upsert_record(sheet_name: str, unique_fields: dict, new_data: dict, sync_to_
         log_history("UPDATE", sheet_name, unique_fields, old_data, new_data)
         return f"Updated existing record for {unique_fields['Customer Name']} ({unique_fields['Contact Number']})"
     else:
-        # Insert new record
         row_values = [new_data.get(col, "") for col in headers]
         ws.append_row(row_values)
         log_history("INSERT", sheet_name, unique_fields, {}, new_data)

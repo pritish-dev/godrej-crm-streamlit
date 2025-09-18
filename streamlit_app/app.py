@@ -225,3 +225,11 @@ elif section == "History Log":
         st.info("No history recorded yet.")
     else:
         st.dataframe(log_df, width="stretch")
+        
+# Sidebar navigation
+st.sidebar.subheader("⚙️ Controls")
+if st.sidebar.button("🔄 Refresh Data"):
+    from sheets import get_df
+    get_df.clear()
+    st.sidebar.success("Cache cleared! Reloading fresh data…")
+    st.rerun()
