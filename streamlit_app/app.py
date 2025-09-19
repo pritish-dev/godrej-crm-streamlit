@@ -11,7 +11,6 @@ st.title("📊 Godrej Interio Patia – CRM Dashboard")
 # Helpers
 # --------------------------
 def _to_dt(s):
-    """Robust datetime parser for CRM DATE RECEIVED column"""
     return pd.to_datetime(s, errors="coerce", dayfirst=True, infer_datetime_format=True)
 
 def clean_crm(df: pd.DataFrame) -> pd.DataFrame:
@@ -40,7 +39,6 @@ def slice_service(crm: pd.DataFrame) -> pd.DataFrame:
     return crm[crm[col].notna() & crm[col].astype(str).str.strip().ne("")]
 
 def summarize_by_status(df, date_col, status_col):
-    """Weekly & monthly summary grouped by status"""
     if df.empty or date_col not in df.columns or status_col not in df.columns:
         return pd.DataFrame(), pd.DataFrame()
 
@@ -52,7 +50,6 @@ def summarize_by_status(df, date_col, status_col):
 
     today = datetime.today()
 
-    # Weekly by status
     weekly = (
         tmp.groupby([pd.Grouper(key=date_col, freq="W-MON"), status_col])
         .size()
@@ -62,7 +59,6 @@ def summarize_by_status(df, date_col, status_col):
     weekly = weekly.rename(columns={date_col: "Period"})
     weekly["Period"] = weekly["Period"].dt.strftime("%Y-%m-%d")
 
-    # Monthly by status
     monthly = (
         tmp.groupby([pd.Grouper(key=date_col, freq="ME"), status_col])
         .size()
@@ -156,12 +152,10 @@ if section == "CRM Overview":
     st.subheader("📋 Master CRM Data")
     st.dataframe(crm_df, width="stretch")
 
-    # Extract slices
     leads_df = slice_leads(crm_df)
     del_df = slice_delivery(crm_df)
     sr_df = slice_service(crm_df)
 
-    # ---------------- Date Filter ----------------
     st.markdown("## 📅 Date Range Filter")
     filter_option = st.radio(
         "Choose Timeframe:",
@@ -171,7 +165,6 @@ if section == "CRM Overview":
 
     today = datetime.today()
     start_date, end_date = None, None
-
     if filter_option == "Weekly":
         start_date = today - timedelta(days=7)
         end_date = today
@@ -209,17 +202,15 @@ if section == "CRM Overview":
     st.markdown("### 📈 Weekly Leads by Status")
     st.table(lw)
     if not lw.empty:
-        fig = px.bar(lw, x="Period", y="Count", color="Lead Status",
-                     barmode="stack", title="Leads per Week by Status")
-        fig.update_layout(width=800, height=400, yaxis=dict(dtick=1), xaxis_tickangle=-45)
+        fig = px.pie(lw, names="Lead Status", values="Count", title="Weekly Leads by Status")
+        fig.update_layout(width=600, height=400)
         st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("### 📈 Monthly Leads by Status")
     st.table(lm)
     if not lm.empty:
-        fig = px.bar(lm, x="Period", y="Count", color="Lead Status",
-                     barmode="stack", title="Leads per Month by Status")
-        fig.update_layout(width=800, height=400, yaxis=dict(dtick=1), xaxis_tickangle=-45)
+        fig = px.pie(lm, names="Lead Status", values="Count", title="Monthly Leads by Status")
+        fig.update_layout(width=600, height=400)
         st.plotly_chart(fig, use_container_width=True)
 
     # ------------------- Delivery -------------------
@@ -229,17 +220,15 @@ if section == "CRM Overview":
     st.markdown("### 📈 Weekly Deliveries by Status")
     st.table(dw)
     if not dw.empty:
-        fig = px.bar(dw, x="Period", y="Count", color="Delivery Status",
-                     barmode="stack", title="Deliveries per Week by Status")
-        fig.update_layout(width=800, height=400, yaxis=dict(dtick=1), xaxis_tickangle=-45)
+        fig = px.pie(dw, names="Delivery Status", values="Count", title="Weekly Deliveries by Status")
+        fig.update_layout(width=600, height=400)
         st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("### 📈 Monthly Deliveries by Status")
     st.table(dm)
     if not dm.empty:
-        fig = px.bar(dm, x="Period", y="Count", color="Delivery Status",
-                     barmode="stack", title="Deliveries per Month by Status")
-        fig.update_layout(width=800, height=400, yaxis=dict(dtick=1), xaxis_tickangle=-45)
+        fig = px.pie(dm, names="Delivery Status", values="Count", title="Monthly Deliveries by Status")
+        fig.update_layout(width=600, height=400)
         st.plotly_chart(fig, use_container_width=True)
 
     # ------------------- Service Requests -------------------
@@ -249,17 +238,15 @@ if section == "CRM Overview":
     st.markdown("### 📈 Weekly Service Requests by Status")
     st.table(sw)
     if not sw.empty:
-        fig = px.bar(sw, x="Period", y="Count", color="Complaint Status",
-                     barmode="stack", title="Service Requests per Week by Status")
-        fig.update_layout(width=800, height=400, yaxis=dict(dtick=1), xaxis_tickangle=-45)
+        fig = px.pie(sw, names="Complaint Status", values="Count", title="Weekly Service Requests by Status")
+        fig.update_layout(width=600, height=400)
         st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("### 📈 Monthly Service Requests by Status")
     st.table(sm)
     if not sm.empty:
-        fig = px.bar(sm, x="Period", y="Count", color="Complaint Status",
-                     barmode="stack", title="Service Requests per Month by Status")
-        fig.update_layout(width=800, height=400, yaxis=dict(dtick=1), xaxis_tickangle=-45)
+        fig = px.pie(sm, names="Complaint Status", values="Count", title="Monthly Service Requests by Status")
+        fig.update_layout(width=600, height=400)
         st.plotly_chart(fig, use_container_width=True)
 
     # ------------------- Trend Comparison -------------------
@@ -275,6 +262,7 @@ if section == "CRM Overview":
 
     styled_trend = trend_df.style.apply(highlight_trends, axis=1)
     st.table(styled_trend)
+
 
 
 
