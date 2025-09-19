@@ -4,8 +4,8 @@ import pandas as pd
 from datetime import datetime, timedelta
 from sheets import get_df, upsert_record
 
-st.set_page_config(page_title="Godrej CRM Dashboard", layout="wide")
-st.title("📊 Godrej Interio Patia – CRM Dashboard")
+st.set_page_config(page_title="4sinteriors CRM Dashboard", layout="wide")
+st.title("📊 Interio by Godrej Patia – CRM Dashboard")
 
 # --------------------------
 # Helpers
@@ -39,6 +39,7 @@ def slice_service(crm: pd.DataFrame) -> pd.DataFrame:
     return crm[crm[col].notna() & crm[col].astype(str).str.strip().ne("")]
 
 def summarize_by_status(df, date_col, status_col):
+    """Weekly & monthly summary grouped by status"""
     if df.empty or date_col not in df.columns or status_col not in df.columns:
         return pd.DataFrame(), pd.DataFrame()
 
@@ -199,55 +200,67 @@ if section == "CRM Overview":
     st.markdown("## 👤 Leads Metrics")
     lw, lm = summarize_by_status(leads_df_f, "DATE RECEIVED", "Lead Status")
 
-    st.markdown("### 📈 Weekly Leads by Status")
-    st.table(lw)
-    if not lw.empty:
-        fig = px.pie(lw, names="Lead Status", values="Count", title="Weekly Leads by Status")
-        fig.update_layout(width=600, height=400)
-        st.plotly_chart(fig, use_container_width=True)
+    st.markdown("### Weekly Leads by Status")
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st.dataframe(lw, use_container_width=False, width=None)
+    with col2:
+        if not lw.empty:
+            fig = px.pie(lw, names="Lead Status", values="Count", title="Weekly Leads by Status")
+            st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### 📈 Monthly Leads by Status")
-    st.table(lm)
-    if not lm.empty:
-        fig = px.pie(lm, names="Lead Status", values="Count", title="Monthly Leads by Status")
-        fig.update_layout(width=600, height=400)
-        st.plotly_chart(fig, use_container_width=True)
+    st.markdown("### Monthly Leads by Status")
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st.dataframe(lm, use_container_width=False, width=None)
+    with col2:
+        if not lm.empty:
+            fig = px.pie(lm, names="Lead Status", values="Count", title="Monthly Leads by Status")
+            st.plotly_chart(fig, use_container_width=True)
 
     # ------------------- Delivery -------------------
     st.markdown("## 🚚 Delivery Metrics")
     dw, dm = summarize_by_status(del_df_f, "DATE RECEIVED", "Delivery Status")
 
-    st.markdown("### 📈 Weekly Deliveries by Status")
-    st.table(dw)
-    if not dw.empty:
-        fig = px.pie(dw, names="Delivery Status", values="Count", title="Weekly Deliveries by Status")
-        fig.update_layout(width=600, height=400)
-        st.plotly_chart(fig, use_container_width=True)
+    st.markdown("### Weekly Deliveries by Status")
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st.dataframe(dw, use_container_width=False, width=None)
+    with col2:
+        if not dw.empty:
+            fig = px.pie(dw, names="Delivery Status", values="Count", title="Weekly Deliveries by Status")
+            st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### 📈 Monthly Deliveries by Status")
-    st.table(dm)
-    if not dm.empty:
-        fig = px.pie(dm, names="Delivery Status", values="Count", title="Monthly Deliveries by Status")
-        fig.update_layout(width=600, height=400)
-        st.plotly_chart(fig, use_container_width=True)
+    st.markdown("### Monthly Deliveries by Status")
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st.dataframe(dm, use_container_width=False, width=None)
+    with col2:
+        if not dm.empty:
+            fig = px.pie(dm, names="Delivery Status", values="Count", title="Monthly Deliveries by Status")
+            st.plotly_chart(fig, use_container_width=True)
 
     # ------------------- Service Requests -------------------
     st.markdown("## 🛠 Service Request Metrics")
     sw, sm = summarize_by_status(sr_df_f, "DATE RECEIVED", "Complaint Status")
 
-    st.markdown("### 📈 Weekly Service Requests by Status")
-    st.table(sw)
-    if not sw.empty:
-        fig = px.pie(sw, names="Complaint Status", values="Count", title="Weekly Service Requests by Status")
-        fig.update_layout(width=600, height=400)
-        st.plotly_chart(fig, use_container_width=True)
+    st.markdown("### Weekly Service Requests by Status")
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st.dataframe(sw, use_container_width=False, width=None)
+    with col2:
+        if not sw.empty:
+            fig = px.pie(sw, names="Complaint Status", values="Count", title="Weekly Service Requests by Status")
+            st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### 📈 Monthly Service Requests by Status")
-    st.table(sm)
-    if not sm.empty:
-        fig = px.pie(sm, names="Complaint Status", values="Count", title="Monthly Service Requests by Status")
-        fig.update_layout(width=600, height=400)
-        st.plotly_chart(fig, use_container_width=True)
+    st.markdown("### Monthly Service Requests by Status")
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st.dataframe(sm, use_container_width=False, width=None)
+    with col2:
+        if not sm.empty:
+            fig = px.pie(sm, names="Complaint Status", values="Count", title="Monthly Service Requests by Status")
+            st.plotly_chart(fig, use_container_width=True)
 
     # ------------------- Trend Comparison -------------------
     st.subheader("📊 Trend Comparison")
@@ -264,8 +277,7 @@ if section == "CRM Overview":
     st.table(styled_trend)
 
 
-
-
+###########################################################################
 # --------------------------
 # New Leads
 # --------------------------
