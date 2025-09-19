@@ -20,9 +20,7 @@ def clean_crm(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
     out = df.copy()
-    # Normalize headers (strip spaces)
     out.columns = [c.strip() for c in out.columns]
-    # Normalize date column
     if "DATE RECEIVED" in out.columns:
         out["DATE RECEIVED"] = _to_dt(out["DATE RECEIVED"], dayfirst=True)
     return out
@@ -38,46 +36,45 @@ def slice_delivery(crm: pd.DataFrame) -> pd.DataFrame:
     return crm[_nonempty(crm["Delivery Status"])]
 
 def slice_service(crm: pd.DataFrame) -> pd.DataFrame:
-    # Service entries are driven by "Complaint / Service Request" being non-empty
     col = "Complaint / Service Request"
     if crm.empty or col not in crm.columns:
         return pd.DataFrame(columns=crm.columns if not crm.empty else [])
     return crm[_nonempty(crm[col])]
 
 def summarize_by_period(df, date_col="DATE RECEIVED"):
-    """Return weekly and monthly summary counts for a given date column."""
+    """Return weekly and monthly summary counts with proper datetime bins"""
     if df.empty or date_col not in df.columns:
         empty = pd.DataFrame(columns=["Period", "Count"])
         return empty, empty
 
     tmp = df.dropna(subset=[date_col]).copy()
+    tmp[date_col] = pd.to_datetime(tmp[date_col], errors="coerce")
+
     if tmp.empty:
         empty = pd.DataFrame(columns=["Period", "Count"])
         return empty, empty
 
-    # Weekly
+    # Weekly resample (week starts Monday)
     weekly = (
-        tmp.groupby(tmp[date_col].dt.to_period("W"))
-        .size()
-        .reset_index(name="Count")
+        tmp.set_index(date_col)
+        .resample("W-MON")["Customer Name"]
+        .count()
+        .reset_index()
+        .rename(columns={date_col: "Period", "Customer Name": "Count"})
     )
-    weekly["Period"] = weekly[date_col].astype(str)
 
-    # Monthly
+    # Monthly resample
     monthly = (
-        tmp.groupby(tmp[date_col].dt.to_period("M"))
-        .size()
-        .reset_index(name="Count")
+        tmp.set_index(date_col)
+        .resample("M")["Customer Name"]
+        .count()
+        .reset_index()
+        .rename(columns={date_col: "Period", "Customer Name": "Count"})
     )
-    monthly["Period"] = monthly[date_col].astype(str)
 
-    # Keep only Period + Count to avoid confusing displays
-    weekly = weekly[["Period", "Count"]]
-    monthly = monthly[["Period", "Count"]]
     return weekly, monthly
 
 def get_trend_comparison(df, date_col="DATE RECEIVED"):
-    """Return current vs last week and month counts for a dataset."""
     base = {"This Week": 0, "Last Week": 0, "This Month": 0, "Last Month": 0}
     if df.empty or date_col not in df.columns:
         return base
@@ -120,7 +117,6 @@ section = st.sidebar.radio(
 
 st.sidebar.subheader("⚙️ Controls")
 if st.sidebar.button("🔄 Refresh Data"):
-    # If get_df is @st.cache_data, this clears it
     get_df.clear()
     st.sidebar.success("Cache cleared! Reloading fresh data…")
     st.rerun()
@@ -138,12 +134,11 @@ if section == "CRM Overview":
     st.subheader("📋 Master CRM Data")
     st.dataframe(crm_df, use_container_width=True)
 
-    # Slices derived from CRM (no dependency on sub-sheets)
     leads_df = slice_leads(crm_df)
     del_df = slice_delivery(crm_df)
     sr_df = slice_service(crm_df)
 
-    # Date Filter
+    # ---------------- Date Filter ----------------
     st.markdown("## 📅 Date Range Filter")
     filter_option = st.radio(
         "Choose Timeframe:",
@@ -175,12 +170,10 @@ if section == "CRM Overview":
         start_date = datetime.combine(sd, datetime.min.time())
         end_date = datetime.combine(ed, datetime.max.time())
 
-    # Apply date filter using unified DATE RECEIVED
     leads_df_f = filter_by_date(leads_df, "DATE RECEIVED", filter_option, start_date, end_date)
     del_df_f   = filter_by_date(del_df,   "DATE RECEIVED", filter_option, start_date, end_date)
     sr_df_f    = filter_by_date(sr_df,    "DATE RECEIVED", filter_option, start_date, end_date)
 
-    # Filter notice
     if filter_option == "All Time":
         st.info("Showing **All Time** CRM metrics")
     else:
@@ -188,80 +181,52 @@ if section == "CRM Overview":
 
     # ------------------- Leads -------------------
     st.markdown("## 👤 Leads Metrics")
-
     lw, lm = summarize_by_period(leads_df_f, "DATE RECEIVED")
+
     st.markdown("### 📈 Weekly Leads")
     st.table(lw.rename(columns={"Count": "Leads"}))
     if not lw.empty:
-        fig = px.bar(lw, x="Period", y="Count", title="Leads per Week")
+        fig = px.line(lw, x="Period", y="Count", title="Leads per Week", markers=True)
         st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("### 📈 Monthly Leads")
     st.table(lm.rename(columns={"Count": "Leads"}))
     if not lm.empty:
-        fig = px.bar(lm, x="Period", y="Count", title="Leads per Month")
-        st.plotly_chart(fig, use_container_width=True)
-
-    lead_status_col = "Lead Status"
-    lead_metrics = {
-        "Total": len(leads_df_f),
-        "New Lead": (leads_df_f[lead_status_col] == "New Lead").sum() if lead_status_col in leads_df_f else 0,
-        "Followup-scheduled": (leads_df_f[lead_status_col] == "Followup-scheduled").sum() if lead_status_col in leads_df_f else 0,
-        "Converted": (leads_df_f[lead_status_col] == "Converted").sum() if lead_status_col in leads_df_f else 0,
-        "Won": (leads_df_f[lead_status_col] == "Won").sum() if lead_status_col in leads_df_f else 0,
-        "Lost": (leads_df_f[lead_status_col] == "Lost").sum() if lead_status_col in leads_df_f else 0,
-    }
-    st.markdown("### 📊 Leads Status Summary")
-    st.table(pd.DataFrame.from_dict(lead_metrics, orient="index", columns=["Count"]).astype(int))
-
-    if lead_status_col in leads_df_f and not leads_df_f.empty:
-        fig = px.pie(leads_df_f, names=lead_status_col, title="Leads by Status")
+        fig = px.line(lm, x="Period", y="Count", title="Leads per Month", markers=True)
         st.plotly_chart(fig, use_container_width=True)
 
     # ------------------- Delivery -------------------
     st.markdown("## 🚚 Delivery Metrics")
     dw, dm = summarize_by_period(del_df_f, "DATE RECEIVED")
+
     st.markdown("### 📈 Weekly Deliveries")
     st.table(dw.rename(columns={"Count": "Deliveries"}))
     if not dw.empty:
-        fig = px.bar(dw, x="Period", y="Count", title="Deliveries per Week")
+        fig = px.line(dw, x="Period", y="Count", title="Deliveries per Week", markers=True)
         st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("### 📈 Monthly Deliveries")
     st.table(dm.rename(columns={"Count": "Deliveries"}))
     if not dm.empty:
-        fig = px.bar(dm, x="Period", y="Count", title="Deliveries per Month")
-        st.plotly_chart(fig, use_container_width=True)
-
-    del_status_col = "Delivery Status"
-    delivery_metrics = {
-        "Total": len(del_df_f),
-        "Pending": (del_df_f[del_status_col] == "Pending").sum() if del_status_col in del_df_f else 0,
-        "Scheduled": (del_df_f[del_status_col] == "Scheduled").sum() if del_status_col in del_df_f else 0,
-        "Delivered": (del_df_f[del_status_col] == "Delivered").sum() if del_status_col in del_df_f else 0,
-        "Installation Done": (del_df_f[del_status_col] == "Installation Done").sum() if del_status_col in del_df_f else 0,
-    }
-    st.markdown("### 📊 Delivery Status Summary")
-    st.table(pd.DataFrame.from_dict(delivery_metrics, orient="index", columns=["Count"]).astype(int))
-
-    if del_status_col in del_df_f and not del_df_f.empty:
-        fig = px.pie(del_df_f, names=del_status_col, title="Delivery by Status")
+        fig = px.line(dm, x="Period", y="Count", title="Deliveries per Month", markers=True)
         st.plotly_chart(fig, use_container_width=True)
 
     # ------------------- Service Requests -------------------
     st.markdown("## 🛠 Service Request Metrics")
     sw, sm = summarize_by_period(sr_df_f, "DATE RECEIVED")
+
     st.markdown("### 📈 Weekly Service Requests")
     st.table(sw.rename(columns={"Count": "Requests"}))
     if not sw.empty:
-        fig = px.bar(sw, x="Period", y="Count", title="Service Requests per Week")
+        fig = px.line(sw, x="Period", y="Count", title="Service Requests per Week", markers=True)
         st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("### 📈 Monthly Service Requests")
     st.table(sm.rename(columns={"Count": "Requests"}))
     if not sm.empty:
-        fig = px.bar(sm, x="Period", y="Count", title="Service Requests per Month")
+        fig = px.line(sm, x="Period", y="Count", title="Service Requests per Month", markers=True)
         st.plotly_chart(fig, use_container_width=True)
+
 
     sr_status_col = "Complaint Status"
     service_metrics = {
