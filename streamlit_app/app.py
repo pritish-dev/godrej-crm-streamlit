@@ -35,11 +35,7 @@ def slice_delivery(crm: pd.DataFrame) -> pd.DataFrame:
 def slice_service(crm: pd.DataFrame) -> pd.DataFrame:
     if crm.empty or "Complaint Status" not in crm.columns:
         return pd.DataFrame(columns=crm.columns if not crm.empty else [])
-    df = crm[
-        crm["Complaint Status"].notna()
-        & crm["Complaint Status"].astype(str).str.strip().ne("")
-    ]
-    return df
+    return crm[crm["Complaint Status"].notna()  & crm["Complaint Status"].astype(str).str.strip().ne("")]
 
 
 def summarize_by_status(df, date_col, status_col):
@@ -65,7 +61,7 @@ def summarize_by_status(df, date_col, status_col):
     weekly["Period"] = weekly["Period"].dt.strftime("%Y-%m-%d")
 
     monthly = (
-        tmp.groupby([pd.Grouper(key=date_col, freq="ME"), status_col])
+        tmp.groupby([pd.Grouper(key=date_col, freq="MS"), status_col])
         .size()
         .reset_index(name="Count")
     )
