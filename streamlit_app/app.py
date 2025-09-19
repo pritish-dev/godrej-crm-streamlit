@@ -46,29 +46,34 @@ def summarize_by_period(df, date_col="DATE RECEIVED"):
 
     tmp = df.dropna(subset=[date_col]).copy()
     tmp[date_col] = _to_dt(tmp[date_col])
+    tmp = tmp.dropna(subset=[date_col])
     if tmp.empty:
         return pd.DataFrame(columns=["Period", "Count"]), pd.DataFrame(columns=["Period", "Count"])
 
     today = datetime.today()
 
-    # Weekly
+    # Weekly (count rows with .size(), not .count() on a column)
     weekly = (
         tmp.set_index(date_col)
-        .resample("W-MON")["Customer Name"].count()
-        .reset_index()
-        .rename(columns={date_col: "Period", "Customer Name": "Count"})
+        .sort_index()
+        .resample("W-MON")
+        .size()
+        .reset_index(name="Count")
     )
-    weekly = weekly[weekly["Period"] <= today]
+    weekly = weekly[weekly["DATE RECEIVED"] <= today]
+    weekly = weekly.rename(columns={"DATE RECEIVED": "Period"})
     weekly["Period"] = weekly["Period"].dt.strftime("%Y-%m-%d")
 
-    # Monthly
+    # Monthly (month-end; Pandas warns for "M", so we use "ME")
     monthly = (
         tmp.set_index(date_col)
-        .resample("ME")["Customer Name"].count()
-        .reset_index()
-        .rename(columns={date_col: "Period", "Customer Name": "Count"})
+        .sort_index()
+        .resample("ME")
+        .size()
+        .reset_index(name="Count")
     )
-    monthly = monthly[monthly["Period"] <= today]
+    monthly = monthly[monthly["DATE RECEIVED"] <= today]
+    monthly = monthly.rename(columns={"DATE RECEIVED": "Period"})
     monthly["Period"] = monthly["Period"].dt.strftime("%Y-%m")
 
     return weekly, monthly
@@ -105,32 +110,33 @@ def filter_by_date(df, date_col, option, start_date=None, end_date=None):
         return df
     tmp = df.dropna(subset=[date_col]).copy()
     tmp[date_col] = _to_dt(tmp[date_col])
+    tmp = tmp.dropna(subset=[date_col])
     if start_date and end_date:
         return tmp[tmp[date_col].between(start_date, end_date)]
     return tmp
 
 def highlight_trends(row):
+    # Return exactly 4 styles for columns:
+    # ["This Week","Last Week","This Month","Last Month"]
     styles = []
-    # This Week vs Last Week
+    # This Week cell
     if row["This Week"] > row["Last Week"]:
         styles.append("color: green; font-weight: bold")
     elif row["This Week"] < row["Last Week"]:
         styles.append("color: red; font-weight: bold")
     else:
         styles.append("color: gray")
-
-    styles.append("color: gray")  # Last Week baseline
-
-    # This Month vs Last Month
+    # Last Week baseline
+    styles.append("color: gray")
+    # This Month cell
     if row["This Month"] > row["Last Month"]:
         styles.append("color: green; font-weight: bold")
     elif row["This Month"] < row["Last Month"]:
         styles.append("color: red; font-weight: bold")
     else:
         styles.append("color: gray")
-
-    styles.append("color: gray")  # Last Month baseline
-
+    # Last Month baseline
+    styles.append("color: gray")
     return styles
 
 # --------------------------
@@ -160,7 +166,7 @@ if section == "CRM Overview":
     st.subheader("📋 Master CRM Data")
     st.dataframe(crm_df, width="stretch")
 
-    # Extract sheets
+    # Extract slices (skip rows without statuses, as you requested)
     leads_df = slice_leads(crm_df)
     del_df = slice_delivery(crm_df)
     sr_df = slice_service(crm_df)
@@ -224,6 +230,15 @@ if section == "CRM Overview":
         fig.update_layout(width=800, height=400, yaxis=dict(dtick=1), xaxis_tickangle=-45)
         st.plotly_chart(fig, width="stretch")
 
+    # Pie: Leads by Status (restored)
+    if not leads_df_f.empty and "Lead Status" in leads_df_f.columns:
+        st.markdown("### 🥧 Leads by Status")
+        lead_counts = leads_df_f["Lead Status"].value_counts()
+        st.table(lead_counts.rename("Count").to_frame())
+        fig = px.pie(leads_df_f, names="Lead Status", title="Leads by Status")
+        fig.update_layout(width=600, height=400)
+        st.plotly_chart(fig, width="content")
+
     # ------------------- Delivery -------------------
     st.markdown("## 🚚 Delivery Metrics")
     dw, dm = summarize_by_period(del_df_f, "DATE RECEIVED")
@@ -241,6 +256,15 @@ if section == "CRM Overview":
         fig = px.line(dm, x="Period", y="Count", title="Deliveries per Month", markers=True)
         fig.update_layout(width=800, height=400, yaxis=dict(dtick=1), xaxis_tickangle=-45)
         st.plotly_chart(fig, width="stretch")
+
+    # Pie: Delivery by Status (restored)
+    if not del_df_f.empty and "Delivery Status" in del_df_f.columns:
+        st.markdown("### 🥧 Delivery by Status")
+        del_counts = del_df_f["Delivery Status"].value_counts()
+        st.table(del_counts.rename("Count").to_frame())
+        fig = px.pie(del_df_f, names="Delivery Status", title="Delivery by Status")
+        fig.update_layout(width=600, height=400)
+        st.plotly_chart(fig, width="content")
 
     # ------------------- Service Requests -------------------
     st.markdown("## 🛠 Service Request Metrics")
@@ -260,11 +284,20 @@ if section == "CRM Overview":
         fig.update_layout(width=800, height=400, yaxis=dict(dtick=1), xaxis_tickangle=-45)
         st.plotly_chart(fig, width="stretch")
 
+    # Pie: Service Requests by Status (restored)
+    if not sr_df_f.empty and "Complaint Status" in sr_df_f.columns:
+        st.markdown("### 🥧 Service Requests by Status")
+        sr_counts = sr_df_f["Complaint Status"].value_counts()
+        st.table(sr_counts.rename("Count").to_frame())
+        fig = px.pie(sr_df_f, names="Complaint Status", title="Service Requests by Status")
+        fig.update_layout(width=600, height=400)
+        st.plotly_chart(fig, width="content")
+
     # ------------------- Trend Comparison -------------------
     st.subheader("📊 Trend Comparison")
     lead_trend = get_trend_comparison(leads_df_f, "DATE RECEIVED")
-    del_trend = get_trend_comparison(del_df_f, "DATE RECEIVED")
-    sr_trend = get_trend_comparison(sr_df_f, "DATE RECEIVED")
+    del_trend  = get_trend_comparison(del_df_f,   "DATE RECEIVED")
+    sr_trend   = get_trend_comparison(sr_df_f,    "DATE RECEIVED")
 
     trend_df = pd.DataFrame(
         [lead_trend, del_trend, sr_trend],
@@ -273,7 +306,6 @@ if section == "CRM Overview":
 
     styled_trend = trend_df.style.apply(highlight_trends, axis=1)
     st.table(styled_trend)
-
 
 
 
