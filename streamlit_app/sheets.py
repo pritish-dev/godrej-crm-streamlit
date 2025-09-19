@@ -45,6 +45,13 @@ def get_df(sheet_name: str):
             unique_headers.append(h)
 
     df = pd.DataFrame(all_values[1:], columns=unique_headers)
+    if "DATE RECEIVED" in df.columns:
+        df["DATE RECEIVED"] = pd.to_datetime(
+            df["DATE RECEIVED"],
+            errors="coerce",
+            dayfirst=True,
+            infer_datetime_format=True
+        )
     return df
 
 
