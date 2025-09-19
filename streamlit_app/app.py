@@ -29,7 +29,7 @@ def summarize_by_period(df, date_col="DATE RECEIVED"):
         return pd.DataFrame(columns=["Period", "Count"]), pd.DataFrame(columns=["Period", "Count"])
 
     tmp = df.dropna(subset=[date_col]).copy()
-    tmp[date_col] = _to_dt(tmp[date_col])   # ✅ ensure datetime parsed properly
+    tmp[date_col] = _to_dt(tmp[date_col])
     if tmp.empty:
         return pd.DataFrame(columns=["Period", "Count"]), pd.DataFrame(columns=["Period", "Count"])
 
@@ -48,7 +48,7 @@ def summarize_by_period(df, date_col="DATE RECEIVED"):
     # Monthly
     monthly = (
         tmp.set_index(date_col)
-        .resample("ME")["Customer Name"].count()  # ✅ ME instead of M
+        .resample("ME")["Customer Name"].count()
         .reset_index()
         .rename(columns={date_col: "Period", "Customer Name": "Count"})
     )
@@ -57,14 +57,59 @@ def summarize_by_period(df, date_col="DATE RECEIVED"):
 
     return weekly, monthly
 
+def get_trend_comparison(df, date_col="DATE RECEIVED"):
+    base = {"This Week": 0, "Last Week": 0, "This Month": 0, "Last Month": 0}
+    if df.empty or date_col not in df.columns:
+        return base
+
+    tmp = df.copy()
+    tmp[date_col] = _to_dt(tmp[date_col])
+    tmp = tmp.dropna(subset=[date_col])
+    if tmp.empty:
+        return base
+
+    today = pd.Timestamp(datetime.today())
+    this_week = today.to_period("W")
+    last_week = (today - pd.Timedelta(days=7)).to_period("W")
+    this_month = today.to_period("M")
+    last_month = (today - pd.Timedelta(days=30)).to_period("M")
+
+    week_counts = tmp.groupby(tmp[date_col].dt.to_period("W")).size()
+    month_counts = tmp.groupby(tmp[date_col].dt.to_period("M")).size()
+
+    return {
+        "This Week": int(week_counts.get(this_week, 0)),
+        "Last Week": int(week_counts.get(last_week, 0)),
+        "This Month": int(month_counts.get(this_month, 0)),
+        "Last Month": int(month_counts.get(last_month, 0)),
+    }
+
 def filter_by_date(df, date_col, option, start_date=None, end_date=None):
     if df.empty or date_col not in df.columns or option == "All Time":
         return df
     tmp = df.dropna(subset=[date_col]).copy()
-    tmp[date_col] = _to_dt(tmp[date_col])   # ✅ enforce datetime
+    tmp[date_col] = _to_dt(tmp[date_col])
     if start_date and end_date:
         return tmp[tmp[date_col].between(start_date, end_date)]
     return tmp
+
+def highlight_trends(row):
+    styles = []
+    # Compare weeks
+    if row["This Week"] > row["Last Week"]:
+        styles.append("color: green; font-weight: bold")
+    elif row["This Week"] < row["Last Week"]:
+        styles.append("color: red; font-weight: bold")
+    else:
+        styles.append("color: gray")
+    # Compare months
+    if row["This Month"] > row["Last Month"]:
+        styles.append("color: green; font-weight: bold")
+    elif row["This Month"] < row["Last Month"]:
+        styles.append("color: red; font-weight: bold")
+    else:
+        styles.append("color: gray")
+    return styles * 2  # apply style to all columns in row
 
 # --------------------------
 # Sidebar
@@ -147,14 +192,14 @@ if section == "CRM Overview":
     st.table(lw.rename(columns={"Count": "Leads"}))
     if not lw.empty:
         fig = px.line(lw, x="Period", y="Count", title="Leads per Week", markers=True)
-        fig.update_layout(width=800, height=400, yaxis=dict(dtick=1))  # ✅ integer only
+        fig.update_layout(width=800, height=400, yaxis=dict(dtick=1))
         st.plotly_chart(fig, width="stretch")
 
     st.markdown("### 📈 Monthly Leads")
     st.table(lm.rename(columns={"Count": "Leads"}))
     if not lm.empty:
         fig = px.line(lm, x="Period", y="Count", title="Leads per Month", markers=True)
-        fig.update_layout(width=800, height=400, yaxis=dict(dtick=1))  # ✅ integer only
+        fig.update_layout(width=800, height=400, yaxis=dict(dtick=1))
         st.plotly_chart(fig, width="stretch")
 
     # ------------------- Delivery -------------------
@@ -165,14 +210,14 @@ if section == "CRM Overview":
     st.table(dw.rename(columns={"Count": "Deliveries"}))
     if not dw.empty:
         fig = px.line(dw, x="Period", y="Count", title="Deliveries per Week", markers=True)
-        fig.update_layout(width=800, height=400, yaxis=dict(dtick=1))  # ✅ integer only
+        fig.update_layout(width=800, height=400, yaxis=dict(dtick=1))
         st.plotly_chart(fig, width="stretch")
 
     st.markdown("### 📈 Monthly Deliveries")
     st.table(dm.rename(columns={"Count": "Deliveries"}))
     if not dm.empty:
         fig = px.line(dm, x="Period", y="Count", title="Deliveries per Month", markers=True)
-        fig.update_layout(width=800, height=400, yaxis=dict(dtick=1))  # ✅ integer only
+        fig.update_layout(width=800, height=400, yaxis=dict(dtick=1))
         st.plotly_chart(fig, width="stretch")
 
     # ------------------- Service Requests -------------------
@@ -183,60 +228,30 @@ if section == "CRM Overview":
     st.table(sw.rename(columns={"Count": "Requests"}))
     if not sw.empty:
         fig = px.line(sw, x="Period", y="Count", title="Service Requests per Week", markers=True)
-        fig.update_layout(width=800, height=400, yaxis=dict(dtick=1))  # ✅ integer only
+        fig.update_layout(width=800, height=400, yaxis=dict(dtick=1))
         st.plotly_chart(fig, width="stretch")
 
     st.markdown("### 📈 Monthly Service Requests")
     st.table(sm.rename(columns={"Count": "Requests"}))
     if not sm.empty:
         fig = px.line(sm, x="Period", y="Count", title="Service Requests per Month", markers=True)
-        fig.update_layout(width=800, height=400, yaxis=dict(dtick=1))  # ✅ integer only
+        fig.update_layout(width=800, height=400, yaxis=dict(dtick=1))
         st.plotly_chart(fig, width="stretch")
 
-########################################################
-
-    sr_status_col = "Complaint Status"
-    service_metrics = {
-        "Total": len(sr_df_f),
-        "Open": (sr_df_f[sr_status_col] == "Open").sum() if sr_status_col in sr_df_f else 0,
-        "In Progress": (sr_df_f[sr_status_col] == "In Progress").sum() if sr_status_col in sr_df_f else 0,
-        "Resolved": (sr_df_f[sr_status_col] == "Resolved").sum() if sr_status_col in sr_df_f else 0,
-        "Closed": (sr_df_f[sr_status_col] == "Closed").sum() if sr_status_col in sr_df_f else 0,
-    }
-    st.markdown("### 📊 Service Request Status Summary")
-    st.table(pd.DataFrame.from_dict(service_metrics, orient="index", columns=["Count"]).astype(int))
-
-    if sr_status_col in sr_df_f and not sr_df_f.empty:
-        fig = px.pie(sr_df_f, names=sr_status_col, title="Service Requests by Status")
-        st.plotly_chart(fig, use_container_width=True)
-
     # ------------------- Trend Comparison -------------------
+    st.subheader("📊 Trend Comparison")
     lead_trend = get_trend_comparison(leads_df_f, "DATE RECEIVED")
-    del_trend  = get_trend_comparison(del_df_f,   "DATE RECEIVED")
-    sr_trend   = get_trend_comparison(sr_df_f,    "DATE RECEIVED")
+    del_trend = get_trend_comparison(del_df_f, "DATE RECEIVED")
+    sr_trend = get_trend_comparison(sr_df_f, "DATE RECEIVED")
 
     trend_df = pd.DataFrame(
         [lead_trend, del_trend, sr_trend],
         index=["Leads", "Delivery", "Service Requests"]
     ).fillna(0).astype(int)
 
-    def highlight_trends(row):
-        styles = []
-        # This Week vs Last Week
-        styles.append("color: green; font-weight: bold" if row["This Week"] > row["Last Week"]
-                      else ("color: red; font-weight: bold" if row["This Week"] < row["Last Week"]
-                            else "color: gray"))
-        styles.append("color: gray")  # Last Week baseline
-        # This Month vs Last Month
-        styles.append("color: green; font-weight: bold" if row["This Month"] > row["Last Month"]
-                      else ("color: red; font-weight: bold" if row["This Month"] < row["Last Month"]
-                            else "color: gray"))
-        styles.append("color: gray")  # Last Month baseline
-        return styles
+    styled_trend = trend_df.style.apply(highlight_trends, axis=1)
+    st.dataframe(styled_trend, width="stretch")
 
-    styled_trend = trend_df[["This Week", "Last Week", "This Month", "Last Month"]].style.apply(highlight_trends, axis=1)
-    st.subheader("📈 Trend Comparison (Color-Coded)")
-    st.dataframe(styled_trend, use_container_width=True)
 
 # --------------------------
 # New Leads
