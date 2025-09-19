@@ -42,7 +42,7 @@ def slice_service(crm: pd.DataFrame) -> pd.DataFrame:
     return crm[_nonempty(crm[col])]
 
 def summarize_by_period(df, date_col="DATE RECEIVED"):
-    """Return weekly and monthly summary counts with proper datetime bins (clean labels, no future bins)."""
+    """Return weekly and monthly summary counts with clean labels (no future bins)."""
     if df.empty or date_col not in df.columns:
         empty = pd.DataFrame(columns=["Period", "Count"])
         return empty, empty
@@ -65,12 +65,12 @@ def summarize_by_period(df, date_col="DATE RECEIVED"):
         .rename(columns={date_col: "Period", "Customer Name": "Count"})
     )
     weekly = weekly[weekly["Period"] <= today]
-    weekly["Period"] = weekly["Period"].dt.date  # ✅ only date (YYYY-MM-DD)
+    weekly["Period"] = weekly["Period"].dt.strftime("%Y-%m-%d")  # ✅ only date
 
     # Monthly resample
     monthly = (
         tmp.set_index(date_col)
-        .resample("M")["Customer Name"]
+        .resample("ME")["Customer Name"]  # ✅ use ME instead of M
         .count()
         .reset_index()
         .rename(columns={date_col: "Period", "Customer Name": "Count"})
@@ -138,7 +138,7 @@ crm_df = clean_crm(crm_df_raw)
 # --------------------------
 if section == "CRM Overview":
     st.subheader("📋 Master CRM Data")
-    st.dataframe(crm_df, use_container_width=True)
+    st.dataframe(crm_df, width="stretch")
 
     leads_df = slice_leads(crm_df)
     del_df = slice_delivery(crm_df)
@@ -192,16 +192,30 @@ if section == "CRM Overview":
     st.markdown("### 📈 Weekly Leads")
     st.table(lw.rename(columns={"Count": "Leads"}))
     if not lw.empty:
-        fig = px.line(lw, x="Period", y="Count", title="Leads per Week", markers=True, width=800, height=400)
-        fig.update_xaxes(title="Week Starting")
-        st.plotly_chart(fig)
+        fig = px.line(lw, x="Period", y="Count", title="Leads per Week", markers=True)
+        fig.update_layout(width=800, height=400)
+        st.plotly_chart(fig, width="stretch")
 
     st.markdown("### 📈 Monthly Leads")
     st.table(lm.rename(columns={"Count": "Leads"}))
     if not lm.empty:
-        fig = px.line(lm, x="Period", y="Count", title="Leads per Month", markers=True, width=800, height=400)
-        fig.update_xaxes(title="Month")
-        st.plotly_chart(fig)
+        fig = px.line(lm, x="Period", y="Count", title="Leads per Month", markers=True)
+        fig.update_layout(width=800, height=400)
+        st.plotly_chart(fig, width="stretch")
+
+    st.markdown("### 📊 Leads Status Summary")
+    if not leads_df_f.empty:
+        lead_metrics = (
+            leads_df_f["Lead Status"].value_counts()
+            .reindex(["New Lead", "Followup-scheduled", "Won", "Lost", "Converted"], fill_value=0)
+            .to_dict()
+        )
+        lead_metrics["Total"] = len(leads_df_f)
+        st.table(pd.DataFrame.from_dict(lead_metrics, orient="index", columns=["Count"]).astype(int))
+
+        fig = px.pie(leads_df_f, names="Lead Status", title="Leads by Status")
+        fig.update_layout(width=600, height=400)
+        st.plotly_chart(fig, width="content")
 
     # ------------------- Delivery -------------------
     st.markdown("## 🚚 Delivery Metrics")
@@ -210,16 +224,16 @@ if section == "CRM Overview":
     st.markdown("### 📈 Weekly Deliveries")
     st.table(dw.rename(columns={"Count": "Deliveries"}))
     if not dw.empty:
-        fig = px.line(dw, x="Period", y="Count", title="Deliveries per Week", markers=True, width=800, height=400)
-        fig.update_xaxes(title="Week Starting")
-        st.plotly_chart(fig)
+        fig = px.line(dw, x="Period", y="Count", title="Deliveries per Week", markers=True)
+        fig.update_layout(width=800, height=400)
+        st.plotly_chart(fig, width="stretch")
 
     st.markdown("### 📈 Monthly Deliveries")
     st.table(dm.rename(columns={"Count": "Deliveries"}))
     if not dm.empty:
-        fig = px.line(dm, x="Period", y="Count", title="Deliveries per Month", markers=True, width=800, height=400)
-        fig.update_xaxes(title="Month")
-        st.plotly_chart(fig)
+        fig = px.line(dm, x="Period", y="Count", title="Deliveries per Month", markers=True)
+        fig.update_layout(width=800, height=400)
+        st.plotly_chart(fig, width="stretch")
 
     # ------------------- Service Requests -------------------
     st.markdown("## 🛠 Service Request Metrics")
@@ -228,18 +242,16 @@ if section == "CRM Overview":
     st.markdown("### 📈 Weekly Service Requests")
     st.table(sw.rename(columns={"Count": "Requests"}))
     if not sw.empty:
-        fig = px.line(sw, x="Period", y="Count", title="Service Requests per Week", markers=True, width=800, height=400)
-        fig.update_xaxes(title="Week Starting")
-        st.plotly_chart(fig)
+        fig = px.line(sw, x="Period", y="Count", title="Service Requests per Week", markers=True)
+        fig.update_layout(width=800, height=400)
+        st.plotly_chart(fig, width="stretch")
 
     st.markdown("### 📈 Monthly Service Requests")
     st.table(sm.rename(columns={"Count": "Requests"}))
     if not sm.empty:
-        fig = px.line(sm, x="Period", y="Count", title="Service Requests per Month", markers=True, width=800, height=400)
-        fig.update_xaxes(title="Month")
-        st.plotly_chart(fig)
-
-
+        fig = px.line(sm, x="Period", y="Count", title="Service Requests per Month", markers=True)
+        fig.update_layout(width=800, height=400)
+        st.plotly_chart(fig, width="stretch")
 
     sr_status_col = "Complaint Status"
     service_metrics = {
