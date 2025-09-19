@@ -207,7 +207,7 @@ if section == "CRM Overview":
     if not leads_df_f.empty:
         lead_metrics = (
             leads_df_f["Lead Status"].value_counts()
-            .reindex(["New Lead", "Followup-scheduled", "Won", "Lost", "Converted"], fill_value=0)
+            .reindex(["New Lead", "Followup-scheduled", "Won", "Lost"], fill_value=0)
             .to_dict()
         )
         lead_metrics["Total"] = len(leads_df_f)
@@ -311,7 +311,7 @@ elif section == "New Leads":
         phone = st.text_input("Contact Number")
         address = st.text_area("Address/Location")
         lead_source = st.selectbox("Lead Source", ["Showroom Visit", "Phone Inquiry", "Website", "Referral", "Facebook", "Instagram", "Other"])
-        lead_status = st.selectbox("Lead Status", ["New Lead", "Followup-scheduled", "Converted", "Won", "Lost"])
+        lead_status = st.selectbox("Lead Status", ["New Lead", "Followup-scheduled", "Won", "Lost"])
         product = st.selectbox("Product Type", ["Sofa", "Bed", "STEEL STORAGE", "Wardrobe", "Dining Table", "Kreation X2", "Kreation X3", "Recliners", "Dresser Unit", "Display Unit", "TV Unit", "Study Table/Office table", "Chairs", "Coffee Table", "Bedside Table", "Shoe Cabinet", "Bedsheet/Pillow/Covers", "Mattress", "Other"])
         budget = st.text_input("Budget Range")
         next_follow = st.date_input("Next Follow-up Date", datetime.today())
