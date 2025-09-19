@@ -12,14 +12,14 @@ st.title("📊 Interio by Godrej Patia – CRM Dashboard")
 # --------------------------
 def _to_dt(s):
     return pd.to_datetime(s, errors="coerce", dayfirst=True, infer_datetime_format=True)
-
+    
 def clean_crm(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
     out = df.copy()
     out.columns = [c.strip() for c in out.columns]
     if "DATE RECEIVED" in out.columns:
-        out["DATE RECEIVED"] = _to_dt(out["DATE RECEIVED"])
+        out["DATE RECEIVED"] = _to_dt(out["DATE RECEIVED"]).dt.date  # ✅ remove timestamp
     return out
 
 def slice_leads(crm: pd.DataFrame) -> pd.DataFrame:
@@ -33,10 +33,14 @@ def slice_delivery(crm: pd.DataFrame) -> pd.DataFrame:
     return crm[crm["Delivery Status"].notna() & crm["Delivery Status"].astype(str).str.strip().ne("")]
 
 def slice_service(crm: pd.DataFrame) -> pd.DataFrame:
-    col = "Complaint / Service Request"
-    if crm.empty or col not in crm.columns:
+    if crm.empty or "Complaint Status" not in crm.columns:
         return pd.DataFrame(columns=crm.columns if not crm.empty else [])
-    return crm[crm[col].notna() & crm[col].astype(str).str.strip().ne("")]
+    df = crm[
+        crm["Complaint Status"].notna()
+        & crm["Complaint Status"].astype(str).str.strip().ne("")
+    ]
+    return df
+
 
 def summarize_by_status(df, date_col, status_col):
     """Weekly & monthly summary grouped by status"""
