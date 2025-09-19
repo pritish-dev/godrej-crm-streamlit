@@ -23,6 +23,22 @@ def clean_crm(df: pd.DataFrame) -> pd.DataFrame:
         out["DATE RECEIVED"] = _to_dt(out["DATE RECEIVED"])
     return out
 
+def slice_leads(crm: pd.DataFrame) -> pd.DataFrame:
+    if crm.empty or "Lead Status" not in crm.columns:
+        return pd.DataFrame(columns=crm.columns if not crm.empty else [])
+    return crm[crm["Lead Status"].notna() & crm["Lead Status"].astype(str).str.strip().ne("")]
+
+def slice_delivery(crm: pd.DataFrame) -> pd.DataFrame:
+    if crm.empty or "Delivery Status" not in crm.columns:
+        return pd.DataFrame(columns=crm.columns if not crm.empty else [])
+    return crm[crm["Delivery Status"].notna() & crm["Delivery Status"].astype(str).str.strip().ne("")]
+
+def slice_service(crm: pd.DataFrame) -> pd.DataFrame:
+    col = "Complaint / Service Request"
+    if crm.empty or col not in crm.columns:
+        return pd.DataFrame(columns=crm.columns if not crm.empty else [])
+    return crm[crm[col].notna() & crm[col].astype(str).str.strip().ne("")]
+
 def summarize_by_period(df, date_col="DATE RECEIVED"):
     """Return weekly and monthly summary counts with clean labels (no future bins)."""
     if df.empty or date_col not in df.columns:
@@ -109,7 +125,7 @@ def highlight_trends(row):
         styles.append("color: red; font-weight: bold")
     else:
         styles.append("color: gray")
-    return styles * 2  # apply style to all columns in row
+    return styles * 4  # apply to all columns
 
 # --------------------------
 # Sidebar
@@ -138,10 +154,10 @@ if section == "CRM Overview":
     st.subheader("📋 Master CRM Data")
     st.dataframe(crm_df, width="stretch")
 
-    # Filter dataframes (only keep rows with valid statuses)
-    leads_df = crm_df[crm_df["Lead Status"].notna() & crm_df["Lead Status"].astype(str).str.strip().ne("")]
-    del_df   = crm_df[crm_df["Delivery Status"].notna() & crm_df["Delivery Status"].astype(str).str.strip().ne("")]
-    sr_df    = crm_df[crm_df["Complaint / Service Request"].notna() & crm_df["Complaint / Service Request"].astype(str).str.strip().ne("")]
+    # Extract sheets
+    leads_df = slice_leads(crm_df)
+    del_df = slice_delivery(crm_df)
+    sr_df = slice_service(crm_df)
 
     # ---------------- Date Filter ----------------
     st.markdown("## 📅 Date Range Filter")
@@ -251,6 +267,7 @@ if section == "CRM Overview":
 
     styled_trend = trend_df.style.apply(highlight_trends, axis=1)
     st.dataframe(styled_trend, width="stretch")
+
 
 
 # --------------------------
