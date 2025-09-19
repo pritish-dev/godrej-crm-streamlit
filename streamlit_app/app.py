@@ -3,7 +3,7 @@ import plotly.express as px
 import pandas as pd
 from datetime import datetime, timedelta
 from sheets import get_df, upsert_record
-
+import calendar
 st.set_page_config(page_title="4sinteriors CRM Dashboard", layout="wide")
 st.title("📊 Interio by Godrej Patia – CRM Dashboard")
 
@@ -39,12 +39,11 @@ def slice_service(crm: pd.DataFrame) -> pd.DataFrame:
 
 
 def summarize_by_status(df, date_col, status_col):
-    """Weekly & monthly summary grouped by status"""
+    """Weekly & monthly summary grouped by status with full period ranges"""
     if df.empty or date_col not in df.columns or status_col not in df.columns:
         return pd.DataFrame(), pd.DataFrame()
 
     tmp = df.copy()
-    # Convert back to datetime for grouping
     tmp[date_col] = pd.to_datetime(tmp[date_col], errors="coerce")
     tmp = tmp.dropna(subset=[date_col])
     if tmp.empty:
@@ -57,7 +56,9 @@ def summarize_by_status(df, date_col, status_col):
         .reset_index(name="Count")
     )
     weekly = weekly.rename(columns={date_col: "Period"})
-    weekly["Period"] = weekly["Period"].dt.strftime("%Y-%m-%d")
+    weekly["Period"] = weekly["Period"].apply(
+        lambda d: f"{d.strftime('%Y-%m-%d')} → {(d + pd.Timedelta(days=6)).strftime('%Y-%m-%d')}"
+    )
 
     # Monthly summary
     monthly = (
@@ -66,7 +67,9 @@ def summarize_by_status(df, date_col, status_col):
         .reset_index(name="Count")
     )
     monthly = monthly.rename(columns={date_col: "Period"})
-    monthly["Period"] = monthly["Period"].dt.strftime("%Y-%m")
+    monthly["Period"] = monthly["Period"].apply(
+        lambda d: f"{d.strftime('%Y-%m-%d')} → {d.replace(day=calendar.monthrange(d.year, d.month)[1]).strftime('%Y-%m-%d')}"
+    )
 
     return weekly, monthly
 
