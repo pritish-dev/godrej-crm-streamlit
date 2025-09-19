@@ -111,21 +111,27 @@ def filter_by_date(df, date_col, option, start_date=None, end_date=None):
 
 def highlight_trends(row):
     styles = []
-    # Compare weeks
+    # This Week vs Last Week
     if row["This Week"] > row["Last Week"]:
         styles.append("color: green; font-weight: bold")
     elif row["This Week"] < row["Last Week"]:
         styles.append("color: red; font-weight: bold")
     else:
         styles.append("color: gray")
-    # Compare months
+
+    styles.append("color: gray")  # Last Week baseline
+
+    # This Month vs Last Month
     if row["This Month"] > row["Last Month"]:
         styles.append("color: green; font-weight: bold")
     elif row["This Month"] < row["Last Month"]:
         styles.append("color: red; font-weight: bold")
     else:
         styles.append("color: gray")
-    return styles * 4  # apply to all columns
+
+    styles.append("color: gray")  # Last Month baseline
+
+    return styles
 
 # --------------------------
 # Sidebar
@@ -208,14 +214,14 @@ if section == "CRM Overview":
     st.table(lw.rename(columns={"Count": "Leads"}))
     if not lw.empty:
         fig = px.line(lw, x="Period", y="Count", title="Leads per Week", markers=True)
-        fig.update_layout(width=800, height=400, yaxis=dict(dtick=1))
+        fig.update_layout(width=800, height=400, yaxis=dict(dtick=1), xaxis_tickangle=-45)
         st.plotly_chart(fig, width="stretch")
 
     st.markdown("### 📈 Monthly Leads")
     st.table(lm.rename(columns={"Count": "Leads"}))
     if not lm.empty:
         fig = px.line(lm, x="Period", y="Count", title="Leads per Month", markers=True)
-        fig.update_layout(width=800, height=400, yaxis=dict(dtick=1))
+        fig.update_layout(width=800, height=400, yaxis=dict(dtick=1), xaxis_tickangle=-45)
         st.plotly_chart(fig, width="stretch")
 
     # ------------------- Delivery -------------------
@@ -226,14 +232,14 @@ if section == "CRM Overview":
     st.table(dw.rename(columns={"Count": "Deliveries"}))
     if not dw.empty:
         fig = px.line(dw, x="Period", y="Count", title="Deliveries per Week", markers=True)
-        fig.update_layout(width=800, height=400, yaxis=dict(dtick=1))
+        fig.update_layout(width=800, height=400, yaxis=dict(dtick=1), xaxis_tickangle=-45)
         st.plotly_chart(fig, width="stretch")
 
     st.markdown("### 📈 Monthly Deliveries")
     st.table(dm.rename(columns={"Count": "Deliveries"}))
     if not dm.empty:
         fig = px.line(dm, x="Period", y="Count", title="Deliveries per Month", markers=True)
-        fig.update_layout(width=800, height=400, yaxis=dict(dtick=1))
+        fig.update_layout(width=800, height=400, yaxis=dict(dtick=1), xaxis_tickangle=-45)
         st.plotly_chart(fig, width="stretch")
 
     # ------------------- Service Requests -------------------
@@ -244,14 +250,14 @@ if section == "CRM Overview":
     st.table(sw.rename(columns={"Count": "Requests"}))
     if not sw.empty:
         fig = px.line(sw, x="Period", y="Count", title="Service Requests per Week", markers=True)
-        fig.update_layout(width=800, height=400, yaxis=dict(dtick=1))
+        fig.update_layout(width=800, height=400, yaxis=dict(dtick=1), xaxis_tickangle=-45)
         st.plotly_chart(fig, width="stretch")
 
     st.markdown("### 📈 Monthly Service Requests")
     st.table(sm.rename(columns={"Count": "Requests"}))
     if not sm.empty:
         fig = px.line(sm, x="Period", y="Count", title="Service Requests per Month", markers=True)
-        fig.update_layout(width=800, height=400, yaxis=dict(dtick=1))
+        fig.update_layout(width=800, height=400, yaxis=dict(dtick=1), xaxis_tickangle=-45)
         st.plotly_chart(fig, width="stretch")
 
     # ------------------- Trend Comparison -------------------
@@ -266,7 +272,8 @@ if section == "CRM Overview":
     ).fillna(0).astype(int)
 
     styled_trend = trend_df.style.apply(highlight_trends, axis=1)
-    st.dataframe(styled_trend, width="stretch")
+    st.table(styled_trend)
+
 
 
 
