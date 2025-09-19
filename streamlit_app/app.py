@@ -44,28 +44,27 @@ def summarize_by_status(df, date_col, status_col):
         return pd.DataFrame(), pd.DataFrame()
 
     tmp = df.copy()
-    tmp[date_col] = _to_dt(tmp[date_col])
+    # Convert back to datetime for grouping
+    tmp[date_col] = pd.to_datetime(tmp[date_col], errors="coerce")
     tmp = tmp.dropna(subset=[date_col])
     if tmp.empty:
         return pd.DataFrame(), pd.DataFrame()
 
-    today = datetime.today()
-
+    # Weekly summary
     weekly = (
         tmp.groupby([pd.Grouper(key=date_col, freq="W-MON"), status_col])
         .size()
         .reset_index(name="Count")
     )
-    weekly = weekly[weekly[date_col] <= today]
     weekly = weekly.rename(columns={date_col: "Period"})
     weekly["Period"] = weekly["Period"].dt.strftime("%Y-%m-%d")
 
+    # Monthly summary
     monthly = (
         tmp.groupby([pd.Grouper(key=date_col, freq="MS"), status_col])
         .size()
         .reset_index(name="Count")
     )
-    monthly = monthly[monthly[date_col] <= today]
     monthly = monthly.rename(columns={date_col: "Period"})
     monthly["Period"] = monthly["Period"].dt.strftime("%Y-%m")
 
