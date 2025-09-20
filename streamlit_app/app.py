@@ -38,7 +38,7 @@ def slice_service(crm: pd.DataFrame) -> pd.DataFrame:
     return crm[crm["Complaint Status"].notna()  & crm["Complaint Status"].astype(str).str.strip().ne("")]
 
 
-def summarize_by_period(df, date_col="DATE RECEIVED", status_col="Lead Status"):
+def summarize_by_status(df, date_col="DATE RECEIVED", status_col="Lead Status"):
     # Ensure proper date type (date only, no time)
     df[date_col] = pd.to_datetime(df[date_col], errors="coerce").dt.date
     df[status_col] = df[status_col].astype(str).str.strip()
