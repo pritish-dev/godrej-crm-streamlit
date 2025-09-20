@@ -51,7 +51,7 @@ def summarize_by_status(df, date_col="DATE RECEIVED", status_col="Lead Status"):
     weekly_counts = (
         df.groupby(["WEEK_PERIOD", status_col])
         .size()
-        .reset_index(name="count")
+        .reset_index(name="Count")   # Capital C
     )
 
     # Add human-readable ranges for weeks
@@ -67,7 +67,7 @@ def summarize_by_status(df, date_col="DATE RECEIVED", status_col="Lead Status"):
     monthly_counts = (
         df.groupby(["MONTH_PERIOD", status_col])
         .size()
-        .reset_index(name="count")
+        .reset_index(name="Count")   # Capital C
     )
 
     # Add human-readable ranges for months
@@ -76,9 +76,10 @@ def summarize_by_status(df, date_col="DATE RECEIVED", status_col="Lead Status"):
     )
 
     return (
-        weekly_counts[["period", status_col, "count"]],
-        monthly_counts[["period", status_col, "count"]],
+        weekly_counts[["period", status_col, "Count"]],
+        monthly_counts[["period", status_col, "Count"]],
     )
+
 
 
 
