@@ -39,7 +39,7 @@ def slice_service(crm: pd.DataFrame) -> pd.DataFrame:
 
 
 def summarize_by_status(df, date_col, status_col):
-    """Weekly & monthly summary grouped by status with full period ranges"""
+    """Weekly & monthly summary grouped by status with full period ranges (no future buckets)."""
     if df.empty or date_col not in df.columns or status_col not in df.columns:
         return pd.DataFrame(), pd.DataFrame()
 
@@ -49,29 +49,40 @@ def summarize_by_status(df, date_col, status_col):
     if tmp.empty:
         return pd.DataFrame(), pd.DataFrame()
 
-    # Weekly summary
+    today = pd.Timestamp(datetime.today().date())
+
+    # ---------------- Weekly ----------------
     weekly = (
         tmp.groupby([pd.Grouper(key=date_col, freq="W-MON"), status_col])
         .size()
         .reset_index(name="Count")
     )
+
+    # Remove future buckets
+    weekly = weekly[weekly[date_col] <= today]
+
     weekly = weekly.rename(columns={date_col: "Period"})
     weekly["Period"] = weekly["Period"].apply(
         lambda d: f"{d.strftime('%Y-%m-%d')} → {(d + pd.Timedelta(days=6)).strftime('%Y-%m-%d')}"
     )
 
-    # Monthly summary
+    # ---------------- Monthly ----------------
     monthly = (
         tmp.groupby([pd.Grouper(key=date_col, freq="MS"), status_col])
         .size()
         .reset_index(name="Count")
     )
+
+    # Remove future buckets
+    monthly = monthly[monthly[date_col] <= today]
+
     monthly = monthly.rename(columns={date_col: "Period"})
     monthly["Period"] = monthly["Period"].apply(
         lambda d: f"{d.strftime('%Y-%m-%d')} → {d.replace(day=calendar.monthrange(d.year, d.month)[1]).strftime('%Y-%m-%d')}"
     )
 
     return weekly, monthly
+
 
 def get_trend_comparison(df, date_col="DATE RECEIVED"):
     base = {"This Week": 0, "Last Week": 0, "This Month": 0, "Last Month": 0}
