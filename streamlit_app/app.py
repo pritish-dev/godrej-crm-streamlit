@@ -38,50 +38,48 @@ def slice_service(crm: pd.DataFrame) -> pd.DataFrame:
     return crm[crm["Complaint Status"].notna()  & crm["Complaint Status"].astype(str).str.strip().ne("")]
 
 
-def summarize_by_status(df, date_col, status_col):
-    """Weekly & monthly summary grouped by status with full period ranges (no future buckets)."""
-    if df.empty or date_col not in df.columns or status_col not in df.columns:
-        return pd.DataFrame(), pd.DataFrame()
+def summarize_by_period(df, date_col="DATE RECEIVED", status_col="Lead Status"):
+    # Ensure proper date type (date only, no time)
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce").dt.date
+    df[status_col] = df[status_col].astype(str).str.strip()
 
-    tmp = df.copy()
-    tmp[date_col] = pd.to_datetime(tmp[date_col], errors="coerce")
-    tmp = tmp.dropna(subset=[date_col])
-    if tmp.empty:
-        return pd.DataFrame(), pd.DataFrame()
+    # ---------------------
+    # Weekly Summary (Mon-Sun weeks)
+    # ---------------------
+    df["WEEK_PERIOD"] = pd.to_datetime(df[date_col]).dt.to_period("W-SUN")
 
-    today = pd.Timestamp(datetime.today().date())
-
-    # ---------------- Weekly ----------------
-    weekly = (
-        tmp.groupby([pd.Grouper(key=date_col, freq="W-MON"), status_col])
+    weekly_counts = (
+        df.groupby(["WEEK_PERIOD", status_col])
         .size()
-        .reset_index(name="Count")
+        .reset_index(name="count")
     )
 
-    # Remove future buckets
-    weekly = weekly[weekly[date_col] <= today]
-
-    weekly = weekly.rename(columns={date_col: "Period"})
-    weekly["Period"] = weekly["Period"].apply(
-        lambda d: f"{d.strftime('%Y-%m-%d')} → {(d + pd.Timedelta(days=6)).strftime('%Y-%m-%d')}"
+    # Add human-readable ranges for weeks
+    weekly_counts["period"] = weekly_counts["WEEK_PERIOD"].apply(
+        lambda p: f"{p.start_time.date()} → {p.end_time.date()}"
     )
 
-    # ---------------- Monthly ----------------
-    monthly = (
-        tmp.groupby([pd.Grouper(key=date_col, freq="MS"), status_col])
+    # ---------------------
+    # Monthly Summary
+    # ---------------------
+    df["MONTH_PERIOD"] = pd.to_datetime(df[date_col]).dt.to_period("M")
+
+    monthly_counts = (
+        df.groupby(["MONTH_PERIOD", status_col])
         .size()
-        .reset_index(name="Count")
+        .reset_index(name="count")
     )
 
-    # Remove future buckets
-    monthly = monthly[monthly[date_col] <= today]
-
-    monthly = monthly.rename(columns={date_col: "Period"})
-    monthly["Period"] = monthly["Period"].apply(
-        lambda d: f"{d.strftime('%Y-%m-%d')} → {d.replace(day=calendar.monthrange(d.year, d.month)[1]).strftime('%Y-%m-%d')}"
+    # Add human-readable ranges for months
+    monthly_counts["period"] = monthly_counts["MONTH_PERIOD"].apply(
+        lambda p: f"{p.start_time.date()} → {p.end_time.date()}"
     )
 
-    return weekly, monthly
+    return (
+        weekly_counts[["period", status_col, "count"]],
+        monthly_counts[["period", status_col, "count"]],
+    )
+
 
 
 def get_trend_comparison(df, date_col="DATE RECEIVED"):
