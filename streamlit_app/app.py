@@ -203,7 +203,7 @@ if section == "CRM Overview":
     lw, lm = summarize_by_status(leads_df_f, "DATE RECEIVED", "Lead Status")
 
     st.markdown("### Weekly Leads by Status")
-    col1, col2 = st.columns([2, 1])
+    col1, col2 = st.columns([1, 1])
     with col1:
         st.dataframe(lw, use_container_width=False, width=None)
     with col2:
@@ -212,7 +212,7 @@ if section == "CRM Overview":
             st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("### Monthly Leads by Status")
-    col1, col2 = st.columns([2, 1])
+    col1, col2 = st.columns([1, 1])
     with col1:
         st.dataframe(lm, use_container_width=False, width=None)
     with col2:
@@ -225,7 +225,7 @@ if section == "CRM Overview":
     dw, dm = summarize_by_status(del_df_f, "DATE RECEIVED", "Delivery Status")
 
     st.markdown("### Weekly Deliveries by Status")
-    col1, col2 = st.columns([2, 1])
+    col1, col2 = st.columns([1, 1])
     with col1:
         st.dataframe(dw, use_container_width=False, width=None)
     with col2:
@@ -234,7 +234,7 @@ if section == "CRM Overview":
             st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("### Monthly Deliveries by Status")
-    col1, col2 = st.columns([2, 1])
+    col1, col2 = st.columns([1, 1])
     with col1:
         st.dataframe(dm, use_container_width=False, width=None)
     with col2:
@@ -247,7 +247,7 @@ if section == "CRM Overview":
     sw, sm = summarize_by_status(sr_df_f, "DATE RECEIVED", "Complaint Status")
 
     st.markdown("### Weekly Service Requests by Status")
-    col1, col2 = st.columns([2, 1])
+    col1, col2 = st.columns([1, 1])
     with col1:
         st.dataframe(sw, use_container_width=False, width=None)
     with col2:
@@ -256,7 +256,7 @@ if section == "CRM Overview":
             st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("### Monthly Service Requests by Status")
-    col1, col2 = st.columns([2, 1])
+    col1, col2 = st.columns([1, 1])
     with col1:
         st.dataframe(sm, use_container_width=False, width=None)
     with col2:
