@@ -2,7 +2,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 import pandas as pd
 import streamlit as st
-from datetime import datetime
+from datetime import datetime, date
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
@@ -55,7 +55,6 @@ def get_df(sheet_name: str):
     return df
 
 
-
 def log_history(action: str, sheet_name: str, unique_fields: dict, old_data: dict, new_data: dict):
     """Log changes into History Log sheet"""
     try:
@@ -69,6 +68,16 @@ def log_history(action: str, sheet_name: str, unique_fields: dict, old_data: dic
         unique_fields.get("Customer Name", ""), unique_fields.get("Contact Number", ""),
         str(old_data), str(new_data)
     ])
+
+
+# ✅ helper to format values before saving
+def _format_value(val):
+    if isinstance(val, datetime):
+        return val.strftime("%d/%m/%Y")
+    if isinstance(val, date):  # handles datetime.date
+        return val.strftime("%d/%m/%Y")
+    return str(val) if val is not None else ""
+
 
 def upsert_record(sheet_name: str, unique_fields: dict, new_data: dict, sync_to_crm=True):
     """
@@ -91,11 +100,11 @@ def upsert_record(sheet_name: str, unique_fields: dict, new_data: dict, sync_to_
         for col, val in new_data.items():
             if col in headers:
                 col_index = headers.index(col) + 1
-                ws.update_cell(row_index, col_index, val)
+                ws.update_cell(row_index, col_index, _format_value(val))
         log_history("UPDATE", sheet_name, unique_fields, old_data, new_data)
         return f"Updated existing record for {unique_fields['Customer Name']} ({unique_fields['Contact Number']})"
     else:
-        row_values = [new_data.get(col, "") for col in headers]
+        row_values = [_format_value(new_data.get(col, "")) for col in headers]
         ws.append_row(row_values)
         log_history("INSERT", sheet_name, unique_fields, {}, new_data)
 
@@ -104,7 +113,7 @@ def upsert_record(sheet_name: str, unique_fields: dict, new_data: dict, sync_to_
             try:
                 crm_ws = sh.worksheet("CRM")
                 crm_headers = crm_ws.row_values(1)
-                crm_ws.append_row([new_data.get(col, "") for col in crm_headers])
+                crm_ws.append_row([_format_value(new_data.get(col, "")) for col in crm_headers])
             except Exception as e:
                 print("CRM Sync Error:", e)
 
