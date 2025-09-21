@@ -1,15 +1,54 @@
 import streamlit as st
 import plotly.express as px
 import pandas as pd
-from datetime import datetime, timedelta
-from sheets import get_df, upsert_record
 import calendar
-st.set_page_config(page_title="4sinteriors CRM Dashboard", layout="wide")
-st.title("📊 Interio by Godrej Patia – CRM Dashboard")
+from datetime import datetime, timedelta
+
+import gspread
+from google.oauth2.service_account import Credentials
+
+# =========================
+# Streamlit Page Config
+# =========================
+st.set_page_config(page_title="4sinteriors CRM Stage Dashboard", layout="wide")
+st.title("📊 Interio by Godrej Patia – Stage CRM Dashboard")
+
+# =========================
+# Google Sheets Connection
+# =========================
+try:
+    creds = Credentials.from_service_account_info(st.secrets["google"])
+    gc = gspread.authorize(creds)
+
+    # CRM connection (already in your secrets)
+    crm_sheet_id = st.secrets["crm"]["spreadsheet_id"]
+    crm_sh = gc.open_by_key(crm_sheet_id)
+
+    # Reviews connection (staging)
+    reviews_sheet_id = st.secrets["reviews"]["spreadsheet_id"]
+    raw_sheet_name = st.secrets["reviews"]["raw_sheet"]
+    mapped_sheet_name = st.secrets["reviews"]["mapped_sheet"]
+    summary_sheet_name = st.secrets["reviews"]["summary_sheet"]
+    reviews_sh = gc.open_by_key(reviews_sheet_id)
+
+except Exception as e:
+    st.error(f"Google Sheets connection failed: {e}")
+    st.stop()
 
 # --------------------------
 # Helpers
 # --------------------------
+
+def load_ws_as_df(sheet, worksheet_name):
+    """Load a worksheet into a DataFrame safely"""
+    try:
+        ws = sheet.worksheet(worksheet_name)
+        df = pd.DataFrame(ws.get_all_records())
+        return df
+    except Exception as e:
+        st.error(f"Error loading {worksheet_name}: {e}")
+        return pd.DataFrame()
+        
 def _to_dt(s):
     return pd.to_datetime(s, errors="coerce", dayfirst=True, infer_datetime_format=True)
     
@@ -143,14 +182,15 @@ def highlight_trends(row):
 # --------------------------
 section = st.sidebar.radio(
     "Choose Section",
-    ["CRM Overview", "New Leads", "Delivery", "Service Request", "History Log"]
+    ["CRM Overview", "New Leads", "Delivery", "Service Request", "Reviews", "History Log"]
 )
-
 st.sidebar.subheader("⚙️ Controls")
 if st.sidebar.button("🔄 Refresh Data"):
-    get_df.clear()
+    st.cache_data.clear()
     st.sidebar.success("Cache cleared! Reloading fresh data…")
     st.rerun()
+
+
 
 # --------------------------
 # Load CRM once
@@ -429,6 +469,41 @@ elif section == "Service Request":
             msg = upsert_record("CRM", unique_fields, new_data)
             st.success(f"✅ {msg}")
 
+
+# --- Reviews ---
+elif section == "Reviews":
+    st.subheader("📢 Customer Reviews")
+
+    # Raw Reviews
+    raw_df = load_ws_as_df(reviews_sh, raw_sheet_name)
+    if not raw_df.empty:
+        st.write("### Raw Reviews (direct from Google)")
+        st.dataframe(raw_df)
+    else:
+        st.info("No raw reviews found.")
+
+    # Mapped Reviews
+    mapped_df = load_ws_as_df(reviews_sh, mapped_sheet_name)
+    if not mapped_df.empty:
+        st.write("### Mapped Reviews (linked to CRM)")
+        st.dataframe(mapped_df)
+    else:
+        st.info("No mapped reviews found.")
+
+    # Summary
+    summary_df = load_ws_as_df(reviews_sh, summary_sheet_name)
+    if not summary_df.empty:
+        st.write("### Reviews Summary (per Sales Executive)")
+        st.dataframe(summary_df)
+
+        # Chart
+        try:
+            chart_data = summary_df.groupby("salesExecutive")["reviewsCount"].sum()
+            st.bar_chart(chart_data)
+        except Exception:
+            st.warning("Summary chart could not be generated.")
+    else:
+        st.info("No summary data found.")
 # --------------------------
 # History Log
 # --------------------------
