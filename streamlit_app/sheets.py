@@ -4,15 +4,16 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime, date
 
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+]
 
-# ✅ Auto-detect: Local (credentials.json) or Streamlit Cloud (st.secrets)
-try:
-    CREDS = Credentials.from_service_account_info(st.secrets["google"], scopes=SCOPES)
-except Exception:
-    CREDS = Credentials.from_service_account_file("config/credentials.json", scopes=SCOPES)
-
-gc = gspread.authorize(CREDS)
+creds = Credentials.from_service_account_info(
+    st.secrets["google"],
+    scopes=SCOPES
+)
+gc = gspread.authorize(creds)
 SPREADSHEET_ID = "1nRzxuaBZAdJElyiiFMqDoi2cd8QRG26YN-pneYh6OwE"
 sh = gc.open_by_key(SPREADSHEET_ID)
 
