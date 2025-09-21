@@ -13,7 +13,7 @@ except Exception:
     CREDS = Credentials.from_service_account_file("config/credentials.json", scopes=SCOPES)
 
 gc = gspread.authorize(CREDS)
-SPREADSHEET_ID = "1wFpK-WokcZB6k1vzG7B6JO5TdGHrUwdgvVm_-UQse54"
+SPREADSHEET_ID = "1nRzxuaBZAdJElyiiFMqDoi2cd8QRG26YN-pneYh6OwE"
 sh = gc.open_by_key(SPREADSHEET_ID)
 
 
