@@ -480,36 +480,39 @@ elif section == "Service Request":
 elif section == "Reviews":
     st.subheader("📢 Customer Reviews")
 
-    # Raw Reviews
-    raw_df = load_ws_as_df(reviews_sh, raw_sheet_name)
-    if not raw_df.empty:
-        st.write("### Raw Reviews (direct from Google)")
-        st.dataframe(raw_df)
-    else:
-        st.info("No raw reviews found.")
+    if reviews_sh:
+        # Raw Reviews
+        raw_df = load_ws_as_df(reviews_sh, raw_sheet_name)
+        if not raw_df.empty:
+            st.write("### Raw Reviews (direct from Google)")
+            st.dataframe(raw_df)
+        else:
+            st.info("No raw reviews found.")
 
-    # Mapped Reviews
-    mapped_df = load_ws_as_df(reviews_sh, mapped_sheet_name)
-    if not mapped_df.empty:
-        st.write("### Mapped Reviews (linked to CRM)")
-        st.dataframe(mapped_df)
-    else:
-        st.info("No mapped reviews found.")
+        # Mapped Reviews
+        mapped_df = load_ws_as_df(reviews_sh, mapped_sheet_name)
+        if not mapped_df.empty:
+            st.write("### Mapped Reviews (linked to CRM)")
+            st.dataframe(mapped_df)
+        else:
+            st.info("No mapped reviews found.")
 
-    # Summary
-    summary_df = load_ws_as_df(reviews_sh, summary_sheet_name)
-    if not summary_df.empty:
-        st.write("### Reviews Summary (per Sales Executive)")
-        st.dataframe(summary_df)
+        # Summary
+        summary_df = load_ws_as_df(reviews_sh, summary_sheet_name)
+        if not summary_df.empty:
+            st.write("### Reviews Summary (per Sales Executive)")
+            st.dataframe(summary_df)
 
-        # Chart
-        try:
-            chart_data = summary_df.groupby("salesExecutive")["reviewsCount"].sum()
-            st.bar_chart(chart_data)
-        except Exception:
-            st.warning("Summary chart could not be generated.")
+            try:
+                chart_data = summary_df.groupby("salesExecutive")["reviewsCount"].sum()
+                st.bar_chart(chart_data)
+            except Exception:
+                st.warning("Summary chart could not be generated.")
+        else:
+            st.info("No summary data found.")
     else:
-        st.info("No summary data found.")
+        st.error("Reviews spreadsheet not connected.")
+
 # --------------------------
 # History Log
 # --------------------------

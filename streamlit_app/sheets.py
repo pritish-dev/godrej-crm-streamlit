@@ -18,6 +18,7 @@ SPREADSHEET_ID = "1nRzxuaBZAdJElyiiFMqDoi2cd8QRG26YN-pneYh6OwE"
 sh = gc.open_by_key(SPREADSHEET_ID)
 
 
+
 @st.cache_data(ttl=60)
 def get_df(sheet_name: str):
     """Fetch worksheet as DataFrame (handles duplicate headers, creates if missing)"""
@@ -78,8 +79,7 @@ def _format_value(val):
     if isinstance(val, date):  # handles datetime.date
         return val.strftime("%d/%m/%Y")
     return str(val) if val is not None else ""
-
-
+        
 def upsert_record(sheet_name: str, unique_fields: dict, new_data: dict, sync_to_crm=True):
     """
     Update a record if (Customer Name + Contact Number) exists, else insert.
