@@ -2,78 +2,108 @@ import streamlit as st
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
-from datetime import date
+from datetime import date, timedelta
 
 st.set_page_config(page_title="Reviews (Staging)", layout="wide")
+
+# ── secrets.toml (staging) ───────────────────────────────────────────
+# [gspread]
+# sa_json = """{ ... your service account json ... }"""
+# [reviews_staging]
+# spreadsheet_id = "YOUR_REVIEW_STAGING_SHEET_ID"
+# review_sheet = "Review_staging"
+# weekly_sheet = "Weekly_Summary"
+# monthly_sheet = "Monthly_Summary"
+# ────────────────────────────────────────────────────────────────────
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 creds = Credentials.from_service_account_info(st.secrets["gspread"]["sa_json"], scopes=SCOPES)
 gc = gspread.authorize(creds)
 
-REV_SPREAD_ID = st.secrets["reviews"]["spreadsheet_id"]
-RAW_SHEET = st.secrets["reviews"]["raw_sheet"]
-MAP_SHEET = st.secrets["reviews"]["mapped_sheet"]
-SUM_SHEET = st.secrets["reviews"]["summary_sheet"]
+REV_SSID  = st.secrets["reviews_staging"]["spreadsheet_id"]
+S_REVIEW  = st.secrets["reviews_staging"]["review_sheet"]
+S_WEEKLY  = st.secrets["reviews_staging"]["weekly_sheet"]
+S_MONTHLY = st.secrets["reviews_staging"]["monthly_sheet"]
 
-@st.cache_data(ttl=60)  # frequent in staging; bump to 3600 later
-def load_sheets():
-    sh = gc.open_by_key(REV_SPREAD_ID)
-    raw = pd.DataFrame(sh.worksheet(RAW_SHEET).get_all_records())
-    mapped = pd.DataFrame(sh.worksheet(MAP_SHEET).get_all_records())
-    summary = pd.DataFrame(sh.worksheet(SUM_SHEET).get_all_records())
+@st.cache_data(ttl=3600)
+def load_data():
+    sh = gc.open_by_key(REV_SSID)
+    review = pd.DataFrame(sh.worksheet(S_REVIEW).get_all_records())
+    weekly = pd.DataFrame(sh.worksheet(S_WEEKLY).get_all_records())
+    monthly = pd.DataFrame(sh.worksheet(S_MONTHLY).get_all_records())
     # normalize types
-    for df in (raw, mapped, summary):
-        for c in df.columns:
-            if c.lower().endswith("time") or c.lower()=="date":
-                try:
-                    df[c] = pd.to_datetime(df[c]).dt.date
-                except Exception:
-                    pass
-    return raw, mapped, summary
+    if "Date" in review:
+        review["Date"] = pd.to_datetime(review["Date"], errors="coerce").dt.date
+    for df in (weekly, monthly):
+        if not df.empty:
+            df["periodStart"] = pd.to_datetime(df["periodStart"]).dt.date
+            df["periodEnd"]   = pd.to_datetime(df["periodEnd"]).dt.date
+    return review, weekly, monthly
 
-raw, mapped, summary = load_sheets()
+review, weekly, monthly = load_data()
 
-st.title("⭐ Customer Reviews – Staging")
+st.title("⭐ Reviews – Staging")
 
 # KPIs
-c1, c2, c3, c4 = st.columns(4)
+c1, c2, c3 = st.columns(3)
 today = date.today()
-this_month = today.replace(day=1)
+month_start = today.replace(day=1)
 
-month_reviews = mapped[mapped["date"] >= this_month] if "date" in mapped else pd.DataFrame()
-avg_rating = raw["starRating"].map({"ONE":1,"TWO":2,"THREE":3,"FOUR":4,"FIVE":5}).dropna()
-c1.metric("Reviews this month", int(month_reviews.shape[0]))
-c2.metric("Avg rating (all time)", f"{avg_rating.mean():.2f}" if not avg_rating.empty else "—")
-c3.metric("Mapped to CRM", int((mapped["matchedCustomer"]!="").sum()) if "matchedCustomer" in mapped else 0)
-c4.metric("Anonymous reviews", int((mapped["anonymous"]==True).sum()) if "anonymous" in mapped else 0)
+# Count mapped this month
+mapped_month = review[(review.get("Mapped in CRM", "").astype(str).str.lower() == "yes") &
+                      (review["Date"] >= month_start) if "Date" in review else False]
+c1.metric("Mapped Reviews (This Month)", 0 if review.empty else int(mapped_month.shape[0]))
 
-# Leaderboard
-st.subheader("🏆 Reviews collected per Sales Executive (this month)")
-if not summary.empty:
-    sm = summary.copy()
-    sm["date"] = pd.to_datetime(sm["date"])
-    sm = sm[sm["date"].dt.date >= this_month]
-    board = sm.groupby("salesExecutive", dropna=False)["reviewsCount"].sum().reset_index().sort_values("reviewsCount", ascending=False)
+# Avg rating this month
+def to_num_rating(s):
+    m = {"ONE":1,"TWO":2,"THREE":3,"FOUR":4,"FIVE":5}
+    return m.get(str(s).strip().upper(), None)
+if not review.empty:
+    month_rows = review[review["Date"] >= month_start] if "Date" in review else review
+    ratings = month_rows["Rating"].map(to_num_rating).dropna()
+    c2.metric("Avg Rating (This Month)", f"{ratings.mean():.2f}" if not ratings.empty else "—")
+else:
+    c2.metric("Avg Rating (This Month)", "—")
+
+c3.metric("Total Reviews (All Time)", 0 if review.empty else int(review.shape[0]))
+
+st.divider()
+
+# Leaderboard (weekly)
+st.subheader("🏆 Weekly Leaderboard (Sales Executive)")
+if weekly.empty:
+    st.info("No weekly summary yet.")
+else:
+    # show latest week first
+    last_period_start = weekly["periodStart"].max()
+    latest_week = weekly[weekly["periodStart"] == last_period_start]
+    board = latest_week.groupby("salesExecutive", dropna=False)["reviewsCount"].sum() \
+                       .reset_index().sort_values("reviewsCount", ascending=False)
     st.dataframe(board, use_container_width=True, hide_index=True)
+
+    with st.expander("All weekly periods"):
+        st.dataframe(weekly.sort_values(["periodStart","salesExecutive"]),
+                     use_container_width=True, hide_index=True)
+
+# Leaderboard (monthly)
+st.subheader("📅 Monthly Leaderboard (Sales Executive)")
+if monthly.empty:
+    st.info("No monthly summary yet.")
 else:
-    st.info("No summary yet.")
+    last_month_start = monthly["periodStart"].max()
+    latest_month = monthly[monthly["periodStart"] == last_month_start]
+    board_m = latest_month.groupby("salesExecutive", dropna=False)["reviewsCount"].sum() \
+                          .reset_index().sort_values("reviewsCount", ascending=False)
+    st.dataframe(board_m, use_container_width=True, hide_index=True)
 
-# Daily trend (this month)
-st.subheader("📈 Daily reviews trend (by executive)")
-if not summary.empty:
-    sm = summary.copy()
-    sm["date"] = pd.to_datetime(sm["date"]).dt.date
-    sm = sm[sm["date"] >= this_month]
-    pivot = sm.pivot_table(index="date", columns="salesExecutive", values="reviewsCount", aggfunc="sum").fillna(0)
-    st.line_chart(pivot)
-else:
-    st.info("No summary yet.")
+    with st.expander("All monthly periods"):
+        st.dataframe(monthly.sort_values(["periodStart","salesExecutive"]),
+                     use_container_width=True, hide_index=True)
 
-# Raw & mapped tables
-with st.expander("🔎 Latest Mapped Reviews"):
-    show = mapped.sort_values("date", ascending=False).head(200) if not mapped.empty else mapped
-    st.dataframe(show, use_container_width=True, hide_index=True)
-
-with st.expander("🧾 Raw GBP Reviews"):
-    show = raw.sort_values("createTime", ascending=False).head(200) if not raw.empty else raw
-    st.dataframe(show, use_container_width=True, hide_index=True)
+st.divider()
+with st.expander("🔎 Latest Reviews (mapped + raw)"):
+    if not review.empty:
+        show = review.sort_values(["Date"], ascending=False).head(200) if "Date" in review else review
+        st.dataframe(show, use_container_width=True, hide_index=True)
+    else:
+        st.info("No reviews found.")
