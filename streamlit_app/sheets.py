@@ -10,12 +10,15 @@ SCOPES = [
 ]
 
 creds = Credentials.from_service_account_info(
-    st.secrets["google"],
+    dict(st.secrets["google"]),
     scopes=SCOPES
 )
 gc = gspread.authorize(creds)
-SPREADSHEET_ID = "1nRzxuaBZAdJElyiiFMqDoi2cd8QRG26YN-pneYh6OwE"
+
+# CRM spreadsheet (staging)
+SPREADSHEET_ID = st.secrets["crm"]["spreadsheet_id"]
 sh = gc.open_by_key(SPREADSHEET_ID)
+
 
 
 

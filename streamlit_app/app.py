@@ -16,30 +16,28 @@ st.title("📊 Interio by Godrej Patia – Stage CRM Dashboard")
 # =========================
 # Google Sheets Connection
 # =========================
-try:
-    SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
-          "https://www.googleapis.com/auth/drive"]
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+]
 
-    creds = Credentials.from_service_account_info(
-        st.secrets["google"],
-        scopes=SCOPES
-    )
-    gc = gspread.authorize(creds)
+creds = Credentials.from_service_account_info(
+    dict(st.secrets["google"]),
+    scopes=SCOPES
+)
+gc = gspread.authorize(creds)
 
-    # CRM connection (already in your secrets)
-    crm_sheet_id = st.secrets["crm"]["spreadsheet_id"]
-    crm_sh = gc.open_by_key(crm_sheet_id)
+# CRM connection
+crm_sheet_id = st.secrets["crm"]["spreadsheet_id"]
+crm_sh = gc.open_by_key(crm_sheet_id)
 
-    # Reviews connection (staging)
-    reviews_sheet_id = st.secrets["reviews"]["spreadsheet_id"]
-    raw_sheet_name = st.secrets["reviews"]["raw_sheet"]
-    mapped_sheet_name = st.secrets["reviews"]["mapped_sheet"]
-    summary_sheet_name = st.secrets["reviews"]["summary_sheet"]
-    reviews_sh = gc.open_by_key(reviews_sheet_id)
+# Reviews connection
+reviews_sheet_id = st.secrets["reviews"]["spreadsheet_id"]
+raw_sheet_name = st.secrets["reviews"]["raw_sheet"]
+mapped_sheet_name = st.secrets["reviews"]["mapped_sheet"]
+summary_sheet_name = st.secrets["reviews"]["summary_sheet"]
+reviews_sh = gc.open_by_key(reviews_sheet_id)
 
-except Exception as e:
-    st.error(f"Google Sheets connection failed: {e}")
-    st.stop()
 
 # --------------------------
 # Helpers
