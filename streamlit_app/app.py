@@ -38,8 +38,9 @@ crm_sh = gc.open_by_key(crm_sheet_id)
 # Reviews connection
 reviews_sheet_id = st.secrets["reviews"]["spreadsheet_id"]
 raw_sheet_name = st.secrets["reviews"]["raw_sheet"]
-mapped_sheet_name = st.secrets["reviews"]["mapped_sheet"]
-summary_sheet_name = st.secrets["reviews"]["summary_sheet"]
+logs_sheet_name = st.secrets["reviews"]["logs_sheet"]
+weekly_summary_sheet = st.secrets["reviews"]["weekly_summary_sheet"]
+monthly_summary_sheet = st.secrets["reviews"]["monthly_summary_sheet"]
 reviews_sh = gc.open_by_key(reviews_sheet_id)
 
 
@@ -491,27 +492,41 @@ elif section == "Reviews":
         else:
             st.info("No raw reviews found.")
 
-        # Mapped Reviews
-        mapped_df = load_ws_as_df(reviews_sh, mapped_sheet_name)
-        if not mapped_df.empty:
-            st.write("### Mapped Reviews (linked to CRM)")
-            st.dataframe(mapped_df)
+        # Logs
+        logs_df = load_ws_as_df(reviews_sh, logs_sheet_name)
+        if not logs_df.empty:
+            st.write("### Logs")
+            st.dataframe(logs_df)
         else:
-            st.info("No mapped reviews found.")
+            st.info("No logs found.")
 
-        # Summary
-        summary_df = load_ws_as_df(reviews_sh, summary_sheet_name)
-        if not summary_df.empty:
-            st.write("### Reviews Summary (per Sales Executive)")
-            st.dataframe(summary_df)
+        # Weekly Summary
+        weekly_df = load_ws_as_df(reviews_sh, weekly_summary_sheet)
+        if not weekly_df.empty:
+            st.write("### Weekly Reviews Summary (per Sales Executive)")
+            st.dataframe(weekly_df)
 
             try:
-                chart_data = summary_df.groupby("salesExecutive")["reviewsCount"].sum()
+                chart_data = weekly_df.groupby("salesExecutive")["reviewsCount"].sum()
                 st.bar_chart(chart_data)
             except Exception:
-                st.warning("Summary chart could not be generated.")
+                st.warning("Weekly summary chart could not be generated.")
         else:
-            st.info("No summary data found.")
+            st.info("No weekly summary data found.")
+
+        # Monthly Summary
+        monthly_df = load_ws_as_df(reviews_sh, monthly_summary_sheet)
+        if not monthly_df.empty:
+            st.write("### Monthly Reviews Summary (per Sales Executive)")
+            st.dataframe(monthly_df)
+
+            try:
+                chart_data = monthly_df.groupby("salesExecutive")["reviewsCount"].sum()
+                st.bar_chart(chart_data)
+            except Exception:
+                st.warning("Monthly summary chart could not be generated.")
+        else:
+            st.info("No monthly summary data found.")
     else:
         st.error("Reviews spreadsheet not connected.")
 
