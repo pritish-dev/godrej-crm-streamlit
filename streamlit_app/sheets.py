@@ -74,9 +74,17 @@ def log_history(action: str, sheet_name: str, unique_fields: dict, old_data: dic
 def _format_value(val):
     if isinstance(val, datetime):
         return val.strftime("%d/%m/%Y")
-    if isinstance(val, date):  # handles datetime.date
+    if isinstance(val, date):
         return val.strftime("%d/%m/%Y")
+    if isinstance(val, str):
+        try:
+            parsed = pd.to_datetime(val, errors="coerce")
+            if pd.notna(parsed):
+                return parsed.strftime("%d/%m/%Y")
+        except Exception:
+            return val.strip()
     return str(val) if val is not None else ""
+
 
 
 def upsert_record(sheet_name: str, unique_fields: dict, new_data: dict, sync_to_crm=True):
