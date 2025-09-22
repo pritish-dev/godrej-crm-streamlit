@@ -4,7 +4,6 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime, date
 
-__all__ = ["get_df", "upsert_record", "log_history"]
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -124,3 +123,6 @@ def upsert_record(sheet_name: str, unique_fields: dict, new_data: dict, sync_to_
                 print("CRM Sync Error:", e)
 
         return f"Inserted new record for {unique_fields['Customer Name']} ({unique_fields['Contact Number']})"
+
+
+__all__ = ["get_df", "upsert_record", "log_history"]
