@@ -4,6 +4,8 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime, date
 
+__all__ = ["get_df", "upsert_record", "log_history"]
+
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"

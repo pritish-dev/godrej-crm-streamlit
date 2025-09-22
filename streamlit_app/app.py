@@ -6,7 +6,13 @@ from datetime import datetime, timedelta
 
 import gspread
 from google.oauth2.service_account import Credentials
-from streamlit_app.sheets import get_df, upsert_record
+
+# 👇 Adjusted import – this works whether running from repo root or inside streamlit_app
+try:
+    from streamlit_app.sheets import get_df, upsert_record
+except ModuleNotFoundError:
+    from sheets import get_df, upsert_record
+
 
 # =========================
 # Streamlit Page Config
