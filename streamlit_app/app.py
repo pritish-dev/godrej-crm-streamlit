@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 import gspread
 from google.oauth2.service_account import Credentials
-from sheets import get_df
+from streamlit_app.sheets import get_df, upsert_record
 
 # =========================
 # Streamlit Page Config
