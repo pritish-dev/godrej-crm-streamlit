@@ -98,8 +98,12 @@ def upsert_record(sheet_name: str, unique_fields: dict, new_data: dict, sync_to_
            (df["Contact Number"] == unique_fields["Contact Number"])
 
     # --- Always enforce DATE RECEIVED ---
-    if "DATE RECEIVED" not in new_data or not str(new_data["DATE RECEIVED"]).strip():
+    # --- Always normalize DATE RECEIVED ---
+    if "DATE RECEIVED" in new_data:
+        new_data["DATE RECEIVED"] = _format_value(new_data["DATE RECEIVED"])
+    else:
         new_data["DATE RECEIVED"] = datetime.today().strftime("%d/%m/%Y")
+
 
     if mask.any():  # UPDATE
         row_index = mask[mask].index[0] + 2
