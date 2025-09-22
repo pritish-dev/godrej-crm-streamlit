@@ -80,22 +80,21 @@ def _format_value(val):
 
 
 def upsert_record(sheet_name: str, unique_fields: dict, new_data: dict, sync_to_crm=True):
-    """
-    Update a record if (Customer Name + Contact Number) exists, else insert.
-    Also logs changes and syncs to CRM.
-    """
     ws = sh.worksheet(sheet_name)
     headers = ws.row_values(1)
     df = get_df(sheet_name)
 
-    # ✅ Clear cache so Streamlit reloads fresh next time
     get_df.clear()
 
     mask = (df["Customer Name"] == unique_fields["Customer Name"]) & \
            (df["Contact Number"] == unique_fields["Contact Number"])
 
-    if mask.any():
-        row_index = mask[mask].index[0] + 2  # account for header
+    # --- Always enforce DATE RECEIVED ---
+    if "DATE RECEIVED" not in new_data or not str(new_data["DATE RECEIVED"]).strip():
+        new_data["DATE RECEIVED"] = datetime.today().strftime("%d/%m/%Y")
+
+    if mask.any():  # UPDATE
+        row_index = mask[mask].index[0] + 2
         old_data = df.iloc[mask[mask].index[0]].to_dict()
         for col, val in new_data.items():
             if col in headers:
@@ -103,18 +102,27 @@ def upsert_record(sheet_name: str, unique_fields: dict, new_data: dict, sync_to_
                 ws.update_cell(row_index, col_index, _format_value(val))
         log_history("UPDATE", sheet_name, unique_fields, old_data, new_data)
         return f"Updated existing record for {unique_fields['Customer Name']} ({unique_fields['Contact Number']})"
-    else:
-        row_values = [_format_value(new_data.get(col, "")) for col in headers]
+    else:  # INSERT
+        row_values = []
+        for col in headers:
+            if col == "DATE RECEIVED" and (col not in new_data or not str(new_data[col]).strip()):
+                row_values.append(datetime.today().strftime("%d/%m/%Y"))
+            else:
+                row_values.append(_format_value(new_data.get(col, "")))
         ws.append_row(row_values)
         log_history("INSERT", sheet_name, unique_fields, {}, new_data)
 
-        # ✅ Sync to main CRM
-        if sync_to_crm:
-            try:
-                crm_ws = sh.worksheet("CRM")
-                crm_headers = crm_ws.row_values(1)
-                crm_ws.append_row([_format_value(new_data.get(col, "")) for col in crm_headers])
-            except Exception as e:
-                print("CRM Sync Error:", e)
-
-        return f"Inserted new record for {unique_fields['Customer Name']} ({unique_fields['Contact Number']})"
+        # Sync to CRM
+        if sync_to_crm and sheet_name != "CRM":
+    try:
+        crm_ws = sh.worksheet("CRM")
+        crm_headers = crm_ws.row_values(1)
+        crm_row = []
+        for col in crm_headers:
+            if col == "DATE RECEIVED" and (col not in new_data or not str(new_data[col]).strip()):
+                crm_row.append(datetime.today().strftime("%d/%m/%Y"))
+            else:
+                crm_row.append(_format_value(new_data.get(col, "")))
+        crm_ws.append_row(crm_row)
+    except Exception as e:
+        print("CRM Sync Error:", e)
