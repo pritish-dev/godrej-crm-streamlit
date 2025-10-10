@@ -143,167 +143,133 @@ def _unique_sorted(series):
     return sorted([s for s in series.dropna().astype(str).str.strip().unique() if s != ""])
 
 # CRM Overview
+# CRM Overview (built-in filters, no st_aggrid dependency)
 if section == "CRM Overview":
     st.subheader("📋 Master CRM Data")
 
-    if _AG_AVAILABLE:
-        st.caption("Excel-style grid enabled via st-aggrid")
+    def _unique_sorted(series: pd.Series):
+        if series is None or (hasattr(series, "empty") and series.empty):
+            return []
+        return sorted([s for s in series.dropna().astype(str).str.strip().unique() if s != ""])
 
-        grid_df = crm_df.copy()
+    # ---------- Filter UI ----------
+    with st.expander("🔎 Filters", expanded=True):
+        col_a, col_b, col_c = st.columns(3)
 
-        gb = GridOptionsBuilder.from_dataframe(grid_df)
-        gb.configure_default_column(filter=True, sortable=True, resizable=True, floatingFilter=True)
-        gb.configure_side_bar()
-        gb.configure_grid_options(
-            animateRows=True,
-            rowSelection="multiple",
-            enableRangeSelection=True,
-            suppressMenuHide=False,
-        )
+        # Date Received range (defaults: last 30 days → max date)
+        min_dt = pd.to_datetime(crm_df.get("DATE RECEIVED", pd.Series(dtype=str)), errors="coerce").min()
+        max_dt = pd.to_datetime(crm_df.get("DATE RECEIVED", pd.Series(dtype=str)), errors="coerce").max()
+        default_from = (max_dt - pd.Timedelta(days=30)).date() if pd.notna(max_dt) else datetime.today().date()
+        default_to = max_dt.date() if pd.notna(max_dt) else datetime.today().date()
+        with col_a:
+            dr_from = st.date_input("DATE RECEIVED — From", default_from)
+        with col_b:
+            dr_to = st.date_input("DATE RECEIVED — To", default_to)
 
-        # Optional typing for date / numeric columns
-        for c in [c for c in ["DATE RECEIVED", "Next Follow-up Date"] if c in grid_df.columns]:
-            gb.configure_column(c, filter="agDateColumnFilter")
-        for c in [c for c in ["SALE VALUE", "SERVICE CHARGE"] if c in grid_df.columns]:
-            gb.configure_column(c, type=["numericColumn", "rightAligned"])
-
-        quick = st.text_input("🔎 Quick search (all columns)", placeholder="Type to filter across all columns…")
-        grid_options = gb.build()
-        if quick:
-            grid_options["quickFilterText"] = quick
-
-        grid_resp = AgGrid(
-            grid_df,
-            gridOptions=grid_options,
-            data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
-            update_mode=GridUpdateMode.MODEL_CHANGED,
-            fit_columns_on_grid_load=True,
-            theme="balham",
-            enable_enterprise_modules=False,
-            height=480,
-        )
-        filtered_df = pd.DataFrame(grid_resp.get("data", []))
-        if filtered_df.empty:
-            st.info("No rows match the current filters.")
-        else:
-            csv = filtered_df.to_csv(index=False).encode("utf-8")
-            st.download_button("⬇️ Download filtered CSV", data=csv, file_name="crm_filtered.csv", mime="text/csv")
-
-    else:
-        st.caption("Excel-style grid not installed; using built-in filters. To enable AgGrid later: pip install streamlit-aggrid")
-
-        # ---------- Built-in FILTER UI ----------
-        with st.expander("🔎 Filters", expanded=True):
-            col_a, col_b, col_c = st.columns(3)
-
-            # Date Received range
-            min_dt = pd.to_datetime(crm_df["DATE RECEIVED"], errors="coerce").min()
-            max_dt = pd.to_datetime(crm_df["DATE RECEIVED"], errors="coerce").max()
-            default_from = (max_dt - pd.Timedelta(days=30)).date() if pd.notna(max_dt) else datetime.today().date()
-            default_to = max_dt.date() if pd.notna(max_dt) else datetime.today().date()
-            with col_a:
-                dr_from = st.date_input("DATE RECEIVED — From", default_from)
-            with col_b:
-                dr_to = st.date_input("DATE RECEIVED — To", default_to)
-
-            # Next follow-up date range (optional)
+        # Next follow-up date range (optional)
+        with col_c:
+            use_nf = st.checkbox("Filter by Next Follow-up Date")
+        if use_nf:
             nf_min = pd.to_datetime(crm_df.get("Next Follow-up Date", pd.Series(dtype=str)), errors="coerce").min()
             nf_max = pd.to_datetime(crm_df.get("Next Follow-up Date", pd.Series(dtype=str)), errors="coerce").max()
-            with col_c:
-                use_nf = st.checkbox("Filter by Next Follow-up Date")
-            if use_nf:
-                col_nf1, col_nf2 = st.columns(2)
-                with col_nf1:
-                    nf_from = st.date_input(
-                        "Next Follow-up — From",
-                        (nf_max - pd.Timedelta(days=7)).date() if pd.notna(nf_max) else datetime.today().date(),
-                        key="nf_from"
-                    )
-                with col_nf2:
-                    nf_to = st.date_input(
-                        "Next Follow-up — To",
-                        nf_max.date() if pd.notna(nf_max) else datetime.today().date(),
-                        key="nf_to"
-                    )
+            col_nf1, col_nf2 = st.columns(2)
+            with col_nf1:
+                nf_from = st.date_input(
+                    "Next Follow-up — From",
+                    (nf_max - pd.Timedelta(days=7)).date() if pd.notna(nf_max) else datetime.today().date(),
+                    key="nf_from"
+                )
+            with col_nf2:
+                nf_to = st.date_input(
+                    "Next Follow-up — To",
+                    nf_max.date() if pd.notna(nf_max) else datetime.today().date(),
+                    key="nf_to"
+                )
 
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                lead_statuses = st.multiselect("Lead Status", _unique_sorted(crm_df.get("Lead Status", pd.Series(dtype=str))))
-            with col2:
-                products = st.multiselect("Product Type", _unique_sorted(crm_df.get("Product Type", pd.Series(dtype=str))))
-            with col3:
-                execs = st.multiselect("LEAD Sales Executive", _unique_sorted(crm_df.get("LEAD Sales Executive", pd.Series(dtype=str))))
-            with col4:
-                staff_emails = st.multiselect("Staff Email", _unique_sorted(crm_df.get("Staff Email", pd.Series(dtype=str))))
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            lead_statuses = st.multiselect("Lead Status", _unique_sorted(crm_df.get("Lead Status", pd.Series(dtype=str))))
+        with col2:
+            products = st.multiselect("Product Type", _unique_sorted(crm_df.get("Product Type", pd.Series(dtype=str))))
+        with col3:
+            execs = st.multiselect("LEAD Sales Executive", _unique_sorted(crm_df.get("LEAD Sales Executive", pd.Series(dtype=str))))
+        with col4:
+            staff_emails = st.multiselect("Staff Email", _unique_sorted(crm_df.get("Staff Email", pd.Series(dtype=str))))
 
-            col5, col6, col7 = st.columns(3)
-            with col5:
-                delivery_statuses = st.multiselect("Delivery Status", _unique_sorted(crm_df.get("Delivery Status", pd.Series(dtype=str))))
-            with col6:
-                complaint_statuses = st.multiselect("Complaint Status", _unique_sorted(crm_df.get("Complaint Status", pd.Series(dtype=str))))
-            with col7:
-                only_active = st.checkbox("Only Active Leads (exclude Won/Lost)", value=True)
+        col5, col6, col7 = st.columns(3)
+        with col5:
+            delivery_statuses = st.multiselect("Delivery Status", _unique_sorted(crm_df.get("Delivery Status", pd.Series(dtype=str))))
+        with col6:
+            complaint_statuses = st.multiselect("Complaint Status", _unique_sorted(crm_df.get("Complaint Status", pd.Series(dtype=str))))
+        with col7:
+            only_active = st.checkbox("Only Active Leads (exclude Won/Lost)", value=True)
 
-            search_text = st.text_input("Search (Name / Phone / Address / Notes)", placeholder="Type to search across key fields…").strip()
+        search_text = st.text_input(
+            "Search (Name / Phone / Address / Notes)",
+            placeholder="Type to search across key fields…"
+        ).strip()
 
-            col_btn1, col_btn2 = st.columns([1, 1])
-            with col_btn1:
-                clear = st.button("Clear Filters")
+        col_btn1, _ = st.columns([1, 1])
+        with col_btn1:
+            clear = st.button("Clear Filters")
 
-        # Apply built-in filters
-        filt = crm_df.copy()
+    # ---------- Apply Filters ----------
+    filt = crm_df.copy()
 
-        if 'filters_cleared' not in st.session_state:
-            st.session_state['filters_cleared'] = False
-        if clear:
-            st.session_state['filters_cleared'] = True
-            st.experimental_rerun()
+    if 'filters_cleared' not in st.session_state:
+        st.session_state['filters_cleared'] = False
+    if clear:
+        st.session_state['filters_cleared'] = True
+        st.rerun()
 
-        # DATE RECEIVED range
-        if not filt.empty:
-            dr = pd.to_datetime(filt["DATE RECEIVED"], errors="coerce")
-            m = (dr >= pd.to_datetime(dr_from)) & (dr <= pd.to_datetime(dr_to) + pd.Timedelta(days=1) - pd.Timedelta(milliseconds=1))
-            filt = filt[m]
+    # DATE RECEIVED range
+    if not filt.empty and "DATE RECEIVED" in filt.columns:
+        dr = pd.to_datetime(filt["DATE RECEIVED"], errors="coerce")
+        mask = (dr >= pd.to_datetime(dr_from)) & (dr <= pd.to_datetime(dr_to) + pd.Timedelta(days=1) - pd.Timedelta(milliseconds=1))
+        filt = filt[mask]
 
-        # Next Follow-up Date range
-        if use_nf and "Next Follow-up Date" in filt.columns:
-            nf = pd.to_datetime(filt["Next Follow-up Date"], errors="coerce")
-            nf_mask = (nf >= pd.to_datetime(nf_from)) & (nf <= pd.to_datetime(nf_to) + pd.Timedelta(days=1) - pd.Timedelta(milliseconds=1))
-            filt = filt[nf_mask]
+    # Next Follow-up Date range
+    if use_nf and "Next Follow-up Date" in filt.columns:
+        nf = pd.to_datetime(filt["Next Follow-up Date"], errors="coerce")
+        nf_mask = (nf >= pd.to_datetime(nf_from)) & (nf <= pd.to_datetime(nf_to) + pd.Timedelta(days=1) - pd.Timedelta(milliseconds=1))
+        filt = filt[nf_mask]
 
-        # Helper: return new df instead of using nonlocal
-        def _apply_multi(df_in, col, values):
-            if values and col in df_in.columns:
-                return df_in[df_in[col].astype(str).isin(values)]
-            return df_in
+    # Helper to apply multiselects
+    def _apply_multi(df_in: pd.DataFrame, col: str, values: list) -> pd.DataFrame:
+        if values and col in df_in.columns:
+            return df_in[df_in[col].astype(str).isin(values)]
+        return df_in
 
-        filt = _apply_multi(filt, "Lead Status", lead_statuses)
-        filt = _apply_multi(filt, "Product Type", products)
-        filt = _apply_multi(filt, "LEAD Sales Executive", execs)
-        filt = _apply_multi(filt, "Staff Email", staff_emails)
-        filt = _apply_multi(filt, "Delivery Status", delivery_statuses)
-        filt = _apply_multi(filt, "Complaint Status", complaint_statuses)
+    filt = _apply_multi(filt, "Lead Status", lead_statuses)
+    filt = _apply_multi(filt, "Product Type", products)
+    filt = _apply_multi(filt, "LEAD Sales Executive", execs)
+    filt = _apply_multi(filt, "Staff Email", staff_emails)
+    filt = _apply_multi(filt, "Delivery Status", delivery_statuses)
+    filt = _apply_multi(filt, "Complaint Status", complaint_statuses)
 
-        # Only active leads
-        if "Lead Status" in filt.columns and only_active:
-            filt = filt[~filt["Lead Status"].astype(str).str.lower().isin(["won", "lost"])]
+    # Only active leads
+    if "Lead Status" in filt.columns and only_active:
+        filt = filt[~filt["Lead Status"].astype(str).str.lower().isin(["won", "lost"])]
 
-        # Search across fields
-        if search_text:
-            hay_cols = [c for c in ["Customer Name","Contact Number","Address/Location","Notes"] if c in filt.columns]
-            if hay_cols:
-                hay = filt[hay_cols].astype(str).apply(lambda s: s.str.contains(search_text, case=False, na=False))
-                any_hit = hay.any(axis=1)
-                filt = filt[any_hit]
+    # Search across fields
+    if search_text:
+        hay_cols = [c for c in ["Customer Name", "Contact Number", "Address/Location", "Notes"] if c in filt.columns]
+        if hay_cols:
+            hay = filt[hay_cols].astype(str).apply(lambda s: s.str.contains(search_text, case=False, na=False))
+            any_hit = hay.any(axis=1)
+            filt = filt[any_hit]
 
-        st.dataframe(filt, use_container_width=True)
+    # ---------- Show table + download ----------
+    st.dataframe(filt, use_container_width=True)
 
-        csv = filt.to_csv(index=False).encode("utf-8")
-        st.download_button("⬇️ Download filtered CSV", data=csv, file_name="crm_filtered.csv", mime="text/csv")
+    csv = filt.to_csv(index=False).encode("utf-8")
+    st.download_button("⬇️ Download filtered CSV", data=csv, file_name="crm_filtered.csv", mime="text/csv")
 
-        filtered_df = filt
+    # ---------- Analytics (use filtered rows) ----------
+    leads_df = slice_leads(filt)
+    del_df   = slice_delivery(filt)
+    sr_df    = slice_service(filt)
 
-    # ---------- Metrics & Charts (use filtered_df from above) ----------
     st.markdown("## 📅 Date Range for Metrics (post-filter)")
     filter_option = st.radio(
         "Choose Timeframe:",
@@ -328,18 +294,14 @@ if section == "CRM Overview":
         start_date = datetime.combine(sd, datetime.min.time())
         end_date   = datetime.combine(ed, datetime.max.time())
 
-    leads_df = slice_leads(filtered_df if _AG_AVAILABLE else filtered_df)
-    del_df   = slice_delivery(filtered_df if _AG_AVAILABLE else filtered_df)
-    sr_df    = slice_service(filtered_df if _AG_AVAILABLE else filtered_df)
-
     leads_df_f = filter_by_date(leads_df, "DATE RECEIVED", filter_option, start_date, end_date)
     del_df_f   = filter_by_date(del_df,   "DATE RECEIVED", filter_option, start_date, end_date)
     sr_df_f    = filter_by_date(sr_df,    "DATE RECEIVED", filter_option, start_date, end_date)
 
     if filter_option == "All Time":
-        st.info("Showing **All Time** metrics based on the current table filters.")
+        st.info("Showing **All Time** metrics (after applying the Filters above).")
     else:
-        st.info(f"Showing metrics from **{start_date.date()}** to **{end_date.date()}**, based on the current table filters.")
+        st.info(f"Showing metrics from **{start_date.date()}** to **{end_date.date()}** (after applying the Filters above).")
 
     # Leads
     st.markdown("## 👤 Leads Metrics")
@@ -394,9 +356,13 @@ if section == "CRM Overview":
     lead_trend = get_trend_comparison(leads_df_f, "DATE RECEIVED")
     del_trend  = get_trend_comparison(del_df_f,   "DATE RECEIVED")
     sr_trend   = get_trend_comparison(sr_df_f,    "DATE RECEIVED")
-    trend_df = pd.DataFrame([lead_trend, del_trend, sr_trend], index=["Leads", "Delivery", "Service Requests"]).fillna(0).astype(int)
+    trend_df = pd.DataFrame(
+        [lead_trend, del_trend, sr_trend],
+        index=["Leads", "Delivery", "Service Requests"]
+    ).fillna(0).astype(int)
     styled_trend = trend_df.style.apply(highlight_trends, axis=1)
     st.table(styled_trend)
+
 
 
 
