@@ -92,26 +92,28 @@ def log_history(action: str, sheet_name: str, unique_fields: dict, old_data: dic
 
 def _normalize_field(col: str, val):
     if col in {"DATE RECEIVED", "Next Follow-up Date"}:
-        return _fmt_mmddyyyy(val or datetime.today())
+        return _fmt_mmddyyyy(val or datetime.today())  # ⬅️ MM/DD/YYYY for both
     if col == "Follow-up Time (HH:MM)":
         s = str(val or "").strip()
-        # Accept "HH:MM:SS" or "HH:MM" and coerce to "HH:MM"
         try:
-            # Fast path for "HH:MM[:SS]"
             parts = s.split(":")
             if len(parts) >= 2:
                 hh = int(parts[0]); mm = int(parts[1])
-                return f"{hh:02d}:{mm:02d}"
+                return f"{hh:02d}:{mm:02d}"          # ⬅️ force HH:MM
         except Exception:
             pass
         return s
     if col in EMAIL_COLS:
-        return (str(val or "")).strip().lower()
+        v = (str(val or "")).strip().lower()
+        return v or "4sinteriorsbbsr@gmail.com"        # ⬅️ default Staff/Customer Email
+    if col == "Customer WhatsApp (+91XXXXXXXXXX)":
+        return (str(val or "")).strip()                # fallback applied below using Contact Number
     if col in TITLE_COLS:
         return _title_case(val or "")
     if isinstance(val, (datetime, date)):
         return _fmt_mmddyyyy(val)
     return "" if val is None else str(val)
+
 
 def upsert_record(sheet_name: str, unique_fields: dict, new_data: dict, sync_to_crm=True):
     ws = sh.worksheet(sheet_name)
@@ -138,7 +140,13 @@ def upsert_record(sheet_name: str, unique_fields: dict, new_data: dict, sync_to_
     new_data = {k: _normalize_field(k, v) for k, v in new_data.items()}
     if "DATE RECEIVED" not in new_data:
         new_data["DATE RECEIVED"] = _fmt_mmddyyyy(datetime.today())
-
+    if not new_data.get("Staff Email"):
+        new_data["Staff Email"] = "4sinteriorsbbsr@gmail.com"
+    # 2) WhatsApp fallback to phone if empty
+    if not new_data.get("Customer WhatsApp (+91XXXXXXXXXX)"):
+        phone = new_data.get("Contact Number", "")
+        if phone:
+            new_data["Customer WhatsApp (+91XXXXXXXXXX)"] = phone
     if mask.any():  # UPDATE
         row_index = mask[mask].index[0] + 2
         old_data = df.iloc[mask[mask].index[0]].to_dict()
