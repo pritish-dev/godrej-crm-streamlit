@@ -281,7 +281,7 @@ elif section == "New Leads":
                 "Product Type": product,
                 "Budget Range": budget,
                 "Next Follow-up Date": str(next_follow),
-                "Follow-up Time (HH:MM)": str(follow_time),
+                "Follow-up Time (HH:MM)": follow_time.strftime("%H:%M"),
                 "LEAD Sales Executive": lead_exec,
                 "Staff Email": staff_email,
                 "Customer Email": customer_email,

@@ -94,7 +94,17 @@ def _normalize_field(col: str, val):
     if col in {"DATE RECEIVED", "Next Follow-up Date"}:
         return _fmt_mmddyyyy(val or datetime.today())
     if col == "Follow-up Time (HH:MM)":
-        return str(val or "").strip()
+        s = str(val or "").strip()
+        # Accept "HH:MM:SS" or "HH:MM" and coerce to "HH:MM"
+        try:
+            # Fast path for "HH:MM[:SS]"
+            parts = s.split(":")
+            if len(parts) >= 2:
+                hh = int(parts[0]); mm = int(parts[1])
+                return f"{hh:02d}:{mm:02d}"
+        except Exception:
+            pass
+        return s
     if col in EMAIL_COLS:
         return (str(val or "")).strip().lower()
     if col in TITLE_COLS:
