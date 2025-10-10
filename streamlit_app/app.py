@@ -3,6 +3,7 @@ import plotly.express as px
 import pandas as pd
 from datetime import datetime, timedelta
 from sheets import get_df, upsert_record
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 
 st.set_page_config(page_title="4sinteriors CRM Dashboard", layout="wide")
 st.title("📊 Interio by Godrej Patia – CRM Dashboard")
@@ -118,16 +119,80 @@ if st.sidebar.button("🔄 Refresh Data"):
 crm_df_raw = get_df("CRM")
 crm_df = clean_crm(crm_df_raw)
 
-# CRM Overview
+# CRM Overview (Excel-like filters via st-aggrid)
 if section == "CRM Overview":
-    st.subheader("📋 Master CRM Data")
-    st.dataframe(crm_df, width="stretch")
+    st.subheader("📋 Master CRM Data (Excel-style)")
 
-    leads_df = slice_leads(crm_df)
-    del_df   = slice_delivery(crm_df)
-    sr_df    = slice_service(crm_df)
+    # -------- Excel-like Grid --------
+    # Use the cleaned CRM dataframe (crm_df) that already has DATE RECEIVED parsed to dates
+    grid_df = crm_df.copy()
 
-    st.markdown("## 📅 Date Range Filter")
+    # Build grid options
+    gb = GridOptionsBuilder.from_dataframe(grid_df)
+
+    # Default column behavior (Excel-like)
+    gb.configure_default_column(
+        filter=True,             # enable per-column filters
+        sortable=True,
+        resizable=True,
+        floatingFilter=True,     # little filter boxes below header
+    )
+
+    # Helpful grid features
+    gb.configure_side_bar()      # right-side filter/pivot panel
+    gb.configure_grid_options(
+        animateRows=True,
+        rowSelection="multiple",
+        enableRangeSelection=True,
+        suppressMenuHide=False,  # keep column menu visible on hover
+    )
+
+    # Optional: set some column types explicitly if present
+    date_cols = [c for c in ["DATE RECEIVED", "Next Follow-up Date"] if c in grid_df.columns]
+    for c in date_cols:
+        gb.configure_column(c, filter="agDateColumnFilter")
+
+    numeric_cols = [c for c in ["SALE VALUE", "SERVICE CHARGE"] if c in grid_df.columns]
+    for c in numeric_cols:
+        gb.configure_column(c, type=["numericColumn", "rightAligned"])
+
+    # Quick search across all columns (like Excel search box)
+    quick = st.text_input("🔎 Quick search (all columns)", placeholder="Type to filter across all columns…")
+    grid_options = gb.build()
+    if quick:
+        grid_options["quickFilterText"] = quick
+
+    # Render the grid; return only what's currently filtered/sorted in the UI
+    grid_resp = AgGrid(
+        grid_df,
+        gridOptions=grid_options,
+        data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+        update_mode=GridUpdateMode.MODEL_CHANGED,
+        fit_columns_on_grid_load=True,
+        theme="balham",  # try "alpine", "material", "streamlit"
+        enable_enterprise_modules=False,  # keep OSS features
+        height=480,
+    )
+
+    # This is exactly what the user sees after applying Excel-like filters
+    filtered_df = pd.DataFrame(grid_resp.get("data", []))
+
+    # Download the filtered rows
+    if not filtered_df.empty:
+        csv = filtered_df.to_csv(index=False).encode("utf-8")
+        st.download_button("⬇️ Download filtered CSV", data=csv, file_name="crm_filtered.csv", mime="text/csv")
+    else:
+        st.info("No rows match the current filters.")
+
+    # -------- Stats & Charts (use the filtered rows) --------
+    # If no rows, create empty frames to avoid errors
+    base_df = filtered_df if not filtered_df.empty else grid_df.iloc[0:0]
+
+    leads_df = slice_leads(base_df)
+    del_df   = slice_delivery(base_df)
+    sr_df    = slice_service(base_df)
+
+    st.markdown("## 📅 Date Range for Metrics (post-filter)")
     filter_option = st.radio(
         "Choose Timeframe:",
         ["All Time", "Weekly", "Monthly", "This Month (to-date)", "Quarterly", "Custom Range"],
@@ -137,110 +202,95 @@ if section == "CRM Overview":
     today = datetime.today()
     start_date, end_date = None, None
     if filter_option == "Weekly":
-        start_date = today - timedelta(days=7)
-        end_date = today
+        start_date = today - timedelta(days=7);   end_date = today
     elif filter_option == "Monthly":
-        start_date = today - timedelta(days=30)
-        end_date = today
+        start_date = today - timedelta(days=30);  end_date = today
     elif filter_option == "This Month (to-date)":
-        start_date = today.replace(day=1)
-        end_date = today
+        start_date = today.replace(day=1);        end_date = today
     elif filter_option == "Quarterly":
-        start_date = today - timedelta(days=90)
-        end_date = today
+        start_date = today - timedelta(days=90);  end_date = today
     elif filter_option == "Custom Range":
         col1, col2 = st.columns(2)
-        with col1:
-            sd = st.date_input("Start Date", today - timedelta(days=30))
-        with col2:
-            ed = st.date_input("End Date", today)
+        with col1: sd = st.date_input("Start Date", today - timedelta(days=30), key="stat_sd")
+        with col2: ed = st.date_input("End Date", today, key="stat_ed")
         start_date = datetime.combine(sd, datetime.min.time())
-        end_date = datetime.combine(ed, datetime.max.time())
+        end_date   = datetime.combine(ed, datetime.max.time())
 
     leads_df_f = filter_by_date(leads_df, "DATE RECEIVED", filter_option, start_date, end_date)
-    del_df_f   = filter_by_date(del_df, "DATE RECEIVED", filter_option, start_date, end_date)
-    sr_df_f    = filter_by_date(sr_df, "DATE RECEIVED", filter_option, start_date, end_date)
+    del_df_f   = filter_by_date(del_df,   "DATE RECEIVED", filter_option, start_date, end_date)
+    sr_df_f    = filter_by_date(sr_df,    "DATE RECEIVED", filter_option, start_date, end_date)
 
     if filter_option == "All Time":
-        st.info("Showing **All Time** CRM metrics")
+        st.info("Showing **All Time** metrics based on the **current Excel-style grid filters** above.")
     else:
-        st.info(f"Showing metrics from **{start_date.date()}** to **{end_date.date()}**")
+        st.info(f"Showing metrics from **{start_date.date()}** to **{end_date.date()}**, based on the **current Excel-style grid filters** above.")
 
-    # Leads
+    # ----- Leads -----
     st.markdown("## 👤 Leads Metrics")
     lw, lm = summarize_by_status(leads_df_f, "DATE RECEIVED", "Lead Status")
-
-    st.markdown("### Weekly Leads by Status")
     c1, c2 = st.columns(2)
-    with c1:
-        st.dataframe(lw, use_container_width=True)
+    with c1: st.dataframe(lw, use_container_width=True)
     with c2:
         if not lw.empty:
             fig = px.pie(lw, names="Lead Status", values="Count", title="Weekly Leads by Status")
             st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### Monthly Leads by Status")
     c1, c2 = st.columns(2)
-    with c1:
-        st.dataframe(lm, use_container_width=True)
+    with c1: st.dataframe(lm, use_container_width=True)
     with c2:
         if not lm.empty:
             fig = px.pie(lm, names="Lead Status", values="Count", title="Monthly Leads by Status")
             st.plotly_chart(fig, use_container_width=True)
 
-    # Delivery
+    # ----- Delivery -----
     st.markdown("## 🚚 Delivery Metrics")
     dw, dm = summarize_by_status(del_df_f, "DATE RECEIVED", "Delivery Status")
-
-    st.markdown("### Weekly Deliveries by Status")
     c1, c2 = st.columns(2)
-    with c1:
-        st.dataframe(dw, use_container_width=True)
+    with c1: st.dataframe(dw, use_container_width=True)
     with c2:
         if not dw.empty:
             fig = px.pie(dw, names="Delivery Status", values="Count", title="Weekly Deliveries by Status")
             st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### Monthly Deliveries by Status")
     c1, c2 = st.columns(2)
-    with c1:
-        st.dataframe(dm, use_container_width=True)
+    with c1: st.dataframe(dm, use_container_width=True)
     with c2:
         if not dm.empty:
             fig = px.pie(dm, names="Delivery Status", values="Count", title="Monthly Deliveries by Status")
             st.plotly_chart(fig, use_container_width=True)
 
-    # Service
+    # ----- Service -----
     st.markdown("## 🛠 Service Request Metrics")
     sw, sm = summarize_by_status(sr_df_f, "DATE RECEIVED", "Complaint Status")
-
-    st.markdown("### Weekly Service Requests by Status")
     c1, c2 = st.columns(2)
-    with c1:
-        st.dataframe(sw, use_container_width=True)
+    with c1: st.dataframe(sw, use_container_width=True)
     with c2:
         if not sw.empty:
             fig = px.pie(sw, names="Complaint Status", values="Count", title="Weekly Service Requests by Status")
             st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### Monthly Service Requests by Status")
     c1, c2 = st.columns(2)
-    with c1:
-        st.dataframe(sm, use_container_width=True)
+    with c1: st.dataframe(sm, use_container_width=True)
     with c2:
         if not sm.empty:
             fig = px.pie(sm, names="Complaint Status", values="Count", title="Monthly Service Requests by Status")
             st.plotly_chart(fig, use_container_width=True)
 
-    # Trend comparison
+    # ----- Trend comparison -----
     st.subheader("📊 Trend Comparison")
     lead_trend = get_trend_comparison(leads_df_f, "DATE RECEIVED")
     del_trend  = get_trend_comparison(del_df_f,   "DATE RECEIVED")
     sr_trend   = get_trend_comparison(sr_df_f,    "DATE RECEIVED")
 
-    trend_df = pd.DataFrame([lead_trend, del_trend, sr_trend], index=["Leads", "Delivery", "Service Requests"]).fillna(0).astype(int)
+    trend_df = pd.DataFrame(
+        [lead_trend, del_trend, sr_trend],
+        index=["Leads", "Delivery", "Service Requests"]
+    ).fillna(0).astype(int)
+
     styled_trend = trend_df.style.apply(highlight_trends, axis=1)
     st.table(styled_trend)
+
+
 
 # New Leads
 elif section == "New Leads":
