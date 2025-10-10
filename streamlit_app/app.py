@@ -3,23 +3,22 @@ import plotly.express as px
 import pandas as pd
 from datetime import datetime, timedelta
 from sheets import get_df, upsert_record
-import calendar
+
 st.set_page_config(page_title="4sinteriors CRM Dashboard", layout="wide")
 st.title("📊 Interio by Godrej Patia – CRM Dashboard")
 
-# --------------------------
-# Helpers
-# --------------------------
 def _to_dt(s):
-    return pd.to_datetime(s, errors="coerce", dayfirst=True, infer_datetime_format=True)
-    
+    return pd.to_datetime(s, errors="coerce", dayfirst=False, infer_datetime_format=True)
+
 def clean_crm(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
     out = df.copy()
     out.columns = [c.strip() for c in out.columns]
     if "DATE RECEIVED" in out.columns:
-        out["DATE RECEIVED"] = _to_dt(out["DATE RECEIVED"]).dt.date  # ✅ remove timestamp
+        out["DATE RECEIVED"] = _to_dt(out["DATE RECEIVED"]).dt.date
+    if "Next Follow-up Date" in out.columns:
+        out["Next Follow-up Date"] = _to_dt(out["Next Follow-up Date"]).dt.date
     return out
 
 def slice_leads(crm: pd.DataFrame) -> pd.DataFrame:
@@ -37,57 +36,25 @@ def slice_service(crm: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=crm.columns if not crm.empty else [])
     return crm[crm["Complaint Status"].notna()  & crm["Complaint Status"].astype(str).str.strip().ne("")]
 
-
 def summarize_by_status(df, date_col="DATE RECEIVED", status_col="Lead Status"):
-    # Ensure proper date type (date only, no time)
+    df = df.copy()
     df[date_col] = pd.to_datetime(df[date_col], errors="coerce").dt.date
     df[status_col] = df[status_col].astype(str).str.strip()
 
-    # ---------------------
-    # Weekly Summary (Mon-Sun weeks)
-    # ---------------------
-    df["WEEK_PERIOD"] = pd.to_datetime(df[date_col]).dt.to_period("W-SUN")
+    df["WEEK_PERIOD"]  = pd.to_datetime(df[date_col]).dt.to_period("W-SUN")
+    weekly_counts = df.groupby(["WEEK_PERIOD", status_col]).size().reset_index(name="Count")
+    weekly_counts["period"] = weekly_counts["WEEK_PERIOD"].apply(lambda p: f"{p.start_time.date()} → {p.end_time.date()}")
 
-    weekly_counts = (
-        df.groupby(["WEEK_PERIOD", status_col])
-        .size()
-        .reset_index(name="Count")   # Capital C
-    )
-
-    # Add human-readable ranges for weeks
-    weekly_counts["period"] = weekly_counts["WEEK_PERIOD"].apply(
-        lambda p: f"{p.start_time.date()} → {p.end_time.date()}"
-    )
-
-    # ---------------------
-    # Monthly Summary
-    # ---------------------
     df["MONTH_PERIOD"] = pd.to_datetime(df[date_col]).dt.to_period("M")
+    monthly_counts = df.groupby(["MONTH_PERIOD", status_col]).size().reset_index(name="Count")
+    monthly_counts["period"] = monthly_counts["MONTH_PERIOD"].apply(lambda p: f"{p.start_time.date()} → {p.end_time.date()}")
 
-    monthly_counts = (
-        df.groupby(["MONTH_PERIOD", status_col])
-        .size()
-        .reset_index(name="Count")   # Capital C
-    )
-
-    # Add human-readable ranges for months
-    monthly_counts["period"] = monthly_counts["MONTH_PERIOD"].apply(
-        lambda p: f"{p.start_time.date()} → {p.end_time.date()}"
-    )
-
-    return (
-        weekly_counts[["period", status_col, "Count"]],
-        monthly_counts[["period", status_col, "Count"]],
-    )
-
-
-
+    return weekly_counts[["period", status_col, "Count"]], monthly_counts[["period", status_col, "Count"]]
 
 def get_trend_comparison(df, date_col="DATE RECEIVED"):
     base = {"This Week": 0, "Last Week": 0, "This Month": 0, "Last Month": 0}
     if df.empty or date_col not in df.columns:
         return base
-
     tmp = df.copy()
     tmp[date_col] = _to_dt(tmp[date_col])
     tmp = tmp.dropna(subset=[date_col])
@@ -95,12 +62,12 @@ def get_trend_comparison(df, date_col="DATE RECEIVED"):
         return base
 
     today = pd.Timestamp(datetime.today())
-    this_week = today.to_period("W")
-    last_week = (today - pd.Timedelta(days=7)).to_period("W")
+    this_week  = today.to_period("W")
+    last_week  = (today - pd.Timedelta(days=7)).to_period("W")
     this_month = today.to_period("M")
     last_month = (today - pd.Timedelta(days=30)).to_period("M")
 
-    week_counts = tmp.groupby(tmp[date_col].dt.to_period("W")).size()
+    week_counts  = tmp.groupby(tmp[date_col].dt.to_period("W")).size()
     month_counts = tmp.groupby(tmp[date_col].dt.to_period("M")).size()
 
     return {
@@ -138,13 +105,8 @@ def highlight_trends(row):
     styles.append("color: gray")
     return styles
 
-# --------------------------
 # Sidebar
-# --------------------------
-section = st.sidebar.radio(
-    "Choose Section",
-    ["CRM Overview", "New Leads", "Delivery", "Service Request", "History Log"]
-)
+section = st.sidebar.radio("Choose Section", ["CRM Overview", "New Leads", "Delivery", "Service Request", "History Log"])
 
 st.sidebar.subheader("⚙️ Controls")
 if st.sidebar.button("🔄 Refresh Data"):
@@ -152,22 +114,18 @@ if st.sidebar.button("🔄 Refresh Data"):
     st.sidebar.success("Cache cleared! Reloading fresh data…")
     st.rerun()
 
-# --------------------------
 # Load CRM once
-# --------------------------
 crm_df_raw = get_df("CRM")
 crm_df = clean_crm(crm_df_raw)
 
-# --------------------------
 # CRM Overview
-# --------------------------
 if section == "CRM Overview":
     st.subheader("📋 Master CRM Data")
     st.dataframe(crm_df, width="stretch")
 
     leads_df = slice_leads(crm_df)
-    del_df = slice_delivery(crm_df)
-    sr_df = slice_service(crm_df)
+    del_df   = slice_delivery(crm_df)
+    sr_df    = slice_service(crm_df)
 
     st.markdown("## 📅 Date Range Filter")
     filter_option = st.radio(
@@ -208,91 +166,83 @@ if section == "CRM Overview":
     else:
         st.info(f"Showing metrics from **{start_date.date()}** to **{end_date.date()}**")
 
-    # ------------------- Leads -------------------
+    # Leads
     st.markdown("## 👤 Leads Metrics")
     lw, lm = summarize_by_status(leads_df_f, "DATE RECEIVED", "Lead Status")
 
     st.markdown("### Weekly Leads by Status")
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        st.dataframe(lw, use_container_width=False, width=None)
-    with col2:
+    c1, c2 = st.columns(2)
+    with c1:
+        st.dataframe(lw, use_container_width=True)
+    with c2:
         if not lw.empty:
             fig = px.pie(lw, names="Lead Status", values="Count", title="Weekly Leads by Status")
             st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("### Monthly Leads by Status")
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        st.dataframe(lm, use_container_width=False, width=None)
-    with col2:
+    c1, c2 = st.columns(2)
+    with c1:
+        st.dataframe(lm, use_container_width=True)
+    with c2:
         if not lm.empty:
             fig = px.pie(lm, names="Lead Status", values="Count", title="Monthly Leads by Status")
             st.plotly_chart(fig, use_container_width=True)
 
-    # ------------------- Delivery -------------------
+    # Delivery
     st.markdown("## 🚚 Delivery Metrics")
     dw, dm = summarize_by_status(del_df_f, "DATE RECEIVED", "Delivery Status")
 
     st.markdown("### Weekly Deliveries by Status")
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        st.dataframe(dw, use_container_width=False, width=None)
-    with col2:
+    c1, c2 = st.columns(2)
+    with c1:
+        st.dataframe(dw, use_container_width=True)
+    with c2:
         if not dw.empty:
             fig = px.pie(dw, names="Delivery Status", values="Count", title="Weekly Deliveries by Status")
             st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("### Monthly Deliveries by Status")
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        st.dataframe(dm, use_container_width=False, width=None)
-    with col2:
+    c1, c2 = st.columns(2)
+    with c1:
+        st.dataframe(dm, use_container_width=True)
+    with c2:
         if not dm.empty:
             fig = px.pie(dm, names="Delivery Status", values="Count", title="Monthly Deliveries by Status")
             st.plotly_chart(fig, use_container_width=True)
 
-    # ------------------- Service Requests -------------------
+    # Service
     st.markdown("## 🛠 Service Request Metrics")
     sw, sm = summarize_by_status(sr_df_f, "DATE RECEIVED", "Complaint Status")
 
     st.markdown("### Weekly Service Requests by Status")
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        st.dataframe(sw, use_container_width=False, width=None)
-    with col2:
+    c1, c2 = st.columns(2)
+    with c1:
+        st.dataframe(sw, use_container_width=True)
+    with c2:
         if not sw.empty:
             fig = px.pie(sw, names="Complaint Status", values="Count", title="Weekly Service Requests by Status")
             st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("### Monthly Service Requests by Status")
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        st.dataframe(sm, use_container_width=False, width=None)
-    with col2:
+    c1, c2 = st.columns(2)
+    with c1:
+        st.dataframe(sm, use_container_width=True)
+    with c2:
         if not sm.empty:
             fig = px.pie(sm, names="Complaint Status", values="Count", title="Monthly Service Requests by Status")
             st.plotly_chart(fig, use_container_width=True)
 
-    # ------------------- Trend Comparison -------------------
+    # Trend comparison
     st.subheader("📊 Trend Comparison")
     lead_trend = get_trend_comparison(leads_df_f, "DATE RECEIVED")
     del_trend  = get_trend_comparison(del_df_f,   "DATE RECEIVED")
     sr_trend   = get_trend_comparison(sr_df_f,    "DATE RECEIVED")
 
-    trend_df = pd.DataFrame(
-        [lead_trend, del_trend, sr_trend],
-        index=["Leads", "Delivery", "Service Requests"]
-    ).fillna(0).astype(int)
-
+    trend_df = pd.DataFrame([lead_trend, del_trend, sr_trend], index=["Leads", "Delivery", "Service Requests"]).fillna(0).astype(int)
     styled_trend = trend_df.style.apply(highlight_trends, axis=1)
     st.table(styled_trend)
 
-
-###########################################################################
-# --------------------------
 # New Leads
-# --------------------------
 elif section == "New Leads":
     st.subheader("👤 Leads Dashboard")
     leads_df = slice_leads(crm_df)
@@ -304,8 +254,8 @@ elif section == "New Leads":
         name = st.text_input("Customer Name")
         phone = st.text_input("Contact Number")
         address = st.text_area("Address/Location")
-        lead_source = st.selectbox("Lead Source", ["Showroom Visit", "Phone Inquiry", "Website", "Referral", "Facebook", "Instagram", "Other"])
-        lead_status = st.selectbox("Lead Status", ["New Lead", "Followup-scheduled", "Won", "Lost"])
+        lead_source = st.selectbox("Lead Source", ["Walkin", "Phone Inquiry", "Website", "Referral", "Facebook", "Instagram", "Other"])
+        lead_status = st.selectbox("Lead Status", ["New Lead", "Followup-scheduled", "Won-Closed", "Lost-Closed"])
         product = st.selectbox("Product Type", ["Sofa", "Bed", "STEEL STORAGE", "Wardrobe", "Dining Table", "Kreation X2", "Kreation X3", "Recliners", "Dresser Unit", "Display Unit", "TV Unit", "Study Table/Office table", "Chairs", "Coffee Table", "Bedside Table", "Shoe Cabinet", "Bedsheet/Pillow/Covers", "Mattress", "Other"])
         budget = st.text_input("Budget Range")
         next_follow = st.date_input("Next Follow-up Date", datetime.today())
@@ -314,6 +264,9 @@ elif section == "New Leads":
         staff_email = st.text_input("Staff Email")
         customer_email = st.text_input("Customer Email")
         customer_whatsapp = st.text_input("Customer WhatsApp (+91XXXXXXXXXX)", placeholder="+9199XXXXXXXX")
+        sale_value = ""
+        if lead_status == "Won":
+            sale_value = st.text_input("SALE VALUE (₹)", placeholder="e.g., 125000")
         submit = st.form_submit_button("Save Lead")
 
         if submit:
@@ -332,6 +285,7 @@ elif section == "New Leads":
                 "LEAD Sales Executive": lead_exec,
                 "Staff Email": staff_email,
                 "Customer Email": customer_email,
+                "SALE VALUE": sale_value if lead_status == "Won" else ""
             }
             if customer_whatsapp.strip():
                 new_data["Customer WhatsApp (+91XXXXXXXXXX)"] = customer_whatsapp.strip()
@@ -339,9 +293,7 @@ elif section == "New Leads":
             msg = upsert_record("CRM", unique_fields, new_data)
             st.success(f"✅ {msg}")
 
-# --------------------------
 # Delivery
-# --------------------------
 elif section == "Delivery":
     st.subheader("🚚 Delivery Dashboard")
     del_df = slice_delivery(crm_df)
@@ -382,9 +334,7 @@ elif section == "Delivery":
             msg = upsert_record("CRM", unique_fields, new_data)
             st.success(f"✅ {msg}")
 
-# --------------------------
-# Service Requests
-# --------------------------
+# Service Request
 elif section == "Service Request":
     st.subheader("🛠 Service Request Dashboard")
     sr_df = slice_service(crm_df)
@@ -429,9 +379,7 @@ elif section == "Service Request":
             msg = upsert_record("CRM", unique_fields, new_data)
             st.success(f"✅ {msg}")
 
-# --------------------------
 # History Log
-# --------------------------
 elif section == "History Log":
     st.subheader("📝 Change History")
     try:

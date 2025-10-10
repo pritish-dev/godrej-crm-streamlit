@@ -6,7 +6,6 @@ from datetime import datetime, date
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-# ✅ Auto-detect: Local (credentials.json) or Streamlit Cloud (st.secrets)
 try:
     CREDS = Credentials.from_service_account_info(st.secrets["google"], scopes=SCOPES)
 except Exception:
@@ -16,6 +15,29 @@ gc = gspread.authorize(CREDS)
 SPREADSHEET_ID = "1wFpK-WokcZB6k1vzG7B6JO5TdGHrUwdgvVm_-UQse54"
 sh = gc.open_by_key(SPREADSHEET_ID)
 
+EMAIL_COLS = {"Staff Email", "Customer Email"}
+TITLE_COLS = {
+    "Customer Name","Address/Location","Lead Source","Lead Status","Product Type",
+    "Delivery Status","Complaint Status","Complaint Registered By","LEAD Sales Executive",
+    "Delivery Sales Executive","Delivery Assigned To","Complaint/Service Assigned To"
+}
+
+def _title_case(s: str) -> str:
+    if not s:
+        return ""
+    out = str(s).lower().title()
+    # keep common acronyms neat
+    out = out.replace("Tv", "TV").replace("X2", "X2").replace("X3", "X3").replace("Gb", "GB")
+    return out
+
+def _fmt_mmddyyyy(v) -> str:
+    if isinstance(v, (datetime, date)):
+        d = pd.to_datetime(v, errors="coerce")
+    else:
+        d = pd.to_datetime(str(v), errors="coerce")
+    if pd.isna(d):
+        return ""
+    return d.strftime("%m/%d/%Y")
 
 @st.cache_data(ttl=60)
 def get_df(sheet_name: str):
@@ -23,7 +45,6 @@ def get_df(sheet_name: str):
     try:
         ws = sh.worksheet(sheet_name)
     except gspread.exceptions.WorksheetNotFound:
-        # Auto-create empty sheet with just headers
         ws = sh.add_worksheet(title=sheet_name, rows=1000, cols=20)
         if sheet_name == "History Log":
             ws.append_row(["Timestamp", "Action", "Sheet", "Customer Name", "Contact Number", "Old Data", "New Data"])
@@ -34,8 +55,7 @@ def get_df(sheet_name: str):
         return pd.DataFrame()
 
     headers = all_values[0]
-    seen = {}
-    unique_headers = []
+    seen, unique_headers = {}, []
     for h in headers:
         if h in seen:
             seen[h] += 1
@@ -45,18 +65,19 @@ def get_df(sheet_name: str):
             unique_headers.append(h)
 
     df = pd.DataFrame(all_values[1:], columns=unique_headers)
+
+    # Ensure SALE VALUE exists in DataFrame if present in sheet header
+    if "SALE VALUE" in df.columns:
+        pass
+
     if "DATE RECEIVED" in df.columns:
+        # parse month-first
         df["DATE RECEIVED"] = pd.to_datetime(
-            df["DATE RECEIVED"],
-            errors="coerce",
-            dayfirst=True,
-            infer_datetime_format=True
+            df["DATE RECEIVED"], errors="coerce", dayfirst=False, infer_datetime_format=True
         )
     return df
 
-
 def log_history(action: str, sheet_name: str, unique_fields: dict, old_data: dict, new_data: dict):
-    """Log changes into History Log sheet"""
     try:
         ws = sh.worksheet("History Log")
     except gspread.exceptions.WorksheetNotFound:
@@ -69,72 +90,72 @@ def log_history(action: str, sheet_name: str, unique_fields: dict, old_data: dic
         str(old_data), str(new_data)
     ])
 
-
-# ✅ helper to format values before saving
-def _format_value(val):
-    if isinstance(val, datetime):
-        return val.strftime("%d/%m/%Y")
-    if isinstance(val, date):
-        return val.strftime("%d/%m/%Y")
-    if isinstance(val, str):
-        try:
-            parsed = pd.to_datetime(val, errors="coerce")
-            if pd.notna(parsed):
-                return parsed.strftime("%d/%m/%Y")
-        except Exception:
-            return val.strip()
-    return str(val) if val is not None else ""
-
-
+def _normalize_field(col: str, val):
+    if col in {"DATE RECEIVED", "Next Follow-up Date"}:
+        return _fmt_mmddyyyy(val or datetime.today())
+    if col == "Follow-up Time (HH:MM)":
+        return str(val or "").strip()
+    if col in EMAIL_COLS:
+        return (str(val or "")).strip().lower()
+    if col in TITLE_COLS:
+        return _title_case(val or "")
+    if isinstance(val, (datetime, date)):
+        return _fmt_mmddyyyy(val)
+    return "" if val is None else str(val)
 
 def upsert_record(sheet_name: str, unique_fields: dict, new_data: dict, sync_to_crm=True):
     ws = sh.worksheet(sheet_name)
     headers = ws.row_values(1)
+    # Ensure SALE VALUE column exists in CRM sheet header
+    if sheet_name == "CRM" and "SALE VALUE" not in headers:
+        ws.add_cols(1)
+        ws.update_cell(1, len(headers) + 1, "SALE VALUE")
+        headers = ws.row_values(1)
+
     df = get_df(sheet_name)
+    get_df.clear()  # bust cache
 
-    # ✅ Clear cache so Streamlit reloads fresh next time
-    get_df.clear()
-
-    mask = (df["Customer Name"] == unique_fields["Customer Name"]) & \
-           (df["Contact Number"] == unique_fields["Contact Number"])
-
-    # --- Always normalize DATE RECEIVED ---
-    if "DATE RECEIVED" in new_data:
-        new_data["DATE RECEIVED"] = _format_value(new_data["DATE RECEIVED"])
+    # Build boolean mask safely
+    if df.empty:
+        mask = pd.Series([], dtype=bool)
     else:
-        new_data["DATE RECEIVED"] = datetime.today().strftime("%d/%m/%Y")
+        cn = unique_fields.get("Customer Name", "")
+        ph = unique_fields.get("Contact Number", "")
+        mask = (df.get("Customer Name", pd.Series(dtype=str)) == cn) & \
+               (df.get("Contact Number", pd.Series(dtype=str)) == ph)
+
+    # Always normalize fields (case + date) before write
+    new_data = {k: _normalize_field(k, v) for k, v in new_data.items()}
+    if "DATE RECEIVED" not in new_data:
+        new_data["DATE RECEIVED"] = _fmt_mmddyyyy(datetime.today())
 
     if mask.any():  # UPDATE
-        row_index = mask[mask].index[0] + 2  # account for header row
+        row_index = mask[mask].index[0] + 2
         old_data = df.iloc[mask[mask].index[0]].to_dict()
-        for col, val in new_data.items():
-            if col in headers:
-                col_index = headers.index(col) + 1
-                ws.update_cell(row_index, col_index, _format_value(val))
+        for col, _ in enumerate(headers, start=1):
+            key = headers[col-1]
+            if key in new_data:
+                ws.update_cell(row_index, col, _normalize_field(key, new_data[key]))
         log_history("UPDATE", sheet_name, unique_fields, old_data, new_data)
         return f"Updated existing record for {unique_fields['Customer Name']} ({unique_fields['Contact Number']})"
-
     else:  # INSERT
         row_values = []
         for col in headers:
-            if col == "DATE RECEIVED":
-                row_values.append(new_data.get("DATE RECEIVED", datetime.today().strftime("%d/%m/%Y")))
-            else:
-                row_values.append(_format_value(new_data.get(col, "")))
+            row_values.append(_normalize_field(col, new_data.get(col, "")))
         ws.append_row(row_values)
         log_history("INSERT", sheet_name, unique_fields, {}, new_data)
 
-        # ✅ Sync to main CRM only if not already writing to CRM
+        # Sync to main CRM if needed
         if sync_to_crm and sheet_name != "CRM":
             try:
                 crm_ws = sh.worksheet("CRM")
                 crm_headers = crm_ws.row_values(1)
-                crm_row = []
-                for col in crm_headers:
-                    if col == "DATE RECEIVED":
-                        crm_row.append(new_data.get("DATE RECEIVED", datetime.today().strftime("%d/%m/%Y")))
-                    else:
-                        crm_row.append(_format_value(new_data.get(col, "")))
+                # ensure SALE VALUE exists in CRM too
+                if "SALE VALUE" not in crm_headers:
+                    crm_ws.add_cols(1)
+                    crm_ws.update_cell(1, len(crm_headers) + 1, "SALE VALUE")
+                    crm_headers = crm_ws.row_values(1)
+                crm_row = [_normalize_field(col, new_data.get(col, "")) for col in crm_headers]
                 crm_ws.append_row(crm_row)
             except Exception as e:
                 print("CRM Sync Error:", e)
