@@ -3,7 +3,6 @@ import plotly.express as px
 import pandas as pd
 from datetime import datetime, timedelta
 from sheets import get_df, upsert_record
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 
 st.set_page_config(page_title="4sinteriors CRM Dashboard", layout="wide")
 st.title("📊 Interio by Godrej Patia – CRM Dashboard")
@@ -119,158 +118,16 @@ if st.sidebar.button("🔄 Refresh Data"):
 crm_df_raw = get_df("CRM")
 crm_df = clean_crm(crm_df_raw)
 
-try:
-    from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
-    _AG_AVAILABLE = True
-except Exception:
-    _AG_AVAILABLE = False
-
-def _unique_sorted(series):
-    if series is None or series.empty:
-        return []
-    return sorted([s for s in series.dropna().astype(str).str.strip().unique() if s != ""])
-
-# ---- Try AgGrid; fallback to native filters if not installed ----
-try:
-    from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
-    _AG_AVAILABLE = True
-except Exception:
-    _AG_AVAILABLE = False
-
-def _unique_sorted(series):
-    if series is None or (hasattr(series, "empty") and series.empty):
-        return []
-    return sorted([s for s in series.dropna().astype(str).str.strip().unique() if s != ""])
-
 # CRM Overview
-# CRM Overview (built-in filters, no st_aggrid dependency)
 if section == "CRM Overview":
     st.subheader("📋 Master CRM Data")
+    st.dataframe(crm_df, width="stretch")
 
-    def _unique_sorted(series: pd.Series):
-        if series is None or (hasattr(series, "empty") and series.empty):
-            return []
-        return sorted([s for s in series.dropna().astype(str).str.strip().unique() if s != ""])
+    leads_df = slice_leads(crm_df)
+    del_df   = slice_delivery(crm_df)
+    sr_df    = slice_service(crm_df)
 
-    # ---------- Filter UI ----------
-    with st.expander("🔎 Filters", expanded=True):
-        col_a, col_b, col_c = st.columns(3)
-
-        # Date Received range (defaults: last 30 days → max date)
-        min_dt = pd.to_datetime(crm_df.get("DATE RECEIVED", pd.Series(dtype=str)), errors="coerce").min()
-        max_dt = pd.to_datetime(crm_df.get("DATE RECEIVED", pd.Series(dtype=str)), errors="coerce").max()
-        default_from = (max_dt - pd.Timedelta(days=30)).date() if pd.notna(max_dt) else datetime.today().date()
-        default_to = max_dt.date() if pd.notna(max_dt) else datetime.today().date()
-        with col_a:
-            dr_from = st.date_input("DATE RECEIVED — From", default_from)
-        with col_b:
-            dr_to = st.date_input("DATE RECEIVED — To", default_to)
-
-        # Next follow-up date range (optional)
-        with col_c:
-            use_nf = st.checkbox("Filter by Next Follow-up Date")
-        if use_nf:
-            nf_min = pd.to_datetime(crm_df.get("Next Follow-up Date", pd.Series(dtype=str)), errors="coerce").min()
-            nf_max = pd.to_datetime(crm_df.get("Next Follow-up Date", pd.Series(dtype=str)), errors="coerce").max()
-            col_nf1, col_nf2 = st.columns(2)
-            with col_nf1:
-                nf_from = st.date_input(
-                    "Next Follow-up — From",
-                    (nf_max - pd.Timedelta(days=7)).date() if pd.notna(nf_max) else datetime.today().date(),
-                    key="nf_from"
-                )
-            with col_nf2:
-                nf_to = st.date_input(
-                    "Next Follow-up — To",
-                    nf_max.date() if pd.notna(nf_max) else datetime.today().date(),
-                    key="nf_to"
-                )
-
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            lead_statuses = st.multiselect("Lead Status", _unique_sorted(crm_df.get("Lead Status", pd.Series(dtype=str))))
-        with col2:
-            products = st.multiselect("Product Type", _unique_sorted(crm_df.get("Product Type", pd.Series(dtype=str))))
-        with col3:
-            execs = st.multiselect("LEAD Sales Executive", _unique_sorted(crm_df.get("LEAD Sales Executive", pd.Series(dtype=str))))
-        with col4:
-            staff_emails = st.multiselect("Staff Email", _unique_sorted(crm_df.get("Staff Email", pd.Series(dtype=str))))
-
-        col5, col6, col7 = st.columns(3)
-        with col5:
-            delivery_statuses = st.multiselect("Delivery Status", _unique_sorted(crm_df.get("Delivery Status", pd.Series(dtype=str))))
-        with col6:
-            complaint_statuses = st.multiselect("Complaint Status", _unique_sorted(crm_df.get("Complaint Status", pd.Series(dtype=str))))
-        with col7:
-            only_active = st.checkbox("Only Active Leads (exclude Won/Lost)", value=True)
-
-        search_text = st.text_input(
-            "Search (Name / Phone / Address / Notes)",
-            placeholder="Type to search across key fields…"
-        ).strip()
-
-        col_btn1, _ = st.columns([1, 1])
-        with col_btn1:
-            clear = st.button("Clear Filters")
-
-    # ---------- Apply Filters ----------
-    filt = crm_df.copy()
-
-    if 'filters_cleared' not in st.session_state:
-        st.session_state['filters_cleared'] = False
-    if clear:
-        st.session_state['filters_cleared'] = True
-        st.rerun()
-
-    # DATE RECEIVED range
-    if not filt.empty and "DATE RECEIVED" in filt.columns:
-        dr = pd.to_datetime(filt["DATE RECEIVED"], errors="coerce")
-        mask = (dr >= pd.to_datetime(dr_from)) & (dr <= pd.to_datetime(dr_to) + pd.Timedelta(days=1) - pd.Timedelta(milliseconds=1))
-        filt = filt[mask]
-
-    # Next Follow-up Date range
-    if use_nf and "Next Follow-up Date" in filt.columns:
-        nf = pd.to_datetime(filt["Next Follow-up Date"], errors="coerce")
-        nf_mask = (nf >= pd.to_datetime(nf_from)) & (nf <= pd.to_datetime(nf_to) + pd.Timedelta(days=1) - pd.Timedelta(milliseconds=1))
-        filt = filt[nf_mask]
-
-    # Helper to apply multiselects
-    def _apply_multi(df_in: pd.DataFrame, col: str, values: list) -> pd.DataFrame:
-        if values and col in df_in.columns:
-            return df_in[df_in[col].astype(str).isin(values)]
-        return df_in
-
-    filt = _apply_multi(filt, "Lead Status", lead_statuses)
-    filt = _apply_multi(filt, "Product Type", products)
-    filt = _apply_multi(filt, "LEAD Sales Executive", execs)
-    filt = _apply_multi(filt, "Staff Email", staff_emails)
-    filt = _apply_multi(filt, "Delivery Status", delivery_statuses)
-    filt = _apply_multi(filt, "Complaint Status", complaint_statuses)
-
-    # Only active leads
-    if "Lead Status" in filt.columns and only_active:
-        filt = filt[~filt["Lead Status"].astype(str).str.lower().isin(["won", "lost"])]
-
-    # Search across fields
-    if search_text:
-        hay_cols = [c for c in ["Customer Name", "Contact Number", "Address/Location", "Notes"] if c in filt.columns]
-        if hay_cols:
-            hay = filt[hay_cols].astype(str).apply(lambda s: s.str.contains(search_text, case=False, na=False))
-            any_hit = hay.any(axis=1)
-            filt = filt[any_hit]
-
-    # ---------- Show table + download ----------
-    st.dataframe(filt, use_container_width=True)
-
-    csv = filt.to_csv(index=False).encode("utf-8")
-    st.download_button("⬇️ Download filtered CSV", data=csv, file_name="crm_filtered.csv", mime="text/csv")
-
-    # ---------- Analytics (use filtered rows) ----------
-    leads_df = slice_leads(filt)
-    del_df   = slice_delivery(filt)
-    sr_df    = slice_service(filt)
-
-    st.markdown("## 📅 Date Range for Metrics (post-filter)")
+    st.markdown("## 📅 Date Range Filter")
     filter_option = st.radio(
         "Choose Timeframe:",
         ["All Time", "Weekly", "Monthly", "This Month (to-date)", "Quarterly", "Custom Range"],
@@ -280,40 +137,52 @@ if section == "CRM Overview":
     today = datetime.today()
     start_date, end_date = None, None
     if filter_option == "Weekly":
-        start_date = today - timedelta(days=7);   end_date = today
+        start_date = today - timedelta(days=7)
+        end_date = today
     elif filter_option == "Monthly":
-        start_date = today - timedelta(days=30);  end_date = today
+        start_date = today - timedelta(days=30)
+        end_date = today
     elif filter_option == "This Month (to-date)":
-        start_date = today.replace(day=1);        end_date = today
+        start_date = today.replace(day=1)
+        end_date = today
     elif filter_option == "Quarterly":
-        start_date = today - timedelta(days=90);  end_date = today
+        start_date = today - timedelta(days=90)
+        end_date = today
     elif filter_option == "Custom Range":
         col1, col2 = st.columns(2)
-        with col1: sd = st.date_input("Start Date", today - timedelta(days=30), key="stat_sd")
-        with col2: ed = st.date_input("End Date", today, key="stat_ed")
+        with col1:
+            sd = st.date_input("Start Date", today - timedelta(days=30))
+        with col2:
+            ed = st.date_input("End Date", today)
         start_date = datetime.combine(sd, datetime.min.time())
-        end_date   = datetime.combine(ed, datetime.max.time())
+        end_date = datetime.combine(ed, datetime.max.time())
 
     leads_df_f = filter_by_date(leads_df, "DATE RECEIVED", filter_option, start_date, end_date)
-    del_df_f   = filter_by_date(del_df,   "DATE RECEIVED", filter_option, start_date, end_date)
-    sr_df_f    = filter_by_date(sr_df,    "DATE RECEIVED", filter_option, start_date, end_date)
+    del_df_f   = filter_by_date(del_df, "DATE RECEIVED", filter_option, start_date, end_date)
+    sr_df_f    = filter_by_date(sr_df, "DATE RECEIVED", filter_option, start_date, end_date)
 
     if filter_option == "All Time":
-        st.info("Showing **All Time** metrics (after applying the Filters above).")
+        st.info("Showing **All Time** CRM metrics")
     else:
-        st.info(f"Showing metrics from **{start_date.date()}** to **{end_date.date()}** (after applying the Filters above).")
+        st.info(f"Showing metrics from **{start_date.date()}** to **{end_date.date()}**")
 
     # Leads
     st.markdown("## 👤 Leads Metrics")
     lw, lm = summarize_by_status(leads_df_f, "DATE RECEIVED", "Lead Status")
+
+    st.markdown("### Weekly Leads by Status")
     c1, c2 = st.columns(2)
-    with c1: st.dataframe(lw, use_container_width=True)
+    with c1:
+        st.dataframe(lw, use_container_width=True)
     with c2:
         if not lw.empty:
             fig = px.pie(lw, names="Lead Status", values="Count", title="Weekly Leads by Status")
             st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("### Monthly Leads by Status")
     c1, c2 = st.columns(2)
-    with c1: st.dataframe(lm, use_container_width=True)
+    with c1:
+        st.dataframe(lm, use_container_width=True)
     with c2:
         if not lm.empty:
             fig = px.pie(lm, names="Lead Status", values="Count", title="Monthly Leads by Status")
@@ -322,14 +191,20 @@ if section == "CRM Overview":
     # Delivery
     st.markdown("## 🚚 Delivery Metrics")
     dw, dm = summarize_by_status(del_df_f, "DATE RECEIVED", "Delivery Status")
+
+    st.markdown("### Weekly Deliveries by Status")
     c1, c2 = st.columns(2)
-    with c1: st.dataframe(dw, use_container_width=True)
+    with c1:
+        st.dataframe(dw, use_container_width=True)
     with c2:
         if not dw.empty:
             fig = px.pie(dw, names="Delivery Status", values="Count", title="Weekly Deliveries by Status")
             st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("### Monthly Deliveries by Status")
     c1, c2 = st.columns(2)
-    with c1: st.dataframe(dm, use_container_width=True)
+    with c1:
+        st.dataframe(dm, use_container_width=True)
     with c2:
         if not dm.empty:
             fig = px.pie(dm, names="Delivery Status", values="Count", title="Monthly Deliveries by Status")
@@ -338,14 +213,20 @@ if section == "CRM Overview":
     # Service
     st.markdown("## 🛠 Service Request Metrics")
     sw, sm = summarize_by_status(sr_df_f, "DATE RECEIVED", "Complaint Status")
+
+    st.markdown("### Weekly Service Requests by Status")
     c1, c2 = st.columns(2)
-    with c1: st.dataframe(sw, use_container_width=True)
+    with c1:
+        st.dataframe(sw, use_container_width=True)
     with c2:
         if not sw.empty:
             fig = px.pie(sw, names="Complaint Status", values="Count", title="Weekly Service Requests by Status")
             st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("### Monthly Service Requests by Status")
     c1, c2 = st.columns(2)
-    with c1: st.dataframe(sm, use_container_width=True)
+    with c1:
+        st.dataframe(sm, use_container_width=True)
     with c2:
         if not sm.empty:
             fig = px.pie(sm, names="Complaint Status", values="Count", title="Monthly Service Requests by Status")
@@ -356,16 +237,10 @@ if section == "CRM Overview":
     lead_trend = get_trend_comparison(leads_df_f, "DATE RECEIVED")
     del_trend  = get_trend_comparison(del_df_f,   "DATE RECEIVED")
     sr_trend   = get_trend_comparison(sr_df_f,    "DATE RECEIVED")
-    trend_df = pd.DataFrame(
-        [lead_trend, del_trend, sr_trend],
-        index=["Leads", "Delivery", "Service Requests"]
-    ).fillna(0).astype(int)
+
+    trend_df = pd.DataFrame([lead_trend, del_trend, sr_trend], index=["Leads", "Delivery", "Service Requests"]).fillna(0).astype(int)
     styled_trend = trend_df.style.apply(highlight_trends, axis=1)
     st.table(styled_trend)
-
-
-
-
 
 # New Leads
 elif section == "New Leads":
