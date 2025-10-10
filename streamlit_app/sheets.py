@@ -1,4 +1,5 @@
 import gspread
+import re
 from google.oauth2.service_account import Credentials
 import pandas as pd
 import streamlit as st
@@ -103,9 +104,11 @@ def _normalize_field(col: str, val):
         except Exception:
             pass
         return s
-    if col in EMAIL_COLS:
+    if col == "Staff Email":
         v = (str(val or "")).strip().lower()
-        return v or "4sinteriorsbbsr@gmail.com"        # ⬅️ default Staff/Customer Email
+        return v or "4sinteriorsbbsr@gmail.com"        # ⬅️ default ONLY Staff Email
+    if col == "Customer Email":
+        return (str(val or "")).strip().lower()
     if col == "Customer WhatsApp (+91XXXXXXXXXX)":
         return (str(val or "")).strip()                # fallback applied below using Contact Number
     if col in TITLE_COLS:
@@ -115,9 +118,18 @@ def _normalize_field(col: str, val):
     return "" if val is None else str(val)
 
 
+def _norm_name(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").strip().lower())
+
+def _norm_phone(s: str) -> str:
+    digits = re.sub(r"\D", "", str(s or ""))
+    return digits[-10:] if len(digits) >= 10 else digits
+
+
 def upsert_record(sheet_name: str, unique_fields: dict, new_data: dict, sync_to_crm=True):
     ws = sh.worksheet(sheet_name)
     headers = ws.row_values(1)
+
     # Ensure SALE VALUE column exists in CRM sheet header
     if sheet_name == "CRM" and "SALE VALUE" not in headers:
         ws.add_cols(1)
@@ -127,54 +139,89 @@ def upsert_record(sheet_name: str, unique_fields: dict, new_data: dict, sync_to_
     df = get_df(sheet_name)
     get_df.clear()  # bust cache
 
-    # Build boolean mask safely
+    # ---- Build a normalized match on Name + Phone (prevents dupes) ----
+    cn_raw = unique_fields.get("Customer Name", "")
+    ph_raw = unique_fields.get("Contact Number", "")
+    cn_norm = _norm_name(cn_raw)
+    ph_norm = _norm_phone(ph_raw)
+
     if df.empty:
         mask = pd.Series([], dtype=bool)
     else:
-        cn = unique_fields.get("Customer Name", "")
-        ph = unique_fields.get("Contact Number", "")
-        mask = (df.get("Customer Name", pd.Series(dtype=str)) == cn) & \
-               (df.get("Contact Number", pd.Series(dtype=str)) == ph)
+        name_series = (
+            df.get("Customer Name", pd.Series(dtype=str))
+              .astype(str).str.strip().str.lower().str.replace(r"\s+", " ", regex=True)
+        )
+        phone_series = (
+            df.get("Contact Number", pd.Series(dtype=str))
+              .astype(str).str.replace(r"\D", "", regex=True).str[-10:]
+        )
+        mask = (name_series == cn_norm) & (phone_series == ph_norm)
 
-    # Always normalize fields (case + date) before write
+    # ---- Normalize fields (dates, emails, title case, time) before write ----
     new_data = {k: _normalize_field(k, v) for k, v in new_data.items()}
     if "DATE RECEIVED" not in new_data:
         new_data["DATE RECEIVED"] = _fmt_mmddyyyy(datetime.today())
+
+    # Defaults & fallbacks you asked for
     if not new_data.get("Staff Email"):
         new_data["Staff Email"] = "4sinteriorsbbsr@gmail.com"
-    # 2) WhatsApp fallback to phone if empty
     if not new_data.get("Customer WhatsApp (+91XXXXXXXXXX)"):
-        phone = new_data.get("Contact Number", "")
-        if phone:
-            new_data["Customer WhatsApp (+91XXXXXXXXXX)"] = phone
-    if mask.any():  # UPDATE
-        row_index = mask[mask].index[0] + 2
+        phone_for_wa = new_data.get("Contact Number", "")
+        if phone_for_wa:
+            new_data["Customer WhatsApp (+91XXXXXXXXXX)"] = phone_for_wa
+
+    if mask.any():  # UPDATE existing (by normalized match)
+        row_index = mask[mask].index[0] + 2  # + header row
         old_data = df.iloc[mask[mask].index[0]].to_dict()
-        for col, _ in enumerate(headers, start=1):
-            key = headers[col-1]
-            if key in new_data:
-                ws.update_cell(row_index, col, _normalize_field(key, new_data[key]))
+        for col_idx, col_name in enumerate(headers, start=1):
+            if col_name in new_data:
+                ws.update_cell(row_index, col_idx, _normalize_field(col_name, new_data[col_name]))
         log_history("UPDATE", sheet_name, unique_fields, old_data, new_data)
         return f"Updated existing record for {unique_fields['Customer Name']} ({unique_fields['Contact Number']})"
-    else:  # INSERT
+
+    else:  # INSERT new
         row_values = []
         for col in headers:
             row_values.append(_normalize_field(col, new_data.get(col, "")))
         ws.append_row(row_values)
         log_history("INSERT", sheet_name, unique_fields, {}, new_data)
 
-        # Sync to main CRM if needed
+        # ---- Sync to main CRM if writing to a child sheet (dedupe there too) ----
         if sync_to_crm and sheet_name != "CRM":
             try:
                 crm_ws = sh.worksheet("CRM")
                 crm_headers = crm_ws.row_values(1)
-                # ensure SALE VALUE exists in CRM too
                 if "SALE VALUE" not in crm_headers:
                     crm_ws.add_cols(1)
                     crm_ws.update_cell(1, len(crm_headers) + 1, "SALE VALUE")
                     crm_headers = crm_ws.row_values(1)
-                crm_row = [_normalize_field(col, new_data.get(col, "")) for col in crm_headers]
-                crm_ws.append_row(crm_row)
+
+                # Read CRM and find by normalized name+phone before deciding insert/update
+                crm_df = get_df("CRM")
+                get_df.clear()
+
+                if crm_df.empty:
+                    crm_match = pd.Series([], dtype=bool)
+                else:
+                    crm_name_series = (
+                        crm_df.get("Customer Name", pd.Series(dtype=str))
+                              .astype(str).str.strip().str.lower().str.replace(r"\s+", " ", regex=True)
+                    )
+                    crm_phone_series = (
+                        crm_df.get("Contact Number", pd.Series(dtype=str))
+                              .astype(str).str.replace(r"\D", "", regex=True).str[-10:]
+                    )
+                    crm_match = (crm_name_series == cn_norm) & (crm_phone_series == ph_norm)
+
+                if crm_match.any():  # UPDATE in CRM
+                    crm_row_index = crm_match[crm_match].index[0] + 2
+                    for col_idx, col_name in enumerate(crm_headers, start=1):
+                        crm_ws.update_cell(crm_row_index, col_idx, _normalize_field(col_name, new_data.get(col_name, "")))
+                else:  # INSERT in CRM
+                    crm_row = [_normalize_field(col, new_data.get(col, "")) for col in crm_headers]
+                    crm_ws.append_row(crm_row)
+
             except Exception as e:
                 print("CRM Sync Error:", e)
 
