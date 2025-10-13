@@ -1,15 +1,16 @@
-config/credentials.json
+# Python / Streamlit
 __pycache__/
 *.pyc
-.venv/
-venv/
-env/
+.venv
+.env
 .streamlit/secrets.toml
-config/credentials.json
-__pycache__/
-*.pyc
-*.pyo
-.venv/
-env/
-venv/
-.streamlit/secrets.toml
+
+# Credentials (VERY IMPORTANT)
+**/config/credentials.json
+**/.secrets/*
+.secrets/
+.secrets/*
+
+# OS/editor
+.DS_Store
+Thumbs.db
