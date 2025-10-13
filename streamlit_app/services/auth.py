@@ -24,7 +24,7 @@ def _get_user_record(username: str):
         rec = df.iloc[m[m].index[0]].to_dict()
         # Normalize record fields
         rec["username"] = str(rec.get("username","")).strip().lower()
-        rec["password_hash"] = str(rec.get("password_hash","")).strip()
+        rec["passwordhash"] = str(rec.get("passwordhash","")).strip()
         rec["full_name"] = str(rec.get("full_name","")).strip()
         rec["role"] = str(rec.get("role","Viewer")).strip()
         rec["active"] = str(rec.get("active","Y")).strip()
@@ -73,7 +73,7 @@ class AuthService:
             st.error("User is inactive.")
             return False
 
-        pw_hash = rec.get("password_hash","").strip().encode()
+        pw_hash = rec.get("passwordhash","").strip().encode()
         if not pw_hash or not p:
             st.error("Missing password or hash.")
             return False
