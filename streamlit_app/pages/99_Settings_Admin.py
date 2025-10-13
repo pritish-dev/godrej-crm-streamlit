@@ -7,9 +7,9 @@ from services.sheets import upsert_user, get_users_df
 st.set_page_config(layout="wide")
 st.title("⚙️ Settings — Admin Tools")
 
-#auth = AuthService()
-#if not auth.login_block(min_role="Admin"):
-#    st.stop()
+auth = AuthService()
+if not auth.login_block(min_role="Admin"):
+    st.stop()
 
 st.subheader("Create Password Hash")
 with st.form("hash_form"):
