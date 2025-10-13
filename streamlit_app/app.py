@@ -11,7 +11,7 @@ st.title("📊 Interio by Godrej Patia – CRM Dashboard")
 
 # --- Sidebar: login badge + controls (viewing Master CRM does NOT require login) ---
 auth = AuthService()
-st.sidebar.title("B2C CRM")
+st.sidebar.title("4sinteriors")
 current_user_badge(auth)
 
 # Refresh
@@ -21,7 +21,7 @@ if st.sidebar.button("🔄 Refresh Data"):
     st.rerun()
 
 # ============ Master CRM (Read-only, stays on app page) ============
-st.subheader("📋 Master CRM — Read Only")
+st.subheader("📋 Master CRM — B2C")
 crm_df_raw = get_df("CRM")
 
 def _to_dt(s):
