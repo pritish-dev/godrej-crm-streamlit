@@ -1,131 +1,225 @@
 # pages/20_Add_or_Update.py
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, time
 from services.sheets import get_df, upsert_record
 from services.auth import AuthService
 
 st.set_page_config(layout="wide")
-st.title("➕ Add or Update Client")
+st.title("➕ Add or Update Client (Dynamic)")
 
 auth = AuthService()
 if not auth.login_block(min_role="Editor"):
     st.stop()
 
+# ---- Load CRM + headers ----
 crm = get_df("CRM")
+if crm is None:
+    crm = pd.DataFrame()
 
-def _safe(v): return "" if pd.isna(v) else str(v)
+headers = list(crm.columns) if not crm.empty else [
+    # sensible defaults if sheet is still empty
+    "DATE RECEIVED","Customer Name","Contact Number","Address/Location","Lead Source","Lead Status",
+    "Product Type","Budget Range","Next Follow-up Date","Follow-up Time (HH:MM)","LEAD Sales Executive",
+    "Delivery Status","Delivery Instruction / Floor / LIFT","Delivery Assigned To","Delivery Sales Executive",
+    "Complaint / Service Request","Complaint Status","Complaint Registered By","Warranty (Y/N)",
+    "Complaint/Service Assigned To","SERVICE CHARGE","Notes","Staff Email","Customer Email",
+    "Customer WhatsApp (+91XXXXXXXXXX)","SALE VALUE"
+]
+
+# columns we never want to edit manually
+EXCLUDE = {"Last Reminder Sent (IST)"}
+
+# ---- Options for select fields (use your vocab) ----
+LEAD_SOURCES = ["Walk-in", "Phone Inquiry", "Website", "Referral", "Facebook", "Instagram", "Other", "Showroom Visit"]
+LEAD_STATUSES = ["New Lead", "Followup-scheduled", "Won", "Lost"]
+PRODUCTS = ["Sofa", "Bed", "STEEL STORAGE", "Wardrobe", "Dining Table", "Kreation X2", "Kreation X3", "Recliners",
+            "Dresser Unit", "Display Unit", "TV Unit", "Study Table/Office table", "Chairs", "Coffee Table",
+            "Bedside Table", "Shoe Cabinet", "Bedsheet/Pillow/Covers", "Mattress", "Other"]
+DELIVERY_STATUSES = ["Pending", "Scheduled", "Delivered", "Installation Done", "NA"]
+COMPLAINT_STATUSES = ["Open", "In Progress", "Resolved", "Closed"]
+EXEC_LEAD = ["Archita", "Jitendra", "Smruti", "Swati", "Nazrin", "Krupa", "Other"]
+EXEC_DELIVERY = ["Archita", "Jitendra", "Smruti", "Swati", "Other"]
+ASSIGNED_TO = ["4sinteriors", "Frunicare", "ArchanaTraders", "KB", "Others"]
+ASSIGNED_TO_SR = ["4sinteriors", "Frunicare", "ArchanaTraders", "Others"]
+WARRANTY = ["Y", "N"]
+
+# ---- Map headers to input types/options ----
+FIELD_SPEC = {
+    "DATE RECEIVED": {"type": "date"},
+    "Customer Name": {"type": "text"},
+    "Contact Number": {"type": "text"},
+    "Address/Location": {"type": "textarea"},
+    "Lead Source": {"type": "select", "options": LEAD_SOURCES},
+    "Lead Status": {"type": "select", "options": LEAD_STATUSES},
+    "Product Type": {"type": "select", "options": PRODUCTS},
+    "Budget Range": {"type": "text"},
+    "Next Follow-up Date": {"type": "date"},
+    "Follow-up Time (HH:MM)": {"type": "time"},
+    "LEAD Sales Executive": {"type": "select", "options": EXEC_LEAD},
+    "Delivery Status": {"type": "select", "options": DELIVERY_STATUSES},
+    "Delivery Instruction / Floor / LIFT": {"type": "text"},
+    "Delivery Assigned To": {"type": "select", "options": ASSIGNED_TO},
+    "Delivery Sales Executive": {"type": "select", "options": EXEC_DELIVERY},
+    "Complaint / Service Request": {"type": "textarea"},
+    "Complaint Status": {"type": "select", "options": COMPLAINT_STATUSES},
+    "Complaint Registered By": {"type": "select", "options": EXEC_LEAD},
+    "Warranty (Y/N)": {"type": "select", "options": WARRANTY},
+    "Complaint/Service Assigned To": {"type": "select", "options": ASSIGNED_TO_SR},
+    "SERVICE CHARGE": {"type": "number"},
+    "Notes": {"type": "textarea"},
+    "Staff Email": {"type": "text"},
+    "Customer Email": {"type": "text"},
+    "Customer WhatsApp (+91XXXXXXXXXX)": {"type": "text"},
+    "SALE VALUE": {"type": "number"},
+}
+
+# ---- Helpers ----
+def _safe(v): 
+    if v is None or (isinstance(v, float) and pd.isna(v)): 
+        return ""
+    return str(v)
+
+def _parse_date(v):
+    d = pd.to_datetime(v, errors="coerce")
+    if pd.isna(d):
+        return datetime.today().date()
+    return d.date()
+
+def _parse_time(v):
+    s = _safe(v)
+    try:
+        hh, mm = (s.split(":") + ["0","0"])[:2]
+        return time(int(hh), int(mm))
+    except Exception:
+        return time(10, 0)
 
 def _find_existing(name: str, phone: str):
     if crm is None or crm.empty:
         return None
-    mask = pd.Series([True]*len(crm))
+    df = crm.copy()
+    mask = pd.Series([True]*len(df))
     if phone.strip():
-        mask &= crm.get("Contact Number", pd.Series(dtype=str)).astype(str).str.contains(phone[-10:], na=False)
+        # match using last 10 digits
+        digits = "".join(ch for ch in phone if ch.isdigit())[-10:]
+        mask &= df.get("Contact Number", pd.Series(dtype=str)).astype(str).str.replace(r"\D","", regex=True).str[-10:].eq(digits)
     if name.strip():
-        mask &= crm.get("Customer Name", pd.Series(dtype=str)).astype(str).str.contains(name, case=False, na=False)
-    subset = crm[mask]
-    return None if subset.empty else subset.iloc[0].to_dict()
+        mask &= df.get("Customer Name", pd.Series(dtype=str)).astype(str).str.contains(name.strip(), case=False, na=False)
+    sub = df[mask]
+    return None if sub.empty else sub.iloc[0].to_dict()
 
+# ---- Prefill lookup ----
 st.subheader("Find Existing (optional)")
 c1, c2 = st.columns(2)
 with c1:
-    pref_name = st.text_input("Customer Name (search)")
+    q_name = st.text_input("Customer Name (search)")
 with c2:
-    pref_phone = st.text_input("Contact Number (search)")
+    q_phone = st.text_input("Contact Number (search)")
 
 prefill = None
 if st.button("Load Existing"):
-    prefill = _find_existing(pref_name, pref_phone)
+    prefill = _find_existing(q_name, q_phone)
     if prefill:
-        st.success("Loaded existing record. Fields prefilled below.")
+        st.success("Loaded existing record. Fields are prefilled below.")
     else:
-        st.info("No match found. Fill new details below.")
+        st.info("No match found. Fill as a new record.")
 
-# Form
+# ---- Order fields: show common ones first, then any remaining columns dynamically ----
+COMMON_ORDER = [
+    # Lead core
+    "DATE RECEIVED","Customer Name","Contact Number","Address/Location","Lead Source","Lead Status",
+    "Product Type","Budget Range","Next Follow-up Date","Follow-up Time (HH:MM)","LEAD Sales Executive",
+    # Delivery block
+    "Delivery Status","Delivery Instruction / Floor / LIFT","Delivery Assigned To","Delivery Sales Executive",
+    # Service block
+    "Complaint / Service Request","Complaint Status","Complaint Registered By","Warranty (Y/N)",
+    "Complaint/Service Assigned To","SERVICE CHARGE",
+    # Other
+    "Notes","Staff Email","Customer Email","Customer WhatsApp (+91XXXXXXXXXX)","SALE VALUE",
+]
+present_common = [h for h in COMMON_ORDER if h in headers and h not in EXCLUDE]
+extras = [h for h in headers if h not in set(present_common) and h not in EXCLUDE]
+ordered_fields = present_common + extras
+
+# ---- Form ----
 st.subheader("Client Details")
-with st.form("add_update"):
-    date_received = st.date_input("DATE RECEIVED", datetime.today())
-    name = st.text_input("Customer Name", value=_safe(prefill.get("Customer Name")) if prefill else "")
-    phone = st.text_input("Contact Number", value=_safe(prefill.get("Contact Number")) if prefill else "")
-    address = st.text_area("Address/Location", value=_safe(prefill.get("Address/Location")) if prefill else "")
+with st.form("add_update_dynamic", clear_on_submit=False):
+    # two-column layout for readability
+    colA, colB = st.columns(2)
+    values = {}
 
-    lead_source = st.selectbox("Lead Source",
-        ["Walk-in", "Phone Inquiry", "Website", "Referral", "Facebook", "Instagram", "Other"],
-        index=(["Walk-in","Phone Inquiry","Website","Referral","Facebook","Instagram","Other"]
-               .index(_safe(prefill.get("Lead Source"))) if prefill and _safe(prefill.get("Lead Source")) in
-               ["Walk-in","Phone Inquiry","Website","Referral","Facebook","Instagram","Other"] else 0))
+    for i, field in enumerate(ordered_fields):
+        spec = FIELD_SPEC.get(field, {"type": "text"})  # default to text
+        cur = prefill.get(field) if prefill else ""
 
-    lead_status = st.selectbox("Lead Status",
-        ["New Lead", "Followup-scheduled", "Won", "Lost"],
-        index=(["New Lead","Followup-scheduled","Won","Lost"]
-               .index(_safe(prefill.get("Lead Status"))) if prefill and _safe(prefill.get("Lead Status")) in
-               ["New Lead","Followup-scheduled","Won","Lost"] else 0))
+        # place alternately in columns
+        target = colA if i % 2 == 0 else colB
 
-    product = st.selectbox("Product Type",
-        ["Sofa", "Bed", "STEEL STORAGE", "Wardrobe", "Dining Table", "Kreation X2", "Kreation X3", "Recliners",
-         "Dresser Unit", "Display Unit", "TV Unit", "Study Table/Office table", "Chairs", "Coffee Table",
-         "Bedside Table", "Shoe Cabinet", "Bedsheet/Pillow/Covers", "Mattress", "Other"],
-        index=0 if not prefill else max(0, ["Sofa","Bed","STEEL STORAGE","Wardrobe","Dining Table","Kreation X2","Kreation X3",
-         "Recliners","Dresser Unit","Display Unit","TV Unit","Study Table/Office table","Chairs","Coffee Table",
-         "Bedside Table","Shoe Cabinet","Bedsheet/Pillow/Covers","Mattress","Other"].index(
-             _safe(prefill.get("Product Type"))) if _safe(prefill.get("Product Type")) in
-             ["Sofa","Bed","STEEL STORAGE","Wardrobe","Dining Table","Kreation X2","Kreation X3","Recliners",
-              "Dresser Unit","Display Unit","TV Unit","Study Table/Office table","Chairs","Coffee Table",
-              "Bedside Table","Shoe Cabinet","Bedsheet/Pillow/Covers","Mattress","Other"] else 0)
-    )
+        if spec["type"] == "date":
+            target_date = _parse_date(cur) if prefill else datetime.today().date()
+            values[field] = target.date_input(field, value=target_date)
 
-    budget = st.text_input("Budget Range", value=_safe(prefill.get("Budget Range")) if prefill else "")
+        elif spec["type"] == "time":
+            t = _parse_time(cur) if prefill else time(10, 0)
+            values[field] = target.time_input(field, value=t)
 
-    next_follow = st.date_input("Next Follow-up Date",
-                                value=pd.to_datetime(prefill.get("Next Follow-up Date"), errors="coerce").date()
-                                if prefill and pd.to_datetime(prefill.get("Next Follow-up Date"), errors="coerce") is not pd.NaT
-                                else datetime.today())
+        elif spec["type"] == "number":
+            # try to coerce numeric; allow 0.0 default
+            try:
+                default = float(str(cur).replace(",", "").replace("₹","")) if prefill and str(cur).strip() else 0.0
+            except Exception:
+                default = 0.0
+            values[field] = target.number_input(field, min_value=0.0, step=100.0, value=default)
 
-    follow_time = st.time_input("Follow-up Time (HH:MM)",
-                                value=pd.to_datetime(_safe(prefill.get("Follow-up Time (HH:MM)")), errors="coerce").time()
-                                if prefill and pd.to_datetime(_safe(prefill.get("Follow-up Time (HH:MM)")), errors="coerce") is not pd.NaT
-                                else datetime.strptime("10:00","%H:%M").time())
+        elif spec["type"] == "select":
+            opts = spec["options"]
+            current = _safe(cur)
+            idx = opts.index(current) if current in opts else 0
+            values[field] = target.selectbox(field, opts, index=idx)
 
-    lead_exec = st.selectbox("LEAD Sales Executive",
-        ["Archita", "Jitendra", "Smruti", "Swati", "Nazrin", "Krupa", "Other"],
-        index=0 if not prefill else (["Archita","Jitendra","Smruti","Swati","Nazrin","Krupa","Other"].index(
-            _safe(prefill.get("LEAD Sales Executive"))) if _safe(prefill.get("LEAD Sales Executive")) in
-            ["Archita","Jitendra","Smruti","Swati","Nazrin","Krupa","Other"] else 0))
+        elif spec["type"] == "textarea":
+            values[field] = target.text_area(field, value=_safe(cur))
 
-    staff_email = st.text_input("Staff Email", value=_safe(prefill.get("Staff Email")) if prefill else "")
-    customer_email = st.text_input("Customer Email", value=_safe(prefill.get("Customer Email")) if prefill else "")
-    customer_whatsapp = st.text_input("Customer WhatsApp (+91XXXXXXXXXX)",
-                                      value=_safe(prefill.get("Customer WhatsApp (+91XXXXXXXXXX)")) if prefill else "",
-                                      placeholder="+9199XXXXXXXX")
-
-    sale_value = st.text_input("SALE VALUE (₹)", value=_safe(prefill.get("SALE VALUE")) if prefill else "")
+        else:  # text
+            # Provide small placeholder for whatsapp
+            ph = "+9199XXXXXXXX" if "WhatsApp" in field else ""
+            values[field] = target.text_input(field, value=_safe(cur), placeholder=ph)
 
     submit = st.form_submit_button("Save")
 
 if submit:
-    unique_fields = {"Customer Name": name, "Contact Number": phone}
-    new_data = {
-        "DATE RECEIVED": str(date_received),
-        "Customer Name": name,
-        "Contact Number": phone,
-        "Address/Location": address,
-        "Lead Source": lead_source,
-        "Lead Status": lead_status,
-        "Product Type": product,
-        "Budget Range": budget,
-        "Next Follow-up Date": str(next_follow),
-        "Follow-up Time (HH:MM)": follow_time.strftime("%H:%M"),
-        "LEAD Sales Executive": lead_exec,
-        "Staff Email": staff_email,
-        "Customer Email": customer_email,
-        "SALE VALUE": sale_value,
-    }
-    if customer_whatsapp.strip():
-        new_data["Customer WhatsApp (+91XXXXXXXXXX)"] = customer_whatsapp.strip()
+    # Minimal uniqueness
+    name = str(values.get("Customer Name","")).strip()
+    phone = str(values.get("Contact Number","")).strip()
+    if not name or not phone:
+        st.error("Customer Name and Contact Number are required.")
+        st.stop()
 
-    msg = upsert_record("CRM", unique_fields, new_data)
+    # Convert Streamlit date/time widgets back to strings
+    payload = {}
+    for k, v in values.items():
+        if isinstance(v, datetime):
+            payload[k] = v.strftime("%Y-%m-%d")
+        elif isinstance(v, pd.Timestamp):
+            payload[k] = v.date().strftime("%Y-%m-%d")
+        elif hasattr(v, "isoformat") and not isinstance(v, (str, bytes)):  # date/time
+            # date -> YYYY-MM-DD, time -> HH:MM
+            if hasattr(v, "year"):  # date
+                payload[k] = v.strftime("%Y-%m-%d")
+            else:                   # time
+                payload[k] = f"{v.hour:02d}:{v.minute:02d}"
+        else:
+            payload[k] = v
+
+    # Ensure required defaults if missing
+    if "DATE RECEIVED" not in payload or not str(payload["DATE RECEIVED"]).strip():
+        payload["DATE RECEIVED"] = datetime.today().strftime("%Y-%m-%d")
+
+    # Upsert
+    unique_fields = {"Customer Name": name, "Contact Number": phone}
+    msg = upsert_record("CRM", unique_fields, payload)
     st.success(f"✅ {msg}")
-    from services.sheets import get_df as _g
-    _g.clear()
+
+    # refresh cache + rerun
+    get_df.clear()
     st.rerun()
