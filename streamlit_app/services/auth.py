@@ -25,7 +25,7 @@ def _get_user_record(username: str):
         # Normalize record fields
         rec["username"] = str(rec.get("username","")).strip().lower()
         rec["passwordhash"] = str(rec.get("passwordhash","")).strip()
-        rec["full_name"] = str(rec.get("full_name","")).strip()
+        rec["fullname"] = str(rec.get("fullname","")).strip()
         rec["role"] = str(rec.get("role","Viewer")).strip()
         rec["active"] = str(rec.get("active","Y")).strip()
         return rec
@@ -88,7 +88,7 @@ class AuthService:
             st.session_state.auth_user = {
                 "username": rec["username"],
                 "role": rec.get("role","Viewer"),
-                "full_name": rec.get("full_name") or rec["username"]
+                "fullname": rec.get("fullname") or rec["username"]
             }
             st.success("Authenticated.")
             st.rerun()
@@ -107,7 +107,7 @@ class AuthService:
                 self.logout()
             return False
         with st.expander("Account", expanded=False):
-            st.write(f"Signed in as **{user['full_name']}** ({user['username']}) — role: **{user['role']}**")
+            st.write(f"Signed in as **{user['fullname']}** ({user['username']}) — role: **{user['role']}**")
             if st.button("Logout"):
                 self.logout()
         return True
@@ -115,7 +115,7 @@ class AuthService:
 def current_user_badge(auth: AuthService):
     u = auth.current_user()
     if u:
-        st.sidebar.success(f"User: {u['full_name']} ({u['role']})")
+        st.sidebar.success(f"User: {u['fullname']} ({u['role']})")
         if st.sidebar.button("Logout"):
             auth.logout()
     else:
