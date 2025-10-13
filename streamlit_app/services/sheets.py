@@ -265,3 +265,73 @@ def get_users_df() -> pd.DataFrame:
     df["role"] = df["role"].astype(str).str.strip()
     df["active"] = df["active"].astype(str).str.strip()
     return df
+
+# --- ADD THIS to streamlit_app/services/sheets.py (after get_users_df) ---
+
+def upsert_user(username: str, password_hash: str, full_name: str, role: str, active: str = "Y"):
+    """
+    Create/update a user row in the 'Users' sheet by username (case-insensitive).
+    Expects canonical headers: username | password_hash | full_name | role | active
+    Returns: 'Created user' or 'Updated user'
+    """
+    import gspread
+    ensure_users_header()
+    sh_ = _get_spreadsheet()
+    ws = sh_.worksheet("Users")
+
+    # Ensure canonical headers (if someone edited them in Sheets)
+    headers = ws.row_values(1)
+    canonical = ["username", "password_hash", "full_name", "role", "active"]
+    if [h.strip().lower() for h in headers] != canonical:
+        ws.clear()
+        ws.append_row(canonical)
+        headers = ws.row_values(1)
+
+    df = get_users_df()  # already normalized & lowercased
+    # clear cached get_df so login sees changes immediately
+    try:
+        get_df.clear()
+    except Exception:
+        pass
+
+    uname = (username or "").strip().lower()
+    row = {
+        "username": uname,
+        "password_hash": (password_hash or "").strip(),
+        "full_name": (full_name or "").strip(),
+        "role": (role or "").strip(),
+        "active": (active or "Y").strip(),
+    }
+
+    if not df.empty and (df["username"] == uname).any():
+        # UPDATE existing
+        idx = df.index[df["username"] == uname][0] + 2  # +1 for 0-index, +1 for header -> +2
+        for col_idx, col_name in enumerate(headers, start=1):
+            ws.update_cell(idx, col_idx, row.get(col_name, ""))
+        return "Updated user"
+    else:
+        # INSERT new
+        ws.append_row([row.get(c, "") for c in headers])
+        return "Created user"
+
+
+def deactivate_user(username: str):
+    """Set active='N' for a username (case-insensitive)."""
+    ensure_users_header()
+    sh_ = _get_spreadsheet()
+    ws = sh_.worksheet("Users")
+    df = get_users_df()
+    if df.empty:
+        return "No users sheet rows"
+    uname = (username or "").strip().lower()
+    m = df["username"] == uname
+    if not m.any():
+        return "User not found"
+    row_idx = m[m].index[0] + 2
+    # active is 5th column per canonical headers
+    ws.update_cell(row_idx, 5, "N")
+    try:
+        get_df.clear()
+    except Exception:
+        pass
+    return "Deactivated user"
