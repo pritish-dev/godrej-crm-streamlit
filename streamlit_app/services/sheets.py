@@ -78,7 +78,7 @@ def get_df(sheet_name: str) -> pd.DataFrame:
         if sheet_name == "History Log":
             ws.append_row(["Timestamp", "Action", "Sheet", "Customer Name", "Contact Number", "Old Data", "New Data"])
         if sheet_name == "Users":
-            ws.append_row(["username", "password_hash", "full_name", "role", "active"])
+            ws.append_row(["username", "passwordhash", "full_name", "role", "active"])
         return pd.DataFrame()
 
     all_values = ws.get_all_values()
@@ -200,7 +200,7 @@ def ensure_users_header():
         ws = sh.worksheet("Users")
     except gspread.exceptions.WorksheetNotFound:
         ws = sh.add_worksheet(title="Users", rows=200, cols=5)
-        ws.append_row(["username", "password_hash", "full_name", "role", "active"])
+        ws.append_row(["username", "passwordhash", "full_name", "role", "active"])
 
 def get_users_df() -> pd.DataFrame:
     """Always return a normalized Users dataframe with lowercase, stripped headers/values."""
@@ -209,32 +209,32 @@ def get_users_df() -> pd.DataFrame:
 
     if df is None or df.empty:
         # Make sure expected columns exist even if the sheet is empty
-        return pd.DataFrame(columns=["username", "password_hash", "full_name", "role", "active"])
+        return pd.DataFrame(columns=["username", "passwordhash", "full_name", "role", "active"])
 
     # Normalize headers and key columns
     df.columns = [str(c).strip().lower() for c in df.columns]
-    for col in ["username", "password_hash", "full_name", "role", "active"]:
+    for col in ["username", "passwordhash", "full_name", "role", "active"]:
         if col not in df.columns:
             df[col] = ""
 
     # Strip values
     df["username"] = df["username"].astype(str).str.strip().str.lower()
-    df["password_hash"] = df["password_hash"].astype(str).str.strip()
+    df["passwordhash"] = df["passwordhash"].astype(str).str.strip()
     df["full_name"] = df["full_name"].astype(str).str.strip()
     df["role"] = df["role"].astype(str).str.strip()
     df["active"] = df["active"].astype(str).str.strip()
 
     return df
 
-def upsert_user(username: str, password_hash: str, full_name: str, role: str, active: str = "Y"):
+def upsert_user(username: str, passwordhash: str, full_name: str, role: str, active: str = "Y"):
     """Create/update a user; writes canonical headers and trims values."""
     ensure_users_header()
     ws = sh.worksheet("Users")
     headers = ws.row_values(1)
     # Canonicalize headers if someone edited them:
-    if [h.strip().lower() for h in headers] != ["username","password_hash","full_name","role","active"]:
+    if [h.strip().lower() for h in headers] != ["username","passwordhash","full_name","role","active"]:
         ws.clear()
-        ws.append_row(["username", "password_hash", "full_name", "role", "active"])
+        ws.append_row(["username", "passwordhash", "full_name", "role", "active"])
         headers = ws.row_values(1)
 
     df = get_users_df()
@@ -244,7 +244,7 @@ def upsert_user(username: str, password_hash: str, full_name: str, role: str, ac
     uname = (username or "").strip().lower()
     row_dict = {
         "username": uname,
-        "password_hash": (password_hash or "").strip(),
+        "passwordhash": (passwordhash or "").strip(),
         "full_name": (full_name or "").strip(),
         "role": (role or "").strip(),
         "active": (active or "Y").strip(),
