@@ -231,3 +231,4 @@ def upsert_user(username: str, password_hash: str, full_name: str, role: str, ac
     else:
         ws.append_row([row_dict.get(c, "") for c in headers])
         return "Created user"
+#############END###################
