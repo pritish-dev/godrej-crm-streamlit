@@ -2,7 +2,7 @@
 import streamlit as st
 import pandas as pd
 import bcrypt
-from services.sheets import get_users_df
+from services.sheets import get_users_df, get_df
 
 ROLES = ["Viewer", "Editor", "Admin"]
 
@@ -13,13 +13,30 @@ def _role_at_least(user_role: str, min_role: str) -> bool:
         return False
 
 def _get_user_record(username: str):
-    df = get_users_df()
-    if df is None or df.empty:
-        return None
-    m = df.get("username", pd.Series(dtype=str)).astype(str).str.lower() == (username or "").strip().lower()
-    if not m.any():
-        return None
-    return df.iloc[m[m].index[0]].to_dict()
+    """Fetch user by username (case-insensitive), with one cache refresh fallback."""
+    def _lookup():
+        df = get_users_df()
+        if df is None or df.empty:
+            return None
+        m = df["username"] == (username or "").strip().lower()
+        if not m.any():
+            return None
+        rec = df.iloc[m[m].index[0]].to_dict()
+        # Normalize record fields
+        rec["username"] = str(rec.get("username","")).strip().lower()
+        rec["password_hash"] = str(rec.get("password_hash","")).strip()
+        rec["full_name"] = str(rec.get("full_name","")).strip()
+        rec["role"] = str(rec.get("role","Viewer")).strip()
+        rec["active"] = str(rec.get("active","Y")).strip()
+        return rec
+
+    # 1st try (cached)
+    rec = _lookup()
+    if rec:
+        return rec
+    # If not found, clear cache and try again (user might have just been added)
+    get_df.clear()
+    return _lookup()
 
 class AuthService:
     def __init__(self):
@@ -37,36 +54,54 @@ class AuthService:
     def _login_form(self):
         st.subheader("🔐 Sign in")
         with st.form("login_form"):
-            u = st.text_input("Username")
+            u = st.text_input("Username").strip().lower()
             p = st.text_input("Password", type="password")
             submit = st.form_submit_button("Login")
-        if submit:
-            rec = _get_user_record(u)
-            if not rec:
-                st.error("User not found.")
-                return False
-            if str(rec.get("active", "Y")).strip().upper() not in ("Y", "YES", "TRUE", "1"):
-                st.error("User inactive.")
-                return False
-            pw_hash = str(rec.get("password_hash", "")).encode()
-            if bcrypt.checkpw(p.encode(), pw_hash):
-                st.session_state.auth_user = {
-                    "username": rec.get("username"),
-                    "role": rec.get("role", "Viewer"),
-                    "full_name": rec.get("full_name", rec.get("username"))
-                }
-                st.success("Authenticated.")
+
+        if not submit:
+            return False
+
+        rec = _get_user_record(u)
+        if not rec:
+            st.error("User not found. Check the 'Users' sheet and header names.")
+            if st.button("Force reload users"):
+                get_df.clear()
                 st.rerun()
-                return True
-            else:
-                st.error("Invalid password.")
+            return False
+
+        if str(rec.get("active","Y")).strip().upper() not in ("Y","YES","TRUE","1"):
+            st.error("User is inactive.")
+            return False
+
+        pw_hash = rec.get("password_hash","").strip().encode()
+        if not pw_hash or not p:
+            st.error("Missing password or hash.")
+            return False
+
+        try:
+            ok = bcrypt.checkpw(p.encode(), pw_hash)
+        except Exception:
+            st.error("Invalid password hash format in sheet (must be bcrypt).")
+            return False
+
+        if ok:
+            st.session_state.auth_user = {
+                "username": rec["username"],
+                "role": rec.get("role","Viewer"),
+                "full_name": rec.get("full_name") or rec["username"]
+            }
+            st.success("Authenticated.")
+            st.rerun()
+            return True
+
+        st.error("Invalid password.")
         return False
 
     def login_block(self, min_role: str = "Editor") -> bool:
         user = self.current_user()
         if not user:
             return self._login_form()
-        if not _role_at_least(user.get("role", "Viewer"), min_role):
+        if not _role_at_least(user.get("role","Viewer"), min_role):
             st.error(f"Insufficient role. Requires: {min_role}. You are: {user.get('role')}.")
             if st.button("Logout"):
                 self.logout()

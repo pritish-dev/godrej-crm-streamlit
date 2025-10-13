@@ -192,43 +192,78 @@ def upsert_record(sheet_name: str, unique_fields: dict, new_data: dict, sync_to_
     return f"Inserted new record for {unique_fields.get('Customer Name','')} ({unique_fields.get('Contact Number','')})"
 
 # --- Users (auth) helpers ---
-def get_users_df() -> pd.DataFrame:
-    return get_df("Users")
+# services/sheets.py
 
 def ensure_users_header():
+    import gspread
     try:
         ws = sh.worksheet("Users")
     except gspread.exceptions.WorksheetNotFound:
         ws = sh.add_worksheet(title="Users", rows=200, cols=5)
         ws.append_row(["username", "password_hash", "full_name", "role", "active"])
 
+def get_users_df() -> pd.DataFrame:
+    """Always return a normalized Users dataframe with lowercase, stripped headers/values."""
+    ensure_users_header()
+    df = get_df("Users").copy()
+
+    if df is None or df.empty:
+        # Make sure expected columns exist even if the sheet is empty
+        return pd.DataFrame(columns=["username", "password_hash", "full_name", "role", "active"])
+
+    # Normalize headers and key columns
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    for col in ["username", "password_hash", "full_name", "role", "active"]:
+        if col not in df.columns:
+            df[col] = ""
+
+    # Strip values
+    df["username"] = df["username"].astype(str).str.strip().str.lower()
+    df["password_hash"] = df["password_hash"].astype(str).str.strip()
+    df["full_name"] = df["full_name"].astype(str).str.strip()
+    df["role"] = df["role"].astype(str).str.strip()
+    df["active"] = df["active"].astype(str).str.strip()
+
+    return df
+
 def upsert_user(username: str, password_hash: str, full_name: str, role: str, active: str = "Y"):
+    """Create/update a user; writes canonical headers and trims values."""
     ensure_users_header()
     ws = sh.worksheet("Users")
     headers = ws.row_values(1)
+    # Canonicalize headers if someone edited them:
+    if [h.strip().lower() for h in headers] != ["username","password_hash","full_name","role","active"]:
+        ws.clear()
+        ws.append_row(["username", "password_hash", "full_name", "role", "active"])
+        headers = ws.row_values(1)
+
     df = get_users_df()
+    # Clear cache so auth sees the new user immediately
     get_df.clear()
 
     uname = (username or "").strip().lower()
-    if df.empty:
-        match = pd.Series([], dtype=bool)
-    else:
-        match = df.get("username", pd.Series(dtype=str)).astype(str).str.lower() == uname
-
     row_dict = {
         "username": uname,
-        "password_hash": password_hash,
-        "full_name": full_name,
-        "role": role,
-        "active": active
+        "password_hash": (password_hash or "").strip(),
+        "full_name": (full_name or "").strip(),
+        "role": (role or "").strip(),
+        "active": (active or "Y").strip(),
     }
+
+    if not df.empty:
+        match = df["username"] == uname
+    else:
+        match = pd.Series([], dtype=bool)
+
     if match.any():
-        idx = match[match].index[0] + 2
+        idx = match[match].index[0] + 2  # + header row
         for i, col in enumerate(headers, start=1):
-            if col in row_dict:
-                ws.update_cell(idx, i, row_dict[col])
+            ws.update_cell(idx, i, row_dict.get(col, ""))
         return "Updated user"
     else:
         ws.append_row([row_dict.get(c, "") for c in headers])
         return "Created user"
+
+
+
 #############END###################
