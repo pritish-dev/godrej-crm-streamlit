@@ -41,9 +41,9 @@ def clean_crm(df: pd.DataFrame) -> pd.DataFrame:
 def _to_amount(series: pd.Series) -> pd.Series:
     if series is None or series.empty:
         return pd.Series([], dtype=float)
-    # remove ₹, commas, spaces; coerce to float
     s = series.astype(str).str.replace("[₹,]", "", regex=True).str.strip()
     return pd.to_numeric(s, errors="coerce").fillna(0.0)
+
 
 crm_df = clean_crm(crm_df_raw)
 st.dataframe(crm_df, use_container_width=True)
@@ -52,50 +52,82 @@ if crm_df.empty:
     st.info("CRM is empty. Use **Add/Update** (left sidebar pages) to add your first entry.")
     st.stop()
 
-# ============ NEW: Top Sales Executives (Monthly) ============
-st.markdown("## 🏆 Top Sales Executives — Monthly (Won Deals)")
+# ============ 🏆 Top Sales Executives (by Sale Amount) ============
+st.markdown("## 🏆 Top Sales Executives — Sale Amount")
 
-# guard rails: required columns
+# Controls just for this metric (default = current month)
+mt_left, mt_right = st.columns([1, 2])
+with mt_left:
+    # Default to current month
+    _today = datetime.today().date()
+    _month_start = _today.replace(day=1)
+    m_start = st.date_input("Start date (exec metric)", value=_month_start, key="exec_metric_start")
+with mt_right:
+    m_end = st.date_input("End date (exec metric)", value=_today, key="exec_metric_end")
+
+# Show a clear header of the selected period
+if m_start == _month_start and m_end == _today:
+    st.caption(f"Showing metrics for **{_today.strftime('%B %Y')}** (to date).")
+else:
+    st.caption(f"Showing metrics from **{m_start}** to **{m_end}**.")
+
 need_cols = {"LEAD Sales Executive", "SALE VALUE", "Lead Status", "DATE RECEIVED"}
 missing = [c for c in need_cols if c not in crm_df.columns]
 if missing:
     st.warning(f"Missing columns for this metric: {', '.join(missing)}")
 else:
-    today = datetime.today().date()
-    month_start = today.replace(day=1)
-
-    # Filter current month + only Won
     tmp = crm_df.copy()
-    tmp["DATE_RECEIVED_DT"] = pd.to_datetime(tmp["DATE RECEIVED"], errors="coerce").dt.date
+
+    # Date range filter (based on DATE RECEIVED)
+    tmp["__DATE"] = pd.to_datetime(tmp["DATE RECEIVED"], errors="coerce").dt.date
+    mask_range = tmp["__DATE"].between(m_start, m_end)
+    tmp = tmp[mask_range]
+
+    # Only count 'Won' deals (case-insensitive)
     won_mask = tmp["Lead Status"].astype(str).str.strip().str.lower().eq("won")
-    month_mask = tmp["DATE_RECEIVED_DT"].between(month_start, today)
-    tmp = tmp[won_mask & month_mask]
+    tmp = tmp[won_mask]
 
-    if tmp.empty:
-        st.info("No won deals recorded this month yet.")
-    else:
-        tmp["SALE_VALUE_NUM"] = _to_amount(tmp["SALE VALUE"])
+    # Build full roster: known list + all names found in data
+    KNOWN_EXECUTIVES = ["Archita", "Jitendra", "Smruti", "Swati", "Nazrin", "Krupa", "Other"]
+    found_execs = (
+        tmp["LEAD Sales Executive"].dropna().astype(str).str.strip()
+        .replace("", pd.NA).dropna().unique().tolist()
+        if "LEAD Sales Executive" in tmp.columns else []
+    )
+    full_roster = sorted(set(KNOWN_EXECUTIVES + found_execs), key=lambda x: KNOWN_EXECUTIVES.index(x) if x in KNOWN_EXECUTIVES else len(KNOWN_EXECUTIVES)+ord(x[0]))
 
-        grp = (
-            tmp.groupby("LEAD Sales Executive", dropna=False)["SALE_VALUE_NUM"]
-              .sum()
-              .reset_index()
-              .rename(columns={"LEAD Sales Executive": "Executive", "SALE_VALUE_NUM": "Total Sales (₹)"})
-        )
+    # Numeric sale values
+    tmp["__SALE"] = _to_amount(tmp["SALE VALUE"])
 
-        # Sort & rank
-        grp = grp.sort_values("Total Sales (₹)", ascending=False, kind="mergesort").reset_index(drop=True)
-        grp.insert(0, "Rank", grp.index + 1)
+    # Aggregate by executive (might be empty)
+    agg = (
+        tmp.groupby("LEAD Sales Executive", dropna=False)["__SALE"]
+          .sum()
+          .reset_index()
+          .rename(columns={"LEAD Sales Executive": "Executive", "__SALE": "Total Sales (₹)"})
+        if not tmp.empty else pd.DataFrame(columns=["Executive", "Total Sales (₹)"])
+    )
 
-        # Crown for #1
-        if not grp.empty:
-            grp.loc[0, "Executive"] = f"👑 {grp.loc[0, 'Executive']}"
+    # Ensure every executive is present; fill missing with 0
+    full_df = pd.DataFrame({"Executive": full_roster})
+    agg = full_df.merge(agg, on="Executive", how="left")
+    agg["Total Sales (₹)"] = agg["Total Sales (₹)"].fillna(0.0)
 
-        # Nice formatting for currency (display only)
-        display = grp.copy()
-        display["Total Sales (₹)"] = display["Total Sales (₹)"].apply(lambda x: f"₹{x:,.0f}")
+    # Sort & rank (descending by total sales)
+    agg = agg.sort_values("Total Sales (₹)", ascending=False, kind="mergesort").reset_index(drop=True)
+    agg.insert(0, "Rank", agg.index + 1)
 
-        st.dataframe(display, use_container_width=True)
+    # Crown for the top executive (if any)
+    if not agg.empty:
+        agg.loc[0, "Executive"] = f"👑 {agg.loc[0, 'Executive']}"
+
+    # Display-friendly currency
+    display = agg.copy()
+    display["Total Sales (₹)"] = display["Total Sales (₹)"].apply(lambda x: f"₹{x:,.0f}")
+
+    # Hide index (row id) in the table
+    st.dataframe(display, use_container_width=True, hide_index=True)
+
 
 
 # ============ Light metrics & timeframe filter (still on app page, read-only) ============
