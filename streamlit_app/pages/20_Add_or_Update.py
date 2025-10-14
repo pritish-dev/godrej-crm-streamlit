@@ -187,7 +187,7 @@ with st.form("add_update_dynamic", clear_on_submit=False):
                 default = float(str(cur).replace(",", "").replace("₹","")) if prefill and str(cur).strip() else 0.0
             except Exception:
                 default = 0.0
-            values[field] = target.number_input(field, min_value=500.0, step=50.0, value=default)
+            values[field] = target.number_input(field, min_value=0.0, step=50.0, value=default)
 
         elif spec["type"] == "select":
             opts = spec["options"]
