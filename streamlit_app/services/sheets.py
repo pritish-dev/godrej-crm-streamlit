@@ -172,48 +172,102 @@ def get_df(sheet_name: str) -> pd.DataFrame:
 def upsert_user(username: str, password_hash: str, full_name: str, role: str, active: str = "Y"):
     """
     Create/update a user row in the 'Users' sheet by username (case-insensitive).
-    Expects canonical headers: username | password_hash | full_name | role | active
-    Returns: 'Created user' or 'Updated user'
+    Works non-destructively: fixes/extends header if needed, updates a single row or appends a new one.
+    Expected canonical headers: username | password_hash | full_name | role | active
+    Returns a short message string.
     """
     import gspread
+
     ensure_users_header()
     sh_ = _get_spreadsheet()
     ws = sh_.worksheet("Users")
 
-    # Ensure canonical headers (if someone edited them in Sheets)
-    headers = ws.row_values(1)
-    canonical = ["username", "password_hash", "full_name", "role", "active"]
-    if [h.strip().lower() for h in headers] != canonical:
-        ws.clear()
-        ws.append_row(canonical)
-        headers = ws.row_values(1)
+    # Canonical columns (order we want to maintain)
+    CANON = ["username", "password_hash", "full_name", "role", "active"]
 
-    df = get_users_df()  # already normalized & lowercased
-    # clear cached get_df so login sees changes immediately
+    # Read current header (row 1). If the sheet is brand new, ensure header is present.
+    headers = ws.row_values(1) or []
+    headers_norm = [h.strip().lower() for h in headers] if headers else []
+
+    # If header row is empty, write the canonical header (non-destructive for data because there is none).
+    if not headers_norm:
+        ws.update("A1", [CANON])
+        headers = CANON[:]
+        headers_norm = CANON[:]
+
+    # Build column index mapping for all existing headers (case-insensitive)
+    col_idx = {h: i + 1 for i, h in enumerate(headers_norm)}  # name(lower) -> 1-based col
+
+    # Add any missing canonical columns to the RIGHT (append), do NOT clear anything
+    added = False
+    for name in CANON:
+        if name not in col_idx:
+            headers.append(name)           # extend visible header text
+            headers_norm.append(name)
+            col_idx[name] = len(headers_norm)  # new 1-based col
+            added = True
+
+    # If we added columns, update the header row in one go (A1-style range)
+    if added:
+        ws.update("A1", [headers])  # updates only row 1 (header), keeps all data
+
+    # Prepare normalized row values
+    uname = (username or "").strip().lower()
+    full_name = (full_name or "").strip()
+    role = (role or "").strip()
+    active = "Y" if str(active).strip().upper() != "N" else "N"
+    password_hash = (password_hash or "").strip()
+
+    if not (uname and full_name and role and password_hash):
+        raise ValueError("username, password_hash, full_name, role are required")
+
+    # Find existing row for this username (using the mapped Username column)
+    if "username" not in col_idx:
+        # Safety: if header got mangled somehow, ensure it's present
+        headers, headers_norm = (ws.row_values(1) or CANON), [h.strip().lower() for h in (ws.row_values(1) or CANON)]
+        col_idx = {h: i + 1 for i, h in enumerate(headers_norm)}
+        if "username" not in col_idx:
+            raise RuntimeError("Users sheet missing 'username' column even after normalization.")
+
+    username_col = col_idx["username"]
+    usernames = ws.col_values(username_col)[1:]  # skip header
+    row_number = None
+    for i, u in enumerate(usernames, start=2):   # sheet rows start at 2 (after header)
+        if (u or "").strip().lower() == uname:
+            row_number = i
+            break
+
+    # Compose ordered values list matching the CURRENT header (headers list)
+    ordered = [""] * len(headers_norm)
+    values_map = {
+        "username": uname,
+        "password_hash": password_hash,
+        "full_name": full_name,
+        "role": role,
+        "active": active,
+    }
+    for key, val in values_map.items():
+        c = col_idx[key]
+        ordered[c - 1] = val
+
+    # Write: update existing row's individual cells OR append a new row
+    if row_number is None:
+        ws.append_row(ordered, value_input_option="RAW")
+        result = f"Created user '{uname}'."
+    else:
+        # Update only the columns we control; no clears, no sheet-wide updates
+        cells = [gspread.Cell(row=row_number, col=col_idx[k], value=values_map[k]) for k in values_map]
+        ws.update_cells(cells, value_input_option="RAW")
+        result = f"Updated user '{uname}'."
+
+    # Bust the cached DataFrame so readers see the change immediately
     try:
         get_df.clear()
     except Exception:
         pass
 
-    uname = (username or "").strip().lower()
-    row = {
-        "username": uname,
-        "password_hash": (password_hash or "").strip(),
-        "full_name": (full_name or "").strip(),
-        "role": (role or "").strip(),
-        "active": (active or "Y").strip(),
-    }
+    return result
 
-    if not df.empty and (df["username"] == uname).any():
-        # UPDATE existing
-        idx = df.index[df["username"] == uname][0] + 2  # +1 for 0-index, +1 for header -> +2
-        for col_idx, col_name in enumerate(headers, start=1):
-            ws.update_cell(idx, col_idx, row.get(col_name, ""))
-        return "Updated user"
-    else:
-        # INSERT new
-        ws.append_row([row.get(c, "") for c in headers])
-        return "Created user"
 
 
 def log_history(action: str, sheet_name: str, unique_fields: dict, old_data: dict, new_data: dict):
