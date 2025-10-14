@@ -54,175 +54,131 @@ if crm_df.empty:
 # ============ 🏆 Top Sales Executives (by Sale Amount) ============
 st.markdown("## 🏆 Top Sales Executives — B2C Sale Amount")
 
-# Controls just for this metric (default = current month) — compact layout
-sp1, mt_left, mt_right, sp2 = st.columns([6, 2, 2, 6])  # tweak ratios to taste
+# ---- Single row: start picker | end picker | table ----
+col_start, col_end, col_table = st.columns([1.6, 1.6, 6.8])
+
 _today = datetime.today().date()
 _month_start = _today.replace(day=1)
 
-with mt_left:
-    m_start = st.date_input(
-        "Start date (exec metric)",
-        value=_month_start,
-        key="exec_metric_start"
-    )
+with col_start:
+    m_start = st.date_input("Start date (exec metric)", value=_month_start, key="exec_metric_start")
 
-with mt_right:
-    m_end = st.date_input(
-        "End date (exec metric)",
-        value=_today,
-        key="exec_metric_end"
-    )
+with col_end:
+    m_end = st.date_input("End date (exec metric)", value=_today, key="exec_metric_end")
 
-
-# Clear, friendly period header
-if m_start == _month_start and m_end == _today:
-    st.caption(f"Showing metrics for **{_today.strftime('%B %Y')}** (to date).")
-else:
-    st.caption(f"Showing metrics from **{m_start}** to **{m_end}**.")
-
-need_cols = {"LEAD Sales Executive", "SALE VALUE", "Lead Status", "DATE RECEIVED"}
-missing = [c for c in need_cols if c not in crm_df.columns]
-if missing:
-    st.warning(f"Missing columns for this metric: {', '.join(missing)}")
-else:
-    tmp = crm_df.copy()
-
-    # Date range filter (based on DATE RECEIVED)
-    tmp["__DATE"] = pd.to_datetime(tmp["DATE RECEIVED"], errors="coerce").dt.date
-    tmp = tmp[tmp["__DATE"].between(m_start, m_end)]
-
-    # Only count 'Won' deals
-    tmp = tmp[tmp["Lead Status"].astype(str).str.strip().str.lower().eq("won")]
-
-    # Build full roster (exclude "Other")
-    KNOWN_EXECUTIVES = ["Archita", "Jitendra", "Smruti", "Swati", "Nazrin", "Krupa"]  # <- no "Other"
-    found_execs = (
-        tmp["LEAD Sales Executive"].dropna().astype(str).str.strip()
-        .replace("", pd.NA).dropna().unique().tolist()
-        if "LEAD Sales Executive" in tmp.columns else []
-    )
-    # union, preserve known order, exclude "Other" if present in data
-    full_roster = [e for e in KNOWN_EXECUTIVES] + [e for e in found_execs if e not in KNOWN_EXECUTIVES and e.lower() != "other"]
-
-    # Numeric sale values
-    tmp["__SALE"] = _to_amount(tmp["SALE VALUE"])
-
-    # Aggregate by executive
-    agg = (
-        tmp.groupby("LEAD Sales Executive", dropna=False)["__SALE"]
-          .sum()
-          .reset_index()
-          .rename(columns={"LEAD Sales Executive": "Executive", "__SALE": "Total Sales (₹)"})
-        if not tmp.empty else pd.DataFrame(columns=["Executive", "Total Sales (₹)"])
-    )
-
-    # Ensure every exec is present; fill missing with 0; drop “Other” safeguard
-    full_df = pd.DataFrame({"Executive": full_roster})
-    agg = full_df.merge(agg, on="Executive", how="left")
-    agg["Total Sales (₹)"] = agg["Total Sales (₹)"].fillna(0.0)
-    agg = agg[agg["Executive"].str.lower() != "other"]
-
-    # Sort, rank, crown
-    agg = agg.sort_values("Total Sales (₹)", ascending=False, kind="mergesort").reset_index(drop=True)
-    agg.insert(0, "Rank", agg.index + 1)
-    if not agg.empty:
-        agg.loc[0, "Executive"] = f"👑 {agg.loc[0, 'Executive']}"
-
-    # --- Prepare display dataframe (no index column) ---
-    display = agg[["Rank", "Executive", "Total Sales (₹)"]].copy()
-    display["Total Sales (₹)"] = display["Total Sales (₹)"].apply(lambda x: f"₹{x:,.0f}")
-    display.reset_index(drop=True, inplace=True)  # defensive: remove any residual index
-
-    # Motivation line
-    st.caption("🚀 Keep pushing team—every deal moves you up the leaderboard!")
-
-    # ---- Styled, compact, non-stretched table (colorful header, no index) ----
-    header_fg = "#FFFFFF"   # white
-    header_bg = "#6D28D9"   # purple-700
-    
-    # Start a styler
-    styler = display.style
-    
-    # 🔧 Back-compat: hide index for old/new pandas
-    if getattr(styler, "hide_index", None):
-        styler = styler.hide_index()  # pandas >= 1.4
+with col_table:
+    # Period header inside the same row as the table
+    if m_start == _month_start and m_end == _today:
+        st.caption(f"Showing metrics for **{_today.strftime('%B %Y')}** (to date).")
     else:
-        try:
-            styler = styler.hide(axis="index")  # older API
-        except Exception:
-            # Last resort: rely on CSS to hide stub headers
-            pass
-    
-    styler = (
-        styler
-        .set_table_styles([
-            # header
-            {"selector": "thead th", "props": [
-                ("background-color", header_bg),
-                ("color", header_fg),
-                ("font-weight", "bold"),
-                ("text-align", "center"),
-                ("border", "1px solid #e5e7eb")
-            ]},
-            # body
-            {"selector": "tbody td", "props": [
-                ("border", "1px solid #f1f5f9"),
-                ("white-space", "nowrap"),
-                ("font-size", "0.95rem"),
-                ("padding", "6px 10px")
-            ]},
-            # round corners (optional)
-            {"selector": "table", "props": [
-                ("border-collapse", "separate"),
-                ("border-spacing", "0"),
-                ("border-radius", "8px"),
-                ("overflow", "hidden")
-            ]},
-            # belt & suspenders: hide stub headers if any
-            {"selector": "th.row_heading", "props": [("display", "none")]},
-            {"selector": "th.blank.level0", "props": [("display", "none")]},
-        ])
-        # fixed widths to avoid stretching
-        .set_properties(subset=["Rank"], **{"text-align": "center", "width": "5.5em"})
-        .set_properties(subset=["Executive"], **{"text-align": "left", "width": "14em"})
-        .set_properties(subset=["Total Sales (₹)"], **{"text-align": "right", "width": "10em"})
-    )
-    
-    # ---- Render date panel (left) + compact table (right) ----
-    html = styler.to_html()
-    
-    left_info, table_area = st.columns([1.1, 3.9])
-    
-    with left_info:
-        # tiny date panel
-        st.markdown(
-            f"""
-            <div style="
-                display:flex;flex-direction:column;gap:8px;
-                font-size:0.92rem; line-height:1.2;
-                padding:8px 10px; border:1px solid #e5e7eb; border-radius:8px;
-                background:#fafafa; max-width: 170px;">
-                <div><span style="font-weight:600;">Start:</span><br>
-                    <span style="display:inline-block;margin-top:4px;padding:4px 8px;border-radius:6px;background:#eef2ff;border:1px solid #e0e7ff;">
-                        {m_start.strftime('%Y/%m/%d')}
-                    </span>
-                </div>
-                <div><span style="font-weight:600;">End:</span><br>
-                    <span style="display:inline-block;margin-top:4px;padding:4px 8px;border-radius:6px;background:#eef2ff;border:1px solid #e0e7ff;">
-                        {m_end.strftime('%Y/%m/%d')}
-                    </span>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+        st.caption(f"Showing metrics from **{m_start}** to **{m_end}**.")
+
+    need_cols = {"LEAD Sales Executive", "SALE VALUE", "Lead Status", "DATE RECEIVED"}
+    missing = [c for c in need_cols if c not in crm_df.columns]
+    if missing:
+        st.warning(f"Missing columns for this metric: {', '.join(missing)}")
+    else:
+        tmp = crm_df.copy()
+
+        # Date range filter (based on DATE RECEIVED)
+        tmp["__DATE"] = pd.to_datetime(tmp["DATE RECEIVED"], errors="coerce").dt.date
+        tmp = tmp[tmp["__DATE"].between(m_start, m_end)]
+
+        # Only count 'Won' deals
+        tmp = tmp[tmp["Lead Status"].astype(str).str.strip().str.lower().eq("won")]
+
+        # Build full roster (exclude "Other")
+        KNOWN_EXECUTIVES = ["Archita", "Jitendra", "Smruti", "Swati", "Nazrin", "Krupa"]
+        found_execs = (
+            tmp["LEAD Sales Executive"].dropna().astype(str).str.strip()
+            .replace("", pd.NA).dropna().unique().tolist()
+            if "LEAD Sales Executive" in tmp.columns else []
         )
-    
-    with table_area:
-        # keep table compact; don't stretch
-        st.markdown(
-            f"<div style='display:inline-block'>{html}</div>",
-            unsafe_allow_html=True
+        full_roster = [e for e in KNOWN_EXECUTIVES] + [
+            e for e in found_execs if e not in KNOWN_EXECUTIVES and e.lower() != "other"
+        ]
+
+        # Numeric sale values
+        tmp["__SALE"] = _to_amount(tmp["SALE VALUE"])
+
+        # Aggregate by executive
+        agg = (
+            tmp.groupby("LEAD Sales Executive", dropna=False)["__SALE"]
+              .sum()
+              .reset_index()
+              .rename(columns={"LEAD Sales Executive": "Executive", "__SALE": "Total Sales (₹)"})
+            if not tmp.empty else pd.DataFrame(columns=["Executive", "Total Sales (₹)"])
         )
+
+        # Ensure every exec is present; fill missing with 0; drop “Other”
+        full_df = pd.DataFrame({"Executive": full_roster})
+        agg = full_df.merge(agg, on="Executive", how="left")
+        agg["Total Sales (₹)"] = agg["Total Sales (₹)"].fillna(0.0)
+        agg = agg[agg["Executive"].str.lower() != "other"]
+
+        # Sort, rank, crown
+        agg = agg.sort_values("Total Sales (₹)", ascending=False, kind="mergesort").reset_index(drop=True)
+        agg.insert(0, "Rank", agg.index + 1)
+        if not agg.empty:
+            agg.loc[0, "Executive"] = f"👑 {agg.loc[0, 'Executive']}"
+
+        # Display dataframe (no index)
+        display = agg[["Rank", "Executive", "Total Sales (₹)"]].copy()
+        display["Total Sales (₹)"] = display["Total Sales (₹)"].apply(lambda x: f"₹{x:,.0f}")
+        display.reset_index(drop=True, inplace=True)
+
+        # Pep line
+        st.caption("🚀 Keep pushing team—every deal moves you up the leaderboard!")
+
+        # ---- Styled, compact table (no stretch) ----
+        header_bg = "#6D28D9"   # purple-700
+        header_fg = "#FFFFFF"   # white
+
+        styler = display.style
+        # Back-compat hiding index
+        if getattr(styler, "hide_index", None):
+            styler = styler.hide_index()
+        else:
+            try:
+                styler = styler.hide(axis="index")
+            except Exception:
+                pass
+
+        styler = (
+            styler
+            .set_table_styles([
+                {"selector": "thead th", "props": [
+                    ("background-color", header_bg),
+                    ("color", header_fg),
+                    ("font-weight", "bold"),
+                    ("text-align", "center"),
+                    ("border", "1px solid #e5e7eb")
+                ]},
+                {"selector": "tbody td", "props": [
+                    ("border", "1px solid #f1f5f9"),
+                    ("white-space", "nowrap"),
+                    ("font-size", "0.95rem"),
+                    ("padding", "6px 10px")
+                ]},
+                {"selector": "table", "props": [
+                    ("border-collapse", "separate"),
+                    ("border-spacing", "0"),
+                    ("border-radius", "8px"),
+                    ("overflow", "hidden")
+                ]},
+                {"selector": "th.row_heading", "props": [("display", "none")]},
+                {"selector": "th.blank.level0", "props": [("display", "none")]},
+            ])
+            .set_properties(subset=["Rank"], **{"text-align": "center", "width": "5.5em"})
+            .set_properties(subset=["Executive"], **{"text-align": "left", "width": "14em"})
+            .set_properties(subset=["Total Sales (₹)"], **{"text-align": "right", "width": "10em"})
+        )
+
+        # Render compact (no stretch) right here in the table column
+        html = styler.to_html()
+        st.markdown(f"<div style='display:inline-block'>{html}</div>", unsafe_allow_html=True)
+
+
 
     
 
