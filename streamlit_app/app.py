@@ -61,10 +61,10 @@ _today = datetime.today().date()
 _month_start = _today.replace(day=1)
 
 with col_start:
-    m_start = st.date_input("Start date (exec metric)", value=_month_start, key="exec_metric_start")
+    m_start = st.date_input("Start date", value=_month_start, key="exec_metric_start")
 
 with col_end:
-    m_end = st.date_input("End date (exec metric)", value=_today, key="exec_metric_end")
+    m_end = st.date_input("End date", value=_today, key="exec_metric_end")
 
 with col_table:
     # Period header inside the same row as the table
@@ -174,10 +174,29 @@ with col_table:
             .set_properties(subset=["Total Sales (₹)"], **{"text-align": "right", "width": "10em"})
         )
 
-        # Render compact (no stretch) right here in the table column
+        # ---- Render caption + pep + table BELOW the pickers, aligned under them ----
         html = styler.to_html()
-        st.markdown(f"<div style='display:inline-block'>{html}</div>", unsafe_allow_html=True)
-
+        
+        # Create a new row. Middle column width (4) matches the combined width of the two pickers (2+2)
+        under_left, under_mid, under_right = st.columns([6, 4, 6])
+        
+        with under_mid:
+            # Period caption (month or custom range)
+            if m_start == _month_start and m_end == _today:
+                st.caption(f"Showing metrics for **{_today.strftime('%B %Y')}** (to date).")
+            else:
+                st.caption(f"Showing metrics from **{m_start}** to **{m_end}**.")
+        
+            
+        
+            # Compact table; inline-block prevents stretching
+            st.markdown(
+                f"<div style='display:inline-block'>{html}</div>",
+                unsafe_allow_html=True
+            )
+        
+            # Pep line
+            st.caption("🚀 Keep pushing team—every deal moves you up the leaderboard!")
 
 
     
