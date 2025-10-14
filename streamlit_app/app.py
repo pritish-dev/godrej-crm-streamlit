@@ -188,15 +188,15 @@ with col_table:
                 st.caption(f"Showing metrics from **{m_start}** to **{m_end}**.")
         
             
-        
+            # Pep line
+            st.caption("🚀 Keep pushing team—every deal moves you up the leaderboard!")
             # Compact table; inline-block prevents stretching
             st.markdown(
                 f"<div style='display:inline-block'>{html}</div>",
                 unsafe_allow_html=True
             )
         
-            # Pep line
-            st.caption("🚀 Keep pushing team—every deal moves you up the leaderboard!")
+            
 
 
     
