@@ -111,8 +111,12 @@ def _title_case(s: str) -> str:
     return out.replace("Tv", "TV").replace("X2","X2").replace("X3","X3").replace("Gb","GB")
 
 def _normalize_field(col: str, val):
-    if col in {"DATE RECEIVED", "Next Follow-up Date"}:
+    if col == "DATE RECEIVED":
+        # Only DATE RECEIVED defaults to today when missing
         return _fmt_mmddyyyy(val or datetime.today())
+    if col == "Next Follow-up Date":
+        # Do NOT default; keep blank unless explicitly set
+        return _fmt_mmddyyyy(val)
     if col == "Follow-up Time (HH:MM)":
         s = str(val or "").strip()
         m = re.match(r"^(\d{1,2}):(\d{2})(?::\d{2})?$", s)

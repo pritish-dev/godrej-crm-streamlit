@@ -75,11 +75,11 @@ FIELD_SPEC = {
 }
 
 # ---- Helpers ----
-def _safe(v): 
-    if v is None or (isinstance(v, float) and pd.isna(v)): 
+def _safe(v):
+    if v is None or (isinstance(v, float) and pd.isna(v)):
         return ""
     return str(v)
-    
+
 def _has_value(x: object) -> bool:
     return not (x is None or (isinstance(x, float) and pd.isna(x)) or (isinstance(x, str) and not x.strip()))
 
@@ -160,37 +160,34 @@ with st.form("add_update_dynamic", clear_on_submit=False):
 
         if spec["type"] == "date":
             if field == "DATE RECEIVED":
-                # Special rules:
-                # - New record (no prefill): always editable, no checkbox
-                # - Existing record: editable, but only saved if checkbox is ticked
+                # NEW: always editable. For existing records, save only if checkbox is ticked.
                 has_prefill = _has_value(cur)
                 default_date = _parse_date(cur) if has_prefill else datetime.today().date()
-            
+
                 if prefill:
                     change_dr = target.checkbox("Change DATE RECEIVED", value=False, key="DR_change")
-                    dr_value = target.date_input("DATE RECEIVED", value=default_date, key="DR_value")
-                    # Store a sentinel so we can skip saving unless checkbox was ticked
+                    dr_value  = target.date_input("DATE RECEIVED", value=default_date, key="DR_value")
+                    # sentinel -> skip saving unless checked
                     values[field] = dr_value if change_dr else "__UNCHANGED__"
                 else:
-                    # New record: just take the picker value
+                    # New record: editable and always saved
                     values[field] = target.date_input("DATE RECEIVED", value=default_date, key="DR_new_value")
             else:
-                # Other date fields keep your toggle pattern, but keep input enabled
+                # Other date fields: checkbox decides saving; picker stays enabled
                 has_prefill = _has_value(cur)
                 enable = target.checkbox(f"Set {field}", value=has_prefill, key=f"{field}_enable")
                 default_date = _parse_date(cur) if has_prefill else datetime.today().date()
-                # Always render the picker (enabled UI), but ignore it unless 'enable' is True
                 date_val = target.date_input(field, value=default_date, key=f"{field}_date")
                 values[field] = date_val if enable else None
 
-        
         elif spec["type"] == "time":
+            # Always enabled; checkbox decides whether to save
             has_prefill = _has_value(cur)
             enable = target.checkbox(f"Set {field}", value=has_prefill, key=f"{field}_enable")
-            t = _parse_time(cur) if has_prefill else time(10, 0)
-            values[field] = target.time_input(field, value=t, key=f"{field}_time", disabled=not enable)
-            if not enable: values[field] = None
-        
+            t_default = _parse_time(cur) if has_prefill else time(10, 0)
+            t_val = target.time_input(field, value=t_default, key=f"{field}_time")
+            values[field] = t_val if enable else None
+
         elif spec["type"] == "number":
             # try to coerce numeric; allow 0.0 default
             try:
@@ -201,11 +198,7 @@ with st.form("add_update_dynamic", clear_on_submit=False):
 
         elif spec["type"] == "select":
             opts = spec["options"]
-            
-            # If we have a prefill and it's valid, use it; otherwise None (no selection)
             current = cur if (prefill and isinstance(cur, str) and cur in opts) else None
-            
-            # Add a None placeholder; render it nicely
             sel_options = [None] + opts
             sel_index = 0 if current is None else (1 + opts.index(current))
             values[field] = target.selectbox(
@@ -215,13 +208,11 @@ with st.form("add_update_dynamic", clear_on_submit=False):
                 format_func=lambda x: "— Select —" if x is None else x,
                 help="Leave as '— Select —' if you don't want to set this now."
             )
-            
 
         elif spec["type"] == "textarea":
             values[field] = target.text_area(field, value=_safe(cur))
 
         else:  # text
-            # Provide small placeholder for whatsapp
             ph = "+9199XXXXXXXX" if "WhatsApp" in field else ""
             values[field] = target.text_input(field, value=_safe(cur), placeholder=ph)
 
@@ -235,7 +226,7 @@ if submit:
         st.error("Customer Name and Contact Number are required.")
         st.stop()
 
-    # Convert Streamlit date/time widgets back to strings
+    # Convert Streamlit widgets back to strings
     is_update = bool(prefill)  # True if you loaded an existing row earlier
 
     payload = {}
@@ -243,11 +234,11 @@ if submit:
         # Skip untouched / placeholder values
         if v is None:
             continue
-        if v == "__UNCHANGED__":  # our sentinel for DATE RECEIVED on updates
+        if v == "__UNCHANGED__":  # sentinel for DATE RECEIVED on updates
             continue
         if isinstance(v, str) and not v.strip():
             continue
-    
+
         # Convert widgets to strings
         if isinstance(v, datetime):
             payload[k] = v.strftime("%Y-%m-%d")
@@ -265,13 +256,6 @@ if submit:
     if not is_update:
         if "DATE RECEIVED" not in payload or not str(payload["DATE RECEIVED"]).strip():
             payload["DATE RECEIVED"] = datetime.today().strftime("%Y-%m-%d")
-    
-
-
-
-    # Ensure required defaults if missing
-    if "DATE RECEIVED" not in payload or not str(payload["DATE RECEIVED"]).strip():
-        payload["DATE RECEIVED"] = datetime.today().strftime("%Y-%m-%d")
 
     # Upsert
     unique_fields = {"Customer Name": name, "Contact Number": phone}
