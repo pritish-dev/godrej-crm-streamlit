@@ -53,19 +53,18 @@ if crm_df.empty:
     st.stop()
 
 # ============ 🏆 Top Sales Executives (by Sale Amount) ============
-st.markdown("## 🏆 Top Sales Executives — Sale Amount")
+st.markdown("## 🏆 Top Sales Executives — B2C Sales Amount")
 
 # Controls just for this metric (default = current month)
 mt_left, mt_right = st.columns([1, 2])
+_today = datetime.today().date()
+_month_start = _today.replace(day=1)
 with mt_left:
-    # Default to current month
-    _today = datetime.today().date()
-    _month_start = _today.replace(day=1)
     m_start = st.date_input("Start date (exec metric)", value=_month_start, key="exec_metric_start")
 with mt_right:
     m_end = st.date_input("End date (exec metric)", value=_today, key="exec_metric_end")
 
-# Show a clear header of the selected period
+# Clear, friendly period header
 if m_start == _month_start and m_end == _today:
     st.caption(f"Showing metrics for **{_today.strftime('%B %Y')}** (to date).")
 else:
@@ -80,26 +79,25 @@ else:
 
     # Date range filter (based on DATE RECEIVED)
     tmp["__DATE"] = pd.to_datetime(tmp["DATE RECEIVED"], errors="coerce").dt.date
-    mask_range = tmp["__DATE"].between(m_start, m_end)
-    tmp = tmp[mask_range]
+    tmp = tmp[tmp["__DATE"].between(m_start, m_end)]
 
-    # Only count 'Won' deals (case-insensitive)
-    won_mask = tmp["Lead Status"].astype(str).str.strip().str.lower().eq("won")
-    tmp = tmp[won_mask]
+    # Only count 'Won' deals
+    tmp = tmp[tmp["Lead Status"].astype(str).str.strip().str.lower().eq("won")]
 
-    # Build full roster: known list + all names found in data
-    KNOWN_EXECUTIVES = ["Archita", "Jitendra", "Smruti", "Swati", "Nazrin", "Krupa", "Other"]
+    # Build full roster (exclude "Other")
+    KNOWN_EXECUTIVES = ["Archita", "Jitendra", "Smruti", "Swati", "Nazrin", "Krupa"]  # <- no "Other"
     found_execs = (
         tmp["LEAD Sales Executive"].dropna().astype(str).str.strip()
         .replace("", pd.NA).dropna().unique().tolist()
         if "LEAD Sales Executive" in tmp.columns else []
     )
-    full_roster = sorted(set(KNOWN_EXECUTIVES + found_execs), key=lambda x: KNOWN_EXECUTIVES.index(x) if x in KNOWN_EXECUTIVES else len(KNOWN_EXECUTIVES)+ord(x[0]))
+    # union, preserve known order, exclude "Other" if present in data
+    full_roster = [e for e in KNOWN_EXECUTIVES] + [e for e in found_execs if e not in KNOWN_EXECUTIVES and e.lower() != "other"]
 
     # Numeric sale values
     tmp["__SALE"] = _to_amount(tmp["SALE VALUE"])
 
-    # Aggregate by executive (might be empty)
+    # Aggregate by executive
     agg = (
         tmp.groupby("LEAD Sales Executive", dropna=False)["__SALE"]
           .sum()
@@ -108,16 +106,15 @@ else:
         if not tmp.empty else pd.DataFrame(columns=["Executive", "Total Sales (₹)"])
     )
 
-    # Ensure every executive is present; fill missing with 0
+    # Ensure every exec is present; fill missing with 0; drop “Other” safeguard
     full_df = pd.DataFrame({"Executive": full_roster})
     agg = full_df.merge(agg, on="Executive", how="left")
     agg["Total Sales (₹)"] = agg["Total Sales (₹)"].fillna(0.0)
+    agg = agg[agg["Executive"].str.lower() != "other"]
 
-    # Sort & rank (descending by total sales)
+    # Sort, rank, crown
     agg = agg.sort_values("Total Sales (₹)", ascending=False, kind="mergesort").reset_index(drop=True)
     agg.insert(0, "Rank", agg.index + 1)
-
-    # Crown for the top executive (if any)
     if not agg.empty:
         agg.loc[0, "Executive"] = f"👑 {agg.loc[0, 'Executive']}"
 
@@ -125,8 +122,41 @@ else:
     display = agg.copy()
     display["Total Sales (₹)"] = display["Total Sales (₹)"].apply(lambda x: f"₹{x:,.0f}")
 
-    # Hide index (row id) in the table
-    st.dataframe(display, use_container_width=True, hide_index=True)
+    # Motivation line
+    st.caption("🚀 Keep pushing team—every deal moves you up the leaderboard!")
+
+    # ---- Styled, compact, non-stretched table ----
+    header_bg = "#6D28D9"   # purple-700
+    header_fg = "#FFFFFF"   # white
+
+    styler = (
+        display.style
+            .hide(axis="index")  # remove row id
+            .set_table_styles([
+                {"selector": "th", "props": [
+                    ("background-color", header_bg),
+                    ("color", header_fg),
+                    ("font-weight", "bold"),
+                    ("text-align", "center"),
+                    ("border", "1px solid #e5e7eb")
+                ]},
+                {"selector": "td", "props": [
+                    ("border", "1px solid #f1f5f9"),
+                    ("white-space", "nowrap"),
+                    ("font-size", "0.95rem"),
+                    ("padding", "6px 10px")
+                ]},
+            ])
+            # fixed widths to avoid stretching
+            .set_properties(subset=["Rank"], **{"text-align": "center", "width": "6em"})
+            .set_properties(subset=["Executive"], **{"text-align": "left", "width": "18em"})
+            .set_properties(subset=["Total Sales (₹)"], **{"text-align": "right", "width": "12em"})
+    )
+
+    st.table(styler)  # st.table + Styler = colored header & compact widths
+
+
+
 
 
 
