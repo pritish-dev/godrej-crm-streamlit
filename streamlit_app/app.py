@@ -126,42 +126,59 @@ else:
     st.caption("🚀 Keep pushing team—every deal moves you up the leaderboard!")
 
     # ---- Styled, compact, non-stretched table (colorful header, no index) ----
-    header_bg = "#6D28D9"   # purple-700
     header_fg = "#FFFFFF"   # white
-
+    header_bg = "#6D28D9"   # purple-700
+    
+    # Start a styler
+    styler = display.style
+    
+    # 🔧 Back-compat: hide index for old/new pandas
+    if getattr(styler, "hide_index", None):
+        styler = styler.hide_index()  # pandas >= 1.4
+    else:
+        try:
+            styler = styler.hide(axis="index")  # older API
+        except Exception:
+            # Last resort: rely on CSS to hide stub headers
+            pass
+    
     styler = (
-        display.style
-            .hide_index()  # hide any row index/stub
-            .set_table_styles([
-                # header
-                {"selector": "thead th", "props": [
-                    ("background-color", header_bg),
-                    ("color", header_fg),
-                    ("font-weight", "bold"),
-                    ("text-align", "center"),
-                    ("border", "1px solid #e5e7eb")
-                ]},
-                # body
-                {"selector": "tbody td", "props": [
-                    ("border", "1px solid #f1f5f9"),
-                    ("white-space", "nowrap"),
-                    ("font-size", "0.95rem"),
-                    ("padding", "6px 10px")
-                ]},
-                # round corners (optional)
-                {"selector": "table", "props": [("border-collapse", "separate"), ("border-spacing", "0"), ("border-radius", "8px"), ("overflow", "hidden")]},
-                # belt & suspenders: hide stub headers if any
-                {"selector": "th.row_heading", "props": [("display", "none")]},
-                {"selector": "th.blank.level0", "props": [("display", "none")]},
-            ])
-            # fixed widths to avoid stretching
-            .set_properties(subset=["Rank"], **{"text-align": "center", "width": "5.5em"})
-            .set_properties(subset=["Executive"], **{"text-align": "left", "width": "14em"})
-            .set_properties(subset=["Total Sales (₹)"], **{"text-align": "right", "width": "10em"})
+        styler
+        .set_table_styles([
+            # header
+            {"selector": "thead th", "props": [
+                ("background-color", header_bg),
+                ("color", header_fg),
+                ("font-weight", "bold"),
+                ("text-align", "center"),
+                ("border", "1px solid #e5e7eb")
+            ]},
+            # body
+            {"selector": "tbody td", "props": [
+                ("border", "1px solid #f1f5f9"),
+                ("white-space", "nowrap"),
+                ("font-size", "0.95rem"),
+                ("padding", "6px 10px")
+            ]},
+            # round corners (optional)
+            {"selector": "table", "props": [
+                ("border-collapse", "separate"),
+                ("border-spacing", "0"),
+                ("border-radius", "8px"),
+                ("overflow", "hidden")
+            ]},
+            # belt & suspenders: hide stub headers if any
+            {"selector": "th.row_heading", "props": [("display", "none")]},
+            {"selector": "th.blank.level0", "props": [("display", "none")]},
+        ])
+        # fixed widths to avoid stretching
+        .set_properties(subset=["Rank"], **{"text-align": "center", "width": "5.5em"})
+        .set_properties(subset=["Executive"], **{"text-align": "left", "width": "14em"})
+        .set_properties(subset=["Total Sales (₹)"], **{"text-align": "right", "width": "10em"})
     )
-
-    # st.table respects Styler (colors, widths) and won't auto-stretch to full width
+    
     st.table(styler)
+    
 
 # ============ Light metrics & timeframe filter (still on app page, read-only) ============
 st.markdown("## 📅 Date Range Filter (Read-only Metrics)")
