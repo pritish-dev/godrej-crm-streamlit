@@ -52,7 +52,7 @@ if crm_df.empty:
     st.stop()
 
 # ============ 🏆 Top Sales Executives (by Sale Amount) ============
-st.markdown("## 🏆 Top Sales Executives — B2C Sale Amount")
+st.markdown("## 🏆 Top Sales Executives — B2C Sales")
 
 # We render everything inside a left column whose width matches the table.
 # The right column is empty, so the whole metric block hugs the left edge.
