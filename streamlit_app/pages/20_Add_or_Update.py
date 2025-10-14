@@ -159,11 +159,30 @@ with st.form("add_update_dynamic", clear_on_submit=False):
         target = colA if i % 2 == 0 else colB
 
         if spec["type"] == "date":
-            has_prefill = _has_value(cur)
-            enable = target.checkbox(f"Set {field}", value=has_prefill, key=f"{field}_enable")
-            default_date = _parse_date(cur) if has_prefill else datetime.today().date()
-            values[field] = target.date_input(field, value=default_date, key=f"{field}_date", disabled=not enable)
-            if not enable: values[field] = None
+            if field == "DATE RECEIVED":
+                # Special rules:
+                # - New record (no prefill): always editable, no checkbox
+                # - Existing record: editable, but only saved if checkbox is ticked
+                has_prefill = _has_value(cur)
+                default_date = _parse_date(cur) if has_prefill else datetime.today().date()
+            
+                if prefill:
+                    change_dr = target.checkbox("Change DATE RECEIVED", value=False, key="DR_change")
+                    dr_value = target.date_input("DATE RECEIVED", value=default_date, key="DR_value")
+                    # Store a sentinel so we can skip saving unless checkbox was ticked
+                    values[field] = dr_value if change_dr else "__UNCHANGED__"
+                else:
+                    # New record: just take the picker value
+                    values[field] = target.date_input("DATE RECEIVED", value=default_date, key="DR_new_value")
+            else:
+                # Other date fields keep your toggle pattern, but keep input enabled
+                has_prefill = _has_value(cur)
+                enable = target.checkbox(f"Set {field}", value=has_prefill, key=f"{field}_enable")
+                default_date = _parse_date(cur) if has_prefill else datetime.today().date()
+                # Always render the picker (enabled UI), but ignore it unless 'enable' is True
+                date_val = target.date_input(field, value=default_date, key=f"{field}_date")
+                values[field] = date_val if enable else None
+
         
         elif spec["type"] == "time":
             has_prefill = _has_value(cur)
@@ -217,10 +236,14 @@ if submit:
         st.stop()
 
     # Convert Streamlit date/time widgets back to strings
+    is_update = bool(prefill)  # True if you loaded an existing row earlier
+
     payload = {}
     for k, v in values.items():
         # Skip untouched / placeholder values
         if v is None:
+            continue
+        if v == "__UNCHANGED__":  # our sentinel for DATE RECEIVED on updates
             continue
         if isinstance(v, str) and not v.strip():
             continue
@@ -231,13 +254,18 @@ if submit:
         elif isinstance(v, pd.Timestamp):
             payload[k] = v.date().strftime("%Y-%m-%d")
         elif hasattr(v, "isoformat") and not isinstance(v, (str, bytes)):
-            # date or time (time has hour/minute; date has year)
             if hasattr(v, "year"):  # date
                 payload[k] = v.strftime("%Y-%m-%d")
             else:                   # time
                 payload[k] = f"{v.hour:02d}:{v.minute:02d}"
         else:
             payload[k] = v
+
+    # Only auto-default DATE RECEIVED for NEW records
+    if not is_update:
+        if "DATE RECEIVED" not in payload or not str(payload["DATE RECEIVED"]).strip():
+            payload["DATE RECEIVED"] = datetime.today().strftime("%Y-%m-%d")
+    
 
 
 
