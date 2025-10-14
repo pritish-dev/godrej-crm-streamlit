@@ -160,21 +160,17 @@ with st.form("add_update_dynamic", clear_on_submit=False):
 
         if spec["type"] == "date":
             has_prefill = _has_value(cur)
-            enable = enable_flags.get(field, has_prefill)
+            enable = target.checkbox(f"Set {field}", value=has_prefill, key=f"{field}_enable")
             default_date = _parse_date(cur) if has_prefill else datetime.today().date()
-            # Show picker always, but disable it unless enabled
             values[field] = target.date_input(field, value=default_date, key=f"{field}_date", disabled=not enable)
-            # If not enabled, treat as unset
-            if not enable:
-                values[field] = None
+            if not enable: values[field] = None
         
         elif spec["type"] == "time":
             has_prefill = _has_value(cur)
-            enable = enable_flags.get(field, has_prefill)
+            enable = target.checkbox(f"Set {field}", value=has_prefill, key=f"{field}_enable")
             t = _parse_time(cur) if has_prefill else time(10, 0)
             values[field] = target.time_input(field, value=t, key=f"{field}_time", disabled=not enable)
-            if not enable:
-                values[field] = None
+            if not enable: values[field] = None
         
         elif spec["type"] == "number":
             # try to coerce numeric; allow 0.0 default
