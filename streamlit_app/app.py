@@ -54,14 +54,25 @@ if crm_df.empty:
 # ============ 🏆 Top Sales Executives (by Sale Amount) ============
 st.markdown("## 🏆 Top Sales Executives — B2C Sale Amount")
 
-# Controls just for this metric (default = current month)
-mt_left, mt_right = st.columns([1, 2])
+# Controls just for this metric (default = current month) — compact layout
+sp1, mt_left, mt_right, sp2 = st.columns([6, 2, 2, 6])  # tweak ratios to taste
 _today = datetime.today().date()
 _month_start = _today.replace(day=1)
+
 with mt_left:
-    m_start = st.date_input("Start date (exec metric)", value=_month_start, key="exec_metric_start")
+    m_start = st.date_input(
+        "Start date (exec metric)",
+        value=_month_start,
+        key="exec_metric_start"
+    )
+
 with mt_right:
-    m_end = st.date_input("End date (exec metric)", value=_today, key="exec_metric_end")
+    m_end = st.date_input(
+        "End date (exec metric)",
+        value=_today,
+        key="exec_metric_end"
+    )
+
 
 # Clear, friendly period header
 if m_start == _month_start and m_end == _today:
