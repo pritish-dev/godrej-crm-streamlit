@@ -38,12 +38,65 @@ def clean_crm(df: pd.DataFrame) -> pd.DataFrame:
         out["Next Follow-up Date"] = _to_dt(out["Next Follow-up Date"]).dt.date
     return out
 
+def _to_amount(series: pd.Series) -> pd.Series:
+    if series is None or series.empty:
+        return pd.Series([], dtype=float)
+    # remove ₹, commas, spaces; coerce to float
+    s = series.astype(str).str.replace("[₹,]", "", regex=True).str.strip()
+    return pd.to_numeric(s, errors="coerce").fillna(0.0)
+
 crm_df = clean_crm(crm_df_raw)
 st.dataframe(crm_df, use_container_width=True)
 
 if crm_df.empty:
     st.info("CRM is empty. Use **Add/Update** (left sidebar pages) to add your first entry.")
     st.stop()
+
+# ============ NEW: Top Sales Executives (Monthly) ============
+st.markdown("## 🏆 Top Sales Executives — Monthly (Won Deals)")
+
+# guard rails: required columns
+need_cols = {"LEAD Sales Executive", "SALE VALUE", "Lead Status", "DATE RECEIVED"}
+missing = [c for c in need_cols if c not in crm_df.columns]
+if missing:
+    st.warning(f"Missing columns for this metric: {', '.join(missing)}")
+else:
+    today = datetime.today().date()
+    month_start = today.replace(day=1)
+
+    # Filter current month + only Won
+    tmp = crm_df.copy()
+    tmp["DATE_RECEIVED_DT"] = pd.to_datetime(tmp["DATE RECEIVED"], errors="coerce").dt.date
+    won_mask = tmp["Lead Status"].astype(str).str.strip().str.lower().eq("won")
+    month_mask = tmp["DATE_RECEIVED_DT"].between(month_start, today)
+    tmp = tmp[won_mask & month_mask]
+
+    if tmp.empty:
+        st.info("No won deals recorded this month yet.")
+    else:
+        tmp["SALE_VALUE_NUM"] = _to_amount(tmp["SALE VALUE"])
+
+        grp = (
+            tmp.groupby("LEAD Sales Executive", dropna=False)["SALE_VALUE_NUM"]
+              .sum()
+              .reset_index()
+              .rename(columns={"LEAD Sales Executive": "Executive", "SALE_VALUE_NUM": "Total Sales (₹)"})
+        )
+
+        # Sort & rank
+        grp = grp.sort_values("Total Sales (₹)", ascending=False, kind="mergesort").reset_index(drop=True)
+        grp.insert(0, "Rank", grp.index + 1)
+
+        # Crown for #1
+        if not grp.empty:
+            grp.loc[0, "Executive"] = f"👑 {grp.loc[0, 'Executive']}"
+
+        # Nice formatting for currency (display only)
+        display = grp.copy()
+        display["Total Sales (₹)"] = display["Total Sales (₹)"].apply(lambda x: f"₹{x:,.0f}")
+
+        st.dataframe(display, use_container_width=True)
+
 
 # ============ Light metrics & timeframe filter (still on app page, read-only) ============
 st.markdown("## 📅 Date Range Filter (Read-only Metrics)")
