@@ -79,6 +79,9 @@ def _safe(v):
     if v is None or (isinstance(v, float) and pd.isna(v)): 
         return ""
     return str(v)
+    
+def _has_value(x: object) -> bool:
+    return not (x is None or (isinstance(x, float) and pd.isna(x)) or (isinstance(x, str) and not x.strip()))
 
 def _parse_date(v):
     d = pd.to_datetime(v, errors="coerce")
@@ -156,12 +159,27 @@ with st.form("add_update_dynamic", clear_on_submit=False):
         target = colA if i % 2 == 0 else colB
 
         if spec["type"] == "date":
-            target_date = _parse_date(cur) if prefill else datetime.today().date()
-            values[field] = target.date_input(field, value=target_date)
+            # Only show a date picker if user chooses to set it.
+            has_prefill = _has_value(cur)
+            # If there’s prefill, default the toggle to True; otherwise False
+            enable = target.checkbox(f"Set {field}", value=has_prefill, key=f"{field}_enable")
+            
+            if enable:
+                # If we have prefill, use that exact date; otherwise show picker without implying a date.
+                default_date = _parse_date(cur) if has_prefill else datetime.today().date()
+                values[field] = target.date_input(field, value=default_date, key=f"{field}_date")
+            else:
+                values[field] = None
 
         elif spec["type"] == "time":
-            t = _parse_time(cur) if prefill else time(10, 0)
-            values[field] = target.time_input(field, value=t)
+            has_prefill = _has_value(cur)
+            enable = target.checkbox(f"Set {field}", value=has_prefill, key=f"{field}_enable")
+            if enable:
+                t = _parse_time(cur) if has_prefill else time(10, 0)  # initial suggestion; won’t be saved unless enabled
+                values[field] = target.time_input(field, value=t, key=f"{field}_time")
+            else:
+                values[field] = None
+
 
         elif spec["type"] == "number":
             # try to coerce numeric; allow 0.0 default
@@ -169,7 +187,7 @@ with st.form("add_update_dynamic", clear_on_submit=False):
                 default = float(str(cur).replace(",", "").replace("₹","")) if prefill and str(cur).strip() else 0.0
             except Exception:
                 default = 0.0
-            values[field] = target.number_input(field, min_value=0.0, step=100.0, value=default)
+            values[field] = target.number_input(field, min_value=500.0, step=50.0, value=default)
 
         elif spec["type"] == "select":
             opts = spec["options"]
@@ -210,10 +228,9 @@ if submit:
     # Convert Streamlit date/time widgets back to strings
     payload = {}
     for k, v in values.items():
-        # Skip untouched dropdowns (None means placeholder selected)
+        # Skip untouched / placeholder values
         if v is None:
             continue
-        # Skip empty strings
         if isinstance(v, str) and not v.strip():
             continue
     
@@ -223,13 +240,14 @@ if submit:
         elif isinstance(v, pd.Timestamp):
             payload[k] = v.date().strftime("%Y-%m-%d")
         elif hasattr(v, "isoformat") and not isinstance(v, (str, bytes)):
-            # date or time
+            # date or time (time has hour/minute; date has year)
             if hasattr(v, "year"):  # date
                 payload[k] = v.strftime("%Y-%m-%d")
-            else:  # time
+            else:                   # time
                 payload[k] = f"{v.hour:02d}:{v.minute:02d}"
         else:
             payload[k] = v
+
 
 
     # Ensure required defaults if missing
