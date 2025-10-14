@@ -118,42 +118,49 @@ else:
     if not agg.empty:
         agg.loc[0, "Executive"] = f"👑 {agg.loc[0, 'Executive']}"
 
-    # Display-friendly currency
-    display = agg.copy()
-    display["Total Sales (₹)"] = display["Total Sales (₹)"].apply(lambda x: f"₹{x:,.0f}")
+    # --- Prepare display dataframe (no index column) ---
+display = agg[["Rank", "Executive", "Total Sales (₹)"]].copy()
+display["Total Sales (₹)"] = display["Total Sales (₹)"].apply(lambda x: f"₹{x:,.0f}")
 
-    # Motivation line
-    st.caption("🚀 Keep pushing team—every deal moves you up the leaderboard!")
+# 🚀 Motivation line
+st.caption("🚀 Keep pushing team—every deal moves you up the leaderboard!")
 
-    # ---- Styled, compact, non-stretched table ----
-    header_bg = "#6D28D9"   # purple-700
-    header_fg = "#FFFFFF"   # white
+# --- Styled, compact, non-stretched table (no index, colorful header) ---
+header_bg = "#6D28D9"   # purple-700
+header_fg = "#FFFFFF"   # white
 
-    styler = (
-        display.style
-            .hide(axis="index")  # remove row id
-            .set_table_styles([
-                {"selector": "th", "props": [
-                    ("background-color", header_bg),
-                    ("color", header_fg),
-                    ("font-weight", "bold"),
-                    ("text-align", "center"),
-                    ("border", "1px solid #e5e7eb")
-                ]},
-                {"selector": "td", "props": [
-                    ("border", "1px solid #f1f5f9"),
-                    ("white-space", "nowrap"),
-                    ("font-size", "0.95rem"),
-                    ("padding", "6px 10px")
-                ]},
-            ])
-            # fixed widths to avoid stretching
-            .set_properties(subset=["Rank"], **{"text-align": "center", "width": "6em"})
-            .set_properties(subset=["Executive"], **{"text-align": "left", "width": "18em"})
-            .set_properties(subset=["Total Sales (₹)"], **{"text-align": "right", "width": "12em"})
-    )
+styler = (
+    display.style
+        .hide_index()  # 1) hide index (preferred API)
+        .set_table_styles([
+            # Style only the column headers
+            {"selector": "thead th", "props": [
+                ("background-color", header_bg),
+                ("color", header_fg),
+                ("font-weight", "bold"),
+                ("text-align", "center"),
+                ("border", "1px solid #e5e7eb")
+            ]},
+            # Body cells
+            {"selector": "tbody td", "props": [
+                ("border", "1px solid #f1f5f9"),
+                ("white-space", "nowrap"),
+                ("font-size", "0.95rem"),
+                ("padding", "6px 10px")
+            ]},
+            # 2) defensive: hide any stub/index header cells some builds still render
+            {"selector": "th.row_heading", "props": [("display", "none")]},
+            {"selector": "th.blank.level0", "props": [("display", "none")]},
+        ])
+        # Fixed, compact widths so the table doesn't stretch
+        .set_properties(subset=["Rank"], **{"text-align": "center", "width": "5.5em"})
+        .set_properties(subset=["Executive"], **{"text-align": "left", "width": "14em"})
+        .set_properties(subset=["Total Sales (₹)"], **{"text-align": "right", "width": "10em"})
+)
 
-    st.table(styler)  # st.table + Styler = colored header & compact widths
+# st.table respects Styler (colors, widths) and won't auto-stretch to full width
+st.table(styler)
+
 
 
 
