@@ -54,20 +54,23 @@ if crm_df.empty:
 # ============ 🏆 Top Sales Executives (by Sale Amount) ============
 st.markdown("## 🏆 Top Sales Executives — B2C Sale Amount")
 
-# ---- Single row: start picker | end picker | table ----
-col_start, col_end, col_table = st.columns([1.6, 1.6, 6.8])
+# We render everything inside a left column whose width matches the table.
+# The right column is empty, so the whole metric block hugs the left edge.
+left_block, _spacer = st.columns([6, 6])
 
-_today = datetime.today().date()
-_month_start = _today.replace(day=1)
+with left_block:
+    # --- Date pickers in a single row (kept inside the same width as the table) ---
+    dp1, dp2 = st.columns([1, 1])
 
-with col_start:
-    m_start = st.date_input("Start date", value=_month_start, key="exec_metric_start")
+    _today = datetime.today().date()
+    _month_start = _today.replace(day=1)
 
-with col_end:
-    m_end = st.date_input("End date", value=_today, key="exec_metric_end")
+    with dp1:
+        m_start = st.date_input("Start date", value=_month_start, key="exec_metric_start")
+    with dp2:
+        m_end = st.date_input("End date", value=_today, key="exec_metric_end")
 
-with col_table:
-    # Period header inside the same row as the table
+    # Friendly period header just above the table
     if m_start == _month_start and m_end == _today:
         st.caption(f"Showing metrics for **{_today.strftime('%B %Y')}** (to date).")
     else:
@@ -127,12 +130,10 @@ with col_table:
         display["Total Sales (₹)"] = display["Total Sales (₹)"].apply(lambda x: f"₹{x:,.0f}")
         display.reset_index(drop=True, inplace=True)
 
-        # Pep line
-        st.caption("🚀 Keep pushing team—every deal moves you up the leaderboard!")
-
         # ---- Styled, compact table (no stretch) ----
-        header_bg = "#6D28D9"   # purple-700
-        header_fg = "#FFFFFF"   # white
+        # Softer, pleasing header color to match dashboards
+        header_bg = "#38BDF8"   # sky-400 (pleasant, not harsh)
+        header_fg = "#0B1220"   # near-black for great contrast on light blue
 
         styler = display.style
         # Back-compat hiding index
@@ -174,27 +175,16 @@ with col_table:
             .set_properties(subset=["Total Sales (₹)"], **{"text-align": "right", "width": "10em"})
         )
 
-        # ---- Render caption + pep + table BELOW the pickers, aligned under them ----
+        # Render table directly below date pickers, left-aligned, compact width
         html = styler.to_html()
-        
-        # Create a new row. Middle column width (4) matches the combined width of the two pickers (2+2)
-        under_left, under_mid, under_right = st.columns([6, 4, 6])
-        
-        with under_mid:
-            # Period caption (month or custom range)
-            if m_start == _month_start and m_end == _today:
-                st.caption(f"Showing metrics for **{_today.strftime('%B %Y')}** (to date).")
-            else:
-                st.caption(f"Showing metrics from **{m_start}** to **{m_end}**.")
-        
-            
-            # Pep line
-            st.caption("🚀 Keep pushing team—every deal moves you up the leaderboard!")
-            # Compact table; inline-block prevents stretching
-            st.markdown(
-                f"<div style='display:inline-block'>{html}</div>",
-                unsafe_allow_html=True
-            )
+        st.markdown(
+            f"<div style='display:inline-block'>{html}</div>",
+            unsafe_allow_html=True
+        )
+
+        # Motivation line LAST, under the table
+        st.caption("🚀🏃‍♂️🏃🏻‍♀️ Keep pushing team—every deal moves you up the leaderboard!")
+
         
             
 
