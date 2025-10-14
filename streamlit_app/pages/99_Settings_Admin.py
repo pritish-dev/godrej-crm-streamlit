@@ -29,14 +29,14 @@ with st.form("user_form"):
     full_name = st.text_input("Full Name")
     role = st.selectbox("Role", ["Viewer", "Editor", "Admin"])
     active = st.selectbox("Active", ["Y", "N"])
-    password_hash = st.text_input("Password Hash (bcrypt)", help="Paste the generated hash above")
+    passwordhash = st.text_input("Password Hash (bcrypt)", help="Paste the generated hash above")
     submit_user = st.form_submit_button("Save User")
 
 if submit_user:
-    if not (username and full_name and role and password_hash):
+    if not (username and full_name and role and passwordhash):
         st.error("All fields (except Active) are required.")
     else:
-        msg = upsert_user(username, password_hash, full_name, role, active)
+        msg = upsert_user(username, passwordhash, full_name, role, active)
         st.success(msg)
 
 st.subheader("Users (read-only)")

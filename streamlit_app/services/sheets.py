@@ -149,7 +149,7 @@ def get_df(sheet_name: str) -> pd.DataFrame:
             if sheet_name == "History Log":
                 ws.append_row(["Timestamp", "Action", "Sheet", "Customer Name", "Contact Number", "Old Data", "New Data"])
             if sheet_name == "Users":
-                ws.append_row(["username", "password_hash", "full_name", "role", "active"])
+                ws.append_row(["username", "passwordhash", "full_name", "role", "active"])
             return pd.DataFrame()
         all_values = ws.get_all_values()
         if not all_values:
@@ -169,11 +169,11 @@ def get_df(sheet_name: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def upsert_user(username: str, password_hash: str, full_name: str, role: str, active: str = "Y"):
+def upsert_user(username: str, passwordhash: str, full_name: str, role: str, active: str = "Y"):
     """
     Create/update a user row in the 'Users' sheet by username (case-insensitive).
     Works non-destructively: fixes/extends header if needed, updates a single row or appends a new one.
-    Expected canonical headers: username | password_hash | full_name | role | active
+    Expected canonical headers: username | passwordhash | full_name | role | active
     Returns a short message string.
     """
     import gspread
@@ -183,7 +183,7 @@ def upsert_user(username: str, password_hash: str, full_name: str, role: str, ac
     ws = sh_.worksheet("Users")
 
     # Canonical columns (order we want to maintain)
-    CANON = ["username", "password_hash", "full_name", "role", "active"]
+    CANON = ["username", "passwordhash", "full_name", "role", "active"]
 
     # Read current header (row 1). If the sheet is brand new, ensure header is present.
     headers = ws.row_values(1) or []
@@ -216,10 +216,10 @@ def upsert_user(username: str, password_hash: str, full_name: str, role: str, ac
     full_name = (full_name or "").strip()
     role = (role or "").strip()
     active = "Y" if str(active).strip().upper() != "N" else "N"
-    password_hash = (password_hash or "").strip()
+    passwordhash = (passwordhash or "").strip()
 
-    if not (uname and full_name and role and password_hash):
-        raise ValueError("username, password_hash, full_name, role are required")
+    if not (uname and full_name and role and passwordhash):
+        raise ValueError("username, passwordhash, full_name, role are required")
 
     # Find existing row for this username (using the mapped Username column)
     if "username" not in col_idx:
@@ -241,7 +241,7 @@ def upsert_user(username: str, password_hash: str, full_name: str, role: str, ac
     ordered = [""] * len(headers_norm)
     values_map = {
         "username": uname,
-        "password_hash": password_hash,
+        "passwordhash": passwordhash,
         "full_name": full_name,
         "role": role,
         "active": active,
@@ -351,18 +351,18 @@ def ensure_users_header():
         ws = sh.worksheet("Users")
     except gspread.exceptions.WorksheetNotFound:
         ws = sh.add_worksheet(title="Users", rows=200, cols=5)
-        ws.append_row(["username","password_hash","full_name","role","active"])
+        ws.append_row(["username","passwordhash","full_name","role","active"])
 
 def get_users_df() -> pd.DataFrame:
     ensure_users_header()
     df = get_df("Users").copy()
     if df is None or df.empty:
-        return pd.DataFrame(columns=["username","password_hash","full_name","role","active"])
+        return pd.DataFrame(columns=["username","passwordhash","full_name","role","active"])
     df.columns = [str(c).strip().lower() for c in df.columns]
-    for col in ["username","password_hash","full_name","role","active"]:
+    for col in ["username","passwordhash","full_name","role","active"]:
         if col not in df.columns: df[col] = ""
     df["username"] = df["username"].astype(str).str.strip().str.lower()
-    df["password_hash"] = df["password_hash"].astype(str).str.strip()
+    df["passwordhash"] = df["passwordhash"].astype(str).str.strip()
     df["full_name"] = df["full_name"].astype(str).str.strip()
     df["role"] = df["role"].astype(str).str.strip()
     df["active"] = df["active"].astype(str).str.strip()
