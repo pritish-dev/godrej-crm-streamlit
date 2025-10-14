@@ -173,9 +173,21 @@ with st.form("add_update_dynamic", clear_on_submit=False):
 
         elif spec["type"] == "select":
             opts = spec["options"]
-            current = _safe(cur)
-            idx = opts.index(current) if current in opts else 0
-            values[field] = target.selectbox(field, opts, index=idx)
+            
+            # If we have a prefill and it's valid, use it; otherwise None (no selection)
+            current = cur if (prefill and isinstance(cur, str) and cur in opts) else None
+            
+            # Add a None placeholder; render it nicely
+            sel_options = [None] + opts
+            sel_index = 0 if current is None else (1 + opts.index(current))
+            values[field] = target.selectbox(
+                field,
+                sel_options,
+                index=sel_index,
+                format_func=lambda x: "— Select —" if x is None else x,
+                help="Leave as '— Select —' if you don't want to set this now."
+            )
+            
 
         elif spec["type"] == "textarea":
             values[field] = target.text_area(field, value=_safe(cur))
@@ -198,18 +210,27 @@ if submit:
     # Convert Streamlit date/time widgets back to strings
     payload = {}
     for k, v in values.items():
+        # Skip untouched dropdowns (None means placeholder selected)
+        if v is None:
+            continue
+        # Skip empty strings
+        if isinstance(v, str) and not v.strip():
+            continue
+    
+        # Convert widgets to strings
         if isinstance(v, datetime):
             payload[k] = v.strftime("%Y-%m-%d")
         elif isinstance(v, pd.Timestamp):
             payload[k] = v.date().strftime("%Y-%m-%d")
-        elif hasattr(v, "isoformat") and not isinstance(v, (str, bytes)):  # date/time
-            # date -> YYYY-MM-DD, time -> HH:MM
+        elif hasattr(v, "isoformat") and not isinstance(v, (str, bytes)):
+            # date or time
             if hasattr(v, "year"):  # date
                 payload[k] = v.strftime("%Y-%m-%d")
-            else:                   # time
+            else:  # time
                 payload[k] = f"{v.hour:02d}:{v.minute:02d}"
         else:
             payload[k] = v
+
 
     # Ensure required defaults if missing
     if "DATE RECEIVED" not in payload or not str(payload["DATE RECEIVED"]).strip():
