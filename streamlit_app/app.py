@@ -188,11 +188,42 @@ else:
         .set_properties(subset=["Total Sales (₹)"], **{"text-align": "right", "width": "10em"})
     )
     
+    # ---- Render date panel (left) + compact table (right) ----
     html = styler.to_html()
-    st.markdown(
-        f"<div style='display:inline-block; max-width: 700px'>{html}</div>",
-        unsafe_allow_html=True
-    )
+    
+    left_info, table_area = st.columns([1.1, 3.9])
+    
+    with left_info:
+        # tiny date panel
+        st.markdown(
+            f"""
+            <div style="
+                display:flex;flex-direction:column;gap:8px;
+                font-size:0.92rem; line-height:1.2;
+                padding:8px 10px; border:1px solid #e5e7eb; border-radius:8px;
+                background:#fafafa; max-width: 170px;">
+                <div><span style="font-weight:600;">Start:</span><br>
+                    <span style="display:inline-block;margin-top:4px;padding:4px 8px;border-radius:6px;background:#eef2ff;border:1px solid #e0e7ff;">
+                        {m_start.strftime('%Y/%m/%d')}
+                    </span>
+                </div>
+                <div><span style="font-weight:600;">End:</span><br>
+                    <span style="display:inline-block;margin-top:4px;padding:4px 8px;border-radius:6px;background:#eef2ff;border:1px solid #e0e7ff;">
+                        {m_end.strftime('%Y/%m/%d')}
+                    </span>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    
+    with table_area:
+        # keep table compact; don't stretch
+        st.markdown(
+            f"<div style='display:inline-block'>{html}</div>",
+            unsafe_allow_html=True
+        )
+
     
 
 # ============ Light metrics & timeframe filter (still on app page, read-only) ============
