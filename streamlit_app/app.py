@@ -177,7 +177,11 @@ else:
         .set_properties(subset=["Total Sales (₹)"], **{"text-align": "right", "width": "10em"})
     )
     
-    st.table(styler)
+    html = styler.to_html()
+    st.markdown(
+        f"<div style='display:inline-block; max-width: 700px'>{html}</div>",
+        unsafe_allow_html=True
+    )
     
 
 # ============ Light metrics & timeframe filter (still on app page, read-only) ============
