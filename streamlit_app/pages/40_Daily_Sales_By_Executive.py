@@ -94,22 +94,19 @@ for exec_name in full_roster:
         pivot_num[exec_name] = 0.0
 pivot_num = pivot_num[full_roster]
 
-# ---------- add daily total column ----------
+# ---------- add daily total column + monthly footer ----------
 pivot_num["Total (Daily)"] = pivot_num.sum(axis=1)
 monthly_total_value = float(pivot_num["Total (Daily)"].sum())
 
-# ---------- build display frame aligned with numeric frame ----------
 disp = pivot_num.copy()
 disp.index.name = "Date"
-disp = disp.reset_index()               # <-- alignment point for styling
-num_aligned = pivot_num.reset_index()   # <-- numeric copy aligned to disp
+disp = disp.reset_index()
+num_aligned = pivot_num.reset_index()
 
-# format exec columns + total for display (leave num_aligned numeric)
 display_cols = full_roster + ["Total (Daily)"]
 for col in display_cols:
     disp[col] = disp[col].map(_fmt_currency)
 
-# ---------- append monthly total footer row ----------
 footer = {
     "Date": "Monthly Total",
     **{col: "" for col in full_roster},
@@ -117,7 +114,6 @@ footer = {
 }
 disp = pd.concat([disp, pd.DataFrame([footer])], ignore_index=True)
 
-# keep num_aligned shape matched; add a numeric footer row (zeros for execs)
 footer_num = {
     "Date": None,
     **{col: 0.0 for col in full_roster},
@@ -129,18 +125,9 @@ num_aligned = pd.concat([num_aligned, pd.DataFrame([footer_num])], ignore_index=
 header_bg = "#E0F2FE"   # sky-100
 header_fg = "#0B1220"   # near-black
 
-# boolean mask for zeros (exclude footer row from red highlight)
-mask = num_aligned[full_roster].eq(0.0)
-if not mask.empty:
-    mask.iloc[-1, :] = False  # don't style footer row as zero-sales
-
-styles = mask.replace(
-    {True: "background-color:#fee2e2; color:#991b1b;", False: ""}
-)
-
 styler = disp.style
 
-# hide index for various pandas versions
+# hide index across pandas versions
 if getattr(styler, "hide_index", None):
     styler = styler.hide_index()
 else:
@@ -149,19 +136,44 @@ else:
     except Exception:
         pass
 
-# apply the style matrix to exec columns only
-styler = styler.apply(lambda _df: styles, subset=full_roster, axis=None)
+# 1) RED: zero-sales cells for executives (not footer)
+zero_mask = num_aligned[full_roster].eq(0.0)
+if not zero_mask.empty:
+    zero_mask.iloc[-1, :] = False
+zero_styles = zero_mask.replace(
+    {True: "background-color:#fee2e2; color:#991b1b;", False: ""}
+)
+styler = styler.apply(lambda _df: zero_styles, subset=full_roster, axis=None)
 
-# make the footer row bold
+# 2) GREEN: exec cell > ₹500,000 for that day
+thr = 500000
+high_exec_mask = num_aligned[full_roster].gt(thr)
+if not high_exec_mask.empty:
+    high_exec_mask.iloc[-1, :] = False  # don't style footer
+green_cell_styles = high_exec_mask.replace(
+    {True: "background-color:#dcfce7; color:#14532d; font-weight:600;", False: ""}
+)
+styler = styler.apply(lambda _df: green_cell_styles, subset=full_roster, axis=None)
+
+# 3) GREEN: Date cell when Total (Daily) > ₹500,000
+date_style_df = pd.DataFrame("", index=disp.index, columns=["Date"])
+day_high = num_aligned["Total (Daily)"].gt(thr)
+if len(day_high) > 0:
+    day_high.iloc[-1] = False  # don't style footer
+    date_style_df.loc[day_high[day_high].index, "Date"] = (
+        "background-color:#dcfce7; color:#14532d; font-weight:600;"
+    )
+styler = styler.apply(lambda _df: date_style_df, subset=["Date"], axis=None)
+
+# 4) Footer row bold
 def footer_style(df: pd.DataFrame):
     s = pd.DataFrame("", index=df.index, columns=df.columns)
     if len(df) > 0:
         s.iloc[-1, :] = "font-weight: bold; border-top: 2px solid #0b1220;"
     return s
-
 styler = styler.apply(footer_style, axis=None)
 
-# add table-wide styles
+# Table-wide styles
 styler = (
     styler
     .set_table_styles([
@@ -193,6 +205,7 @@ html = styler.to_html()
 st.markdown(f"<div style='display:inline-block'>{html}</div>", unsafe_allow_html=True)
 
 st.caption(
-    "🔴 Cells with **₹0** indicate no sales recorded for that executive on that day. "
-    "The **Total (Daily)** column sums all executives for the day; the **Monthly Total** row shows the sum across the selected period."
+    "🔴 ₹0 cells mean no sales for that executive on that day. "
+    "🟢 Days with **Total (Daily) > ₹5,00,000** have the **Date** highlighted; "
+    "🟢 individual executive cells > ₹5,00,000 are highlighted as well."
 )
