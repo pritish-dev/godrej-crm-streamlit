@@ -119,13 +119,18 @@ with c1:
 with c2:
     q_phone = st.text_input("Contact Number (search)")
 
-prefill = None
+if "prefill" not in st.session_state:
+    st.session_state.prefill = None
+
 if st.button("Load Existing"):
-    prefill = _find_existing(q_name, q_phone)
-    if prefill:
+    st.session_state.prefill = _find_existing(q_name, q_phone)
+    if st.session_state.prefill:
         st.success("Loaded existing record. Fields are prefilled below.")
     else:
         st.info("No match found. Fill as a new record.")
+
+prefill = st.session_state.prefill
+
 
 # ---- Order fields: show common ones first, then any remaining columns dynamically ----
 COMMON_ORDER = [
@@ -219,27 +224,32 @@ with st.form("add_update_dynamic", clear_on_submit=False):
     submit = st.form_submit_button("Save")
 
 if submit:
-    # Minimal uniqueness
-    name = str(values.get("Customer Name","")).strip()
-    phone = str(values.get("Contact Number","")).strip()
+    # Primary values from the form widgets
+    name  = str(values.get("Customer Name", "")).strip()
+    phone = str(values.get("Contact Number", "")).strip()
+
+    # Fallback to prefill if widgets were blank for any reason (e.g., rerun/dup fields)
+    if (not name) and prefill:
+        name = str(prefill.get("Customer Name", "")).strip()
+    if (not phone) and prefill:
+        phone = str(prefill.get("Contact Number", "")).strip()
+
+    # Final fallback to the search inputs (user typed them to find the record)
+    if not name:
+        name = str(q_name).strip()
+    if not phone:
+        phone = str(q_phone).strip()
+
     if not name or not phone:
         st.error("Customer Name and Contact Number are required.")
         st.stop()
 
-    # Convert Streamlit widgets back to strings
-    is_update = bool(prefill)  # True if you loaded an existing row earlier
+    is_update = bool(prefill)
 
     payload = {}
     for k, v in values.items():
-        # Skip untouched / placeholder values
-        if v is None:
+        if v is None or v == "__UNCHANGED__" or (isinstance(v, str) and not v.strip()):
             continue
-        if v == "__UNCHANGED__":  # sentinel for DATE RECEIVED on updates
-            continue
-        if isinstance(v, str) and not v.strip():
-            continue
-
-        # Convert widgets to strings
         if isinstance(v, datetime):
             payload[k] = v.strftime("%Y-%m-%d")
         elif isinstance(v, pd.Timestamp):
@@ -252,16 +262,13 @@ if submit:
         else:
             payload[k] = v
 
-    # Only auto-default DATE RECEIVED for NEW records
     if not is_update:
         if "DATE RECEIVED" not in payload or not str(payload["DATE RECEIVED"]).strip():
             payload["DATE RECEIVED"] = datetime.today().strftime("%Y-%m-%d")
 
-    # Upsert
     unique_fields = {"Customer Name": name, "Contact Number": phone}
     msg = upsert_record("CRM", unique_fields, payload)
     st.success(f"✅ {msg}")
 
-    # refresh cache + rerun
     get_df.clear()
     st.rerun()
