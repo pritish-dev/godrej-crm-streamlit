@@ -58,7 +58,7 @@ mask_range = (crm["DATE_RECEIVED_DT"] >= start) & (crm["DATE_RECEIVED_DT"] <= en
 mask_won   = crm["Lead Status"].astype(str).str.strip().str.lower().eq("won")
 df = crm[mask_range & mask_won].copy()
 
-KNOWN_EXECUTIVES = ["Archita", "Jitendra", "Smruti", "Swati"]  # exclude "Other"
+KNOWN_EXECUTIVES = ["Archita", "Jitendra", "Smruti", "Swati", "Nazrin", "Krupa"]  # exclude "Other"
 found_execs = (
     crm["LEAD Sales Executive"].dropna().astype(str).str.strip()
       .replace("", pd.NA).dropna().unique().tolist()
@@ -94,22 +94,46 @@ for exec_name in full_roster:
         pivot_num[exec_name] = 0.0
 pivot_num = pivot_num[full_roster]
 
+# ---------- add daily total column ----------
+pivot_num["Total (Daily)"] = pivot_num.sum(axis=1)
+monthly_total_value = float(pivot_num["Total (Daily)"].sum())
+
 # ---------- build display frame aligned with numeric frame ----------
 disp = pivot_num.copy()
 disp.index.name = "Date"
 disp = disp.reset_index()               # <-- alignment point for styling
 num_aligned = pivot_num.reset_index()   # <-- numeric copy aligned to disp
 
-# format currency strings for display (leave num_aligned numeric)
-for col in full_roster:
+# format exec columns + total for display (leave num_aligned numeric)
+display_cols = full_roster + ["Total (Daily)"]
+for col in display_cols:
     disp[col] = disp[col].map(_fmt_currency)
 
+# ---------- append monthly total footer row ----------
+footer = {
+    "Date": "Monthly Total",
+    **{col: "" for col in full_roster},
+    "Total (Daily)": _fmt_currency(monthly_total_value),
+}
+disp = pd.concat([disp, pd.DataFrame([footer])], ignore_index=True)
+
+# keep num_aligned shape matched; add a numeric footer row (zeros for execs)
+footer_num = {
+    "Date": None,
+    **{col: 0.0 for col in full_roster},
+    "Total (Daily)": monthly_total_value,
+}
+num_aligned = pd.concat([num_aligned, pd.DataFrame([footer_num])], ignore_index=True)
+
 # ---------- styling ----------
-header_bg = "#E0F2FE"   # sky-100 (soft, friendly)
+header_bg = "#E0F2FE"   # sky-100
 header_fg = "#0B1220"   # near-black
 
-# Create a boolean mask (True where zero) EXACTLY matching disp's shape (excluding Date)
+# boolean mask for zeros (exclude footer row from red highlight)
 mask = num_aligned[full_roster].eq(0.0)
+if not mask.empty:
+    mask.iloc[-1, :] = False  # don't style footer row as zero-sales
+
 styles = mask.replace(
     {True: "background-color:#fee2e2; color:#991b1b;", False: ""}
 )
@@ -125,9 +149,19 @@ else:
     except Exception:
         pass
 
-# apply the style matrix; index/columns align with subset
+# apply the style matrix to exec columns only
 styler = styler.apply(lambda _df: styles, subset=full_roster, axis=None)
 
+# make the footer row bold
+def footer_style(df: pd.DataFrame):
+    s = pd.DataFrame("", index=df.index, columns=df.columns)
+    if len(df) > 0:
+        s.iloc[-1, :] = "font-weight: bold; border-top: 2px solid #0b1220;"
+    return s
+
+styler = styler.apply(footer_style, axis=None)
+
+# add table-wide styles
 styler = (
     styler
     .set_table_styles([
@@ -151,11 +185,14 @@ styler = (
             ("overflow", "hidden")
         ]},
     ])
-    .set_properties(subset=["Date"], **{"text-align": "left", "width": "9.5em"})
+    .set_properties(subset=["Date"], **{"text-align": "left", "width": "10.5em"})
 )
 
 # compact width (no full stretch)
 html = styler.to_html()
 st.markdown(f"<div style='display:inline-block'>{html}</div>", unsafe_allow_html=True)
 
-st.caption("🔴 Cells with **₹0** indicate no sales recorded for that executive on that day.")
+st.caption(
+    "🔴 Cells with **₹0** indicate no sales recorded for that executive on that day. "
+    "The **Total (Daily)** column sums all executives for the day; the **Monthly Total** row shows the sum across the selected period."
+)
