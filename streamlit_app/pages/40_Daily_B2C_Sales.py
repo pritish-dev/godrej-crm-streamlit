@@ -140,7 +140,7 @@ def build_messages(num_df: pd.DataFrame, roster: list[str]) -> list[str]:
         if len(series) and best_val > 0:
             best_day = body.loc[series.idxmax(), "DATE_RECEIVED_DT"]
             msgs.append(f"🏆 {e}: Best day {best_day} — {_fmt_currency(best_val)}")
-        msgs.append(f"📈 {e}: MTD {_fmt_currency(total)} | Avg/day {_fmt_currency(avg)}")
+        msgs.append(f"📈 {e}: TOTAL SALE {_fmt_currency(total)} | Avg/day {_fmt_currency(avg)}")
         zero_days = int((series == 0).sum()) if len(series) else 0
         msgs.append(f"🧱 {e}: Zero-sale days this period — {zero_days}")
 
