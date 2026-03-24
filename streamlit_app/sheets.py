@@ -151,3 +151,41 @@ def upsert_record(sheet_name: str, unique_fields: dict, new_data: dict, sync_to_
         log_history("INSERT", sheet_name, order_no, {}, new_data)
 
         return f"Inserted Order {order_no}"
+
+
+def log_history(action: str, sheet_name: str, unique_fields: dict, old_data: dict, new_data: dict):
+    try:
+        import streamlit as st
+        sh = _get_spreadsheet()
+
+        try:
+            ws = sh.worksheet("History Log")
+        except Exception:
+            ws = sh.add_worksheet(title="History Log", rows=1000, cols=20)
+            ws.append_row([
+                "Timestamp", "User", "Action", "Sheet",
+                "Customer Name", "Contact Number",
+                "Old Data", "New Data"
+            ])
+
+        # 👇 Get logged-in user (from session)
+        user = "Unknown"
+        try:
+            if "user" in st.session_state:
+                user = st.session_state["user"].get("username", "Unknown")
+        except:
+            pass
+
+        ws.append_row([
+            str(datetime.now()),
+            user,
+            action,
+            sheet_name,
+            unique_fields.get("Customer Name", ""),
+            unique_fields.get("Contact Number", ""),
+            str(old_data),
+            str(new_data)
+        ])
+
+    except Exception as e:
+        st.warning(f"History log write failed: {e}")

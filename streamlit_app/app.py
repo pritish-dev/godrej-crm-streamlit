@@ -1,204 +1,153 @@
-# NOTE: B2C SALES ONLY VERSION (Leads & Service moved to separate pages)
+# UPDATED sheets.py FOR ORDER-BASED CRM (B2C READY)
 
-import streamlit as st
-import plotly.express as px
+import gspread
+import re
+from google.oauth2.service_account import Credentials
 import pandas as pd
-from datetime import datetime
-from sheets import get_df, upsert_record
+import streamlit as st
+from datetime import datetime, date
 
-st.set_page_config(page_title="4sinteriors B2C Sales Dashboard", layout="wide")
-st.title("📊 Interio by Godrej Patia – B2C Sales Dashboard")
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+
+try:
+    CREDS = Credentials.from_service_account_info(st.secrets["google"], scopes=SCOPES)
+except Exception:
+    CREDS = Credentials.from_service_account_file("config/credentials.json", scopes=SCOPES)
+
+gc = gspread.authorize(CREDS)
+SPREADSHEET_ID = "1wFpK-WokcZB6k1vzG7B6JO5TdGHrUwdgvVm_-UQse54"
+sh = gc.open_by_key(SPREADSHEET_ID)
+
+EMAIL_COLS = {"STAFF EMAIL", "CUSTOMER EMAIL"}
 
 # ----------------------------
 # Helpers
 # ----------------------------
 
-def _to_dt(s):
-    return pd.to_datetime(s, errors="coerce")
-
-def clean_crm(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
-        return pd.DataFrame()
-    out = df.copy()
-    out.columns = [c.strip().upper() for c in out.columns]
-
-    if "DATE" in out.columns:
-        out["DATE"] = _to_dt(out["DATE"]).dt.date
-
-    if "DATE OF INVOICE" in out.columns:
-        out["DATE OF INVOICE"] = _to_dt(out["DATE OF INVOICE"]).dt.date
-
-    return out
-
-# ----------------------------
-# Load Data
-# ----------------------------
-
-crm_df_raw = get_df("CRM")
-crm_df = clean_crm(crm_df_raw)
-
-# Filter ONLY B2C
-if "B2B/B2C" in crm_df.columns:
-    crm_df = crm_df[crm_df["B2B/B2C"].astype(str).str.upper() == "B2C"]
-
-# ----------------------------
-# Sidebar
-# ----------------------------
-
-section = st.sidebar.radio(
-    "Choose Section",
-    ["B2C Sales Overview", "Add Order", "Quick Edit", "History Log"]
-)
-
-if st.sidebar.button("🔄 Refresh Data"):
-    get_df.clear()
-    st.rerun()
-
-# ----------------------------
-# B2C SALES OVERVIEW
-# ----------------------------
-
-if section == "B2C Sales Overview":
-    st.subheader("📋 B2C Orders Data")
-    st.dataframe(crm_df, use_container_width=True)
-
-    if not crm_df.empty:
-        st.markdown("## 📊 Sales Insights")
-
-        df = crm_df.copy()
-        df["ORDER AMOUNT"] = pd.to_numeric(df.get("ORDER AMOUNT"), errors="coerce")
-
-        # Sales by person
-        if "SALES PERSON" in df.columns:
-            summary = df.groupby("SALES PERSON")["ORDER AMOUNT"].sum().reset_index()
-
-            col1, col2 = st.columns(2)
-
-            with col1:
-                st.dataframe(summary, use_container_width=True)
-
-            with col2:
-                fig = px.pie(summary, names="SALES PERSON", values="ORDER AMOUNT", title="Sales Contribution")
-                st.plotly_chart(fig, use_container_width=True)
-
-        # Monthly trend
-        if "DATE" in df.columns:
-            df["DATE"] = pd.to_datetime(df["DATE"], errors="coerce")
-            df["MONTH"] = df["DATE"].dt.to_period("M").astype(str)
-
-            monthly = df.groupby("MONTH")["ORDER AMOUNT"].sum().reset_index()
-
-            st.markdown("### 📈 Monthly Sales Trend")
-            fig = px.bar(monthly, x="MONTH", y="ORDER AMOUNT", title="Monthly Sales")
-            st.plotly_chart(fig, use_container_width=True)
-
-# ----------------------------
-# ADD ORDER
-# ----------------------------
-
-elif section == "Add Order":
-    st.subheader("➕ Add New B2C Order")
-
-    with st.form("order_form"):
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            date = st.date_input("DATE", datetime.today())
-            customer_name = st.text_input("CUSTOMER NAME")
-            contact = st.text_input("CONTACT NUMBER")
-            category = st.text_input("CATEGORY")
-            product = st.text_input("PRODUCT NAME")
-
-        with col2:
-            order_no = st.text_input("ORDER NO")
-            godrej_so = st.text_input("GODREJ SO NO")
-            order_amount = st.number_input("ORDER AMOUNT", min_value=0.0)
-            qty = st.number_input("QTY", min_value=1)
-            sales_person = st.text_input("SALES PERSON")
-
-        with col3:
-            invoice_no = st.text_input("INVOICE NO")
-            invoice_date = st.date_input("DATE OF INVOICE", datetime.today())
-            inv_amt = st.number_input("INV AMT (BEFORE TAX)", min_value=0.0)
-            adv_received = st.number_input("ADV RECEIVED", min_value=0.0)
-            delivery_date = st.date_input("CUSTOMER DELIVERY DATE", datetime.today())
-
-        submit = st.form_submit_button("Save Order")
-
-        if submit:
-            unique_fields = {"ORDER NO": order_no}
-
-            new_data = {
-                "DATE": str(date),
-                "CUSTOMER NAME": customer_name,
-                "CONTACT NUMBER": contact,
-                "CATEGORY": category,
-                "PRODUCT NAME": product,
-                "ORDER NO": order_no,
-                "GODREJ SO NO": godrej_so,
-                "ORDER AMOUNT": order_amount,
-                "QTY": qty,
-                "SALES PERSON": sales_person,
-                "INVOICE NO": invoice_no,
-                "DATE OF INVOICE": str(invoice_date),
-                "INV AMT(BEFORE TAX)": inv_amt,
-                "ADV RECEIVED": adv_received,
-                "CUSTOMER DELIVERY DATE (TO BE)": str(delivery_date),
-                "B2B/B2C": "B2C"
-            }
-
-            msg = upsert_record("CRM", unique_fields, new_data)
-            st.success(f"✅ {msg}")
-
-# ----------------------------
-# QUICK EDIT
-# ----------------------------
-
-elif section == "Quick Edit":
-    st.subheader("✏️ Quick Edit (B2C Only)")
-
-    if crm_df.empty:
-        st.info("No data available")
-        st.stop()
-
-    df = crm_df.copy()
-
-    search = st.text_input("Search Customer or Order No")
-
-    if search:
-        df = df[
-            df["CUSTOMER NAME"].astype(str).str.contains(search, case=False, na=False) |
-            df["ORDER NO"].astype(str).str.contains(search, case=False, na=False)
-        ]
-
-    if df.empty:
-        st.info("No match found")
-        st.stop()
-
-    choice = st.selectbox("Select Record", df["ORDER NO"].astype(str))
-
-    row = df[df["ORDER NO"].astype(str) == choice].iloc[0]
-
-    field = st.selectbox("Field to update", df.columns.tolist())
-
-    new_val = st.text_input("New Value", value=str(row[field]))
-
-    if st.button("Update"):
-        unique_fields = {"ORDER NO": choice}
-        msg = upsert_record("CRM", unique_fields, {field: new_val})
-        st.success(msg)
-        get_df.clear()
-        st.rerun()
-
-# ----------------------------
-# HISTORY
-# ----------------------------
-
-elif section == "History Log":
-    st.subheader("📝 Change History")
-
+def _fmt_mmddyyyy(v) -> str:
     try:
-        log_df = get_df("History Log")
-        st.dataframe(log_df, use_container_width=True)
+        d = pd.to_datetime(v, errors="coerce")
+        if pd.isna(d):
+            return ""
+        return d.strftime("%m/%d/%Y")
     except:
-        st.info("No history yet")
+        return ""
+
+
+def _normalize_field(col: str, val):
+    col = col.upper()
+
+    # Date fields
+    if col in {"DATE", "DATE OF INVOICE", "CUSTOMER DELIVERY DATE (TO BE)"}:
+        return _fmt_mmddyyyy(val)
+
+    # Emails
+    if col in EMAIL_COLS:
+        return (str(val or "").strip().lower())
+
+    # Numeric fields
+    if col in {"ORDER AMOUNT", "INV AMT(BEFORE TAX)", "ADV RECEIVED", "MRP", "UNIT PRICE=(AFTER DISC + TAX)", "GROSS ORDER VALUE", "ORDER AMOUNT", "DISC ALLOWED", "DISCOUNT GIVEN"}:
+        try:
+            return float(val)
+        except:
+            return 0
+
+    if col == "QTY":
+        try:
+            return int(val)
+        except:
+            return 0
+
+    return "" if val is None else str(val)
+
+
+# ----------------------------
+# GET DATA
+# ----------------------------
+
+@st.cache_data(ttl=60)
+def get_df(sheet_name: str):
+    try:
+        ws = sh.worksheet(sheet_name)
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title=sheet_name, rows=1000, cols=30)
+        return pd.DataFrame()
+
+    data = ws.get_all_values()
+    if not data:
+        return pd.DataFrame()
+
+    headers = [h.strip().upper() for h in data[0]]
+    df = pd.DataFrame(data[1:], columns=headers)
+
+    return df
+
+
+# ----------------------------
+# HISTORY LOG
+# ----------------------------
+
+def log_history(action, sheet_name, unique_id, old_data, new_data):
+    try:
+        ws = sh.worksheet("History Log")
+    except:
+        ws = sh.add_worksheet(title="History Log", rows=1000, cols=20)
+        ws.append_row(["Timestamp", "Action", "Sheet", "ORDER NO", "Old Data", "New Data"])
+
+    ws.append_row([
+        str(datetime.now()), action, sheet_name,
+        unique_id,
+        str(old_data), str(new_data)
+    ])
+
+
+# ----------------------------
+# UPSERT (ORDER NO BASED)
+# ----------------------------
+
+def upsert_record(sheet_name: str, unique_fields: dict, new_data: dict, sync_to_crm=True):
+    ws = sh.worksheet(sheet_name)
+    headers = [h.strip().upper() for h in ws.row_values(1)]
+
+    df = get_df(sheet_name)
+    get_df.clear()
+
+    order_no = str(unique_fields.get("ORDER NO", "")).strip()
+
+    if not order_no:
+        return "❌ ORDER NO is mandatory"
+
+    # Normalize new data
+    new_data = {k.upper(): _normalize_field(k, v) for k, v in new_data.items()}
+
+    # Ensure ORDER NO present
+    new_data["ORDER NO"] = order_no
+
+    # Find match
+    if not df.empty and "ORDER NO" in df.columns:
+        match = df["ORDER NO"].astype(str).str.strip() == order_no
+    else:
+        match = pd.Series([], dtype=bool)
+
+    # ---------------- UPDATE ----------------
+    if match.any():
+        row_index = match[match].index[0] + 2
+        old_data = df.iloc[match[match].index[0]].to_dict()
+
+        for col_idx, col_name in enumerate(headers, start=1):
+            if col_name in new_data:
+                ws.update_cell(row_index, col_idx, new_data[col_name])
+
+        log_history("UPDATE", sheet_name, order_no, old_data, new_data)
+        return f"Updated Order {order_no}"
+
+    # ---------------- INSERT ----------------
+    else:
+        row_values = []
+        for col in headers:
+            row_values.append(new_data.get(col, ""))
+
+        ws.append_row(row_values)
+        log_history("INSERT", sheet_name, order_no, {}, new_data)
+
+        return f"Inserted Order {order_no}"
