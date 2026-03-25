@@ -2,96 +2,129 @@ import streamlit as st
 import pandas as pd
 from services.sheets import get_df
 
-st.set_page_config(layout="wide")
-st.title("📊 CRM — Sales Dashboard (B2C/B2B Orders)")
+st.set_page_config(page_title="CRM Dashboard", layout="wide")
 
-# -------- LOAD DATA --------
+st.title("📊 Sales CRM Dashboard")
+
+# ----------------------------
+# Load Data
+# ----------------------------
 df = get_df("CRM")
 
 if df is None or df.empty:
-    st.info("No data found in CRM.")
+    st.warning("No CRM data found.")
     st.stop()
 
-# -------- CLEAN HEADERS --------
-df.columns = [c.strip().upper() for c in df.columns]
+# ----------------------------
+# CLEAN & FORMAT DATE
+# ----------------------------
+if "DATE" in df.columns:
+    df["DATE"] = pd.to_datetime(
+        df["DATE"],
+        format="%d-%m-%Y",
+        errors="coerce"
+    )
 
-# -------- SALES VIEW COLUMNS --------
+    # Sort latest first
+    df = df.sort_values(by="DATE", ascending=False)
+
+    # Convert back to display format
+    df["DATE"] = df["DATE"].dt.strftime("%d-%m-%Y")
+
+# ----------------------------
+# SALES-FOCUSED COLUMNS ONLY
+# ----------------------------
 SALES_COLUMNS = [
     "DATE",
     "ORDER NO",
     "CUSTOMER NAME",
     "CONTACT NUMBER",
-    "PRODUCT NAME",
     "CATEGORY",
+    "PRODUCT NAME",
     "B2B/B2C",
     "QTY",
     "UNIT PRICE=(AFTER DISC + TAX)",
     "ORDER AMOUNT",
-    "SALES PERSON",
     "ADV RECEIVED",
+    "SALES PERSON",
     "CUSTOMER DELIVERY DATE (TO BE)",
-    "DELIVERY REMARKS"
 ]
 
-# Keep only available columns (safe)
-visible_cols = [c for c in SALES_COLUMNS if c in df.columns]
+# Keep only available columns
+display_cols = [col for col in SALES_COLUMNS if col in df.columns]
 
-sales_df = df[visible_cols].copy()
+df_display = df[display_cols].copy()
 
-# -------- SORT BY DATE (LATEST FIRST) --------
-if "DATE" in sales_df.columns:
-    sales_df["DATE"] = pd.to_datetime(sales_df["DATE"], errors="coerce")
-    sales_df = sales_df.sort_values(by="DATE", ascending=False)
+# ----------------------------
+# KPI SECTION
+# ----------------------------
+st.subheader("📈 Key Metrics")
 
-# -------- TYPE CONVERSIONS --------
-def _to_num(x):
-    try:
-        return float(str(x).replace(",", "").replace("₹", ""))
-    except:
-        return 0
-
-if "ORDER AMOUNT" in sales_df.columns:
-    sales_df["ORDER AMOUNT"] = sales_df["ORDER AMOUNT"].apply(_to_num)
-
-if "ADV RECEIVED" in sales_df.columns:
-    sales_df["ADV RECEIVED"] = sales_df["ADV RECEIVED"].apply(_to_num)
-
-# -------- FILTERS --------
-st.sidebar.header("🔍 Filters")
-
-# B2B / B2C Filter
-if "B2B/B2C" in sales_df.columns:
-    type_filter = st.sidebar.multiselect(
-        "Business Type",
-        options=sales_df["B2B/B2C"].dropna().unique(),
-        default=sales_df["B2B/B2C"].dropna().unique()
-    )
-    sales_df = sales_df[sales_df["B2B/B2C"].isin(type_filter)]
-
-# Salesperson Filter
-if "SALES PERSON" in sales_df.columns:
-    exec_filter = st.sidebar.multiselect(
-        "Sales Person",
-        options=sales_df["SALES PERSON"].dropna().unique(),
-        default=sales_df["SALES PERSON"].dropna().unique()
-    )
-    sales_df = sales_df[sales_df["SALES PERSON"].isin(exec_filter)]
-
-# -------- METRICS --------
-total_orders = len(sales_df)
-total_revenue = sales_df["ORDER AMOUNT"].sum() if "ORDER AMOUNT" in sales_df else 0
-total_advance = sales_df["ADV RECEIVED"].sum() if "ADV RECEIVED" in sales_df else 0
+total_sales = pd.to_numeric(df.get("ORDER AMOUNT", 0), errors="coerce").fillna(0).sum()
+total_orders = len(df)
+total_adv = pd.to_numeric(df.get("ADV RECEIVED", 0), errors="coerce").fillna(0).sum()
 
 col1, col2, col3 = st.columns(3)
-col1.metric("📦 Total Orders", total_orders)
-col2.metric("💰 Total Revenue", f"₹{total_revenue:,.0f}")
-col3.metric("💵 Advance Received", f"₹{total_advance:,.0f}")
 
-# -------- TABLE --------
-st.subheader("📋 Sales Records")
+col1.metric("💰 Total Sales", f"₹{total_sales:,.0f}")
+col2.metric("📦 Total Orders", total_orders)
+col3.metric("💵 Advance Received", f"₹{total_adv:,.0f}")
 
-st.dataframe(sales_df, use_container_width=True)
+# ----------------------------
+# FILTERS
+# ----------------------------
+st.subheader("🔍 Filters")
 
-# -------- DOWNLOAD --------
-csv = sales_df.to_csv(index=False).encode("utf-8")
-st.download_button("⬇️ Download Sales Data", csv, "sales_data.csv", "text/csv")
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    salesperson_filter = st.multiselect(
+        "Sales Person",
+        options=sorted(df_display["SALES PERSON"].dropna().unique()) if "SALES PERSON" in df_display else []
+    )
+
+with col2:
+    category_filter = st.multiselect(
+        "Category",
+        options=sorted(df_display["CATEGORY"].dropna().unique()) if "CATEGORY" in df_display else []
+    )
+
+with col3:
+    type_filter = st.multiselect(
+        "B2B / B2C",
+        options=sorted(df_display["B2B/B2C"].dropna().unique()) if "B2B/B2C" in df_display else []
+    )
+
+filtered_df = df_display.copy()
+
+if salesperson_filter:
+    filtered_df = filtered_df[filtered_df["SALES PERSON"].isin(salesperson_filter)]
+
+if category_filter:
+    filtered_df = filtered_df[filtered_df["CATEGORY"].isin(category_filter)]
+
+if type_filter:
+    filtered_df = filtered_df[filtered_df["B2B/B2C"].isin(type_filter)]
+
+# ----------------------------
+# DISPLAY TABLE
+# ----------------------------
+st.subheader("📋 CRM Records (Latest First)")
+
+st.dataframe(
+    filtered_df,
+    use_container_width=True,
+    height=600
+)
+
+# ----------------------------
+# DOWNLOAD OPTION
+# ----------------------------
+csv = filtered_df.to_csv(index=False).encode("utf-8")
+
+st.download_button(
+    "⬇️ Download Filtered Data",
+    data=csv,
+    file_name="crm_sales_data.csv",
+    mime="text/csv"
+)
