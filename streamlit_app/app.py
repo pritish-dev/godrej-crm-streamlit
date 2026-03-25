@@ -1,11 +1,12 @@
 import streamlit as st
 import pandas as pd
+from datetime import datetime
 
 from services.sheets import get_df
 
-st.set_page_config(page_title="🚀 Sales Dashboard", layout="wide")
+st.set_page_config(page_title="🚀 Advanced Sales Dashboard", layout="wide")
 
-st.title("🚀 Sales Performance Dashboard")
+st.title("🚀 Sales Command Center")
 
 # ----------------------------
 # LOAD DATA
@@ -19,113 +20,125 @@ if df is None or df.empty:
 df.columns = [c.strip().upper() for c in df.columns]
 
 # ----------------------------
-# DATE FIX (DD-MM-YYYY)
+# DATE HANDLING (DD-MM-YYYY)
 # ----------------------------
-if "DATE" in df.columns:
-    df["DATE"] = pd.to_datetime(df["DATE"], dayfirst=True, errors="coerce")
-
-# Numeric conversions
-def to_num(col):
-    return pd.to_numeric(df.get(col, 0), errors="coerce").fillna(0)
-
-df["ORDER AMOUNT"] = to_num("ORDER AMOUNT")
-df["ADV RECEIVED"] = to_num("ADV RECEIVED")
-df["QTY"] = to_num("QTY")
+df["DATE"] = pd.to_datetime(df["DATE"], dayfirst=True, errors="coerce")
 
 # ----------------------------
-# SORT (LATEST FIRST)
+# FINANCIAL YEAR LOGIC
 # ----------------------------
-df = df.sort_values(by="DATE", ascending=False)
+def get_financial_year(d):
+    if d.month >= 4:
+        return f"{d.year}-{d.year+1}"
+    else:
+        return f"{d.year-1}-{d.year}"
 
-# ----------------------------
-# FILTERS
-# ----------------------------
-st.sidebar.header("🔍 Filters")
+df["FY"] = df["DATE"].apply(get_financial_year)
+df["MONTH_NUM"] = df["DATE"].dt.month
+df["MONTH_NAME"] = df["DATE"].dt.strftime("%b")
 
-salespersons = sorted(df["SALES PERSON"].dropna().unique()) if "SALES PERSON" in df else []
-categories = sorted(df["CATEGORY"].dropna().unique()) if "CATEGORY" in df else []
-types = sorted(df["B2B/B2C"].dropna().unique()) if "B2B/B2C" in df else []
-
-f_sales = st.sidebar.multiselect("Sales Person", salespersons)
-f_cat = st.sidebar.multiselect("Category", categories)
-f_type = st.sidebar.multiselect("B2B/B2C", types)
-
-filtered = df.copy()
-
-if f_sales:
-    filtered = filtered[filtered["SALES PERSON"].isin(f_sales)]
-
-if f_cat:
-    filtered = filtered[filtered["CATEGORY"].isin(f_cat)]
-
-if f_type:
-    filtered = filtered[filtered["B2B/B2C"].isin(f_type)]
+# Convert numbers
+df["ORDER AMOUNT"] = pd.to_numeric(df["ORDER AMOUNT"], errors="coerce").fillna(0)
+df["ADV RECEIVED"] = pd.to_numeric(df["ADV RECEIVED"], errors="coerce").fillna(0)
 
 # ----------------------------
-# KPI SECTION
+# TOP FILTERS
+# ----------------------------
+st.sidebar.header("🎯 Filters")
+
+selected_fy = st.sidebar.selectbox("Financial Year", sorted(df["FY"].dropna().unique(), reverse=True))
+
+month_options = ["All"] + list(
+    df[df["FY"] == selected_fy]
+    .sort_values("DATE", ascending=False)["MONTH_NAME"]
+    .unique()
+)
+
+selected_month = st.sidebar.selectbox("Month", month_options)
+
+salespersons = sorted(df["SALES PERSON"].dropna().unique())
+selected_sales = st.sidebar.multiselect("Sales Person", salespersons)
+
+# Apply filters
+filtered = df[df["FY"] == selected_fy]
+
+if selected_month != "All":
+    filtered = filtered[filtered["MONTH_NAME"] == selected_month]
+
+if selected_sales:
+    filtered = filtered[filtered["SALES PERSON"].isin(selected_sales)]
+
+# ----------------------------
+# KPI
 # ----------------------------
 st.subheader("📊 Key Metrics")
 
 total_sales = filtered["ORDER AMOUNT"].sum()
 total_orders = len(filtered)
 total_adv = filtered["ADV RECEIVED"].sum()
-avg_order = total_sales / total_orders if total_orders else 0
 
-c1, c2, c3, c4 = st.columns(4)
+c1, c2, c3 = st.columns(3)
 
 c1.metric("💰 Total Sales", f"₹{total_sales:,.0f}")
 c2.metric("📦 Orders", total_orders)
 c3.metric("💵 Advance", f"₹{total_adv:,.0f}")
-c4.metric("📊 Avg Order", f"₹{avg_order:,.0f}")
 
 # ----------------------------
-# SALES TREND (DAILY)
+# MONTHLY SALES (DESC ORDER - FY)
 # ----------------------------
-st.subheader("📈 Daily Sales Trend")
+st.subheader("📅 Monthly Sales (FY View)")
 
-daily = filtered.groupby(filtered["DATE"].dt.date)["ORDER AMOUNT"].sum()
+monthly = (
+    filtered.groupby(["MONTH_NUM", "MONTH_NAME"])["ORDER AMOUNT"]
+    .sum()
+    .reset_index()
+    .sort_values("MONTH_NUM", ascending=False)
+)
 
-st.line_chart(daily)
+monthly = monthly.set_index("MONTH_NAME")
 
-# ----------------------------
-# MONTHLY TREND
-# ----------------------------
-st.subheader("📅 Monthly Sales")
-
-filtered["MONTH"] = filtered["DATE"].dt.to_period("M").astype(str)
-monthly = filtered.groupby("MONTH")["ORDER AMOUNT"].sum()
-
-st.bar_chart(monthly)
+st.bar_chart(monthly["ORDER AMOUNT"])
 
 # ----------------------------
-# LEADERBOARD
+# SALES TARGET TRACKING
 # ----------------------------
-st.subheader("🏆 Sales Leaderboard")
+st.subheader("🎯 Target vs Achievement")
+
+# Define targets manually (can move to Google Sheet later)
+TARGETS = {
+    "Archita": 1500000,
+    "Swati": 1800000,
+}
 
 leader = (
     filtered.groupby("SALES PERSON")["ORDER AMOUNT"]
     .sum()
-    .sort_values(ascending=False)
+    .reset_index()
 )
 
-st.dataframe(
-    leader.reset_index().rename(columns={"ORDER AMOUNT": "Total Sales"}),
-    use_container_width=True
-)
+leader["Target"] = leader["SALES PERSON"].map(TARGETS).fillna(1000000)
+leader["Achievement %"] = (leader["ORDER AMOUNT"] / leader["Target"] * 100).round(1)
+
+leader = leader.sort_values("ORDER AMOUNT", ascending=False)
+
+st.dataframe(leader, use_container_width=True)
 
 # ----------------------------
-# HIGH VALUE ORDERS
+# HIGH VALUE CUSTOMERS
 # ----------------------------
-st.subheader("💰 High Value Orders (> ₹1,00,000)")
+st.subheader("💰 High Value Customers")
 
-high_value = filtered[filtered["ORDER AMOUNT"] > 100000]
-
-st.dataframe(
-    high_value[
-        ["DATE", "CUSTOMER NAME", "PRODUCT NAME", "ORDER AMOUNT", "SALES PERSON"]
-    ],
-    use_container_width=True
+high_customers = (
+    filtered.groupby("CUSTOMER NAME")
+    .agg({
+        "ORDER AMOUNT": "sum",
+        "PRODUCT NAME": lambda x: ", ".join(set(x))
+    })
+    .reset_index()
+    .sort_values("ORDER AMOUNT", ascending=False)
 )
+
+st.dataframe(high_customers.head(20), use_container_width=True)
 
 # ----------------------------
 # PENDING DELIVERY
@@ -139,6 +152,8 @@ if "DELIVERY REMARKS" in filtered.columns:
 else:
     pending = filtered
 
+pending = pending.sort_values("DATE", ascending=False)
+
 st.dataframe(
     pending[
         ["DATE", "CUSTOMER NAME", "PRODUCT NAME", "CUSTOMER DELIVERY DATE (TO BE)", "SALES PERSON"]
@@ -147,17 +162,15 @@ st.dataframe(
 )
 
 # ----------------------------
-# MAIN TABLE (CLEAN VIEW)
+# MAIN TABLE
 # ----------------------------
-st.subheader("📋 All Orders (Latest First)")
+st.subheader("📋 Latest Orders")
 
 SHOW_COLS = [
     "DATE",
     "ORDER NO",
     "CUSTOMER NAME",
-    "CONTACT NUMBER",
     "PRODUCT NAME",
-    "CATEGORY",
     "ORDER AMOUNT",
     "ADV RECEIVED",
     "SALES PERSON",
@@ -165,16 +178,13 @@ SHOW_COLS = [
 
 SHOW_COLS = [c for c in SHOW_COLS if c in filtered.columns]
 
-st.dataframe(filtered[SHOW_COLS], use_container_width=True)
+final_df = filtered.sort_values("DATE", ascending=False)
+
+st.dataframe(final_df[SHOW_COLS], use_container_width=True)
 
 # ----------------------------
 # DOWNLOAD
 # ----------------------------
-csv = filtered.to_csv(index=False).encode("utf-8")
+csv = final_df.to_csv(index=False).encode("utf-8")
 
-st.download_button(
-    "⬇️ Download Data",
-    csv,
-    "sales_dashboard.csv",
-    "text/csv"
-)
+st.download_button("⬇️ Download Data", csv, "sales_dashboard.csv", "text/csv")
