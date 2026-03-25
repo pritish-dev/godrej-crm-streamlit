@@ -97,34 +97,69 @@ st.dataframe(summary, use_container_width=True)
 # -----------------------------
 st.subheader("🎯 Target vs Achievement")
 
+# Ensure session state initialized properly
+if "targets" not in st.session_state or st.session_state.targets is None:
+    st.session_state.targets = pd.DataFrame(columns=["Sales Person", "Target"])
+
 col1, col2 = st.columns(2)
 
 with col1:
     selected_sales = st.selectbox("Sales Person", sales_people)
 
 with col2:
-    target_value = st.number_input("Target", min_value=0)
+    target_value = st.number_input("Target Value", min_value=0, step=10000)
 
-if "targets" not in st.session_state:
-    st.session_state.targets = pd.DataFrame(columns=["Sales Person", "Target"])
+# ---- ADD / UPDATE TARGET ----
+if st.button("Add / Update Target"):
+    df_targets = st.session_state.targets.copy()
 
-if st.button("Add Target"):
-    existing = st.session_state.targets
-    existing = existing[existing["Sales Person"] != selected_sales]
+    # Ensure correct columns exist
+    if "Sales Person" not in df_targets.columns:
+        df_targets = pd.DataFrame(columns=["Sales Person", "Target"])
 
-    new_row = pd.DataFrame([[selected_sales, target_value]], columns=["Sales Person", "Target"])
-    st.session_state.targets = pd.concat([existing, new_row], ignore_index=True)
+    # Remove existing row for same person
+    df_targets = df_targets[df_targets["Sales Person"] != selected_sales]
 
-# Calculate achievement (CURRENT MONTH)
+    # Add new row
+    new_row = pd.DataFrame({
+        "Sales Person": [selected_sales],
+        "Target": [target_value]
+    })
+
+    df_targets = pd.concat([df_targets, new_row], ignore_index=True)
+
+    st.session_state.targets = df_targets
+
+# -----------------------------
+# CALCULATE ACHIEVEMENT (CURRENT MONTH)
+# -----------------------------
 today = datetime.today()
 month_start = today.replace(day=1)
 
 crm_month = crm[crm["DATE"] >= month_start]
 
-achievement = crm_month.groupby("SALES PERSON")["ORDER AMOUNT"].sum().reset_index()
+achievement = (
+    crm_month.groupby("SALES PERSON")["ORDER AMOUNT"]
+    .sum()
+    .reset_index()
+)
+
 achievement.columns = ["Sales Person", "Achievement"]
 
-final = pd.merge(st.session_state.targets, achievement, on="Sales Person", how="left").fillna(0)
+# -----------------------------
+# MERGE TARGET + ACHIEVEMENT
+# -----------------------------
+final = pd.merge(
+    st.session_state.targets,
+    achievement,
+    on="Sales Person",
+    how="left"
+)
+
+final["Achievement"] = final["Achievement"].fillna(0)
+
+# Remove empty rows
+final = final[final["Sales Person"].notna()]
 
 st.dataframe(final, use_container_width=True)
 
