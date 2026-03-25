@@ -1,172 +1,209 @@
 # services/automation.py
 
 import time
-import urllib.parse
-from datetime import datetime
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options
-from services.sheets import get_df, _get_spreadsheet
+import pandas as pd
+from datetime import datetime, timedelta
+import webbrowser
+from services.sheets import get_df
 
+# -------------------------------
+# FORMAT PHONE
+# -------------------------------
+def format_phone(num):
+    num = str(num).strip()
+    digits = "".join(filter(str.isdigit, num))
+    if len(digits) == 10:
+        return "91" + digits
+    return digits
 
-# ---------------- LOAD CONTACTS ---------------- #
-
-def get_contacts():
+# -------------------------------
+# GET SALES TEAM CONTACTS
+# -------------------------------
+def get_sales_team():
     df = get_df("Sales Team")
 
     contacts = {}
-    manager = None
-    owner = None
 
     for _, row in df.iterrows():
         name = str(row.get("Name", "")).strip()
-        role = str(row.get("Role", "")).strip().lower()
-        phone = str(row.get("Phone", "")).strip()
+        phone = format_phone(row.get("Contact Number", ""))
 
-        if not name or not phone:
-            continue
+        if name and phone:
+            contacts[name.lower()] = phone
 
-        contacts[name] = phone
-
-        if role == "manager":
-            manager = phone
-        elif role == "owner":
-            owner = phone
-
-    return contacts, manager, owner
+    return contacts
 
 
-# ---------------- DRIVER ---------------- #
+# -------------------------------
+# SEND WHATSAPP MESSAGE
+# -------------------------------
+def send_whatsapp(phone, message):
+    url = f"https://web.whatsapp.com/send?phone={phone}&text={message}"
+    webbrowser.open(url)
+    time.sleep(20)  # wait for WhatsApp Web load
 
-def start_driver():
-    options = Options()
-    options.add_argument("--user-data-dir=./chrome-data")
-    options.add_argument("--profile-directory=Default")
-    options.add_argument("--start-maximized")
-    options.add_argument("--disable-notifications")
+    import pyautogui
+    pyautogui.press("enter")
 
-    driver = webdriver.Chrome(options=options)
-    driver.get("https://web.whatsapp.com")
-
-    time.sleep(15)  # QR login first time
-
-    return driver
+    time.sleep(5)
 
 
-# ---------------- SEND MESSAGE ---------------- #
-
-def send_message(driver, phone, message):
-    try:
-        encoded = urllib.parse.quote(message)
-        url = f"https://web.whatsapp.com/send?phone={phone}&text={encoded}"
-
-        driver.get(url)
-        time.sleep(8)
-
-        send_btn = driver.find_element(By.XPATH, '//span[@data-icon="send"]')
-        send_btn.click()
-
-        time.sleep(3)
-        return True
-
-    except Exception as e:
-        print("Error:", e)
-        return False
-
-
-# ---------------- DELIVERY ALERT ---------------- #
-
+# -------------------------------
+# DELIVERY ALERTS (1 DAY BEFORE)
+# -------------------------------
 def send_delivery_alerts():
     df = get_df("CRM")
+    contacts = get_sales_team()
 
-    contacts, manager, owner = get_contacts()
-
-    if df.empty:
-        return "No data"
-
-    driver = start_driver()
     today = datetime.today().date()
+    target_date = today + timedelta(days=1)
 
-    count = 0
+    sent = 0
 
     for _, row in df.iterrows():
+
         try:
-            delivery_date = datetime.strptime(
-                row.get("CUSTOMER DELIVERY DATE (TO BE)", ""), "%d-%m-%Y"
+            delivery_date = pd.to_datetime(
+                row.get("CUSTOMER DELIVERY DATE (TO BE)"), 
+                dayfirst=True, 
+                errors="coerce"
             ).date()
-
-            if (delivery_date - today).days == 1 and row.get("DELIVERY REMARKS", "").lower() == "pending":
-
-                sp = row.get("SALES PERSON", "").strip()
-                phone = contacts.get(sp, manager)
-
-                msg = f"""
-🚚 DELIVERY ALERT (Tomorrow)
-
-Customer: {row.get('CUSTOMER NAME')}
-Product: {row.get('PRODUCT NAME')}
-Delivery Date: {row.get('CUSTOMER DELIVERY DATE (TO BE)')}
-"""
-
-                send_message(driver, phone, msg)
-                send_message(driver, manager, msg)
-                send_message(driver, owner, msg)
-
-                count += 1
-
         except:
             continue
 
-    driver.quit()
-    return f"{count} alerts sent"
+        if pd.isna(delivery_date):
+            continue
+
+        if delivery_date == target_date and str(row.get("DELIVERY REMARKS")).lower() == "pending":
+
+            customer = row.get("CUSTOMER NAME", "")
+            product = row.get("PRODUCT NAME", "")
+            order_no = row.get("ORDER NO", "")
+            sales_person = str(row.get("SALES PERSON", "")).lower()
+
+            message = f"""
+🚚 DELIVERY ALERT
+
+Customer: {customer}
+Product: {product}
+Order No: {order_no}
+Delivery Date: {delivery_date}
+
+⚠️ Delivery is scheduled tomorrow. Please plan accordingly.
+"""
+
+            # Send to Salesperson
+            if sales_person in contacts:
+                send_whatsapp(contacts[sales_person], message)
+
+            # Send to Manager
+            if "shaktiman" in contacts:
+                send_whatsapp(contacts["shaktiman"], message)
+
+            # Send to You
+            if "pritish" in contacts:
+                send_whatsapp(contacts["pritish"], message)
+
+            sent += 1
+
+    return f"✅ Delivery alerts sent: {sent}"
 
 
-# ---------------- PAYMENT ALERT ---------------- #
-
+# -------------------------------
+# PAYMENT DUE ALERTS (7 DAYS BEFORE)
+# -------------------------------
 def send_payment_alerts():
     df = get_df("CRM")
-    contacts, manager, owner = get_contacts()
+    contacts = get_sales_team()
 
-    driver = start_driver()
     today = datetime.today().date()
+    target_date = today + timedelta(days=7)
 
-    count = 0
+    sent = 0
 
     for _, row in df.iterrows():
+
         try:
-            delivery_date = datetime.strptime(
-                row.get("CUSTOMER DELIVERY DATE (TO BE)", ""), "%d-%m-%Y"
+            delivery_date = pd.to_datetime(
+                row.get("CUSTOMER DELIVERY DATE (TO BE)"),
+                dayfirst=True,
+                errors="coerce"
             ).date()
-
-            order_amt = float(row.get("ORDER AMOUNT", 0))
-            adv = float(row.get("ADV RECEIVED", 0))
-
-            due = order_amt - adv
-
-            if (delivery_date - today).days == 7 and due > 0:
-
-                sp = row.get("SALES PERSON", "").strip()
-                phone = contacts.get(sp, manager)
-
-                msg = f"""
-💰 PAYMENT DUE ALERT
-
-Customer: {row.get('CUSTOMER NAME')}
-Order: ₹{order_amt}
-Advance: ₹{adv}
-Due: ₹{due}
-
-Delivery: {row.get('CUSTOMER DELIVERY DATE (TO BE)')}
-"""
-
-                send_message(driver, phone, msg)
-                send_message(driver, manager, msg)
-                send_message(driver, owner, msg)
-
-                count += 1
-
         except:
             continue
 
-    driver.quit()
-    return f"{count} payment alerts sent"
+        if pd.isna(delivery_date):
+            continue
+
+        if delivery_date == target_date:
+
+            order_amt = float(row.get("ORDER AMOUNT", 0) or 0)
+            adv = float(row.get("ADV RECEIVED", 0) or 0)
+            due = order_amt - adv
+
+            if due <= 0:
+                continue
+
+            customer = row.get("CUSTOMER NAME", "")
+            sales_person = str(row.get("SALES PERSON", "")).lower()
+
+            message = f"""
+💰 PAYMENT REMINDER
+
+Customer: {customer}
+Order Amount: ₹{order_amt}
+Advance Paid: ₹{adv}
+Balance Due: ₹{due}
+
+⚠️ Payment pending before delivery (in 7 days).
+"""
+
+            # Salesperson
+            if sales_person in contacts:
+                send_whatsapp(contacts[sales_person], message)
+
+            # Manager
+            if "shaktiman" in contacts:
+                send_whatsapp(contacts["shaktiman"], message)
+
+            # You
+            if "pritish" in contacts:
+                send_whatsapp(contacts["pritish"], message)
+
+            sent += 1
+
+    return f"✅ Payment alerts sent: {sent}"
+
+
+# -------------------------------
+# DAILY REPORT
+# -------------------------------
+def send_daily_report():
+    df = get_df("CRM")
+    contacts = get_sales_team()
+
+    today = datetime.today().date()
+
+    df["DATE"] = pd.to_datetime(df["DATE"], dayfirst=True, errors="coerce").dt.date
+
+    today_df = df[df["DATE"] == today]
+
+    total_sales = pd.to_numeric(today_df["ORDER AMOUNT"], errors="coerce").sum()
+    total_orders = len(today_df)
+
+    message = f"""
+📊 DAILY SALES REPORT
+
+Date: {today}
+
+Orders: {total_orders}
+Sales: ₹{total_sales}
+"""
+
+    if "pritish" in contacts:
+        send_whatsapp(contacts["pritish"], message)
+
+    if "shaktiman" in contacts:
+        send_whatsapp(contacts["shaktiman"], message)
+
+    return "✅ Daily report sent"
