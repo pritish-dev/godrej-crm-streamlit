@@ -20,15 +20,14 @@ if crm.empty:
 crm.columns = [c.strip().upper() for c in crm.columns]
 
 # -----------------------------
-# FIX NUMERIC COLUMNS (CRITICAL)
+# FIX NUMERIC COLUMNS
 # -----------------------------
 num_cols = ["ORDER AMOUNT", "ADV RECEIVED"]
 
 for col in num_cols:
     if col in crm.columns:
         crm[col] = (
-            crm[col]
-            .astype(str)
+            crm[col].astype(str)
             .str.replace(",", "")
             .str.replace("₹", "")
             .str.strip()
@@ -36,26 +35,39 @@ for col in num_cols:
         crm[col] = pd.to_numeric(crm[col], errors="coerce").fillna(0)
 
 # -----------------------------
-# DATE FORMATTING
+# FIX DATE FORMAT
 # -----------------------------
-def format_date(x):
-    try:
-        return pd.to_datetime(x, dayfirst=True).strftime("%d-%b-%Y")
-    except:
-        return x
-
-#crm["DATE"] = pd.to_datetime(crm["DATE"], dayfirst=True, errors="coerce")
 crm["DATE"] = pd.to_datetime(crm["DATE"], format="%d-%m-%Y", errors="coerce")
+
+# -----------------------------
+# SORT LATEST FIRST
+# -----------------------------
 crm = crm.sort_values(by="DATE", ascending=False)
 
 # -----------------------------
-# SALES TEAM FILTER (ONLY SALES ROLE)
+# FORMAT DATE FOR DISPLAY
+# -----------------------------
+def format_date(x):
+    try:
+        return pd.to_datetime(x).strftime("%d-%b-%Y")
+    except:
+        return x
+
+# -----------------------------
+# SALES TEAM FILTER
 # -----------------------------
 sales_people = []
 
 if not team.empty:
     team.columns = [c.strip().upper() for c in team.columns]
-    sales_people = team[team["ROLE"].str.upper() == "SALES"]["NAME"].dropna().unique().tolist()
+    sales_people = (
+        team[team["ROLE"] == "SALES"]["NAME"]
+        .dropna()
+        .str.strip()
+        .str.upper()
+        .unique()
+        .tolist()
+    )
 
 # -----------------------------
 # ALL ORDERS TABLE
@@ -97,8 +109,7 @@ st.dataframe(summary, use_container_width=True)
 # -----------------------------
 st.subheader("🎯 Target vs Achievement")
 
-# Ensure session state initialized properly
-if "targets" not in st.session_state or st.session_state.targets is None:
+if "targets" not in st.session_state:
     st.session_state.targets = pd.DataFrame(columns=["Sales Person", "Target"])
 
 col1, col2 = st.columns(2)
@@ -109,59 +120,41 @@ with col1:
 with col2:
     target_value = st.number_input("Target Value", min_value=0, step=10000)
 
-# ---- ADD / UPDATE TARGET ----
+# ADD / UPDATE TARGET
 if st.button("Add / Update Target"):
     df_targets = st.session_state.targets.copy()
 
-    # Ensure correct columns exist
-    if "Sales Person" not in df_targets.columns:
-        df_targets = pd.DataFrame(columns=["Sales Person", "Target"])
-
-    # Remove existing row for same person
     df_targets = df_targets[df_targets["Sales Person"] != selected_sales]
 
-    # Add new row
     new_row = pd.DataFrame({
         "Sales Person": [selected_sales],
         "Target": [target_value]
     })
 
     df_targets = pd.concat([df_targets, new_row], ignore_index=True)
-
     st.session_state.targets = df_targets
 
-# -----------------------------
 # CALCULATE ACHIEVEMENT (CURRENT MONTH)
-# -----------------------------
 today = datetime.today()
 month_start = today.replace(day=1)
 
-crm_month = crm[crm["DATE"] >= month_start]
+crm_month = crm[
+    (crm["DATE"] >= month_start) &
+    (crm["SALES PERSON"] == selected_sales)
+]
 
-achievement = (
-    crm_month.groupby("SALES PERSON")["ORDER AMOUNT"]
-    .sum()
-    .reset_index()
+achievement_value = crm_month["ORDER AMOUNT"].sum()
+
+df_targets = st.session_state.targets.copy()
+
+df_targets["Achievement"] = df_targets["Sales Person"].apply(
+    lambda x: crm[
+        (crm["DATE"] >= month_start) &
+        (crm["SALES PERSON"] == x)
+    ]["ORDER AMOUNT"].sum()
 )
 
-achievement.columns = ["Sales Person", "Achievement"]
-
-# -----------------------------
-# MERGE TARGET + ACHIEVEMENT
-# -----------------------------
-final = pd.merge(
-    st.session_state.targets,
-    achievement,
-    on="Sales Person",
-    how="left"
-)
-
-final["Achievement"] = final["Achievement"].fillna(0)
-
-# Remove empty rows
-final = final[final["Sales Person"].notna()]
-
-st.dataframe(final, use_container_width=True)
+st.dataframe(df_targets, use_container_width=True)
 
 # -----------------------------
 # SALES FILTER
@@ -192,7 +185,9 @@ if year_filter != "All":
 
 df_filtered["MONTH"] = df_filtered["DATE"].dt.strftime("%b")
 
-sales_summary = df_filtered.groupby(["SALES PERSON", "MONTH"])["ORDER AMOUNT"].sum().reset_index()
+sales_summary = df_filtered.groupby(
+    ["SALES PERSON", "MONTH"]
+)["ORDER AMOUNT"].sum().reset_index()
 
 st.dataframe(sales_summary, use_container_width=True)
 
@@ -211,7 +206,7 @@ st.dataframe(pending[display_cols], use_container_width=True)
 
 if st.button("📲 Send Delivery Alerts"):
     send_delivery_alerts()
-    st.success("Alerts Sent")
+    st.success("Delivery Alerts Sent")
 
 # -----------------------------
 # PAYMENT DUE
@@ -223,8 +218,12 @@ crm["PENDING AMOUNT"] = crm["ORDER AMOUNT"] - crm["ADV RECEIVED"]
 due = crm[crm["PENDING AMOUNT"] > 0]
 
 st.dataframe(due[[
-    "CUSTOMER NAME", "ORDER AMOUNT", "ADV RECEIVED", "PENDING AMOUNT",
-    "CUSTOMER DELIVERY DATE (TO BE)", "SALES PERSON"
+    "CUSTOMER NAME",
+    "ORDER AMOUNT",
+    "ADV RECEIVED",
+    "PENDING AMOUNT",
+    "CUSTOMER DELIVERY DATE (TO BE)",
+    "SALES PERSON"
 ]], use_container_width=True)
 
 if st.button("📲 Send Payment Alerts"):
