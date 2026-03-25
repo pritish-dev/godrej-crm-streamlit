@@ -9,3 +9,5 @@ plotly
 streamlit-plotly-events
 streamlit-aggrid
 bcrypt
+pywhatkit
+pyautogui
