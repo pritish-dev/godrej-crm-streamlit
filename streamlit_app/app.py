@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-from services.sheets import get_df, sh
+from services.sheets import get_df, get_sheet
 from services.automation import send_delivery_alerts, send_payment_alerts
 
 st.set_page_config(layout="wide")
@@ -37,9 +37,6 @@ for col in ["ORDER AMOUNT", "ADV RECEIVED"]:
 crm["DATE"] = pd.to_datetime(crm["DATE"], format="%d-%m-%Y", errors="coerce")
 crm = crm.sort_values(by="DATE", ascending=False)
 
-# -----------------------------
-# FORMAT DATE
-# -----------------------------
 def format_date(x):
     try:
         return pd.to_datetime(x).strftime("%d-%b-%Y")
@@ -110,8 +107,9 @@ st.subheader(f"🎯 Target vs Achievement for {month_name}")
 # LOAD TARGET SHEET
 # -----------------------------
 try:
-    ws = sh.worksheet("Targets")
+    ws = get_sheet("Targets")
 except:
+    from services.sheets import sh
     ws = sh.add_worksheet(title="Targets", rows=1000, cols=10)
     ws.append_row(["Sales Person","Month","Year","Target"])
 
@@ -119,12 +117,11 @@ targets_data = ws.get_all_records()
 targets_df = pd.DataFrame(targets_data)
 
 # -----------------------------
-# CREATE DEFAULT IF EMPTY
+# DEFAULT ROWS
 # -----------------------------
 if targets_df.empty:
     for sp in sales_people:
         ws.append_row([sp, month, year, 0])
-
     targets_df = pd.DataFrame(ws.get_all_records())
 
 # -----------------------------
@@ -151,10 +148,8 @@ with col2:
 # -----------------------------
 if st.button("Update Target"):
     records = ws.get_all_values()
-    headers = records[0]
 
     found = False
-
     for i, row in enumerate(records[1:], start=2):
         if row[0] == selected_sales and int(row[1]) == month and int(row[2]) == year:
             ws.update_cell(i, 4, target_value)
@@ -182,7 +177,7 @@ def calc_category(sp, category):
 rows = []
 
 for _, row in targets_df.iterrows():
-    sp = row["Sales Person"]
+    sp = str(row["Sales Person"]).upper()
 
     home_storage = calc_category(sp, "HOME STORAGE")
     home_furniture = calc_category(sp, "HOME FURNITURE")
@@ -191,7 +186,7 @@ for _, row in targets_df.iterrows():
 
     rows.append({
         "Sales Person": sp,
-        "Target": round(row["Target"], 0),
+        "Target": round(float(row["Target"]), 0),
         "Home Storage": round(home_storage, 0),
         "Home Furniture": round(home_furniture, 0),
         "Achievement": round(achievement, 0)
@@ -199,11 +194,10 @@ for _, row in targets_df.iterrows():
 
 final_df = pd.DataFrame(rows)
 
-# -----------------------------
-# HIGHLIGHT + RANKING
-# -----------------------------
+# SORT
 final_df = final_df.sort_values(by="Achievement", ascending=False)
 
+# HIGHLIGHT
 def style_row(row):
     if row["Achievement"] >= row["Target"] and row["Target"] > 0:
         return ["background-color:#dcfce7"]*len(row)
