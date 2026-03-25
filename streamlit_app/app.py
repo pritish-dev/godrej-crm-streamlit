@@ -38,6 +38,12 @@ visible_cols = [c for c in SALES_COLUMNS if c in df.columns]
 
 sales_df = df[visible_cols].copy()
 
+# -------- SORT BY DATE (LATEST FIRST) --------
+if "DATE" in sales_df.columns:
+    sales_df["DATE"] = pd.to_datetime(sales_df["DATE"], errors="coerce")
+    sales_df = sales_df.sort_values(by="DATE", ascending=False)
+sales_df["DATE"] = sales_df["DATE"].dt.strftime("%d-%b-%Y")
+
 # -------- TYPE CONVERSIONS --------
 def _to_num(x):
     try:
