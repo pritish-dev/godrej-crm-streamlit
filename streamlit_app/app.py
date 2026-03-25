@@ -1,153 +1,92 @@
-# UPDATED sheets.py FOR ORDER-BASED CRM (B2C READY)
-
-import gspread
-import re
-from google.oauth2.service_account import Credentials
-import pandas as pd
 import streamlit as st
-from datetime import datetime, date
+import pandas as pd
+from services.sheets import get_df
 
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+st.set_page_config(layout="wide")
+st.title("📊 CRM — Sales Dashboard (B2C/B2B Orders)")
 
-try:
-    CREDS = Credentials.from_service_account_info(st.secrets["google"], scopes=SCOPES)
-except Exception:
-    CREDS = Credentials.from_service_account_file("config/credentials.json", scopes=SCOPES)
+# -------- LOAD DATA --------
+df = get_df("CRM")
 
-gc = gspread.authorize(CREDS)
-SPREADSHEET_ID = "1wFpK-WokcZB6k1vzG7B6JO5TdGHrUwdgvVm_-UQse54"
-sh = gc.open_by_key(SPREADSHEET_ID)
+if df is None or df.empty:
+    st.info("No data found in CRM.")
+    st.stop()
 
-EMAIL_COLS = {"STAFF EMAIL", "CUSTOMER EMAIL"}
+# -------- CLEAN HEADERS --------
+df.columns = [c.strip().upper() for c in df.columns]
 
-# ----------------------------
-# Helpers
-# ----------------------------
+# -------- SALES VIEW COLUMNS --------
+SALES_COLUMNS = [
+    "DATE",
+    "ORDER NO",
+    "CUSTOMER NAME",
+    "CONTACT NUMBER",
+    "PRODUCT NAME",
+    "CATEGORY",
+    "B2B/B2C",
+    "QTY",
+    "UNIT PRICE=(AFTER DISC + TAX)",
+    "ORDER AMOUNT",
+    "SALES PERSON",
+    "ADV RECEIVED",
+    "CUSTOMER DELIVERY DATE (TO BE)",
+    "DELIVERY REMARKS"
+]
 
-def _fmt_mmddyyyy(v) -> str:
+# Keep only available columns (safe)
+visible_cols = [c for c in SALES_COLUMNS if c in df.columns]
+
+sales_df = df[visible_cols].copy()
+
+# -------- TYPE CONVERSIONS --------
+def _to_num(x):
     try:
-        d = pd.to_datetime(v, errors="coerce")
-        if pd.isna(d):
-            return ""
-        return d.strftime("%m/%d/%Y")
+        return float(str(x).replace(",", "").replace("₹", ""))
     except:
-        return ""
+        return 0
 
+if "ORDER AMOUNT" in sales_df.columns:
+    sales_df["ORDER AMOUNT"] = sales_df["ORDER AMOUNT"].apply(_to_num)
 
-def _normalize_field(col: str, val):
-    col = col.upper()
+if "ADV RECEIVED" in sales_df.columns:
+    sales_df["ADV RECEIVED"] = sales_df["ADV RECEIVED"].apply(_to_num)
 
-    # Date fields
-    if col in {"DATE", "DATE OF INVOICE", "CUSTOMER DELIVERY DATE (TO BE)"}:
-        return _fmt_mmddyyyy(val)
+# -------- FILTERS --------
+st.sidebar.header("🔍 Filters")
 
-    # Emails
-    if col in EMAIL_COLS:
-        return (str(val or "").strip().lower())
+# B2B / B2C Filter
+if "B2B/B2C" in sales_df.columns:
+    type_filter = st.sidebar.multiselect(
+        "Business Type",
+        options=sales_df["B2B/B2C"].dropna().unique(),
+        default=sales_df["B2B/B2C"].dropna().unique()
+    )
+    sales_df = sales_df[sales_df["B2B/B2C"].isin(type_filter)]
 
-    # Numeric fields
-    if col in {"ORDER AMOUNT", "INV AMT(BEFORE TAX)", "ADV RECEIVED", "MRP", "UNIT PRICE=(AFTER DISC + TAX)", "GROSS ORDER VALUE", "ORDER AMOUNT", "DISC ALLOWED", "DISCOUNT GIVEN"}:
-        try:
-            return float(val)
-        except:
-            return 0
+# Salesperson Filter
+if "SALES PERSON" in sales_df.columns:
+    exec_filter = st.sidebar.multiselect(
+        "Sales Person",
+        options=sales_df["SALES PERSON"].dropna().unique(),
+        default=sales_df["SALES PERSON"].dropna().unique()
+    )
+    sales_df = sales_df[sales_df["SALES PERSON"].isin(exec_filter)]
 
-    if col == "QTY":
-        try:
-            return int(val)
-        except:
-            return 0
+# -------- METRICS --------
+total_orders = len(sales_df)
+total_revenue = sales_df["ORDER AMOUNT"].sum() if "ORDER AMOUNT" in sales_df else 0
+total_advance = sales_df["ADV RECEIVED"].sum() if "ADV RECEIVED" in sales_df else 0
 
-    return "" if val is None else str(val)
+col1, col2, col3 = st.columns(3)
+col1.metric("📦 Total Orders", total_orders)
+col2.metric("💰 Total Revenue", f"₹{total_revenue:,.0f}")
+col3.metric("💵 Advance Received", f"₹{total_advance:,.0f}")
 
+# -------- TABLE --------
+st.subheader("📋 Sales Records")
 
-# ----------------------------
-# GET DATA
-# ----------------------------
+st.dataframe(sales_df, use_container_width=True)
 
-@st.cache_data(ttl=60)
-def get_df(sheet_name: str):
-    try:
-        ws = sh.worksheet(sheet_name)
-    except gspread.exceptions.WorksheetNotFound:
-        ws = sh.add_worksheet(title=sheet_name, rows=1000, cols=30)
-        return pd.DataFrame()
-
-    data = ws.get_all_values()
-    if not data:
-        return pd.DataFrame()
-
-    headers = [h.strip().upper() for h in data[0]]
-    df = pd.DataFrame(data[1:], columns=headers)
-
-    return df
-
-
-# ----------------------------
-# HISTORY LOG
-# ----------------------------
-
-def log_history(action, sheet_name, unique_id, old_data, new_data):
-    try:
-        ws = sh.worksheet("History Log")
-    except:
-        ws = sh.add_worksheet(title="History Log", rows=1000, cols=20)
-        ws.append_row(["Timestamp", "Action", "Sheet", "ORDER NO", "Old Data", "New Data"])
-
-    ws.append_row([
-        str(datetime.now()), action, sheet_name,
-        unique_id,
-        str(old_data), str(new_data)
-    ])
-
-
-# ----------------------------
-# UPSERT (ORDER NO BASED)
-# ----------------------------
-
-def upsert_record(sheet_name: str, unique_fields: dict, new_data: dict, sync_to_crm=True):
-    ws = sh.worksheet(sheet_name)
-    headers = [h.strip().upper() for h in ws.row_values(1)]
-
-    df = get_df(sheet_name)
-    get_df.clear()
-
-    order_no = str(unique_fields.get("ORDER NO", "")).strip()
-
-    if not order_no:
-        return "❌ ORDER NO is mandatory"
-
-    # Normalize new data
-    new_data = {k.upper(): _normalize_field(k, v) for k, v in new_data.items()}
-
-    # Ensure ORDER NO present
-    new_data["ORDER NO"] = order_no
-
-    # Find match
-    if not df.empty and "ORDER NO" in df.columns:
-        match = df["ORDER NO"].astype(str).str.strip() == order_no
-    else:
-        match = pd.Series([], dtype=bool)
-
-    # ---------------- UPDATE ----------------
-    if match.any():
-        row_index = match[match].index[0] + 2
-        old_data = df.iloc[match[match].index[0]].to_dict()
-
-        for col_idx, col_name in enumerate(headers, start=1):
-            if col_name in new_data:
-                ws.update_cell(row_index, col_idx, new_data[col_name])
-
-        log_history("UPDATE", sheet_name, order_no, old_data, new_data)
-        return f"Updated Order {order_no}"
-
-    # ---------------- INSERT ----------------
-    else:
-        row_values = []
-        for col in headers:
-            row_values.append(new_data.get(col, ""))
-
-        ws.append_row(row_values)
-        log_history("INSERT", sheet_name, order_no, {}, new_data)
-
-        return f"Inserted Order {order_no}"
+# -------- DOWNLOAD --------
+csv = sales_df.to_csv(index=False).encode("utf-8")
+st.download_button("⬇️ Download Sales Data", csv, "sales_data.csv", "text/csv")
