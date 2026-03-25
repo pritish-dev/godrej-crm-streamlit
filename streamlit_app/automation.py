@@ -1,187 +1,172 @@
+# services/automation.py
+
 import time
-import pandas as pd
+import urllib.parse
 from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
-from services.sheets import get_df
+from selenium.webdriver.chrome.options import Options
+from services.sheets import get_df, _get_spreadsheet
 
-# =============================
-# 📲 LOAD SALES TEAM CONTACTS
-# =============================
-team_df = get_df("Sales Team")
 
-CONTACTS = {}
-MANAGER_NUMBER = None
-OWNER_NUMBER = None
+# ---------------- LOAD CONTACTS ---------------- #
 
-for _, row in team_df.iterrows():
-    name = str(row.get("Name", "")).strip()
-    role = str(row.get("Role", "")).strip().lower()
-    number = str(row.get("Contact Number", "")).strip()
+def get_contacts():
+    df = get_df("Sales Team")
 
-    if not name or not number:
-        continue
+    contacts = {}
+    manager = None
+    owner = None
 
-    CONTACTS[name] = number
+    for _, row in df.iterrows():
+        name = str(row.get("Name", "")).strip()
+        role = str(row.get("Role", "")).strip().lower()
+        phone = str(row.get("Phone", "")).strip()
 
-    if role == "manager":
-        MANAGER_NUMBER = number
-    elif role == "owner":
-        OWNER_NUMBER = number
+        if not name or not phone:
+            continue
 
-# Fallback safety
-if not MANAGER_NUMBER:
-    raise Exception("❌ Manager number not found in Sales Team sheet")
+        contacts[name] = phone
 
-if not OWNER_NUMBER:
-    raise Exception("❌ Owner number not found in Sales Team sheet")
+        if role == "manager":
+            manager = phone
+        elif role == "owner":
+            owner = phone
 
-# =============================
-# 🌐 START WHATSAPP DRIVER
-# =============================
+    return contacts, manager, owner
+
+
+# ---------------- DRIVER ---------------- #
+
 def start_driver():
-    options = webdriver.ChromeOptions()
-    options.add_argument("--user-data-dir=chrome-data")  # saves login
+    options = Options()
+    options.add_argument("--user-data-dir=./chrome-data")
+    options.add_argument("--profile-directory=Default")
+    options.add_argument("--start-maximized")
+    options.add_argument("--disable-notifications")
 
-    driver = webdriver.Chrome(
-        service=Service(ChromeDriverManager().install()),
-        options=options
-    )
-
+    driver = webdriver.Chrome(options=options)
     driver.get("https://web.whatsapp.com")
-    input("👉 Scan QR (only first time) and press ENTER...")
+
+    time.sleep(15)  # QR login first time
 
     return driver
 
-# =============================
-# 📤 SEND MESSAGE FUNCTION
-# =============================
-def send_message(driver, number, message):
-    try:
-        url = f"https://web.whatsapp.com/send?phone=91{number}&text={message}"
-        driver.get(url)
 
+# ---------------- SEND MESSAGE ---------------- #
+
+def send_message(driver, phone, message):
+    try:
+        encoded = urllib.parse.quote(message)
+        url = f"https://web.whatsapp.com/send?phone={phone}&text={encoded}"
+
+        driver.get(url)
         time.sleep(8)
 
         send_btn = driver.find_element(By.XPATH, '//span[@data-icon="send"]')
         send_btn.click()
 
         time.sleep(3)
-
-        print(f"✅ Sent to {number}")
+        return True
 
     except Exception as e:
-        print(f"❌ Failed for {number}: {e}")
+        print("Error:", e)
+        return False
 
-# =============================
-# 📊 LOAD CRM DATA
-# =============================
-df = get_df("CRM")
 
-if df.empty:
-    print("No CRM data found")
-    exit()
+# ---------------- DELIVERY ALERT ---------------- #
 
-# -----------------------------
-# DATE FORMAT (dd-mm-yyyy)
-# -----------------------------
-df["DATE"] = pd.to_datetime(df["DATE"], format="%d-%m-%Y", errors="coerce")
-df["DELIVERY DATE"] = pd.to_datetime(df["CUSTOMER DELIVERY DATE (TO BE)"], format="%d-%m-%Y", errors="coerce")
+def send_delivery_alerts():
+    df = get_df("CRM")
 
-# -----------------------------
-# NUMERIC CLEANUP
-# -----------------------------
-df["ORDER AMOUNT"] = pd.to_numeric(df["ORDER AMOUNT"], errors="coerce").fillna(0)
-df["ADV RECEIVED"] = pd.to_numeric(df["ADV RECEIVED"], errors="coerce").fillna(0)
+    contacts, manager, owner = get_contacts()
 
-df["DUE"] = df["ORDER AMOUNT"] - df["ADV RECEIVED"]
+    if df.empty:
+        return "No data"
 
-# =============================
-# 🚀 START DRIVER
-# =============================
-driver = start_driver()
+    driver = start_driver()
+    today = datetime.today().date()
 
-today = datetime.today()
+    count = 0
 
-# =============================
-# 🚚 DELIVERY REMINDER (1 DAY BEFORE)
-# =============================
-delivery_df = df[
-    (df["DELIVERY REMARKS"].str.lower() == "pending") &
-    ((df["DELIVERY DATE"] - today).dt.days == 1)
-]
+    for _, row in df.iterrows():
+        try:
+            delivery_date = datetime.strptime(
+                row.get("CUSTOMER DELIVERY DATE (TO BE)", ""), "%d-%m-%Y"
+            ).date()
 
-print(f"Delivery reminders: {len(delivery_df)}")
+            if (delivery_date - today).days == 1 and row.get("DELIVERY REMARKS", "").lower() == "pending":
 
-for _, row in delivery_df.iterrows():
+                sp = row.get("SALES PERSON", "").strip()
+                phone = contacts.get(sp, manager)
 
-    msg = f"""
-🚚 DELIVERY REMINDER
+                msg = f"""
+🚚 DELIVERY ALERT (Tomorrow)
 
-Customer: {row['CUSTOMER NAME']}
-Product: {row['PRODUCT NAME']}
-Delivery Date: {row['CUSTOMER DELIVERY DATE (TO BE)']}
+Customer: {row.get('CUSTOMER NAME')}
+Product: {row.get('PRODUCT NAME')}
+Delivery Date: {row.get('CUSTOMER DELIVERY DATE (TO BE)')}
 """
 
-    sales = str(row.get("SALES PERSON", "")).strip()
-    number = CONTACTS.get(sales, MANAGER_NUMBER)
+                send_message(driver, phone, msg)
+                send_message(driver, manager, msg)
+                send_message(driver, owner, msg)
 
-    send_message(driver, number, msg)
-    send_message(driver, MANAGER_NUMBER, msg)
-    send_message(driver, OWNER_NUMBER, msg)
+                count += 1
 
-# =============================
-# 💰 PAYMENT REMINDER (7 DAYS BEFORE)
-# =============================
-due_df = df[
-    (df["DUE"] > 0) &
-    ((df["DELIVERY DATE"] - today).dt.days == 7)
-]
+        except:
+            continue
 
-print(f"Payment reminders: {len(due_df)}")
+    driver.quit()
+    return f"{count} alerts sent"
 
-for _, row in due_df.iterrows():
 
-    msg = f"""
-💰 PAYMENT REMINDER
+# ---------------- PAYMENT ALERT ---------------- #
 
-Customer: {row['CUSTOMER NAME']}
-Order Value: ₹{row['ORDER AMOUNT']}
-Advance: ₹{row['ADV RECEIVED']}
-Pending: ₹{row['DUE']}
+def send_payment_alerts():
+    df = get_df("CRM")
+    contacts, manager, owner = get_contacts()
 
-Please collect before delivery.
+    driver = start_driver()
+    today = datetime.today().date()
+
+    count = 0
+
+    for _, row in df.iterrows():
+        try:
+            delivery_date = datetime.strptime(
+                row.get("CUSTOMER DELIVERY DATE (TO BE)", ""), "%d-%m-%Y"
+            ).date()
+
+            order_amt = float(row.get("ORDER AMOUNT", 0))
+            adv = float(row.get("ADV RECEIVED", 0))
+
+            due = order_amt - adv
+
+            if (delivery_date - today).days == 7 and due > 0:
+
+                sp = row.get("SALES PERSON", "").strip()
+                phone = contacts.get(sp, manager)
+
+                msg = f"""
+💰 PAYMENT DUE ALERT
+
+Customer: {row.get('CUSTOMER NAME')}
+Order: ₹{order_amt}
+Advance: ₹{adv}
+Due: ₹{due}
+
+Delivery: {row.get('CUSTOMER DELIVERY DATE (TO BE)')}
 """
 
-    sales = str(row.get("SALES PERSON", "")).strip()
-    number = CONTACTS.get(sales, MANAGER_NUMBER)
+                send_message(driver, phone, msg)
+                send_message(driver, manager, msg)
+                send_message(driver, owner, msg)
 
-    send_message(driver, number, msg)
-    send_message(driver, MANAGER_NUMBER, msg)
-    send_message(driver, OWNER_NUMBER, msg)
+                count += 1
 
-# =============================
-# 📊 DAILY REPORT
-# =============================
-today_df = df[df["DATE"].dt.date == today.date()]
+        except:
+            continue
 
-total_sales = today_df["ORDER AMOUNT"].sum()
-order_count = len(today_df)
-
-msg = f"""
-📊 DAILY SALES REPORT
-
-Total Sales: ₹{total_sales:,.0f}
-Orders Count: {order_count}
-"""
-
-send_message(driver, MANAGER_NUMBER, msg)
-send_message(driver, OWNER_NUMBER, msg)
-
-# =============================
-# ✅ DONE
-# =============================
-print("✅ Automation completed successfully")
-driver.quit()
+    driver.quit()
+    return f"{count} payment alerts sent"

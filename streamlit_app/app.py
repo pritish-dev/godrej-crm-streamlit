@@ -1,108 +1,178 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-from services.sheets import get_df
+from services.sheets import get_df, upsert_record
+from services.automation import send_delivery_alerts, send_payment_alerts
 
 st.set_page_config(layout="wide")
-st.title("📊 SALES DASHBOARD")
+st.title("📊 Sales Dashboard — Godrej CRM")
 
-# -----------------------------
-# LOAD DATA
-# -----------------------------
-df = get_df("CRM")
+# ---------------- LOAD DATA ---------------- #
 
-if df.empty:
-    st.warning("No data found")
+crm = get_df("CRM")
+
+if crm is None or crm.empty:
+    st.warning("No CRM data found")
     st.stop()
 
-# -----------------------------
-# DATE FORMATTING (dd-mm-yyyy)
-# -----------------------------
-df["DATE"] = pd.to_datetime(df["DATE"], format="%d-%m-%Y", errors="coerce")
-df["DELIVERY DATE"] = pd.to_datetime(df["CUSTOMER DELIVERY DATE (TO BE)"], format="%d-%m-%Y", errors="coerce")
+crm.columns = [c.strip().upper() for c in crm.columns]
 
-# -----------------------------
-# NUMERIC CLEANUP
-# -----------------------------
-for col in ["ORDER AMOUNT", "ADV RECEIVED"]:
-    df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+# ---------------- DATE PARSING ---------------- #
 
-df["DUE"] = df["ORDER AMOUNT"] - df["ADV RECEIVED"]
+crm["DATE_PARSED"] = pd.to_datetime(
+    crm["DATE"], format="%d-%m-%Y", errors="coerce"
+)
 
-# -----------------------------
-# FINANCIAL YEAR FILTER
-# -----------------------------
-today = datetime.today()
-fy_start = datetime(today.year if today.month >= 4 else today.year - 1, 4, 1)
+crm["DELIVERY_DATE"] = pd.to_datetime(
+    crm["CUSTOMER DELIVERY DATE (TO BE)"], format="%d-%m-%Y", errors="coerce"
+)
 
-df_fy = df[df["DATE"] >= fy_start]
+crm["ORDER AMOUNT"] = pd.to_numeric(crm["ORDER AMOUNT"], errors="coerce").fillna(0)
+crm["ADV RECEIVED"] = pd.to_numeric(crm["ADV RECEIVED"], errors="coerce").fillna(0)
 
-# =============================
-# 📊 MONTHLY PERFORMANCE
-# =============================
-st.subheader("📊 Monthly Sales (Financial Year)")
+crm["DUE"] = crm["ORDER AMOUNT"] - crm["ADV RECEIVED"]
 
-df_fy["MONTH"] = df_fy["DATE"].dt.strftime("%b-%Y")
+# ---------------- WHATSAPP ALERT BUTTONS ---------------- #
 
-monthly = df_fy.groupby("MONTH").agg({
-    "ORDER AMOUNT": "sum",
-    "ADV RECEIVED": "sum",
-    "DUE": "sum"
-}).reset_index()
-
-# Sort latest month first
-monthly["MONTH_DT"] = pd.to_datetime(monthly["MONTH"], format="%b-%Y")
-monthly = monthly.sort_values("MONTH_DT", ascending=False)
-
-st.dataframe(monthly.drop(columns=["MONTH_DT"]), use_container_width=True)
-
-# =============================
-# 📈 MONTHLY CHART
-# =============================
-st.subheader("📈 Monthly Sales Trend")
-
-chart_df = monthly.set_index("MONTH")
-
-st.bar_chart(chart_df["ORDER AMOUNT"])
-
-# =============================
-# 🎯 TARGET INPUT
-# =============================
-st.subheader("🎯 Target vs Achievement")
+st.subheader("📲 WhatsApp Automations")
 
 col1, col2 = st.columns(2)
 
 with col1:
-    sales_person = st.selectbox(
-        "Salesperson",
-        df["SALES PERSON"].dropna().unique()
-    )
+    if st.button("🚚 Send Delivery Alerts"):
+        result = send_delivery_alerts()
+        st.success(result)
 
 with col2:
-    target = st.number_input("Target Value", min_value=0)
+    if st.button("💰 Send Payment Alerts"):
+        result = send_payment_alerts()
+        st.success(result)
 
-if target > 0:
-    achieved = df_fy[df_fy["SALES PERSON"] == sales_person]["ORDER AMOUNT"].sum()
+# ---------------- FINANCIAL YEAR FILTER ---------------- #
 
-    st.success(f"""
-    {sales_person}
-    Target: ₹{target:,.0f}
-    Achieved: ₹{achieved:,.0f}
-    """)
+st.subheader("📅 Financial Year Analysis")
 
-# =============================
-# 🚚 PENDING DELIVERIES
-# =============================
-st.subheader("🚚 Pending Deliveries")
+fy_options = ["2024-25", "2025-26", "2026-27"]
+fy = st.selectbox("Select Financial Year", fy_options, index=1)
 
-pending = df[
-    (df["DELIVERY REMARKS"].str.lower() == "pending") &
-    (df["DELIVERY DATE"].notna())
-].copy()
+start_year = int(fy.split("-")[0])
+start_date = datetime(start_year, 4, 1)
+end_date = datetime(start_year + 1, 3, 31)
 
-pending = pending.sort_values("DELIVERY DATE")
+fy_df = crm[
+    (crm["DATE_PARSED"] >= start_date) &
+    (crm["DATE_PARSED"] <= end_date)
+]
 
-pending_display = pending[[
+# ---------------- MONTHLY SALES ---------------- #
+
+st.subheader("📊 Monthly Sales Trend")
+
+monthly = (
+    fy_df
+    .groupby(fy_df["DATE_PARSED"].dt.strftime("%b-%Y"))["ORDER AMOUNT"]
+    .sum()
+)
+
+monthly = monthly.sort_index(ascending=False)
+
+st.bar_chart(monthly)
+
+# ---------------- METRICS ---------------- #
+
+st.subheader("📈 Key Metrics")
+
+total_sales = fy_df["ORDER AMOUNT"].sum()
+total_orders = len(fy_df)
+total_advance = fy_df["ADV RECEIVED"].sum()
+total_due = fy_df["DUE"].sum()
+
+m1, m2, m3, m4 = st.columns(4)
+
+m1.metric("Total Sales", f"₹{total_sales:,.0f}")
+m2.metric("Total Orders", total_orders)
+m3.metric("Advance Received", f"₹{total_advance:,.0f}")
+m4.metric("Outstanding Due", f"₹{total_due:,.0f}")
+
+# ---------------- TARGET INPUT ---------------- #
+
+st.subheader("🎯 Target vs Achievement")
+
+sales_people = crm["SALES PERSON"].dropna().unique()
+
+c1, c2 = st.columns(2)
+
+with c1:
+    sp = st.selectbox("Sales Person", sales_people)
+
+with c2:
+    target_val = st.number_input("Target ₹", min_value=0.0, step=10000.0)
+
+if st.button("Save Target"):
+    month_key = datetime.today().strftime("%Y-%m")
+
+    upsert_record(
+        "Targets",
+        {"SALES PERSON": sp, "MONTH": month_key},
+        {
+            "SALES PERSON": sp,
+            "MONTH": month_key,
+            "TARGET": target_val
+        }
+    )
+
+    st.success("Target Updated")
+
+# ---------------- TARGET TABLE ---------------- #
+
+targets = get_df("Targets")
+
+if targets is not None and not targets.empty:
+    targets.columns = [c.upper() for c in targets.columns]
+
+    sales_summary = (
+        fy_df.groupby("SALES PERSON")["ORDER AMOUNT"]
+        .sum()
+        .reset_index()
+    )
+
+    merged = targets.merge(sales_summary, on="SALES PERSON", how="left")
+
+    merged["ACHIEVEMENT"] = merged["ORDER AMOUNT"].fillna(0)
+
+    merged = merged[merged["TARGET"] > 0]
+
+    st.dataframe(merged, use_container_width=True)
+
+# ---------------- HIGH VALUE CUSTOMERS ---------------- #
+
+st.subheader("💎 High Value Customers (> ₹1,00,000)")
+
+high_value = crm[crm["ORDER AMOUNT"] > 100000]
+
+high_value = high_value.sort_values(by="ORDER AMOUNT", ascending=False)
+
+cols = [
+    "CUSTOMER NAME",
+    "CONTACT NUMBER",
+    "PRODUCT NAME",
+    "ORDER AMOUNT",
+    "SALES PERSON"
+]
+
+st.dataframe(high_value[cols], use_container_width=True)
+
+# ---------------- PENDING DELIVERIES ---------------- #
+
+st.subheader("🚚 Upcoming Deliveries")
+
+pending = crm[
+    (crm["DELIVERY REMARKS"].str.lower() == "pending")
+]
+
+pending = pending.sort_values(by="DELIVERY_DATE")
+
+cols_delivery = [
     "CUSTOMER NAME",
     "CONTACT NUMBER",
     "DATE",
@@ -110,35 +180,37 @@ pending_display = pending[[
     "SALES PERSON",
     "CUSTOMER DELIVERY DATE (TO BE)",
     "DELIVERY REMARKS"
-]]
+]
 
-st.dataframe(pending_display, use_container_width=True)
+st.dataframe(pending[cols_delivery], use_container_width=True)
 
-# =============================
-# 💰 PAYMENT DUE TABLE
-# =============================
-st.subheader("💰 Payment Due")
+# ---------------- PAYMENT DUE TABLE ---------------- #
 
-due_df = pending[pending["DUE"] > 0]
+st.subheader("💰 Payment Due Reminder")
 
-due_display = due_df[[
+due_df = crm[
+    (crm["DUE"] > 0) &
+    (crm["DELIVERY REMARKS"].str.lower() == "pending")
+]
+
+due_df = due_df.sort_values(by="DELIVERY_DATE")
+
+cols_due = [
     "CUSTOMER NAME",
-    "CONTACT NUMBER",
     "ORDER AMOUNT",
     "ADV RECEIVED",
     "DUE",
     "CUSTOMER DELIVERY DATE (TO BE)",
     "SALES PERSON"
-]]
+]
 
-st.dataframe(due_display, use_container_width=True)
+st.dataframe(due_df[cols_due], use_container_width=True)
 
-# =============================
-# 📋 FULL CRM VIEW (SALES ONLY)
-# =============================
+# ---------------- ALL ORDERS ---------------- #
+
 st.subheader("📋 All Orders (Latest First)")
 
-df_sorted = df.sort_values("DATE", ascending=False)
+crm_sorted = crm.sort_values(by="DATE_PARSED", ascending=False)
 
 display_cols = [
     "DATE",
@@ -146,11 +218,12 @@ display_cols = [
     "CUSTOMER NAME",
     "CONTACT NUMBER",
     "PRODUCT NAME",
-    "SALES PERSON",
     "ORDER AMOUNT",
     "ADV RECEIVED",
     "DUE",
+    "SALES PERSON",
+    "CUSTOMER DELIVERY DATE (TO BE)",
     "DELIVERY REMARKS"
 ]
 
-st.dataframe(df_sorted[display_cols], use_container_width=True)
+st.dataframe(crm_sorted[display_cols], use_container_width=True)
