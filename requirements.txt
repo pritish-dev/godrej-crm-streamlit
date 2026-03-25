@@ -11,3 +11,5 @@ streamlit-aggrid
 bcrypt
 pywhatkit
 pyautogui
+selenium
+webdriver-manager
