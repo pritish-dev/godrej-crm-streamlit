@@ -14,20 +14,28 @@ crm = get_df("CRM")
 team = get_df("Sales Team")
 targets_sheet = get_df("Targets")
 
+if crm is None or crm.empty:
+    st.warning("No CRM data found")
+    st.stop()
+
 crm.columns = [c.strip().upper() for c in crm.columns]
 
 # -----------------------------
-# CLEAN DATA
+# CLEAN NUMERIC
 # -----------------------------
 for col in ["ORDER AMOUNT", "ADV RECEIVED"]:
-    crm[col] = (
-        crm[col].astype(str)
-        .str.replace(",", "")
-        .str.replace("₹", "")
-        .str.strip()
-    )
-    crm[col] = pd.to_numeric(crm[col], errors="coerce").fillna(0)
+    if col in crm.columns:
+        crm[col] = (
+            crm[col].astype(str)
+            .str.replace(",", "")
+            .str.replace("₹", "")
+            .str.strip()
+        )
+        crm[col] = pd.to_numeric(crm[col], errors="coerce").fillna(0)
 
+# -----------------------------
+# CLEAN DATE
+# -----------------------------
 crm["DATE"] = pd.to_datetime(crm["DATE"], format="%d-%m-%Y", errors="coerce")
 
 crm["DELIVERY DATE"] = pd.to_datetime(
@@ -39,21 +47,24 @@ crm["DELIVERY DATE"] = pd.to_datetime(
 crm = crm.sort_values("DATE", ascending=False)
 
 # -----------------------------
-# SALES TEAM LIST
+# SALES TEAM
 # -----------------------------
-team.columns = [c.strip().upper() for c in team.columns]
+sales_people = []
 
-sales_people = (
-    team[team["ROLE"] == "SALES"]["NAME"]
-    .dropna()
-    .str.strip()
-    .str.upper()
-    .unique()
-    .tolist()
-)
+if team is not None and not team.empty:
+    team.columns = [c.strip().upper() for c in team.columns]
+    sales_people = (
+        team[team["ROLE"] == "SALES"]["NAME"]
+        .dropna()
+        .astype(str)
+        .str.strip()
+        .str.upper()
+        .unique()
+        .tolist()
+    )
 
 # -----------------------------
-# HELPERS
+# FORMATTERS
 # -----------------------------
 def format_money(x):
     return f"₹{x:,.0f}"
@@ -65,50 +76,102 @@ def format_date(x):
         return ""
 
 # -----------------------------
+# ALL ORDERS
+# -----------------------------
+st.subheader("📋 All Orders (Till Date)")
+
+display_cols = [
+    "DATE", "CUSTOMER NAME", "CONTACT NUMBER",
+    "PRODUCT NAME", "CATEGORY",
+    "ORDER AMOUNT", "ADV RECEIVED",
+    "SALES PERSON",
+    "CUSTOMER DELIVERY DATE (TO BE)",
+    "DELIVERY REMARKS"
+]
+
+df_display = crm[display_cols].copy()
+df_display["DATE"] = df_display["DATE"].apply(format_date)
+
+st.dataframe(df_display, use_container_width=True)
+
+# -----------------------------
+# YEAR SUMMARY
+# -----------------------------
+st.subheader("📊 Year-wise Summary")
+
+crm["YEAR"] = crm["DATE"].dt.year
+
+summary = crm.groupby("YEAR").agg({
+    "ORDER AMOUNT": "sum",
+    "ADV RECEIVED": "sum",
+    "ORDER NO": "count"
+}).reset_index()
+
+summary["PENDING"] = summary["ORDER AMOUNT"] - summary["ADV RECEIVED"]
+
+for col in ["ORDER AMOUNT", "ADV RECEIVED", "PENDING"]:
+    summary[col] = summary[col].apply(format_money)
+
+st.dataframe(summary, use_container_width=True)
+
+# -----------------------------
+# TARGETS SHEET FIX (CRITICAL)
+# -----------------------------
+required_cols = ["MONTH", "YEAR", "SALES PERSON", "TARGET"]
+
+if targets_sheet is None or targets_sheet.empty or len(targets_sheet.columns) == 0:
+    targets_sheet = pd.DataFrame(columns=required_cols)
+else:
+    targets_sheet.columns = [c.strip().upper() for c in targets_sheet.columns]
+
+    for col in required_cols:
+        if col not in targets_sheet.columns:
+            targets_sheet[col] = ""
+
+    targets_sheet = targets_sheet[required_cols]
+
+# CLEAN TARGET SHEET DATA
+targets_sheet["MONTH"] = targets_sheet["MONTH"].astype(str).str.strip()
+targets_sheet["YEAR"] = targets_sheet["YEAR"].astype(str).str.strip()
+targets_sheet["SALES PERSON"] = targets_sheet["SALES PERSON"].astype(str).str.strip().str.upper()
+
+# -----------------------------
 # TARGET VS ACHIEVEMENT
 # -----------------------------
 st.subheader("🎯 Target vs Achievement")
 
 today = datetime.today()
 month = today.strftime("%B")
-year = today.year
+year = str(today.year)
 month_start = today.replace(day=1)
 
-# Ensure targets sheet structure
-if targets_sheet.empty:
-    targets_sheet = pd.DataFrame(columns=["MONTH", "YEAR", "SALES PERSON", "TARGET"])
-
-targets_sheet.columns = [c.strip().upper() for c in targets_sheet.columns]
-
-# FILTER CURRENT MONTH
 targets_current = targets_sheet[
     (targets_sheet["MONTH"] == month) &
-    (targets_sheet["YEAR"].astype(str) == str(year))
+    (targets_sheet["YEAR"] == year)
 ]
 
-# AUTO CREATE DEFAULT ROWS
-rows = []
+# AUTO ADD SALES PERSONS
+rows_to_add = []
 for sp in sales_people:
     if sp not in targets_current["SALES PERSON"].values:
-        rows.append({
+        rows_to_add.append({
             "MONTH": month,
             "YEAR": year,
             "SALES PERSON": sp,
             "TARGET": 0
         })
 
-if rows:
-    for r in rows:
+if rows_to_add:
+    for r in rows_to_add:
         upsert_record("Targets",
-            {"SALES PERSON": r["SALES PERSON"], "MONTH": r["MONTH"], "YEAR": r["YEAR"]},
+            {
+                "SALES PERSON": r["SALES PERSON"],
+                "MONTH": r["MONTH"],
+                "YEAR": r["YEAR"]
+            },
             r
         )
-    targets_sheet = get_df("Targets")
-    targets_sheet.columns = [c.strip().upper() for c in targets_sheet.columns]
-    targets_current = targets_sheet[
-        (targets_sheet["MONTH"] == month) &
-        (targets_sheet["YEAR"].astype(str) == str(year))
-    ]
+    st.rerun()
 
 # -----------------------------
 # INPUT TARGET
@@ -136,7 +199,7 @@ if st.button("Update Target"):
     st.rerun()
 
 # -----------------------------
-# CALCULATE ACHIEVEMENT
+# CALCULATIONS
 # -----------------------------
 def calc_achievement(person):
     df = crm[
@@ -175,7 +238,8 @@ for i in range(min(3, len(df_targets))):
 for col in ["TARGET", "ACHIEVEMENT", "HOME FURNITURE", "HOME STORAGE"]:
     df_targets[col] = df_targets[col].apply(format_money)
 
-# HIGHLIGHT
+df_targets["MONTH DISPLAY"] = month + " " + year
+
 def highlight(row):
     ach = int(row["ACHIEVEMENT"].replace("₹", "").replace(",", ""))
     tar = int(row["TARGET"].replace("₹", "").replace(",", ""))
@@ -183,13 +247,11 @@ def highlight(row):
         return ["background-color:#dcfce7"] * len(row)
     return [""] * len(row)
 
-# ADD MONTH DISPLAY
-df_targets["MONTH DISPLAY"] = month + " " + str(year)
-
 st.dataframe(
     df_targets[
-        ["MONTH DISPLAY", "SALES PERSON", "TARGET", "ACHIEVEMENT",
-         "HOME FURNITURE", "HOME STORAGE", "RANK"]
+        ["MONTH DISPLAY", "SALES PERSON", "TARGET",
+         "ACHIEVEMENT", "HOME FURNITURE",
+         "HOME STORAGE", "RANK"]
     ].style.apply(highlight, axis=1),
     use_container_width=True
 )
@@ -199,12 +261,15 @@ st.dataframe(
 # -----------------------------
 st.subheader("🚚 Pending Deliveries")
 
-pending = crm[crm["DELIVERY REMARKS"].str.upper() == "PENDING"]
+pending = crm[
+    crm["DELIVERY REMARKS"].astype(str).str.upper() == "PENDING"
+]
+
 pending = pending.sort_values("DELIVERY DATE")
 
 pending["CUSTOMER DELIVERY DATE (TO BE)"] = pending["DELIVERY DATE"].apply(format_date)
 
-st.dataframe(pending, use_container_width=True)
+st.dataframe(pending[display_cols], use_container_width=True)
 
 if st.button("📲 Send Delivery Alerts"):
     send_delivery_alerts()
@@ -221,7 +286,13 @@ due = crm[crm["PENDING AMOUNT"] > 0]
 
 due["PENDING AMOUNT"] = due["PENDING AMOUNT"].apply(format_money)
 
-st.dataframe(due, use_container_width=True)
+st.dataframe(due[[
+    "CUSTOMER NAME",
+    "ORDER AMOUNT",
+    "ADV RECEIVED",
+    "PENDING AMOUNT",
+    "SALES PERSON"
+]], use_container_width=True)
 
 if st.button("📲 Send Payment Alerts"):
     send_payment_alerts()
