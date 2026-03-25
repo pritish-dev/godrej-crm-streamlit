@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-from services.sheets import get_df, get_sheet
+from services.sheets import get_df, upsert_record
 from services.automation import send_delivery_alerts, send_payment_alerts
 
 st.set_page_config(layout="wide")
@@ -12,6 +12,7 @@ st.title("📊 Sales Dashboard")
 # -----------------------------
 crm = get_df("CRM")
 team = get_df("Sales Team")
+targets_sheet = get_df("Targets")
 
 if crm.empty:
     st.warning("No CRM data found")
@@ -20,21 +21,24 @@ if crm.empty:
 crm.columns = [c.strip().upper() for c in crm.columns]
 
 # -----------------------------
-# FIX NUMERIC
+# FIX NUMERIC COLUMNS
 # -----------------------------
 for col in ["ORDER AMOUNT", "ADV RECEIVED"]:
-    crm[col] = (
-        crm[col].astype(str)
-        .str.replace(",", "")
-        .str.replace("₹", "")
-        .str.strip()
-    )
-    crm[col] = pd.to_numeric(crm[col], errors="coerce").fillna(0)
+    if col in crm.columns:
+        crm[col] = (
+            crm[col].astype(str)
+            .str.replace(",", "")
+            .str.replace("₹", "")
+            .str.strip()
+        )
+        crm[col] = pd.to_numeric(crm[col], errors="coerce").fillna(0)
 
 # -----------------------------
 # FIX DATE
 # -----------------------------
 crm["DATE"] = pd.to_datetime(crm["DATE"], format="%d-%m-%Y", errors="coerce")
+
+# SORT DESC
 crm = crm.sort_values(by="DATE", ascending=False)
 
 def format_date(x):
@@ -46,27 +50,28 @@ def format_date(x):
 # -----------------------------
 # SALES TEAM
 # -----------------------------
-team.columns = [c.strip().upper() for c in team.columns]
+sales_people = []
 
-sales_people = (
-    team[team["ROLE"].str.upper() == "SALES"]["NAME"]
-    .dropna()
-    .astype(str)
-    .str.strip()
-    .str.upper()
-    .unique()
-    .tolist()
-)
+if not team.empty:
+    team.columns = [c.strip().upper() for c in team.columns]
+    sales_people = (
+        team[team["ROLE"] == "SALES"]["NAME"]
+        .dropna()
+        .str.strip()
+        .str.upper()
+        .unique()
+        .tolist()
+    )
 
 # -----------------------------
-# ALL ORDERS
+# ALL ORDERS TABLE
 # -----------------------------
 st.subheader("📋 All Orders (Till Date)")
 
 display_cols = [
-    "DATE","CUSTOMER NAME","CONTACT NUMBER",
-    "PRODUCT NAME","ORDER AMOUNT",
-    "ADV RECEIVED","SALES PERSON",
+    "DATE", "CUSTOMER NAME", "CONTACT NUMBER",
+    "PRODUCT NAME", "ORDER AMOUNT",
+    "ADV RECEIVED", "SALES PERSON",
     "CUSTOMER DELIVERY DATE (TO BE)",
     "DELIVERY REMARKS"
 ]
@@ -96,41 +101,14 @@ st.dataframe(summary, use_container_width=True)
 # -----------------------------
 # TARGET VS ACHIEVEMENT
 # -----------------------------
-today = datetime.today()
-month = today.month
-year = today.year
-month_name = today.strftime("%B")
+current_month = datetime.today().strftime("%B")
+current_year = datetime.today().year
 
-st.subheader(f"🎯 Target vs Achievement for {month_name}")
+st.subheader(f"🎯 Target vs Achievement ({current_month})")
 
-# -----------------------------
-# LOAD TARGET SHEET
-# -----------------------------
-try:
-    ws = get_sheet("Targets")
-except:
-    from services.sheets import sh
-    ws = sh.add_worksheet(title="Targets", rows=1000, cols=10)
-    ws.append_row(["Sales Person","Month","Year","Target"])
-
-targets_data = ws.get_all_records()
-targets_df = pd.DataFrame(targets_data)
-
-# -----------------------------
-# DEFAULT ROWS
-# -----------------------------
-if targets_df.empty:
-    for sp in sales_people:
-        ws.append_row([sp, month, year, 0])
-    targets_df = pd.DataFrame(ws.get_all_records())
-
-# -----------------------------
-# FILTER CURRENT MONTH
-# -----------------------------
-targets_df = targets_df[
-    (targets_df["Month"] == month) &
-    (targets_df["Year"] == year)
-]
+# Ensure Targets sheet structure
+if targets_sheet.empty or "SALES PERSON" not in targets_sheet.columns:
+    targets_sheet = pd.DataFrame(columns=["SALES PERSON", "MONTH", "YEAR", "TARGET"])
 
 # -----------------------------
 # INPUT
@@ -144,74 +122,100 @@ with col2:
     target_value = st.number_input("Target Value", min_value=0, step=10000)
 
 # -----------------------------
-# UPDATE TARGET
+# SAVE TARGET
 # -----------------------------
-if st.button("Update Target"):
-    records = ws.get_all_values()
-
-    found = False
-    for i, row in enumerate(records[1:], start=2):
-        if row[0] == selected_sales and int(row[1]) == month and int(row[2]) == year:
-            ws.update_cell(i, 4, target_value)
-            found = True
-            break
-
-    if not found:
-        ws.append_row([selected_sales, month, year, target_value])
-
+if st.button("Save Target"):
+    upsert_record(
+        "Targets",
+        {"SALES PERSON": selected_sales, "MONTH": current_month, "YEAR": current_year},
+        {
+            "SALES PERSON": selected_sales,
+            "MONTH": current_month,
+            "YEAR": current_year,
+            "TARGET": target_value
+        },
+        sync_to_crm=False
+    )
     st.success("Target Updated")
     st.rerun()
 
 # -----------------------------
-# CATEGORY-WISE ACHIEVEMENT
+# BUILD TARGET TABLE
 # -----------------------------
-def calc_category(sp, category):
-    df = crm[
-        (crm["SALES PERSON"] == sp) &
-        (crm["DATE"].dt.month == month) &
-        (crm["DATE"].dt.year == year) &
-        (crm["CATEGORY"].str.upper() == category.upper())
-    ]
-    return df["ORDER AMOUNT"].sum()
-
 rows = []
 
-for _, row in targets_df.iterrows():
-    sp = str(row["Sales Person"]).upper()
+month_start = datetime.today().replace(day=1)
 
-    home_storage = calc_category(sp, "HOME STORAGE")
-    home_furniture = calc_category(sp, "HOME FURNITURE")
+for sp in sales_people:
+    target_row = targets_sheet[
+        (targets_sheet["SALES PERSON"] == sp) &
+        (targets_sheet["MONTH"] == current_month) &
+        (targets_sheet["YEAR"] == current_year)
+    ]
 
-    achievement = home_storage + home_furniture
+    target_val = (
+        pd.to_numeric(target_row["TARGET"], errors="coerce").sum()
+        if not target_row.empty else 0
+    )
+
+    # Monthly sales
+    sales_df = crm[
+        (crm["SALES PERSON"] == sp) &
+        (crm["DATE"] >= month_start)
+    ]
+
+    home_storage = sales_df[
+        sales_df["CATEGORY"].str.upper() == "HOME STORAGE"
+    ]["ORDER AMOUNT"].sum()
+
+    home_furniture = sales_df[
+        sales_df["CATEGORY"].str.upper() == "HOME FURNITURE"
+    ]["ORDER AMOUNT"].sum()
+
+    total_ach = home_storage + home_furniture
 
     rows.append({
         "Sales Person": sp,
-        "Target": round(float(row["Target"]), 0),
-        "Home Storage": round(home_storage, 0),
-        "Home Furniture": round(home_furniture, 0),
-        "Achievement": round(achievement, 0)
+        "Target": target_val,
+        "Home Storage": home_storage,
+        "Home Furniture": home_furniture,
+        "Achievement": total_ach
     })
 
-final_df = pd.DataFrame(rows)
+df_targets = pd.DataFrame(rows)
+
+# REMOVE EMPTY ROWS
+df_targets = df_targets[
+    (df_targets["Target"] > 0) | (df_targets["Achievement"] > 0)
+]
 
 # SORT
-final_df = final_df.sort_values(by="Achievement", ascending=False)
+df_targets = df_targets.sort_values(by="Achievement", ascending=False)
 
-# HIGHLIGHT
-def style_row(row):
+# -----------------------------
+# MEDALS + COLOR
+# -----------------------------
+def highlight(row):
     if row["Achievement"] >= row["Target"] and row["Target"] > 0:
-        return ["background-color:#dcfce7"]*len(row)
-    return [""]*len(row)
+        return ['background-color: lightgreen']*len(row)
+    return ['']*len(row)
 
-st.dataframe(final_df.style.apply(style_row, axis=1), use_container_width=True)
+df_targets.index = ["🥇", "🥈", "🥉"] + [""]*(len(df_targets)-3)
+
+st.dataframe(df_targets.style.apply(highlight, axis=1), use_container_width=True)
 
 # -----------------------------
 # PENDING DELIVERY
 # -----------------------------
 st.subheader("🚚 Pending Deliveries")
 
-pending = crm[crm["DELIVERY REMARKS"].str.upper() == "PENDING"]
+pending = crm[
+    crm["DELIVERY REMARKS"].str.upper() == "PENDING"
+]
+
 pending = pending.sort_values(by="CUSTOMER DELIVERY DATE (TO BE)")
+
+pending["CUSTOMER DELIVERY DATE (TO BE)"] = pending["CUSTOMER DELIVERY DATE (TO BE)"].apply(format_date)
 
 st.dataframe(pending[display_cols], use_container_width=True)
 
