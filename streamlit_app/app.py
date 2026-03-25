@@ -1,199 +1,246 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
-
+import pywhatkit as kit
 from services.sheets import get_df
 
 st.set_page_config(layout="wide")
-st.title("🚀 Sales Command Center + Automation")
+st.title("📊 SALES DASHBOARD (SMART CRM)")
 
-# ----------------------------
-# CONTACT INPUTS
-# ----------------------------
-st.sidebar.header("📞 Contacts")
+# -----------------------------
+# CONTACT CONFIG (EDIT HERE)
+# -----------------------------
+CONTACTS = {
+    "Pritish": "8867143707",
+    "Shaktiman": "9778022570",
+    "Swati": "8280175104",
+    "Archita": "7606877236"
+}
 
-manager_number = st.sidebar.text_input("Manager WhatsApp Number (+91...)")
-my_number = st.sidebar.text_input("Your Number (+91...)")
+DEFAULT_MANAGER = "Shaktiman"
+OWNER = "Pritish"
 
-sales_contacts = {}
-salespersons = []
-
-# ----------------------------
+# -----------------------------
 # LOAD DATA
-# ----------------------------
+# -----------------------------
 df = get_df("CRM")
-df.columns = [c.strip().upper() for c in df.columns]
 
-df["DATE"] = pd.to_datetime(df["DATE"], dayfirst=True, errors="coerce")
-df["CUSTOMER DELIVERY DATE (TO BE)"] = pd.to_datetime(
-    df.get("CUSTOMER DELIVERY DATE (TO BE)"), dayfirst=True, errors="coerce"
-)
+if df.empty:
+    st.warning("No data found")
+    st.stop()
 
-df["ORDER AMOUNT"] = pd.to_numeric(df.get("ORDER AMOUNT"), errors="coerce").fillna(0)
-df["ADV RECEIVED"] = pd.to_numeric(df.get("ADV RECEIVED"), errors="coerce").fillna(0)
+# -----------------------------
+# DATE FIX (IMPORTANT)
+# -----------------------------
+df["DATE"] = pd.to_datetime(df["DATE"], format="%d-%m-%Y", errors="coerce")
+df["DELIVERY DATE"] = pd.to_datetime(df["CUSTOMER DELIVERY DATE (TO BE)"], format="%d-%m-%Y", errors="coerce")
+
+# -----------------------------
+# FINANCIAL YEAR FILTER
+# -----------------------------
+today = datetime.today()
+fy_start = datetime(today.year if today.month >= 4 else today.year - 1, 4, 1)
+
+df_fy = df[df["DATE"] >= fy_start]
+
+# -----------------------------
+# NUMERIC FIELDS
+# -----------------------------
+for col in ["ORDER AMOUNT", "ADV RECEIVED"]:
+    df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
 df["DUE"] = df["ORDER AMOUNT"] - df["ADV RECEIVED"]
 
-salespersons = df["SALES PERSON"].dropna().unique()
+# =============================
+# 📊 TOP METRICS (MONTH-WISE)
+# =============================
+st.subheader("📊 Monthly Performance")
 
-st.sidebar.subheader("Salesperson Contacts")
-for sp in salespersons:
-    sales_contacts[sp] = st.sidebar.text_input(f"{sp} Number")
+df_fy["MONTH"] = df_fy["DATE"].dt.strftime("%b-%Y")
 
-# ----------------------------
-# KPI (MONTH WISE)
-# ----------------------------
-st.subheader("📊 Monthly Metrics")
+monthly = df_fy.groupby("MONTH").agg({
+    "ORDER AMOUNT": "sum",
+    "ADV RECEIVED": "sum",
+    "DUE": "sum"
+}).reset_index()
 
-df["MONTH"] = df["DATE"].dt.to_period("M")
+# Sort latest first
+monthly["MONTH_DT"] = pd.to_datetime(monthly["MONTH"], format="%b-%Y")
+monthly = monthly.sort_values("MONTH_DT", ascending=False)
 
-monthly_metrics = (
-    df.groupby("MONTH")[["ORDER AMOUNT", "ADV RECEIVED", "DUE"]]
-    .sum()
-    .sort_index(ascending=False)
-)
+st.dataframe(monthly.drop(columns=["MONTH_DT"]), use_container_width=True)
 
-st.dataframe(monthly_metrics)
+# =============================
+# 📈 MONTHLY SALES CHART
+# =============================
+st.subheader("📈 Monthly Sales (Latest → Older)")
 
-# ----------------------------
-# MONTHLY SALES FIXED
-# ----------------------------
-st.subheader("📅 Monthly Sales")
+chart_df = monthly.copy()
+chart_df = chart_df.set_index("MONTH")
 
-chart_data = monthly_metrics["ORDER AMOUNT"]
+st.bar_chart(chart_df[["ORDER AMOUNT"]])
 
-st.bar_chart(chart_data)
+# =============================
+# 🎯 TARGET INPUT
+# =============================
+st.subheader("🎯 Target vs Achievement")
 
-# ----------------------------
-# TARGET INPUT (ROW STYLE)
-# ----------------------------
-st.subheader("🎯 Targets")
+col1, col2 = st.columns([2, 2])
 
-target_data = {}
+with col1:
+    sales_person = st.selectbox("Salesperson", ["Swati", "Archita"])
 
-col1, col2 = st.columns(2)
+with col2:
+    target = st.number_input("Target Value", min_value=0)
 
-selected_sp = col1.selectbox("Salesperson", salespersons)
-target_val = col2.number_input("Target Value", step=50000)
+if target > 0:
+    achieved = df_fy[df_fy["SALES PERSON"] == sales_person]["ORDER AMOUNT"].sum()
+    st.success(f"{sales_person} → Target: ₹{target:,} | Achieved: ₹{achieved:,}")
 
-if st.button("Add Target"):
-    target_data[selected_sp] = target_val
-
-# ----------------------------
-# TARGET VS ACHIEVEMENT
-# ----------------------------
-leader = (
-    df.groupby("SALES PERSON")["ORDER AMOUNT"]
-    .sum()
-    .reset_index()
-)
-
-leader = leader[leader["ORDER AMOUNT"] > 0]
-
-leader["Target"] = leader["SALES PERSON"].map(target_data)
-leader["Achievement %"] = (leader["ORDER AMOUNT"] / leader["Target"] * 100).round(1)
-
-leader = leader.sort_values("ORDER AMOUNT", ascending=False)
-
-st.subheader("🏆 Ranking")
-
-def medal(rank):
-    return ["🥇", "🥈", "🥉"][rank] if rank < 3 else ""
-
-leader["Rank"] = range(len(leader))
-leader["Medal"] = leader["Rank"].apply(medal)
-
-st.dataframe(leader, use_container_width=True)
-
-# ----------------------------
-# HIGH VALUE CUSTOMERS (ALL TIME)
-# ----------------------------
-st.subheader("💰 High Value Customers")
-
-hv = (
-    df.groupby("CUSTOMER NAME")
-    .agg({"ORDER AMOUNT": "sum", "PRODUCT NAME": lambda x: ", ".join(set(x))})
-    .reset_index()
-    .sort_values("ORDER AMOUNT", ascending=False)
-)
-
-st.dataframe(hv.head(20))
-
-# ----------------------------
-# PENDING DELIVERY (ONLY)
-# ----------------------------
-st.subheader("🚚 Upcoming Deliveries")
+# =============================
+# 🚚 PENDING DELIVERIES
+# =============================
+st.subheader("🚚 Pending Deliveries")
 
 pending = df[
-    (df["DUE"] > 0) &
-    df["CUSTOMER DELIVERY DATE (TO BE)"].notna()
-]
+    (df["DELIVERY REMARKS"].str.lower() == "pending") &
+    (df["DELIVERY DATE"].notna())
+].copy()
 
-pending = pending.sort_values("CUSTOMER DELIVERY DATE (TO BE)")
+pending = pending.sort_values("DELIVERY DATE")
 
-st.dataframe(pending)
+pending_display = pending[[
+    "CUSTOMER NAME",
+    "CONTACT NUMBER",
+    "DATE",
+    "PRODUCT NAME",
+    "SALES PERSON",
+    "CUSTOMER DELIVERY DATE (TO BE)",
+    "DELIVERY REMARKS"
+]]
 
-# ----------------------------
-# WHATSAPP ALERTS
-# ----------------------------
-st.subheader("📲 WhatsApp Alerts")
+st.dataframe(pending_display, use_container_width=True)
 
-today = datetime.today()
-delivery_alert = pending[
-    (pending["CUSTOMER DELIVERY DATE (TO BE)"] - today).dt.days <= 1
-]
+# =============================
+# 💰 PAYMENT DUE TABLE
+# =============================
+st.subheader("💰 Payment Due (Before Delivery)")
 
-payment_alert = pending[
-    (pending["CUSTOMER DELIVERY DATE (TO BE)"] - today).dt.days <= 7
-]
+due_df = pending.copy()
+due_df = due_df[due_df["DUE"] > 0]
 
-def send_msg(num, msg):
-    st.write(f"📤 Sending to {num}: {msg}")
+due_display = due_df[[
+    "CUSTOMER NAME",
+    "CONTACT NUMBER",
+    "ORDER AMOUNT",
+    "ADV RECEIVED",
+    "DUE",
+    "CUSTOMER DELIVERY DATE (TO BE)",
+    "SALES PERSON"
+]]
 
-if st.button("Send Alerts"):
-    for _, row in delivery_alert.iterrows():
-        sp = row["SALES PERSON"]
-        msg = f"Delivery Tomorrow: {row['CUSTOMER NAME']}"
-        send_msg(sales_contacts.get(sp), msg)
-        send_msg(manager_number, msg)
+st.dataframe(due_display, use_container_width=True)
 
-    for _, row in payment_alert.iterrows():
-        sp = row["SALES PERSON"]
-        due = row["DUE"]
-        msg = f"Payment Due ₹{due} for {row['CUSTOMER NAME']}"
-        send_msg(sales_contacts.get(sp), msg)
-        send_msg(manager_number, msg)
+# =============================
+# 📲 WHATSAPP FUNCTIONS
+# =============================
+def send_whatsapp(number, message):
+    try:
+        kit.sendwhatmsg_instantly(f"+91{number}", message, wait_time=10, tab_close=True)
+    except Exception as e:
+        st.error(f"WhatsApp Error: {e}")
 
-    st.success("Alerts processed")
+# =============================
+# 🚚 DELIVERY ALERT BUTTON
+# =============================
+if st.button("📲 Send Pending Delivery Alerts"):
+    for _, row in pending.iterrows():
+        sales = row["SALES PERSON"]
+        number = CONTACTS.get(sales, CONTACTS[DEFAULT_MANAGER])
 
-# ----------------------------
-# DAILY REPORT
-# ----------------------------
-st.subheader("📊 Daily Report")
+        msg = f"""
+🚚 DELIVERY ALERT
 
-today_df = df[df["DATE"].dt.date == datetime.today().date()]
+Customer: {row['CUSTOMER NAME']}
+Product: {row['PRODUCT NAME']}
+Delivery Date: {row['CUSTOMER DELIVERY DATE (TO BE)']}
 
-report = f"""
-Today's Sales: ₹{today_df['ORDER AMOUNT'].sum():,.0f}
-Orders: {len(today_df)}
-Outstanding: ₹{today_df['DUE'].sum():,.0f}
+Please plan delivery.
 """
 
-st.text(report)
+        send_whatsapp(number, msg)
+        send_whatsapp(CONTACTS[DEFAULT_MANAGER], msg)
+        send_whatsapp(CONTACTS[OWNER], msg)
 
-if st.button("Send Daily Report"):
-    send_msg(my_number, report)
+    st.success("Delivery alerts sent!")
 
-# ----------------------------
-# FULL ORDER VIEW
-# ----------------------------
-st.subheader("📋 All Orders")
+# =============================
+# 💰 DUE ALERT BUTTON
+# =============================
+if st.button("📲 Send Payment Due Alerts"):
+    for _, row in due_df.iterrows():
 
-cols = [
-    "DATE","ORDER NO","CUSTOMER NAME","PRODUCT NAME",
-    "ORDER AMOUNT","ADV RECEIVED","DUE","SALES PERSON"
+        days_left = (row["DELIVERY DATE"] - datetime.today()).days
+
+        if days_left <= 7:
+            sales = row["SALES PERSON"]
+            number = CONTACTS.get(sales, CONTACTS[DEFAULT_MANAGER])
+
+            msg = f"""
+💰 PAYMENT DUE ALERT
+
+Customer: {row['CUSTOMER NAME']}
+Order Value: ₹{row['ORDER AMOUNT']}
+Advance: ₹{row['ADV RECEIVED']}
+Pending: ₹{row['DUE']}
+
+Collect before delivery.
+"""
+
+            send_whatsapp(number, msg)
+            send_whatsapp(CONTACTS[DEFAULT_MANAGER], msg)
+            send_whatsapp(CONTACTS[OWNER], msg)
+
+    st.success("Due alerts sent!")
+
+# =============================
+# 📩 DAILY REPORT
+# =============================
+if st.button("📊 Send Daily Report"):
+    today_df = df[df["DATE"].dt.date == datetime.today().date()]
+
+    total_sales = today_df["ORDER AMOUNT"].sum()
+
+    msg = f"""
+📊 DAILY SALES REPORT
+
+Total Sales Today: ₹{total_sales:,}
+Orders Count: {len(today_df)}
+"""
+
+    send_whatsapp(CONTACTS["Shaktiman"], msg)
+    send_whatsapp(CONTACTS["Pritish"], msg)
+
+    st.success("Daily report sent!")
+
+# =============================
+# 📋 FULL CRM (SALES VIEW ONLY)
+# =============================
+st.subheader("📋 All Orders (Latest First)")
+
+df_sorted = df.sort_values("DATE", ascending=False)
+
+display_cols = [
+    "DATE",
+    "ORDER NO",
+    "CUSTOMER NAME",
+    "CONTACT NUMBER",
+    "PRODUCT NAME",
+    "SALES PERSON",
+    "ORDER AMOUNT",
+    "ADV RECEIVED",
+    "DUE",
+    "DELIVERY REMARKS"
 ]
 
-cols = [c for c in cols if c in df.columns]
-
-st.dataframe(df.sort_values("DATE", ascending=False)[cols])
+st.dataframe(df_sorted[display_cols], use_container_width=True)
