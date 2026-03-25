@@ -4,9 +4,19 @@ from datetime import datetime, timedelta
 
 from services.sheets import get_df
 
-st.set_page_config(page_title="🚀 Sales Command Center", layout="wide")
+st.set_page_config(layout="wide")
+st.title("🚀 Sales Command Center + Automation")
 
-st.title("🚀 Sales Dashboard + Automation")
+# ----------------------------
+# CONTACT INPUTS
+# ----------------------------
+st.sidebar.header("📞 Contacts")
+
+manager_number = st.sidebar.text_input("Manager WhatsApp Number (+91...)")
+my_number = st.sidebar.text_input("Your Number (+91...)")
+
+sales_contacts = {}
+salespersons = []
 
 # ----------------------------
 # LOAD DATA
@@ -14,179 +24,176 @@ st.title("🚀 Sales Dashboard + Automation")
 df = get_df("CRM")
 df.columns = [c.strip().upper() for c in df.columns]
 
-# Date parsing
 df["DATE"] = pd.to_datetime(df["DATE"], dayfirst=True, errors="coerce")
 df["CUSTOMER DELIVERY DATE (TO BE)"] = pd.to_datetime(
     df.get("CUSTOMER DELIVERY DATE (TO BE)"), dayfirst=True, errors="coerce"
 )
 
-# Numeric
 df["ORDER AMOUNT"] = pd.to_numeric(df.get("ORDER AMOUNT"), errors="coerce").fillna(0)
 df["ADV RECEIVED"] = pd.to_numeric(df.get("ADV RECEIVED"), errors="coerce").fillna(0)
 
-# ----------------------------
-# FINANCIAL YEAR
-# ----------------------------
-def get_fy(d):
-    return f"{d.year}-{d.year+1}" if d.month >= 4 else f"{d.year-1}-{d.year}"
+df["DUE"] = df["ORDER AMOUNT"] - df["ADV RECEIVED"]
 
-df["FY"] = df["DATE"].apply(get_fy)
-df["MONTH"] = df["DATE"].dt.strftime("%b")
-df["MONTH_NUM"] = df["DATE"].dt.month
+salespersons = df["SALES PERSON"].dropna().unique()
+
+st.sidebar.subheader("Salesperson Contacts")
+for sp in salespersons:
+    sales_contacts[sp] = st.sidebar.text_input(f"{sp} Number")
 
 # ----------------------------
-# FILTERS
+# KPI (MONTH WISE)
 # ----------------------------
-st.sidebar.header("Filters")
+st.subheader("📊 Monthly Metrics")
 
-fy = st.sidebar.selectbox("Financial Year", sorted(df["FY"].unique(), reverse=True))
+df["MONTH"] = df["DATE"].dt.to_period("M")
 
-month_list = ["All"] + list(
-    df[df["FY"] == fy].sort_values("DATE", ascending=False)["MONTH"].unique()
+monthly_metrics = (
+    df.groupby("MONTH")[["ORDER AMOUNT", "ADV RECEIVED", "DUE"]]
+    .sum()
+    .sort_index(ascending=False)
 )
 
-month = st.sidebar.selectbox("Month", month_list)
-
-filtered = df[df["FY"] == fy]
-
-if month != "All":
-    filtered = filtered[filtered["MONTH"] == month]
-
-# ----------------------------
-# KPI
-# ----------------------------
-st.subheader("📊 Metrics")
-
-c1, c2, c3 = st.columns(3)
-
-c1.metric("💰 Sales", f"₹{filtered['ORDER AMOUNT'].sum():,.0f}")
-c2.metric("📦 Orders", len(filtered))
-c3.metric("💵 Advance", f"₹{filtered['ADV RECEIVED'].sum():,.0f}")
+st.dataframe(monthly_metrics)
 
 # ----------------------------
 # MONTHLY SALES FIXED
 # ----------------------------
-st.subheader("📅 Monthly Sales (FY)")
+st.subheader("📅 Monthly Sales")
 
-monthly = (
-    filtered.groupby(["MONTH_NUM", "MONTH"])["ORDER AMOUNT"]
-    .sum()
-    .reset_index()
-    .sort_values("MONTH_NUM", ascending=False)
-)
+chart_data = monthly_metrics["ORDER AMOUNT"]
 
-if not monthly.empty:
-    st.bar_chart(monthly.set_index("MONTH")["ORDER AMOUNT"])
-else:
-    st.info("No data for selected filters")
+st.bar_chart(chart_data)
 
 # ----------------------------
-# TARGET INPUT SYSTEM
+# TARGET INPUT (ROW STYLE)
 # ----------------------------
-st.subheader("🎯 Targets Input")
-
-salespersons = df["SALES PERSON"].dropna().unique()
+st.subheader("🎯 Targets")
 
 target_data = {}
 
-for sp in salespersons:
-    target_data[sp] = st.number_input(f"{sp} Target", value=1000000, step=50000)
+col1, col2 = st.columns(2)
+
+selected_sp = col1.selectbox("Salesperson", salespersons)
+target_val = col2.number_input("Target Value", step=50000)
+
+if st.button("Add Target"):
+    target_data[selected_sp] = target_val
 
 # ----------------------------
 # TARGET VS ACHIEVEMENT
 # ----------------------------
-st.subheader("📈 Target vs Achievement")
-
 leader = (
-    filtered.groupby("SALES PERSON")["ORDER AMOUNT"]
+    df.groupby("SALES PERSON")["ORDER AMOUNT"]
     .sum()
     .reset_index()
 )
 
-leader = leader[leader["ORDER AMOUNT"] > 0]  # remove zero rows
+leader = leader[leader["ORDER AMOUNT"] > 0]
 
 leader["Target"] = leader["SALES PERSON"].map(target_data)
 leader["Achievement %"] = (leader["ORDER AMOUNT"] / leader["Target"] * 100).round(1)
 
 leader = leader.sort_values("ORDER AMOUNT", ascending=False)
 
+st.subheader("🏆 Ranking")
+
+def medal(rank):
+    return ["🥇", "🥈", "🥉"][rank] if rank < 3 else ""
+
+leader["Rank"] = range(len(leader))
+leader["Medal"] = leader["Rank"].apply(medal)
+
 st.dataframe(leader, use_container_width=True)
 
 # ----------------------------
 # HIGH VALUE CUSTOMERS (ALL TIME)
 # ----------------------------
-st.subheader("💰 High Value Customers (All Time)")
-
-all_time = df.copy()
+st.subheader("💰 High Value Customers")
 
 hv = (
-    all_time.groupby("CUSTOMER NAME")
-    .agg({
-        "ORDER AMOUNT": "sum",
-        "PRODUCT NAME": lambda x: ", ".join(set(x))
-    })
+    df.groupby("CUSTOMER NAME")
+    .agg({"ORDER AMOUNT": "sum", "PRODUCT NAME": lambda x: ", ".join(set(x))})
     .reset_index()
     .sort_values("ORDER AMOUNT", ascending=False)
 )
 
-st.dataframe(hv.head(20), use_container_width=True)
+st.dataframe(hv.head(20))
 
 # ----------------------------
-# PENDING DELIVERY (SMART SORT)
+# PENDING DELIVERY (ONLY)
 # ----------------------------
 st.subheader("🚚 Upcoming Deliveries")
 
-pending = df.dropna(subset=["CUSTOMER DELIVERY DATE (TO BE)"])
+pending = df[
+    (df["DUE"] > 0) &
+    df["CUSTOMER DELIVERY DATE (TO BE)"].notna()
+]
 
 pending = pending.sort_values("CUSTOMER DELIVERY DATE (TO BE)")
 
-st.dataframe(
-    pending[
-        ["CUSTOMER NAME", "PRODUCT NAME", "CUSTOMER DELIVERY DATE (TO BE)", "SALES PERSON"]
-    ],
-    use_container_width=True
-)
+st.dataframe(pending)
 
 # ----------------------------
-# WHATSAPP AUTOMATION (SEMI)
+# WHATSAPP ALERTS
 # ----------------------------
 st.subheader("📲 WhatsApp Alerts")
 
 today = datetime.today()
-tomorrow = today + timedelta(days=1)
-
-alerts = pending[
-    (pending["CUSTOMER DELIVERY DATE (TO BE)"] >= today) &
-    (pending["CUSTOMER DELIVERY DATE (TO BE)"] <= tomorrow)
+delivery_alert = pending[
+    (pending["CUSTOMER DELIVERY DATE (TO BE)"] - today).dt.days <= 1
 ]
 
-st.write("Customers with delivery in next 24 hours:")
-st.dataframe(alerts)
+payment_alert = pending[
+    (pending["CUSTOMER DELIVERY DATE (TO BE)"] - today).dt.days <= 7
+]
 
-if st.button("Send WhatsApp Reminders"):
-    for _, row in alerts.iterrows():
-        msg = f"Reminder: Delivery for {row['CUSTOMER NAME']} is scheduled tomorrow."
-        st.write(f"Sending to {row['SALES PERSON']} → {msg}")
+def send_msg(num, msg):
+    st.write(f"📤 Sending to {num}: {msg}")
 
-    st.success("Reminders processed (connect API for real sending)")
+if st.button("Send Alerts"):
+    for _, row in delivery_alert.iterrows():
+        sp = row["SALES PERSON"]
+        msg = f"Delivery Tomorrow: {row['CUSTOMER NAME']}"
+        send_msg(sales_contacts.get(sp), msg)
+        send_msg(manager_number, msg)
+
+    for _, row in payment_alert.iterrows():
+        sp = row["SALES PERSON"]
+        due = row["DUE"]
+        msg = f"Payment Due ₹{due} for {row['CUSTOMER NAME']}"
+        send_msg(sales_contacts.get(sp), msg)
+        send_msg(manager_number, msg)
+
+    st.success("Alerts processed")
 
 # ----------------------------
-# FULL ORDER TABLE (ALL TIME)
+# DAILY REPORT
 # ----------------------------
-st.subheader("📋 All Orders (Till Date)")
+st.subheader("📊 Daily Report")
+
+today_df = df[df["DATE"].dt.date == datetime.today().date()]
+
+report = f"""
+Today's Sales: ₹{today_df['ORDER AMOUNT'].sum():,.0f}
+Orders: {len(today_df)}
+Outstanding: ₹{today_df['DUE'].sum():,.0f}
+"""
+
+st.text(report)
+
+if st.button("Send Daily Report"):
+    send_msg(my_number, report)
+
+# ----------------------------
+# FULL ORDER VIEW
+# ----------------------------
+st.subheader("📋 All Orders")
 
 cols = [
-    "DATE",
-    "ORDER NO",
-    "CUSTOMER NAME",
-    "PRODUCT NAME",
-    "ORDER AMOUNT",
-    "ADV RECEIVED",
-    "SALES PERSON"
+    "DATE","ORDER NO","CUSTOMER NAME","PRODUCT NAME",
+    "ORDER AMOUNT","ADV RECEIVED","DUE","SALES PERSON"
 ]
 
 cols = [c for c in cols if c in df.columns]
 
-final_df = df.sort_values("DATE", ascending=False)
-
-st.dataframe(final_df[cols], use_container_width=True)
+st.dataframe(df.sort_values("DATE", ascending=False)[cols])
