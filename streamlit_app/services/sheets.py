@@ -174,3 +174,9 @@ def upsert_record(sheet_name, unique_fields, new_data):
         row = [new_data.get(col, "") for col in headers]
         ws.append_row(row)
         return f"Inserted record ({key_val})"
+        
+def get_sheet(sheet_name):
+    try:
+        return sh.worksheet(sheet_name)
+    except Exception:
+        raise Exception(f"Sheet '{sheet_name}' not found in Google Sheets")
