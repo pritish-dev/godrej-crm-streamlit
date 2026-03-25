@@ -20,6 +20,22 @@ if crm.empty:
 crm.columns = [c.strip().upper() for c in crm.columns]
 
 # -----------------------------
+# FIX NUMERIC COLUMNS (CRITICAL)
+# -----------------------------
+num_cols = ["ORDER AMOUNT", "ADV RECEIVED"]
+
+for col in num_cols:
+    if col in crm.columns:
+        crm[col] = (
+            crm[col]
+            .astype(str)
+            .str.replace(",", "")
+            .str.replace("₹", "")
+            .str.strip()
+        )
+        crm[col] = pd.to_numeric(crm[col], errors="coerce").fillna(0)
+
+# -----------------------------
 # DATE FORMATTING
 # -----------------------------
 def format_date(x):
@@ -28,7 +44,8 @@ def format_date(x):
     except:
         return x
 
-crm["DATE"] = pd.to_datetime(crm["DATE"], dayfirst=True, errors="coerce")
+#crm["DATE"] = pd.to_datetime(crm["DATE"], dayfirst=True, errors="coerce")
+crm["DATE"] = pd.to_datetime(crm["DATE"], format="%d-%m-%Y", errors="coerce")
 crm = crm.sort_values(by="DATE", ascending=False)
 
 # -----------------------------
