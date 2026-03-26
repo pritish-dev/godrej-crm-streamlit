@@ -43,8 +43,8 @@ with c2:
 # --- DYNAMIC MESSAGE ---
 st.write(f"Showing the Daily Sales Figure for **{start_date.strftime('%d-%b-%Y')}** to **{end_date.strftime('%d-%b-%Y')}**")
 
-# ---------- 4. IDENTIFY SALES PEOPLE (Logic Update) ----------
-# A. Get official list from Sales Team sheet
+# ---------- 4. IDENTIFY SALES PEOPLE ----------
+# A. Get official list from Sales Team sheet (Role: SALES)
 official_sales_people = []
 if not team_df.empty:
     team_df.columns = [str(c).strip().upper() for c in team_df.columns]
@@ -60,15 +60,14 @@ df_filtered = crm.loc[mask].copy()
 
 active_in_period = []
 if "SALES PERSON" in df_filtered.columns:
-    # Filter for people with > 0 total sales in this period
     sales_sums = df_filtered.groupby("SALES PERSON")["ORDER AMOUNT"].sum()
     active_in_period = sales_sums[sales_sums > 0].index.str.strip().str.upper().tolist()
 
-# C. Combine: Official "Sales" Role + Anyone with sales in the period
+# C. Final List: Official Sales Role + Anyone with sales in the period
 all_execs = sorted(list(set(official_sales_people + active_in_period)))
 if "" in all_execs: all_execs.remove("")
 
-# ---------- 5. BUILD TABLE (Cell-by-Cell) ----------
+# ---------- 5. BUILD TABLE (Direct Calculation) ----------
 date_range = pd.date_range(start_date, end_date).date
 table_data = []
 
@@ -78,18 +77,11 @@ for d in date_range:
     day_store_total = 0
     
     for sp in all_execs:
-        sp_day_data = day_data[day_data["SALES PERSON"].str.strip().str.upper() == sp]
+        # Direct calculation for the person (no category split)
+        sp_total = day_data[day_data["SALES PERSON"].str.strip().str.upper() == sp]["ORDER AMOUNT"].sum()
         
-        storage_sum = 0
-        furniture_sum = 0
-        
-        if "CATEGORY" in crm.columns:
-            storage_sum = sp_day_data[sp_day_data["CATEGORY"].str.upper() == "HOME STORAGE"]["ORDER AMOUNT"].sum()
-            furniture_sum = sp_day_data[sp_day_data["CATEGORY"].str.upper() == "HOME FURNITURE"]["ORDER AMOUNT"].sum()
-        
-        row[f"{sp} (Storage)"] = round(float(storage_sum), 2)
-        row[f"{sp} (Furniture)"] = round(float(furniture_sum), 2)
-        day_store_total += (storage_sum + furniture_sum)
+        row[sp] = round(float(sp_total), 2)
+        day_store_total += sp_total
     
     row["Store Total"] = round(float(day_store_total), 2)
     table_data.append(row)
@@ -98,7 +90,7 @@ df_display = pd.DataFrame(table_data)
 
 # ---------- 6. TOTALS & STYLING ----------
 if not df_display.empty and len(all_execs) > 0:
-    # Add Total Row
+    # Add Total Footer Row
     totals = {"Date": "TOTAL"}
     for col in df_display.columns:
         if col != "Date":
@@ -110,18 +102,16 @@ if not df_display.empty and len(all_execs) > 0:
         styles = [''] * len(row)
         store_val = row["Store Total"]
         
+        # Row Green if Day > 500,000
         if store_val > 500000: return ['background-color: #d4edda; color: black'] * len(row)
+        # Row Red if Day is 0
         if store_val <= 0: return ['background-color: #f8d7da; color: black'] * len(row)
         
+        # Cell Red if specific person is 0 for the day
         for i, col in enumerate(df_display.columns):
             if col not in ["Date", "Store Total"]:
-                # Logic: Isolate the executive name from the column header
-                parts = col.split(" (")
-                if len(parts) > 0:
-                    exec_name = parts[0]
-                    exec_total = row.get(f"{exec_name} (Storage)", 0) + row.get(f"{exec_name} (Furniture)", 0)
-                    if exec_total <= 0:
-                        styles[i] = 'background-color: #f8d7da; color: #721c24'
+                if row[col] <= 0:
+                    styles[i] = 'background-color: #f8d7da; color: #721c24'
         return styles
 
     # ---------- 7. RENDER ----------
@@ -130,8 +120,8 @@ if not df_display.empty and len(all_execs) > 0:
     )
     st.dataframe(styled_df, use_container_width=True)
 
-    # Monthly Summary Box
+    # Summary Success Box
     grand_total = df_display.iloc[-1]["Store Total"]
-    st.success(f"### 💰 Total B2C Sales (Selected Range): ₹{grand_total:,.2f}")
+    st.success(f"### 💰 Grand Total Sales: ₹{grand_total:,.2f}")
 else:
-    st.info("No active sales data or listed Sales Team members found for this period.")
+    st.info("No active sales data or Sales Team members found for this period.")
