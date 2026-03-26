@@ -183,9 +183,35 @@ def get_sheet(sheet_name):
         
 def upsert_target_record(sheet_name: str, unique_fields: dict, new_data: dict):
     import pandas as pd
+    import streamlit as st
+    import gspread
+    from google.oauth2.service_account import Credentials
     from services.sheets import get_df
 
-    ws = sh.worksheet(sheet_name)
+    # -----------------------------
+    # AUTH (same as main file)
+    # -----------------------------
+    SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+
+    try:
+        CREDS = Credentials.from_service_account_info(st.secrets["google"], scopes=SCOPES)
+    except Exception:
+        CREDS = Credentials.from_service_account_file("config/credentials.json", scopes=SCOPES)
+
+    gc = gspread.authorize(CREDS)
+
+    SPREADSHEET_ID = "1wFpK-WokcZB6k1vzG7B6JO5TdGHrUwdgvVm_-UQse54"
+    sh = gc.open_by_key(SPREADSHEET_ID)
+
+    # -----------------------------
+    # OPEN SHEET
+    # -----------------------------
+    try:
+        ws = sh.worksheet(sheet_name)
+    except:
+        ws = sh.add_worksheet(title=sheet_name, rows=1000, cols=10)
+        ws.append_row(["SALES PERSON", "MONTH", "YEAR", "TARGET"])
+
     headers = [h.strip().upper() for h in ws.row_values(1)]
 
     df = get_df(sheet_name)
@@ -200,7 +226,9 @@ def upsert_target_record(sheet_name: str, unique_fields: dict, new_data: dict):
     if not sales_person or not month or not year:
         return "❌ Missing fields"
 
-    # Handle empty df safely
+    # -----------------------------
+    # FIND MATCH
+    # -----------------------------
     if not df.empty:
         df.columns = [c.strip().upper() for c in df.columns]
 
@@ -212,7 +240,9 @@ def upsert_target_record(sheet_name: str, unique_fields: dict, new_data: dict):
     else:
         match = pd.Series([], dtype=bool)
 
-    # -------- UPDATE --------
+    # -----------------------------
+    # UPDATE
+    # -----------------------------
     if match.any():
         row_index = match[match].index[0] + 2
 
@@ -222,7 +252,9 @@ def upsert_target_record(sheet_name: str, unique_fields: dict, new_data: dict):
 
         return "Updated Target"
 
-    # -------- INSERT --------
+    # -----------------------------
+    # INSERT
+    # -----------------------------
     else:
         row_values = []
         for col in headers:
