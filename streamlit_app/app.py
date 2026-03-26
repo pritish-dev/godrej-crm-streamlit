@@ -167,6 +167,10 @@ if st.button("Save Target"):
         ws.append_row([selected_sales, current_month, current_year, target_value])
 
     st.success("Target Saved")
+    
+    # ADD THIS LINE: Clear the cache so get_df fetches the new data
+    st.cache_data.clear() 
+    
     st.rerun()
 
 # -----------------------------
@@ -205,10 +209,10 @@ for sp in sales_people:
 
     rows.append({
         "Sales Person": sp,
-        "Target": round(target_val),
-        "Home Storage": round(home_storage),
-        "Home Furniture": round(home_furniture),
-        "Achievement": round(total)
+        "Target": round(target_val, 2),
+        "Home Storage": round(home_storage, 2),
+        "Home Furniture": round(home_furniture, 2),
+        "Achievement": round(total, 2)
     })
 
 df_targets = pd.DataFrame(rows)
