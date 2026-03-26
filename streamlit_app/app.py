@@ -220,8 +220,15 @@ df_targets = df_targets[
 df_targets = df_targets.sort_values(by="Achievement", ascending=False)
 
 # MEDALS
-medals = ["🥇","🥈","🥉"]
-df_targets.index = medals + [""]*(len(df_targets)-len(medals))
+medals = ["🥇", "🥈", "🥉"]
+num_rows = len(df_targets)
+
+if num_rows > len(medals):
+    # If there are more rows than medals, add blanks for the rest
+    df_targets.index = medals + [""] * (num_rows - len(medals))
+else:
+    # If there are fewer rows than medals, only use the medals needed
+    df_targets.index = medals[:num_rows]
 
 # COLOR
 def highlight(row):
