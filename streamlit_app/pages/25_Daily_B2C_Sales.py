@@ -17,7 +17,7 @@ if crm_raw is None or crm_raw.empty:
 crm = crm_raw.copy()
 crm.columns = [str(c).strip().upper() for c in crm.columns]
 
-# ---------- 2. FORMAT NUMERICS (App.py Style) ----------
+# ---------- 2. FORMAT NUMERICS ----------
 for col in ["ORDER AMOUNT", "ADV RECEIVED"]:
     if col in crm.columns:
         crm[col] = (
@@ -44,7 +44,6 @@ with c2:
 st.write(f"Showing the Daily Sales Figure for **{start_date.strftime('%d-%b-%Y')}** to **{end_date.strftime('%d-%b-%Y')}**")
 
 # ---------- 4. IDENTIFY SALES PEOPLE ----------
-# A. Get official list from Sales Team sheet (Role: SALES)
 official_sales_people = []
 if not team_df.empty:
     team_df.columns = [str(c).strip().upper() for c in team_df.columns]
@@ -54,7 +53,6 @@ if not team_df.empty:
             .dropna().str.strip().str.upper().unique().tolist()
         )
 
-# B. Get anyone who actually did a sale in the SELECTED range
 mask = (crm["DATE_DT"] >= start_date) & (crm["DATE_DT"] <= end_date)
 df_filtered = crm.loc[mask].copy()
 
@@ -63,11 +61,10 @@ if "SALES PERSON" in df_filtered.columns:
     sales_sums = df_filtered.groupby("SALES PERSON")["ORDER AMOUNT"].sum()
     active_in_period = sales_sums[sales_sums > 0].index.str.strip().str.upper().tolist()
 
-# C. Final List: Official Sales Role + Anyone with sales in the period
 all_execs = sorted(list(set(official_sales_people + active_in_period)))
 if "" in all_execs: all_execs.remove("")
 
-# ---------- 5. BUILD TABLE (Direct Calculation) ----------
+# ---------- 5. BUILD TABLE ----------
 date_range = pd.date_range(start_date, end_date).date
 table_data = []
 
@@ -77,9 +74,7 @@ for d in date_range:
     day_store_total = 0
     
     for sp in all_execs:
-        # Direct calculation for the person (no category split)
         sp_total = day_data[day_data["SALES PERSON"].str.strip().str.upper() == sp]["ORDER AMOUNT"].sum()
-        
         row[sp] = round(float(sp_total), 2)
         day_store_total += sp_total
     
@@ -90,7 +85,6 @@ df_display = pd.DataFrame(table_data)
 
 # ---------- 6. TOTALS & STYLING ----------
 if not df_display.empty and len(all_execs) > 0:
-    # Add Total Footer Row
     totals = {"Date": "TOTAL"}
     for col in df_display.columns:
         if col != "Date":
@@ -98,27 +92,47 @@ if not df_display.empty and len(all_execs) > 0:
     df_display = pd.concat([df_display, pd.DataFrame([totals])], ignore_index=True)
 
     def apply_style_logic(row):
-        if row["Date"] == "TOTAL": return [''] * len(row)
+        # Base styles: Default
         styles = [''] * len(row)
+        
+        # Make the TOTAL row Bold
+        if row["Date"] == "TOTAL":
+            return ['font-weight: bold; background-color: #f0f2f6'] * len(row)
+        
         store_val = row["Store Total"]
         
-        # Row Green if Day > 500,000
-        if store_val > 500000: return ['background-color: #d4edda; color: black'] * len(row)
-        # Row Red if Day is 0
-        if store_val <= 0: return ['background-color: #f8d7da; color: black'] * len(row)
+        # Row Colors
+        if store_val > 500000:
+            styles = ['background-color: #d4edda; color: black'] * len(row)
+        elif store_val <= 0:
+            styles = ['background-color: #f8d7da; color: black'] * len(row)
         
-        # Cell Red if specific person is 0 for the day
+        # Cell Red for individual 0s
         for i, col in enumerate(df_display.columns):
             if col not in ["Date", "Store Total"]:
                 if row[col] <= 0:
                     styles[i] = 'background-color: #f8d7da; color: #721c24'
+        
         return styles
 
-    # ---------- 7. RENDER ----------
-    styled_df = df_display.style.apply(apply_style_logic, axis=1).format(
-        {col: "{:.2f}" for col in df_display.columns if col != "Date"}
-    )
-    st.dataframe(styled_df, use_container_width=True)
+    # ---------- 7. RENDER WITH CSS FOR BOLD HEADERS ----------
+    # Injects CSS to bold headers and handle alignment
+    st.markdown("""
+        <style>
+            th { font-weight: bold !important; text-align: center !important; }
+            td { text-align: right !important; white-space: nowrap !important; }
+            .stDataFrame div[data-testid="stTable"] { width: auto !important; }
+        </style>
+    """, unsafe_allow_html=True)
+
+    # Format numeric columns to 2 decimal places
+    format_dict = {col: "{:.2f}" for col in df_display.columns if col != "Date"}
+    
+    # We use st.table for fixed character width (no horizontal scrolling unless needed)
+    styled_df = df_display.style.apply(apply_style_logic, axis=1).format(format_dict)
+    
+    # Note: st.table creates a static table that fits the text perfectly
+    st.table(styled_df)
 
     # Summary Success Box
     grand_total = df_display.iloc[-1]["Store Total"]
