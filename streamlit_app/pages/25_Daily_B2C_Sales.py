@@ -6,78 +6,46 @@ from services.sheets import get_df
 st.set_page_config(page_title="Daily B2C Sales", layout="wide")
 st.title("📅 Daily B2C Sales by Executive")
 
-# ---------- HELPERS ----------
-def _to_dt(s):
-    return pd.to_datetime(s, dayfirst=True, errors="coerce")
+# ---------- 1. LOAD DATA ----------
+crm = get_df("CRM")
+team = get_df("Sales Team")
 
-def _to_amount(series: pd.Series) -> pd.Series:
-    if series is None or series.empty:
-        return pd.Series([], dtype=float)
-    s = series.astype(str).str.replace("[₹,]", "", regex=True).str.strip()
-    return pd.to_numeric(s, errors="coerce").fillna(0.0)
-
-# ---------- DATA LOADING ----------
-crm_raw = get_df("CRM")
-team_df = get_df("Sales Team")
-
-if crm_raw is None or crm_raw.empty:
-    st.info("CRM is empty. Please add order data.")
+if crm is None or crm.empty:
+    st.warning("No CRM data found")
     st.stop()
 
-crm = crm_raw.copy()
+# Normalize columns exactly like app.py
+crm.columns = [c.strip().upper() for c in crm.columns]
 
-# --- STEP 1: BRUTE FORCE COLUMN CLEANING ---
-# We strip ALL whitespace and hidden characters from headers immediately
-crm.columns = [str(c).strip().upper() for c in crm.columns]
-
-# --- STEP 2: FUZZY COLUMN MAPPING ---
-# If "CATEGORY" isn't an exact match, we look for a column that contains the word
-required_mapping = {
-    "CATEGORY": "CATEGORY",
-    "SALES PERSON": "SALES PERSON",
-    "ORDER AMOUNT": "ORDER AMOUNT",
-    "B2B/B2C": "B2B/B2C",
-    "DATE": "DATE"
-}
-
-for target, search_term in required_mapping.items():
-    if target not in crm.columns:
-        # Look for a partial match (e.g. " CATEGORY " or "PRODUCT CATEGORY")
-        found_col = [c for c in crm.columns if search_term in c]
-        if found_col:
-            crm.rename(columns={found_col[0]: target}, inplace=True)
-        else:
-            # Fallback: Create the column so the script doesn't crash
-            crm[target] = "OTHERS" if target == "CATEGORY" else (0.0 if "AMOUNT" in target else "UNKNOWN")
-
-# ---------- SALES TEAM LOGIC ----------
-official_execs = []
-if not team_df.empty:
-    team_df.columns = [str(c).strip().upper() for c in team_df.columns]
-    if "ROLE" in team_df.columns and "NAME" in team_df.columns:
-        official_execs = (
-            team_df[team_df["ROLE"] == "SALES"]["NAME"]
-            .dropna().str.strip().str.upper().unique().tolist()
+# ---------- 2. FORMAT NUMERICS (Exactly like app.py) ----------
+for col in ["ORDER AMOUNT", "ADV RECEIVED"]:
+    if col in crm.columns:
+        crm[col] = (
+            crm[col].astype(str)
+            .str.replace(",", "")
+            .str.replace("₹", "")
+            .str.strip()
         )
+        crm[col] = pd.to_numeric(crm[col], errors="coerce").fillna(0)
 
-# ---------- PREPROCESSING ----------
-# Use .get() or direct access now that mapping is finished
-crm["DATE_DT"] = _to_dt(crm["DATE"]).dt.date
-crm["ORDER_VALUE"] = _to_amount(crm["ORDER AMOUNT"])
+# Convert Date to standard datetime for filtering
+crm["DATE_DT"] = pd.to_datetime(crm["DATE"], dayfirst=True, errors="coerce").dt.date
 
-# Safe formatting
-crm["CATEGORY"] = crm["CATEGORY"].fillna("OTHERS").astype(str).str.strip().upper()
-crm["SALES PERSON"] = crm["SALES PERSON"].fillna("UNKNOWN").astype(str).str.strip().upper()
+# ---------- 3. GET SALES PEOPLE LIST ----------
+official_sales_people = []
+if not team.empty:
+    team.columns = [c.strip().upper() for c in team.columns]
+    official_sales_people = (
+        team[team["ROLE"] == "SALES"]["NAME"]
+        .dropna().str.strip().str.upper().unique().tolist()
+    )
 
-# Filter for B2C only
-crm = crm[crm["B2B/B2C"].astype(str).str.strip().upper() == "B2C"]
+# Add any extra names found in CRM
+crm_names = crm["SALES PERSON"].dropna().str.strip().str.upper().unique().tolist()
+all_execs = sorted(list(set(official_sales_people + crm_names)))
+if "" in all_execs: all_execs.remove("")
 
-# Executive List
-all_execs = sorted(list(set(official_execs + crm["SALES PERSON"].unique().tolist())))
-if "UNKNOWN" in all_execs: 
-    all_execs.remove("UNKNOWN")
-
-# ---------- DATE FILTERS ----------
+# ---------- 4. DATE FILTERS ----------
 today = datetime.today().date()
 month_start = today.replace(day=1)
 
@@ -87,54 +55,76 @@ with c1:
 with c2:
     end_date = st.date_input("End date", value=today)
 
-mask = (crm["DATE_DT"] >= start_date) & (crm["DATE_DT"] <= end_date)
-df_filtered = crm.loc[mask].copy()
+# Filter for B2C only
+b2c_df = crm[crm["B2B/B2C"].astype(str).str.strip().upper() == "B2C"]
 
-# ---------- TABLE BUILDING ----------
-date_range = pd.date_range(start_date, end_date, freq="D").date
-target_categories = ["HOME STORAGE", "HOME FURNITURE"]
+# ---------- 5. CALCULATE DAILY VALUES ----------
+date_range = pd.date_range(start_date, end_date).date
+table_data = []
 
-columns = pd.MultiIndex.from_product([all_execs, target_categories], names=["Executive", "Category"])
-final_df = pd.DataFrame(0.0, index=date_range, columns=columns)
+for d in date_range:
+    # Get all B2C sales for this day
+    day_data = b2c_df[b2c_df["DATE_DT"] == d]
+    
+    row = {"Date": d.strftime("%d-%b-%Y")}
+    day_store_total = 0
+    
+    for sp in all_execs:
+        # Filter for this specific salesperson
+        sp_day_data = day_data[day_data["SALES PERSON"].str.strip().str.upper() == sp]
+        
+        # Calculate sums for the two categories (App.py style)
+        storage_sum = sp_day_data[sp_day_data["CATEGORY"].str.upper() == "HOME STORAGE"]["ORDER AMOUNT"].sum()
+        furniture_sum = sp_day_data[sp_day_data["CATEGORY"].str.upper() == "HOME FURNITURE"]["ORDER AMOUNT"].sum()
+        
+        row[f"{sp} (Storage)"] = round(float(storage_sum), 2)
+        row[f"{sp} (Furniture)"] = round(float(furniture_sum), 2)
+        day_store_total += (storage_sum + furniture_sum)
+    
+    row["Store Total"] = round(float(day_store_total), 2)
+    table_data.append(row)
 
-if not df_filtered.empty:
-    grouped = df_filtered.groupby(["DATE_DT", "SALES PERSON", "CATEGORY"])["ORDER_VALUE"].sum()
-    for (dt, person, cat), val in grouped.items():
-        if person in all_execs and cat in target_categories:
-            final_df.loc[dt, (person, cat)] = val
+df_display = pd.DataFrame(table_data)
 
-final_df["Store Total"] = final_df.sum(axis=1)
+# ---------- 6. ADD TOTALS ROW ----------
+if not df_display.empty:
+    totals = {"Date": "TOTAL"}
+    for col in df_display.columns:
+        if col != "Date":
+            totals[col] = df_display[col].sum()
+    df_display = pd.concat([df_display, pd.DataFrame([totals])], ignore_index=True)
 
-# ---------- TOTALS ROW ----------
-totals = final_df.sum().to_frame().T
-totals.index = ["TOTAL"]
-display_df = pd.concat([final_df, totals])
-
-# ---------- STYLING ----------
-def apply_custom_styles(row):
+# ---------- 7. STYLING RULES ----------
+def apply_daily_logic(row):
+    if row["Date"] == "TOTAL":
+        return [''] * len(row)
+    
     styles = [''] * len(row)
-    if row.name == "TOTAL":
-        return styles
-
-    store_total = row["Store Total"]
-
-    if store_total > 500000:
-        return ['background-color: #d4edda; color: black'] * len(row)
+    store_val = row["Store Total"]
     
-    if store_total <= 0:
-        return ['background-color: #f8d7da; color: #721c24'] * len(row)
+    # Store-wide Rules
+    if store_val > 500000:
+        return ['background-color: #d4edda; color: black'] * len(row) # Green
+    if store_val <= 0:
+        return ['background-color: #f8d7da; color: black'] * len(row) # Red
     
-    for i, col_name in enumerate(row.index):
-        if isinstance(col_name, tuple):
-            exec_name = col_name[0]
-            exec_sum = row[(exec_name, "HOME STORAGE")] + row[(exec_name, "HOME FURNITURE")]
-            if exec_sum <= 0:
+    # Individual Executive Rules
+    for i, col in enumerate(df_display.columns):
+        if col not in ["Date", "Store Total"]:
+            exec_name = col.split(" (")[0]
+            # Check if this specific person sold 0 for the day
+            exec_total = row[f"{exec_name} (Storage)"] + row[f"{exec_name} (Furniture)"]
+            if exec_total <= 0:
                 styles[i] = 'background-color: #f8d7da; color: #721c24'
     return styles
 
-# ---------- RENDER ----------
-styled_table = display_df.style.apply(apply_custom_styles, axis=1).format("{:.2f}")
-st.dataframe(styled_table, use_container_width=True)
+# ---------- 8. RENDER ----------
+styled_df = df_display.style.apply(apply_daily_logic, axis=1).format(
+    {col: "{:.2f}" for col in df_display.columns if col != "Date"}
+)
 
-grand_total = totals["Store Total"].values[0]
-st.info(f"### 💰 Total B2C Sales (Selected Period): ₹{grand_total:,.2f}")
+st.dataframe(styled_table if 'styled_table' in locals() else styled_df, use_container_width=True)
+
+# Monthly Summary Footer
+grand_total = df_display.iloc[-1]["Store Total"]
+st.info(f"### 💰 Total Store B2C Sales: ₹{grand_total:,.2f}")
