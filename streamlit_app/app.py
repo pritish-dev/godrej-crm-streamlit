@@ -18,9 +18,6 @@ if crm.empty:
     st.warning("No CRM data found")
     st.stop()
 
-# -----------------------------
-# CLEAN HEADERS
-# -----------------------------
 crm.columns = [c.strip().upper() for c in crm.columns]
 
 if not team.empty:
@@ -30,7 +27,7 @@ if not targets_sheet.empty:
     targets_sheet.columns = [c.strip().upper() for c in targets_sheet.columns]
 
 # -----------------------------
-# FIX NUMERIC COLUMNS
+# FIX NUMBERS
 # -----------------------------
 for col in ["ORDER AMOUNT", "ADV RECEIVED"]:
     if col in crm.columns:
@@ -47,17 +44,10 @@ for col in ["ORDER AMOUNT", "ADV RECEIVED"]:
 # -----------------------------
 crm["DATE"] = pd.to_datetime(crm["DATE"], format="%d-%m-%Y", errors="coerce")
 
-# -----------------------------
 # FIX CATEGORY
-# -----------------------------
-if "CATEGORY" in crm.columns:
-    crm["CATEGORY"] = crm["CATEGORY"].fillna("").str.upper()
-else:
-    crm["CATEGORY"] = ""
+crm["CATEGORY"] = crm.get("CATEGORY", "").astype(str).str.upper()
 
-# -----------------------------
-# SORT LATEST FIRST
-# -----------------------------
+# SORT
 crm = crm.sort_values(by="DATE", ascending=False)
 
 def format_date(x):
@@ -75,26 +65,22 @@ if not team.empty and "ROLE" in team.columns:
     sales_people = (
         team[team["ROLE"] == "SALES"]["NAME"]
         .dropna()
-        .str.strip()
         .str.upper()
-        .unique()
         .tolist()
     )
 
 # -----------------------------
-# ALL ORDERS TABLE
+# ALL ORDERS
 # -----------------------------
-st.subheader("📋 All Orders (Till Date)")
+st.subheader("📋 All Orders")
 
-display_cols = [
-    "DATE", "CUSTOMER NAME", "CONTACT NUMBER",
-    "PRODUCT NAME", "ORDER AMOUNT",
-    "ADV RECEIVED", "SALES PERSON",
-    "CUSTOMER DELIVERY DATE (TO BE)",
-    "DELIVERY REMARKS"
+cols = [
+    "DATE","CUSTOMER NAME","CONTACT NUMBER","PRODUCT NAME",
+    "ORDER AMOUNT","ADV RECEIVED","SALES PERSON",
+    "CUSTOMER DELIVERY DATE (TO BE)","DELIVERY REMARKS"
 ]
 
-df_display = crm[display_cols].copy()
+df_display = crm[cols].copy()
 df_display["DATE"] = df_display["DATE"].apply(format_date)
 
 st.dataframe(df_display, use_container_width=True)
@@ -102,7 +88,7 @@ st.dataframe(df_display, use_container_width=True)
 # -----------------------------
 # YEAR SUMMARY
 # -----------------------------
-st.subheader("📊 Year-wise Summary")
+st.subheader("📊 Year Summary")
 
 crm["YEAR"] = crm["DATE"].dt.year
 
@@ -119,145 +105,96 @@ st.dataframe(summary, use_container_width=True)
 # -----------------------------
 # TARGET VS ACHIEVEMENT
 # -----------------------------
-current_month = datetime.today().strftime("%B")
-current_year = datetime.today().year
+month_name = datetime.today().strftime("%B")
+year = datetime.today().year
 
-st.subheader(f"🎯 Target vs Achievement ({current_month})")
+st.subheader(f"🎯 Target vs Achievement ({month_name})")
 
-# Ensure structure
-if targets_sheet.empty or "SALES PERSON" not in targets_sheet.columns:
-    targets_sheet = pd.DataFrame(columns=["SALES PERSON", "MONTH", "YEAR", "TARGET"])
-
-# -----------------------------
-# INPUT
-# -----------------------------
 col1, col2 = st.columns(2)
 
 with col1:
-    selected_sales = st.selectbox("Sales Person", sales_people)
+    sp = st.selectbox("Sales Person", sales_people)
 
 with col2:
-    target_value = st.number_input("Target Value", min_value=0, step=10000)
+    target_val = st.number_input("Target", min_value=0)
 
-# -----------------------------
-# SAVE TARGET
-# -----------------------------
 if st.button("Save Target"):
     msg = upsert_target_record(
         "Targets",
-        {"SALES PERSON": selected_sales, "MONTH": current_month, "YEAR": current_year},
-        {
-            "SALES PERSON": selected_sales,
-            "MONTH": current_month,
-            "YEAR": current_year,
-            "TARGET": target_value
-        }
+        {"SALES PERSON": sp, "MONTH": month_name, "YEAR": year},
+        {"SALES PERSON": sp, "MONTH": month_name, "YEAR": year, "TARGET": target_val}
     )
-    st.success(f"✅ {msg}")
+    st.success(msg)
     st.rerun()
 
-# -----------------------------
-# BUILD TARGET TABLE
-# -----------------------------
+# BUILD TABLE
 rows = []
 month_start = datetime.today().replace(day=1)
 
-for sp in sales_people:
-    target_row = targets_sheet[
-        (targets_sheet["SALES PERSON"] == sp) &
-        (targets_sheet["MONTH"] == current_month) &
-        (targets_sheet["YEAR"].astype(str) == str(current_year))
+for person in sales_people:
+    t = targets_sheet[
+        (targets_sheet["SALES PERSON"] == person) &
+        (targets_sheet["MONTH"] == month_name) &
+        (targets_sheet["YEAR"].astype(str) == str(year))
     ]
 
-    target_val = (
-        pd.to_numeric(target_row["TARGET"], errors="coerce").sum()
-        if not target_row.empty else 0
-    )
+    target = pd.to_numeric(t["TARGET"], errors="coerce").sum() if not t.empty else 0
 
-    sales_df = crm[
-        (crm["SALES PERSON"] == sp) &
+    df = crm[
+        (crm["SALES PERSON"] == person) &
         (crm["DATE"] >= month_start)
     ]
 
-    home_storage = sales_df[
-        sales_df["CATEGORY"] == "HOME STORAGE"
-    ]["ORDER AMOUNT"].sum()
-
-    home_furniture = sales_df[
-        sales_df["CATEGORY"] == "HOME FURNITURE"
-    ]["ORDER AMOUNT"].sum()
-
-    total_ach = home_storage + home_furniture
+    hs = df[df["CATEGORY"] == "HOME STORAGE"]["ORDER AMOUNT"].sum()
+    hf = df[df["CATEGORY"] == "HOME FURNITURE"]["ORDER AMOUNT"].sum()
 
     rows.append({
-        "Sales Person": sp,
-        "Target": target_val,
-        "Home Storage": home_storage,
-        "Home Furniture": home_furniture,
-        "Achievement": total_ach
+        "Sales Person": person,
+        "Target": target,
+        "Home Storage": hs,
+        "Home Furniture": hf,
+        "Achievement": hs + hf
     })
 
 df_targets = pd.DataFrame(rows)
-
-# REMOVE EMPTY ROWS
-df_targets = df_targets[
-    (df_targets["Target"] > 0) | (df_targets["Achievement"] > 0)
-]
-
-# SORT
+df_targets = df_targets[(df_targets["Target"] > 0) | (df_targets["Achievement"] > 0)]
 df_targets = df_targets.sort_values(by="Achievement", ascending=False)
 
-# -----------------------------
-# MEDALS + COLOR
-# -----------------------------
+# COLOR
 def highlight(row):
     if row["Achievement"] >= row["Target"] and row["Target"] > 0:
         return ['background-color: lightgreen']*len(row)
     return ['']*len(row)
 
-if not df_targets.empty:
-    medals = ["🥇", "🥈", "🥉"]
-    df_targets.index = medals[:len(df_targets)] + [""]*(len(df_targets)-len(medals))
-
 st.dataframe(df_targets.style.apply(highlight, axis=1), use_container_width=True)
 
 # -----------------------------
-# PENDING DELIVERY
+# DELIVERY
 # -----------------------------
 st.subheader("🚚 Pending Deliveries")
 
-pending = crm[
-    crm["DELIVERY REMARKS"].str.upper() == "PENDING"
-]
-
+pending = crm[crm["DELIVERY REMARKS"].str.upper() == "PENDING"]
 pending = pending.sort_values(by="CUSTOMER DELIVERY DATE (TO BE)")
 
-pending["CUSTOMER DELIVERY DATE (TO BE)"] = pending["CUSTOMER DELIVERY DATE (TO BE)"].apply(format_date)
+st.dataframe(pending[cols], use_container_width=True)
 
-st.dataframe(pending[display_cols], use_container_width=True)
-
-if st.button("📲 Send Delivery Alerts"):
+if st.button("Send Delivery Alerts"):
     send_delivery_alerts()
-    st.success("Delivery Alerts Sent")
+    st.success("Alerts Sent")
 
 # -----------------------------
-# PAYMENT DUE
+# PAYMENT
 # -----------------------------
 st.subheader("💰 Payment Due")
 
-crm["PENDING AMOUNT"] = crm["ORDER AMOUNT"] - crm["ADV RECEIVED"]
-
-due = crm[crm["PENDING AMOUNT"] > 0]
+crm["PENDING"] = crm["ORDER AMOUNT"] - crm["ADV RECEIVED"]
+due = crm[crm["PENDING"] > 0]
 
 st.dataframe(due[[
-    "CUSTOMER NAME",
-    "ORDER AMOUNT",
-    "ADV RECEIVED",
-    "PENDING AMOUNT",
-    "CUSTOMER DELIVERY DATE (TO BE)",
-    "SALES PERSON"
+    "CUSTOMER NAME","ORDER AMOUNT","ADV RECEIVED",
+    "PENDING","CUSTOMER DELIVERY DATE (TO BE)","SALES PERSON"
 ]], use_container_width=True)
 
-if st.button("📲 Send Payment Alerts"):
+if st.button("Send Payment Alerts"):
     send_payment_alerts()
     st.success("Payment Alerts Sent")
