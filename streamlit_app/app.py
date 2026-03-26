@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-from services.sheets import get_df, upsert_record
+from services.sheets import get_df, upsert_target_record
 from services.automation import send_delivery_alerts, send_payment_alerts
 
 st.set_page_config(layout="wide")
@@ -18,7 +18,16 @@ if crm.empty:
     st.warning("No CRM data found")
     st.stop()
 
+# -----------------------------
+# CLEAN HEADERS
+# -----------------------------
 crm.columns = [c.strip().upper() for c in crm.columns]
+
+if not team.empty:
+    team.columns = [c.strip().upper() for c in team.columns]
+
+if not targets_sheet.empty:
+    targets_sheet.columns = [c.strip().upper() for c in targets_sheet.columns]
 
 # -----------------------------
 # FIX NUMERIC COLUMNS
@@ -38,7 +47,17 @@ for col in ["ORDER AMOUNT", "ADV RECEIVED"]:
 # -----------------------------
 crm["DATE"] = pd.to_datetime(crm["DATE"], format="%d-%m-%Y", errors="coerce")
 
-# SORT DESC
+# -----------------------------
+# FIX CATEGORY
+# -----------------------------
+if "CATEGORY" in crm.columns:
+    crm["CATEGORY"] = crm["CATEGORY"].fillna("").str.upper()
+else:
+    crm["CATEGORY"] = ""
+
+# -----------------------------
+# SORT LATEST FIRST
+# -----------------------------
 crm = crm.sort_values(by="DATE", ascending=False)
 
 def format_date(x):
@@ -52,8 +71,7 @@ def format_date(x):
 # -----------------------------
 sales_people = []
 
-if not team.empty:
-    team.columns = [c.strip().upper() for c in team.columns]
+if not team.empty and "ROLE" in team.columns:
     sales_people = (
         team[team["ROLE"] == "SALES"]["NAME"]
         .dropna()
@@ -106,7 +124,7 @@ current_year = datetime.today().year
 
 st.subheader(f"🎯 Target vs Achievement ({current_month})")
 
-# Ensure Targets sheet structure
+# Ensure structure
 if targets_sheet.empty or "SALES PERSON" not in targets_sheet.columns:
     targets_sheet = pd.DataFrame(columns=["SALES PERSON", "MONTH", "YEAR", "TARGET"])
 
@@ -125,7 +143,7 @@ with col2:
 # SAVE TARGET
 # -----------------------------
 if st.button("Save Target"):
-    upsert_record(
+    msg = upsert_target_record(
         "Targets",
         {"SALES PERSON": selected_sales, "MONTH": current_month, "YEAR": current_year},
         {
@@ -133,24 +151,22 @@ if st.button("Save Target"):
             "MONTH": current_month,
             "YEAR": current_year,
             "TARGET": target_value
-        },
-        sync_to_crm=False
+        }
     )
-    st.success("Target Updated")
+    st.success(f"✅ {msg}")
     st.rerun()
 
 # -----------------------------
 # BUILD TARGET TABLE
 # -----------------------------
 rows = []
-
 month_start = datetime.today().replace(day=1)
 
 for sp in sales_people:
     target_row = targets_sheet[
         (targets_sheet["SALES PERSON"] == sp) &
         (targets_sheet["MONTH"] == current_month) &
-        (targets_sheet["YEAR"] == current_year)
+        (targets_sheet["YEAR"].astype(str) == str(current_year))
     ]
 
     target_val = (
@@ -158,18 +174,17 @@ for sp in sales_people:
         if not target_row.empty else 0
     )
 
-    # Monthly sales
     sales_df = crm[
         (crm["SALES PERSON"] == sp) &
         (crm["DATE"] >= month_start)
     ]
 
     home_storage = sales_df[
-        sales_df["CATEGORY"].str.upper() == "HOME STORAGE"
+        sales_df["CATEGORY"] == "HOME STORAGE"
     ]["ORDER AMOUNT"].sum()
 
     home_furniture = sales_df[
-        sales_df["CATEGORY"].str.upper() == "HOME FURNITURE"
+        sales_df["CATEGORY"] == "HOME FURNITURE"
     ]["ORDER AMOUNT"].sum()
 
     total_ach = home_storage + home_furniture
@@ -200,7 +215,9 @@ def highlight(row):
         return ['background-color: lightgreen']*len(row)
     return ['']*len(row)
 
-df_targets.index = ["🥇", "🥈", "🥉"] + [""]*(len(df_targets)-3)
+if not df_targets.empty:
+    medals = ["🥇", "🥈", "🥉"]
+    df_targets.index = medals[:len(df_targets)] + [""]*(len(df_targets)-len(medals))
 
 st.dataframe(df_targets.style.apply(highlight, axis=1), use_container_width=True)
 
