@@ -17,38 +17,43 @@ def _to_amount(series: pd.Series) -> pd.Series:
     return pd.to_numeric(s, errors="coerce").fillna(0.0)
 
 # ---------- DATA LOADING ----------
-crm = get_df("CRM")
+crm_raw = get_df("CRM")
 team_df = get_df("Sales Team")
 
-if crm is None or crm.empty:
+if crm_raw is None or crm_raw.empty:
     st.info("CRM is empty. Please add order data.")
     st.stop()
 
-crm = crm.copy()
+# Work on a copy to avoid SettingWithCopy warnings
+crm = crm_raw.copy()
 
-# --- NEW: ROBUST COLUMN RECOVERY ---
-# This cleans all headers of spaces and converts to UPPERCASE immediately
+# --- STEP 1: BRUTE FORCE COLUMN NORMALIZATION ---
+# Clean all column names: remove hidden spaces, newlines, and convert to UPPER
 crm.columns = [str(c).strip().upper() for c in crm.columns]
 
-# List of columns we absolutely need
-expected_cols = {
-    "DATE": "DATE",
-    "ORDER AMOUNT": "ORDER AMOUNT",
-    "SALES PERSON": "SALES PERSON",
-    "B2B/B2C": "B2B/B2C",
-    "CATEGORY": "CATEGORY"
+# --- STEP 2: FUZZY MAPPING ---
+# This ensures that even if the sheet says " CATEGORY\n" it maps to "CATEGORY"
+mapping = {
+    "DATE": ["DATE"],
+    "ORDER AMOUNT": ["ORDER AMOUNT", "ORDER_AMOUNT", "AMOUNT"],
+    "SALES PERSON": ["SALES PERSON", "SALESPERSON", "EXECUTIVE"],
+    "B2B/B2C": ["B2B/B2C", "TYPE"],
+    "CATEGORY": ["CATEGORY"]
 }
 
-# Check if each expected column exists; if not, try to find a close match or create it
-for key in expected_cols:
-    if key not in crm.columns:
-        # Try to find if the user named it something slightly different
-        matches = [c for c in crm.columns if key in c]
-        if matches:
-            crm.rename(columns={matches[0]: key}, inplace=True)
-        else:
-            # If still not found, create an empty one to prevent the crash
-            crm[key] = "OTHERS" if key == "CATEGORY" else (0.0 if "AMOUNT" in key else "UNKNOWN")
+for final_name, aliases in mapping.items():
+    if final_name not in crm.columns:
+        # Look for any column header that contains our target word
+        for col in crm.columns:
+            if any(alias in col for alias in aliases):
+                crm.rename(columns={col: final_name}, inplace=True)
+                break
+    
+    # Final Safety: If column STILL doesn't exist, create it with defaults to prevent crash
+    if final_name not in crm.columns:
+        if final_name == "CATEGORY": crm[final_name] = "OTHERS"
+        elif "AMOUNT" in final_name: crm[final_name] = 0.0
+        else: crm[final_name] = "UNKNOWN"
 
 # ---------- SALES TEAM LOGIC ----------
 official_execs = []
@@ -61,10 +66,9 @@ if not team_df.empty:
         )
 
 # ---------- PREPROCESSING ----------
+# Now we can safely use the column names
 crm["DATE_DT"] = _to_dt(crm["DATE"]).dt.date
 crm["ORDER_VALUE"] = _to_amount(crm["ORDER AMOUNT"])
-
-# Safe access to CATEGORY and SALES PERSON now that we've mapped them
 crm["CATEGORY"] = crm["CATEGORY"].fillna("OTHERS").astype(str).str.strip().upper()
 crm["SALES PERSON"] = crm["SALES PERSON"].fillna("UNKNOWN").astype(str).str.strip().upper()
 
@@ -117,12 +121,14 @@ def apply_custom_styles(row):
 
     store_daily_total = row["Store Total"]
 
+    # Row color based on store performance
     if store_daily_total > 500000:
         return ['background-color: #d4edda; color: black'] * len(row)
     
     if store_daily_total <= 0:
         return ['background-color: #f8d7da; color: #721c24'] * len(row)
     
+    # Cell color if individual exec is 0
     for i, col_name in enumerate(row.index):
         if isinstance(col_name, tuple):
             exec_name = col_name[0]
@@ -136,4 +142,4 @@ styled_table = display_df.style.apply(apply_custom_styles, axis=1).format("{:.2f
 st.dataframe(styled_table, use_container_width=True)
 
 grand_total = totals["Store Total"].values[0]
-st.info(f"### 💰 Total B2C Sales for Selected Period: ₹{grand_total:,.2f}")
+st.info(f"### 💰 Total B2C Sales for Period: ₹{grand_total:,.2f}")
