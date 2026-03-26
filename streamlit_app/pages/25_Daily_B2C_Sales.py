@@ -8,19 +8,16 @@ st.title("📅 Daily B2C Sales by Executive")
 
 # ---------- 1. LOAD DATA ----------
 crm_raw = get_df("CRM")
-team = get_df("Sales Team")
+team_df = get_df("Sales Team")
 
 if crm_raw is None or crm_raw.empty:
     st.warning("No CRM data found")
     st.stop()
 
 crm = crm_raw.copy()
-
-# Standardize headers exactly like app.py
 crm.columns = [str(c).strip().upper() for c in crm.columns]
 
 # ---------- 2. FORMAT NUMERICS (App.py Style) ----------
-# This handles the ₹ symbols and commas that often break calculations
 for col in ["ORDER AMOUNT", "ADV RECEIVED"]:
     if col in crm.columns:
         crm[col] = (
@@ -31,29 +28,9 @@ for col in ["ORDER AMOUNT", "ADV RECEIVED"]:
         )
         crm[col] = pd.to_numeric(crm[col], errors="coerce").fillna(0)
 
-# Convert Date to standard format for filtering
 crm["DATE_DT"] = pd.to_datetime(crm["DATE"], dayfirst=True, errors="coerce").dt.date
 
-# ---------- 3. IDENTIFY SALES PEOPLE ----------
-official_sales_people = []
-if not team.empty:
-    team.columns = [str(c).strip().upper() for c in team.columns]
-    if "NAME" in team.columns:
-        # If your team sheet has a ROLE column, we filter; otherwise we take all names
-        if "ROLE" in team.columns:
-            official_sales_people = (
-                team[team["ROLE"] == "SALES"]["NAME"]
-                .dropna().str.strip().str.upper().unique().tolist()
-            )
-        else:
-            official_sales_people = team["NAME"].dropna().str.strip().str.upper().unique().tolist()
-
-# Combine with any names found in CRM to ensure no one is missed
-crm_names = crm["SALES PERSON"].dropna().str.strip().str.upper().unique().tolist() if "SALES PERSON" in crm.columns else []
-all_execs = sorted(list(set(official_sales_people + crm_names)))
-if "" in all_execs: all_execs.remove("")
-
-# ---------- 4. DATE FILTERS ----------
+# ---------- 3. DATE FILTERS ----------
 today = datetime.today().date()
 month_start = today.replace(day=1)
 
@@ -63,23 +40,46 @@ with c1:
 with c2:
     end_date = st.date_input("End date", value=today)
 
-# ---------- 5. BUILD TABLE (Cell-by-Cell Logic) ----------
+# --- DYNAMIC MESSAGE ---
+st.write(f"Showing the Daily Sales Figure for **{start_date.strftime('%d-%b-%Y')}** to **{end_date.strftime('%d-%b-%Y')}**")
+
+# ---------- 4. IDENTIFY SALES PEOPLE (Logic Update) ----------
+# A. Get official list from Sales Team sheet
+official_sales_people = []
+if not team_df.empty:
+    team_df.columns = [str(c).strip().upper() for c in team_df.columns]
+    if "ROLE" in team_df.columns and "NAME" in team_df.columns:
+        official_sales_people = (
+            team_df[team_df["ROLE"].str.upper() == "SALES"]["NAME"]
+            .dropna().str.strip().str.upper().unique().tolist()
+        )
+
+# B. Get anyone who actually did a sale in the SELECTED range
+mask = (crm["DATE_DT"] >= start_date) & (crm["DATE_DT"] <= end_date)
+df_filtered = crm.loc[mask].copy()
+
+active_in_period = []
+if "SALES PERSON" in df_filtered.columns:
+    # Filter for people with > 0 total sales in this period
+    sales_sums = df_filtered.groupby("SALES PERSON")["ORDER AMOUNT"].sum()
+    active_in_period = sales_sums[sales_sums > 0].index.str.strip().str.upper().tolist()
+
+# C. Combine: Official "Sales" Role + Anyone with sales in the period
+all_execs = sorted(list(set(official_sales_people + active_in_period)))
+if "" in all_execs: all_execs.remove("")
+
+# ---------- 5. BUILD TABLE (Cell-by-Cell) ----------
 date_range = pd.date_range(start_date, end_date).date
 table_data = []
 
 for d in date_range:
-    # Get all sales for this specific day
-    day_data = crm[crm["DATE_DT"] == d]
-    
+    day_data = df_filtered[df_filtered["DATE_DT"] == d]
     row = {"Date": d.strftime("%d-%b-%Y")}
     day_store_total = 0
     
     for sp in all_execs:
-        # Filter for this specific salesperson
         sp_day_data = day_data[day_data["SALES PERSON"].str.strip().str.upper() == sp]
         
-        # Calculate Category Sums (App.py Style)
-        # We use .get() as a final safety measure for the CATEGORY column
         storage_sum = 0
         furniture_sum = 0
         
@@ -97,8 +97,8 @@ for d in date_range:
 df_display = pd.DataFrame(table_data)
 
 # ---------- 6. TOTALS & STYLING ----------
-if not df_display.empty:
-    # Add a Footer Row for Monthly Totals
+if not df_display.empty and len(all_execs) > 0:
+    # Add Total Row
     totals = {"Date": "TOTAL"}
     for col in df_display.columns:
         if col != "Date":
@@ -110,18 +110,18 @@ if not df_display.empty:
         styles = [''] * len(row)
         store_val = row["Store Total"]
         
-        # Green if day is > 5L
         if store_val > 500000: return ['background-color: #d4edda; color: black'] * len(row)
-        # Red if day is 0
         if store_val <= 0: return ['background-color: #f8d7da; color: black'] * len(row)
         
-        # Red for individual cells if that person had 0 sales that day
         for i, col in enumerate(df_display.columns):
             if col not in ["Date", "Store Total"]:
-                exec_name = col.split(" (")[0]
-                exec_total = row.get(f"{exec_name} (Storage)", 0) + row.get(f"{exec_name} (Furniture)", 0)
-                if exec_total <= 0:
-                    styles[i] = 'background-color: #f8d7da; color: #721c24'
+                # Logic: Isolate the executive name from the column header
+                parts = col.split(" (")
+                if len(parts) > 0:
+                    exec_name = parts[0]
+                    exec_total = row.get(f"{exec_name} (Storage)", 0) + row.get(f"{exec_name} (Furniture)", 0)
+                    if exec_total <= 0:
+                        styles[i] = 'background-color: #f8d7da; color: #721c24'
         return styles
 
     # ---------- 7. RENDER ----------
@@ -132,6 +132,6 @@ if not df_display.empty:
 
     # Monthly Summary Box
     grand_total = df_display.iloc[-1]["Store Total"]
-    st.success(f"### 💰 Total B2C Sales: ₹{grand_total:,.2f}")
+    st.success(f"### 💰 Total B2C Sales (Selected Range): ₹{grand_total:,.2f}")
 else:
-    st.info("No data available for the selected dates.")
+    st.info("No active sales data or listed Sales Team members found for this period.")
