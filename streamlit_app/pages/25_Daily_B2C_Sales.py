@@ -26,13 +26,29 @@ if crm_raw is None or crm_raw.empty:
 
 crm = crm_raw.copy()
 
-# ✅ AGGRESSIVE CLEANING (Matches your app.py logic + Extra Safety)
+# --- STEP 1: BRUTE FORCE COLUMN CLEANING ---
+# We strip ALL whitespace and hidden characters from headers immediately
 crm.columns = [str(c).strip().upper() for c in crm.columns]
 
-# Ensure the column exists. If not, create a dummy to prevent the crash you were seeing.
-if "CATEGORY" not in crm.columns:
-    st.error("The column 'CATEGORY' was not found in the Google Sheet. Creating a dummy column.")
-    crm["CATEGORY"] = "OTHERS"
+# --- STEP 2: FUZZY COLUMN MAPPING ---
+# If "CATEGORY" isn't an exact match, we look for a column that contains the word
+required_mapping = {
+    "CATEGORY": "CATEGORY",
+    "SALES PERSON": "SALES PERSON",
+    "ORDER AMOUNT": "ORDER AMOUNT",
+    "B2B/B2C": "B2B/B2C",
+    "DATE": "DATE"
+}
+
+for target, search_term in required_mapping.items():
+    if target not in crm.columns:
+        # Look for a partial match (e.g. " CATEGORY " or "PRODUCT CATEGORY")
+        found_col = [c for c in crm.columns if search_term in c]
+        if found_col:
+            crm.rename(columns={found_col[0]: target}, inplace=True)
+        else:
+            # Fallback: Create the column so the script doesn't crash
+            crm[target] = "OTHERS" if target == "CATEGORY" else (0.0 if "AMOUNT" in target else "UNKNOWN")
 
 # ---------- SALES TEAM LOGIC ----------
 official_execs = []
@@ -45,17 +61,18 @@ if not team_df.empty:
         )
 
 # ---------- PREPROCESSING ----------
+# Use .get() or direct access now that mapping is finished
 crm["DATE_DT"] = _to_dt(crm["DATE"]).dt.date
 crm["ORDER_VALUE"] = _to_amount(crm["ORDER AMOUNT"])
 
-# Safe formatting for CATEGORY and SALES PERSON
+# Safe formatting
 crm["CATEGORY"] = crm["CATEGORY"].fillna("OTHERS").astype(str).str.strip().upper()
 crm["SALES PERSON"] = crm["SALES PERSON"].fillna("UNKNOWN").astype(str).str.strip().upper()
 
 # Filter for B2C only
 crm = crm[crm["B2B/B2C"].astype(str).str.strip().upper() == "B2C"]
 
-# Identify executives
+# Executive List
 all_execs = sorted(list(set(official_execs + crm["SALES PERSON"].unique().tolist())))
 if "UNKNOWN" in all_execs: 
     all_execs.remove("UNKNOWN")
@@ -70,7 +87,6 @@ with c1:
 with c2:
     end_date = st.date_input("End date", value=today)
 
-# Filter by Date
 mask = (crm["DATE_DT"] >= start_date) & (crm["DATE_DT"] <= end_date)
 df_filtered = crm.loc[mask].copy()
 
@@ -78,7 +94,6 @@ df_filtered = crm.loc[mask].copy()
 date_range = pd.date_range(start_date, end_date, freq="D").date
 target_categories = ["HOME STORAGE", "HOME FURNITURE"]
 
-# Create Multi-Index Columns
 columns = pd.MultiIndex.from_product([all_execs, target_categories], names=["Executive", "Category"])
 final_df = pd.DataFrame(0.0, index=date_range, columns=columns)
 
@@ -88,7 +103,6 @@ if not df_filtered.empty:
         if person in all_execs and cat in target_categories:
             final_df.loc[dt, (person, cat)] = val
 
-# Add Daily Store Total
 final_df["Store Total"] = final_df.sum(axis=1)
 
 # ---------- TOTALS ROW ----------
@@ -96,18 +110,18 @@ totals = final_df.sum().to_frame().T
 totals.index = ["TOTAL"]
 display_df = pd.concat([final_df, totals])
 
-# ---------- STYLING FUNCTION ----------
+# ---------- STYLING ----------
 def apply_custom_styles(row):
     styles = [''] * len(row)
     if row.name == "TOTAL":
         return styles
 
-    store_daily_total = row["Store Total"]
+    store_total = row["Store Total"]
 
-    if store_daily_total > 500000:
+    if store_total > 500000:
         return ['background-color: #d4edda; color: black'] * len(row)
     
-    if store_daily_total <= 0:
+    if store_total <= 0:
         return ['background-color: #f8d7da; color: #721c24'] * len(row)
     
     for i, col_name in enumerate(row.index):
@@ -118,9 +132,9 @@ def apply_custom_styles(row):
                 styles[i] = 'background-color: #f8d7da; color: #721c24'
     return styles
 
-# ---------- DISPLAY ----------
+# ---------- RENDER ----------
 styled_table = display_df.style.apply(apply_custom_styles, axis=1).format("{:.2f}")
 st.dataframe(styled_table, use_container_width=True)
 
 grand_total = totals["Store Total"].values[0]
-st.info(f"### 💰 Total Store B2C Sales: ₹{grand_total:,.2f}")
+st.info(f"### 💰 Total B2C Sales (Selected Period): ₹{grand_total:,.2f}")
