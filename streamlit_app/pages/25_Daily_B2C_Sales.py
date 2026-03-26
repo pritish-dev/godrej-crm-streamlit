@@ -26,27 +26,13 @@ if crm_raw is None or crm_raw.empty:
 
 crm = crm_raw.copy()
 
-# --- STEP 1: COLUMN NORMALIZATION ---
-# Strip whitespace and convert to uppercase for all headers
+# ✅ AGGRESSIVE CLEANING (Matches your app.py logic + Extra Safety)
 crm.columns = [str(c).strip().upper() for c in crm.columns]
 
-# --- STEP 2: REQUIRED COLUMN CHECK ---
-required_keys = ["DATE", "ORDER AMOUNT", "SALES PERSON", "B2B/B2C", "CATEGORY"]
-
-for key in required_keys:
-    if key not in crm.columns:
-        # Fuzzy match: find if any column contains the keyword
-        matches = [c for c in crm.columns if key in c]
-        if matches:
-            crm.rename(columns={matches[0]: key}, inplace=True)
-        else:
-            # Create default columns if missing to prevent code failure
-            if key == "CATEGORY":
-                crm[key] = "OTHERS"
-            elif "AMOUNT" in key:
-                crm[key] = 0.0
-            else:
-                crm[key] = "UNKNOWN"
+# Ensure the column exists. If not, create a dummy to prevent the crash you were seeing.
+if "CATEGORY" not in crm.columns:
+    st.error("The column 'CATEGORY' was not found in the Google Sheet. Creating a dummy column.")
+    crm["CATEGORY"] = "OTHERS"
 
 # ---------- SALES TEAM LOGIC ----------
 official_execs = []
@@ -54,20 +40,22 @@ if not team_df.empty:
     team_df.columns = [str(c).strip().upper() for c in team_df.columns]
     if "ROLE" in team_df.columns and "NAME" in team_df.columns:
         official_execs = (
-            team_df[team_df["ROLE"].str.upper() == "SALES"]["NAME"]
-            .astype(str).str.strip().str.upper().unique().tolist()
+            team_df[team_df["ROLE"] == "SALES"]["NAME"]
+            .dropna().str.strip().str.upper().unique().tolist()
         )
 
 # ---------- PREPROCESSING ----------
 crm["DATE_DT"] = _to_dt(crm["DATE"]).dt.date
 crm["ORDER_VALUE"] = _to_amount(crm["ORDER AMOUNT"])
+
+# Safe formatting for CATEGORY and SALES PERSON
 crm["CATEGORY"] = crm["CATEGORY"].fillna("OTHERS").astype(str).str.strip().upper()
 crm["SALES PERSON"] = crm["SALES PERSON"].fillna("UNKNOWN").astype(str).str.strip().upper()
 
 # Filter for B2C only
 crm = crm[crm["B2B/B2C"].astype(str).str.strip().upper() == "B2C"]
 
-# Identify all executives (From Sales Team sheet + any extra found in CRM)
+# Identify executives
 all_execs = sorted(list(set(official_execs + crm["SALES PERSON"].unique().tolist())))
 if "UNKNOWN" in all_execs: 
     all_execs.remove("UNKNOWN")
@@ -82,7 +70,7 @@ with c1:
 with c2:
     end_date = st.date_input("End date", value=today)
 
-# Filter by Date Range
+# Filter by Date
 mask = (crm["DATE_DT"] >= start_date) & (crm["DATE_DT"] <= end_date)
 df_filtered = crm.loc[mask].copy()
 
@@ -90,7 +78,7 @@ df_filtered = crm.loc[mask].copy()
 date_range = pd.date_range(start_date, end_date, freq="D").date
 target_categories = ["HOME STORAGE", "HOME FURNITURE"]
 
-# Create Multi-Index Columns: (Executive Name, Category)
+# Create Multi-Index Columns
 columns = pd.MultiIndex.from_product([all_execs, target_categories], names=["Executive", "Category"])
 final_df = pd.DataFrame(0.0, index=date_range, columns=columns)
 
@@ -111,38 +99,28 @@ display_df = pd.concat([final_df, totals])
 # ---------- STYLING FUNCTION ----------
 def apply_custom_styles(row):
     styles = [''] * len(row)
-    
-    # Don't color the final TOTAL row with daily alerts
     if row.name == "TOTAL":
         return styles
 
     store_daily_total = row["Store Total"]
 
-    # Rule 1: Row Green if Store > 500,000
     if store_daily_total > 500000:
         return ['background-color: #d4edda; color: black'] * len(row)
     
-    # Rule 2: Row Red if Store == 0
     if store_daily_total <= 0:
         return ['background-color: #f8d7da; color: #721c24'] * len(row)
     
-    # Rule 3: Individual Exec Red if their specific daily total is 0
     for i, col_name in enumerate(row.index):
         if isinstance(col_name, tuple):
             exec_name = col_name[0]
-            # Sum categories for that person
             exec_sum = row[(exec_name, "HOME STORAGE")] + row[(exec_name, "HOME FURNITURE")]
             if exec_sum <= 0:
                 styles[i] = 'background-color: #f8d7da; color: #721c24'
-                
     return styles
 
 # ---------- DISPLAY ----------
-# Explicitly format numbers to 2 decimal places and apply styles
 styled_table = display_df.style.apply(apply_custom_styles, axis=1).format("{:.2f}")
-
 st.dataframe(styled_table, use_container_width=True)
 
-# Footer Summary
 grand_total = totals["Store Total"].values[0]
-st.info(f"### 💰 Total Store B2C Sales (Selected Period): ₹{grand_total:,.2f}")
+st.info(f"### 💰 Total Store B2C Sales: ₹{grand_total:,.2f}")
