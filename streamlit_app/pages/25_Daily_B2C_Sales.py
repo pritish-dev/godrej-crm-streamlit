@@ -13,6 +13,7 @@ def _to_dt(s):
 def _to_amount(series: pd.Series) -> pd.Series:
     if series is None or series.empty:
         return pd.Series([], dtype=float)
+    # Remove symbols and handle non-string data
     s = series.astype(str).str.replace("[₹,]", "", regex=True).str.strip()
     return pd.to_numeric(s, errors="coerce").fillna(0.0)
 
@@ -24,36 +25,30 @@ if crm_raw is None or crm_raw.empty:
     st.info("CRM is empty. Please add order data.")
     st.stop()
 
-# Work on a copy to avoid SettingWithCopy warnings
 crm = crm_raw.copy()
 
-# --- STEP 1: BRUTE FORCE COLUMN NORMALIZATION ---
-# Clean all column names: remove hidden spaces, newlines, and convert to UPPER
-crm.columns = [str(c).strip().upper() for c in crm.columns]
+# --- STEP 1: AGGRESSIVE COLUMN CLEANING ---
+# This removes spaces, tabs, and newlines from the headers
+crm.columns = [str(c).strip().upper().replace('\N', '').replace('\R', '') for c in crm.columns]
 
-# --- STEP 2: FUZZY MAPPING ---
-# This ensures that even if the sheet says " CATEGORY\n" it maps to "CATEGORY"
-mapping = {
-    "DATE": ["DATE"],
-    "ORDER AMOUNT": ["ORDER AMOUNT", "ORDER_AMOUNT", "AMOUNT"],
-    "SALES PERSON": ["SALES PERSON", "SALESPERSON", "EXECUTIVE"],
-    "B2B/B2C": ["B2B/B2C", "TYPE"],
-    "CATEGORY": ["CATEGORY"]
-}
+# --- STEP 2: COLUMN MAPPING & VALIDATION ---
+# We define the keys we need and look for them in the cleaned columns
+required_keys = ["DATE", "ORDER AMOUNT", "SALES PERSON", "B2B/B2C", "CATEGORY"]
 
-for final_name, aliases in mapping.items():
-    if final_name not in crm.columns:
-        # Look for any column header that contains our target word
-        for col in crm.columns:
-            if any(alias in col for alias in aliases):
-                crm.rename(columns={col: final_name}, inplace=True)
-                break
-    
-    # Final Safety: If column STILL doesn't exist, create it with defaults to prevent crash
-    if final_name not in crm.columns:
-        if final_name == "CATEGORY": crm[final_name] = "OTHERS"
-        elif "AMOUNT" in final_name: crm[final_name] = 0.0
-        else: crm[final_name] = "UNKNOWN"
+for key in required_keys:
+    if key not in crm.columns:
+        # If the exact key isn't found, try a fuzzy match (e.g., "CATEGORIES" or "PRODUCT CATEGORY")
+        matches = [c for c in crm.columns if key in c]
+        if matches:
+            crm.rename(columns={matches[0]: key}, inplace=True)
+        else:
+            # If it's still missing, create a default column to prevent the app from crashing
+            if key == "CATEGORY":
+                crm[key] = "OTHERS"
+            elif "AMOUNT" in key:
+                crm[key] = 0.0
+            else:
+                crm[key] = "UNKNOWN"
 
 # ---------- SALES TEAM LOGIC ----------
 official_execs = []
@@ -66,16 +61,20 @@ if not team_df.empty:
         )
 
 # ---------- PREPROCESSING ----------
-# Now we can safely use the column names
+# Convert Date
 crm["DATE_DT"] = _to_dt(crm["DATE"]).dt.date
+
+# Convert Order Amount
 crm["ORDER_VALUE"] = _to_amount(crm["ORDER AMOUNT"])
+
+# Clean Category and Sales Person (using .get() to be extra safe)
 crm["CATEGORY"] = crm["CATEGORY"].fillna("OTHERS").astype(str).str.strip().upper()
 crm["SALES PERSON"] = crm["SALES PERSON"].fillna("UNKNOWN").astype(str).str.strip().upper()
 
 # Filter for B2C only
 crm = crm[crm["B2B/B2C"].astype(str).str.strip().upper() == "B2C"]
 
-# Combine lists
+# Build the list of all executives to show
 all_execs = sorted(list(set(official_execs + crm["SALES PERSON"].unique().tolist())))
 if "UNKNOWN" in all_execs: all_execs.remove("UNKNOWN")
 
@@ -96,16 +95,18 @@ df_filtered = crm.loc[mask].copy()
 date_range = pd.date_range(start, end, freq="D").date
 target_categories = ["HOME STORAGE", "HOME FURNITURE"]
 
-# Create Multi-Index Columns
+# Create Multi-Index Columns: (Person, Category)
 columns = pd.MultiIndex.from_product([all_execs, target_categories], names=["Executive", "Category"])
 final_df = pd.DataFrame(0.0, index=date_range, columns=columns)
 
 if not df_filtered.empty:
+    # Fill the pivot table with actual sales
     grouped = df_filtered.groupby(["DATE_DT", "SALES PERSON", "CATEGORY"])["ORDER_VALUE"].sum()
     for (dt, person, cat), val in grouped.items():
         if person in all_execs and cat in target_categories:
             final_df.loc[dt, (person, cat)] = val
 
+# Add Daily Store Total
 final_df["Store Total"] = final_df.sum(axis=1)
 
 # ---------- TOTALS ROW ----------
@@ -121,14 +122,15 @@ def apply_custom_styles(row):
 
     store_daily_total = row["Store Total"]
 
-    # Row color based on store performance
+    # Green if daily store total > 500k
     if store_daily_total > 500000:
         return ['background-color: #d4edda; color: black'] * len(row)
     
+    # Red if daily store total is 0
     if store_daily_total <= 0:
         return ['background-color: #f8d7da; color: #721c24'] * len(row)
     
-    # Cell color if individual exec is 0
+    # Red for individual executive cells if they sold nothing that day
     for i, col_name in enumerate(row.index):
         if isinstance(col_name, tuple):
             exec_name = col_name[0]
@@ -137,9 +139,12 @@ def apply_custom_styles(row):
                 styles[i] = 'background-color: #f8d7da; color: #721c24'
     return styles
 
-# ---------- RENDER ----------
+# ---------- DISPLAY ----------
+# Format to 2 decimal places and apply styling
 styled_table = display_df.style.apply(apply_custom_styles, axis=1).format("{:.2f}")
+
 st.dataframe(styled_table, use_container_width=True)
 
+# Footer Summary
 grand_total = totals["Store Total"].values[0]
-st.info(f"### 💰 Total B2C Sales for Period: ₹{grand_total:,.2f}")
+st.success(f"### 💰 Total Store B2C Sales (Selected Period): ₹{grand_total:,.2f}")
