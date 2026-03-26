@@ -180,3 +180,53 @@ def get_sheet(sheet_name):
         return sh.worksheet(sheet_name)
     except Exception:
         raise Exception(f"Sheet '{sheet_name}' not found in Google Sheets")
+        
+def upsert_target_record(sheet_name: str, unique_fields: dict, new_data: dict):
+    import pandas as pd
+    from services.sheets import get_df
+
+    ws = sh.worksheet(sheet_name)
+    headers = [h.strip().upper() for h in ws.row_values(1)]
+
+    df = get_df(sheet_name)
+
+    # Normalize keys
+    new_data = {k.upper(): v for k, v in new_data.items()}
+
+    sales_person = unique_fields.get("SALES PERSON")
+    month = unique_fields.get("MONTH")
+    year = str(unique_fields.get("YEAR"))
+
+    if not sales_person or not month or not year:
+        return "❌ Missing fields"
+
+    # Handle empty df safely
+    if not df.empty:
+        df.columns = [c.strip().upper() for c in df.columns]
+
+        match = (
+            (df["SALES PERSON"] == sales_person) &
+            (df["MONTH"] == month) &
+            (df["YEAR"].astype(str) == year)
+        )
+    else:
+        match = pd.Series([], dtype=bool)
+
+    # -------- UPDATE --------
+    if match.any():
+        row_index = match[match].index[0] + 2
+
+        for col_idx, col_name in enumerate(headers, start=1):
+            if col_name in new_data:
+                ws.update_cell(row_index, col_idx, new_data[col_name])
+
+        return "Updated Target"
+
+    # -------- INSERT --------
+    else:
+        row_values = []
+        for col in headers:
+            row_values.append(new_data.get(col, ""))
+
+        ws.append_row(row_values)
+        return "Inserted Target"
