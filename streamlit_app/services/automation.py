@@ -47,7 +47,7 @@ def get_alerts(df, team_df, alert_type="delivery"):
     df = clean_headers(df)
     team_df = clean_headers(team_df)
     
-    # Identify Owner and Manager from Sheet
+    # Identify Owner and Manager from Sheet dynamically
     owner_row = team_df[team_df["ROLE"].str.upper() == "OWNER"]
     mgr_row = team_df[team_df["ROLE"].str.upper() == "MANAGER"]
     
@@ -68,7 +68,8 @@ def get_alerts(df, team_df, alert_type="delivery"):
                                pd.to_numeric(df["ADV RECEIVED"], errors='coerce').fillna(0)
         mask = (df["PENDING AMOUNT"] > 0)
 
-    filtered_df = df[mask & (df["CUSTOMER DELIVERY DATE (TO BE)"].dt.date <= tomorrow)].dropna(subset=["CUSTOMER DELIVERY DATE (TO BE)"])
+    # STRICT FILTER: Only include records where Delivery Date is exactly Tomorrow
+    filtered_df = df[mask & (df["CUSTOMER DELIVERY DATE (TO BE)"].dt.date == tomorrow)].dropna(subset=["CUSTOMER DELIVERY DATE (TO BE)"])
     
     if filtered_df.empty: return []
 
@@ -94,7 +95,7 @@ def get_alerts(df, team_df, alert_type="delivery"):
         table_content = create_whatsapp_tabular_list(group, alert_type)
         
         msg = (f"Dear *{sp_name}*,\n\n"
-               f"Pending {'Deliveries' if alert_type == 'delivery' else 'Payments'}:\n\n"
+               f"Urgent {'Deliveries' if alert_type == 'delivery' else 'Payments'} for TOMORROW:\n\n"
                f"{table_content}\nAction required!")
 
         # Dynamic recipients
