@@ -1,7 +1,8 @@
 import sys
 import os
 import pandas as pd
-from datetime import datetime
+import numpy as np
+from datetime import datetime, timedelta
 
 # --- CRITICAL PATH FIX ---
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -43,129 +44,138 @@ if crm.empty:
     st.error("Could not load CRM data. Please check your Google Sheet connection.")
     st.stop()
 
-# Helper function to group records
-def group_crm_records(df, group_cols, agg_dict):
-    """Groups multiple items for the same customer into one row."""
-    if df.empty:
-        return df
+# Helper for Grouping
+def group_records(df, is_payment=False):
+    group_cols = ["CUSTOMER NAME", "CONTACT NUMBER", "SALES PERSON"]
+    if not is_payment:
+        group_cols.append("DATE") # Purchase Date
+    group_cols.append("CUSTOMER DELIVERY DATE (TO BE)")
+    
+    agg_dict = {
+        "PRODUCT NAME": lambda x: ", ".join(x.unique()),
+        "ORDER AMOUNT": "sum",
+        "ADV RECEIVED": "sum"
+    }
     return df.groupby(group_cols, as_index=False).agg(agg_dict)
 
-# --- 2. ALL ORDERS TABLE ---
-st.subheader("📋 All Orders (Full History)")
-all_cols = ["DATE", "CUSTOMER NAME", "CONTACT NUMBER", "PRODUCT NAME", "ORDER AMOUNT", "ADV RECEIVED", "SALES PERSON", "CUSTOMER DELIVERY DATE (TO BE)", "DELIVERY REMARKS"]
+# Helper for Custom Sorting (Upcoming first, Overdue last)
+def sort_by_delivery_proximity(df, date_col):
+    today = pd.Timestamp(datetime.now().date())
+    df['is_overdue'] = df[date_col] < today
+    # Sort: Overdue (False < True, so False/Future comes first), then by date
+    df = df.sort_values(by=['is_overdue', date_col], ascending=[True, True])
+    return df.drop(columns=['is_overdue'])
 
-all_orders_disp = crm[all_cols].copy()
-st.dataframe(all_orders_disp.style.format({
-    "ORDER AMOUNT": "{:.2f}", "ADV RECEIVED": "{:.2f}",
-    "DATE": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else "",
-    "CUSTOMER DELIVERY DATE (TO BE)": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else ""
-}), use_container_width=True)
+# Helper for Row Styling
+def style_crm_rows(row, date_col):
+    today = datetime.now().date()
+    delivery_date = row[date_col].date() if pd.notnull(row[date_col]) else None
+    
+    if delivery_date:
+        if delivery_date < today:
+            return ['background-color: #ffcccc; color: black'] * len(row) # Red for Overdue
+        elif delivery_date == today or delivery_date == today + timedelta(days=1):
+            return ['background-color: #c8e6c9; color: black'] * len(row) # Green for Nearest
+    return [''] * len(row)
 
-# --- 3. PENDING DELIVERY SECTION ---
+# --- 2. PENDING DELIVERY SECTION ---
 st.divider()
-st.subheader("🚚 Pending Deliveries (Clubbed)")
+st.subheader("🚚 Pending Deliveries")
 
 mask_pending = crm["DELIVERY REMARKS"].astype(str).str.upper().str.strip() == "PENDING"
-mask_date = crm["CUSTOMER DELIVERY DATE (TO BE)"].notna()
-pending_raw = crm[mask_pending & mask_date].copy()
+pending_raw = crm[mask_pending & crm["CUSTOMER DELIVERY DATE (TO BE)"].notna()].copy()
 
 if not pending_raw.empty:
-    # Grouping Logic
-    pending = group_crm_records(
-        pending_raw, 
-        group_cols=["CUSTOMER NAME", "CONTACT NUMBER", "DATE", "CUSTOMER DELIVERY DATE (TO BE)", "SALES PERSON", "DELIVERY REMARKS"],
-        agg_dict={
-            "PRODUCT NAME": lambda x: ", ".join(x.unique()),
-            "ORDER AMOUNT": "sum",
-            "ADV RECEIVED": "sum"
-        }
-    )
-    
+    pending = group_records(pending_raw)
     pending = pending.rename(columns={"CUSTOMER DELIVERY DATE (TO BE)": "DELIVERY DATE", "DATE": "PURCHASE DATE"})
-    pending = pending.sort_values(by="DELIVERY DATE", ascending=False)
-    
-    today = datetime.now().date()
-    def style_overdue(row):
-        if pd.notnull(row["DELIVERY DATE"]) and row["DELIVERY DATE"].date() < today:
-            return ['background-color: #ffcccc; color: black'] * len(row)
-        return [''] * len(row)
+    pending = sort_by_delivery_proximity(pending, "DELIVERY DATE")
 
-    pend_cols = ["DELIVERY DATE", "CUSTOMER NAME", "CONTACT NUMBER", "PRODUCT NAME", "ORDER AMOUNT", "ADV RECEIVED", "SALES PERSON", "PURCHASE DATE", "DELIVERY REMARKS"]
-    st.dataframe(pending[pend_cols].style.apply(style_overdue, axis=1).format({
+    st.dataframe(pending.style.apply(style_crm_rows, date_col="DELIVERY DATE", axis=1).format({
         "ORDER AMOUNT": "{:.2f}", "ADV RECEIVED": "{:.2f}",
         "DELIVERY DATE": lambda x: x.strftime('%d-%b-%Y'),
-        "PURCHASE DATE": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else ""
+        "PURCHASE DATE": lambda x: x.strftime('%d-%b-%Y')
     }), use_container_width=True)
+
+    # Metrics
+    today_dt = datetime.now().date()
+    tmrw_dt = today_dt + timedelta(days=1)
+    overdue_count = len(pending[pending["DELIVERY DATE"].dt.date < today_dt])
+    tmrw_count = len(pending[pending["DELIVERY DATE"].dt.date == tmrw_dt])
+    today_count = len(pending[pending["DELIVERY DATE"].dt.date == today_dt])
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Total Pending", len(pending))
+    m2.metric("For Tomorrow", tmrw_count)
+    m3.metric("Due Today", today_count)
+    m4.metric("Overdue (Missed)", overdue_count, delta_color="inverse", delta=f"{overdue_count} orders")
 else:
-    st.info("No pending deliveries found.")
+    st.info("No pending deliveries.")
 
-# --- 4. WHATSAPP ACTION CENTER ---
-st.write("### 📲 WhatsApp Action Center")
-st.caption("Alerts are automatically clubbed for customers with multiple items.")
-c1, c2, c3 = st.columns(3)
-
-# Note: For these functions to work with clubbed data, ensure your 
-# 'services.automation' logic also uses a similar .groupby() or handles duplicates.
-with c1:
-    if st.button("🚀 Prepare Grouped Delivery Alerts", use_container_width=True):
-        alerts = get_delivery_alerts_list(is_test=False)
-        if not alerts:
-            st.info("No deliveries scheduled for tomorrow.")
-        else:
-            st.success(f"Generated {len(alerts)} unique customer alerts.")
-            for label, phone, msg in alerts:
-                st.link_button(f"Open Chat with {label}", generate_whatsapp_link(phone, msg))
-
-with c2:
-    if st.button("💰 Prepare Payment Reminders", use_container_width=True):
-        pay_alerts = get_payment_alerts_list()
-        if not pay_alerts:
-            st.info("No payments due for delivery in 7 days.")
-        else:
-            for p, m in pay_alerts:
-                st.link_button(f"Remind {p}", generate_whatsapp_link(p, m))
-
-with c3:
-    if st.button("🧪 RUN TABULAR TEST RUN", use_container_width=True, type="primary"):
-        tests = get_delivery_alerts_list(is_test=True)
-        if not tests:
-            st.warning("No 'PENDING' orders found in CRM to run a test.")
-        else:
-            st.info("🔧 Test Mode: Showing how clubbed messages look.")
-            for label, phone, msg in tests:
-                st.link_button(f"Test Send to {label}", generate_whatsapp_link(phone, msg))
-
-# --- 5. PAYMENT DUE SECTION ---
+# --- 3. PAYMENT DUE SECTION ---
 st.divider()
-st.subheader("💰 Payment Due (Clubbed)")
+st.subheader("💰 Payment Due")
 
 crm["PENDING AMOUNT"] = crm["ORDER AMOUNT"] - crm["ADV RECEIVED"]
 due_raw = crm[(crm["PENDING AMOUNT"] > 0) & (crm["CUSTOMER DELIVERY DATE (TO BE)"].notna())].copy()
 
 if not due_raw.empty:
-    # Grouping Logic for Payments
-    due = group_crm_records(
-        due_raw,
-        group_cols=["CUSTOMER NAME", "CONTACT NUMBER", "CUSTOMER DELIVERY DATE (TO BE)", "SALES PERSON"],
-        agg_dict={
-            "ORDER AMOUNT": "sum",
-            "ADV RECEIVED": "sum",
-            "PENDING AMOUNT": "sum"
-        }
-    )
-    
+    due = group_records(due_raw, is_payment=True)
+    due["PENDING AMOUNT"] = due["ORDER AMOUNT"] - due["ADV RECEIVED"]
     due = due.rename(columns={"CUSTOMER DELIVERY DATE (TO BE)": "DELIVERY DATE"})
-    due = due.sort_values(by="DELIVERY DATE", ascending=False)
-    
-    def style_due(row):
-        if pd.notnull(row["DELIVERY DATE"]) and row["DELIVERY DATE"].date() < today:
-            return ['background-color: #ffcccc; color: black'] * len(row)
-        return [''] * len(row)
+    due = sort_by_delivery_proximity(due, "DELIVERY DATE")
 
-    due_cols = ["DELIVERY DATE", "CUSTOMER NAME", "ORDER AMOUNT", "ADV RECEIVED", "PENDING AMOUNT", "SALES PERSON"]
-    st.dataframe(due[due_cols].style.apply(style_due, axis=1).format({
+    st.dataframe(due.style.apply(style_crm_rows, date_col="DELIVERY DATE", axis=1).format({
         "ORDER AMOUNT": "{:.2f}", "ADV RECEIVED": "{:.2f}", "PENDING AMOUNT": "{:.2f}",
         "DELIVERY DATE": lambda x: x.strftime('%d-%b-%Y')
     }), use_container_width=True)
+
+    # Metrics
+    total_due = due["PENDING AMOUNT"].sum()
+    overdue_payment_count = len(due[due["DELIVERY DATE"].dt.date < today_dt])
+    
+    p1, p2, p3 = st.columns(3)
+    p1.metric("Total Outstanding", f"₹{total_due:,.2f}")
+    p2.metric("Customers with Dues", len(due))
+    p3.metric("Overdue Payments", overdue_payment_count)
 else:
-    st.info("No outstanding payments found.")
+    st.info("No outstanding payments.")
+
+# --- 4. WHATSAPP ACTION CENTER ---
+st.divider()
+st.write("### 📲 WhatsApp Action Center")
+st.caption("Green alerts prioritize upcoming/immediate deliveries.")
+c1, c2, c3 = st.columns(3)
+
+with c1:
+    if st.button("🚀 Prepare Delivery Alerts (Upcoming)", use_container_width=True):
+        # We filter the pending list for Green records (Today/Tomorrow)
+        target_dates = [today_dt, today_dt + timedelta(days=1)]
+        upcoming_customers = pending[pending["DELIVERY DATE"].dt.date.isin(target_dates)]
+        
+        if upcoming_customers.empty:
+            st.info("No immediate (Green) deliveries scheduled.")
+        else:
+            alerts = get_delivery_alerts_list(is_test=False) 
+            # Note: We filter existing alerts to only those in our 'upcoming' group
+            valid_phones = upcoming_customers["CONTACT NUMBER"].astype(str).tolist()
+            filtered_alerts = [a for a in alerts if str(a[1]) in valid_phones]
+            
+            st.success(f"Found {len(filtered_alerts)} immediate alerts.")
+            for label, phone, msg in filtered_alerts:
+                st.link_button(f"Send to {label}", generate_whatsapp_link(phone, msg))
+
+with c2:
+    if st.button("💰 Prepare Payment Reminders", use_container_width=True):
+        pay_alerts = get_payment_alerts_list()
+        if not pay_alerts:
+            st.info("No payments due soon.")
+        else:
+            for p, m in pay_alerts:
+                st.link_button(f"Remind {p}", generate_whatsapp_link(p, m))
+
+with c3:
+    # Full list for testing purposes
+    if st.button("🧪 TEST ALL PENDING", use_container_width=True, type="secondary"):
+        tests = get_delivery_alerts_list(is_test=True)
+        for label, phone, msg in tests:
+            st.link_button(f"Test {label}", generate_whatsapp_link(phone, msg))
