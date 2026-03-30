@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from services.sheets import get_df
-from services.automation import send_delivery_alerts, send_payment_alerts
 import gspread
 from google.oauth2.service_account import Credentials
 from services.automation import get_delivery_alerts_list, get_payment_alerts_list, generate_whatsapp_link
