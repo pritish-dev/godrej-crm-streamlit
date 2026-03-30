@@ -34,8 +34,6 @@ with c1:
 with c2:
     end_date = st.date_input("End date", value=today)
 
-st.write(f"Showing the Daily Sales Figure for **{start_date.strftime('%d-%b-%Y')}** to **{end_date.strftime('%d-%b-%Y')}**")
-
 # ---------- 3. SALES TEAM LOGIC ----------
 official_sales_people = []
 if team_df is not None and not team_df.empty:
@@ -60,7 +58,7 @@ if "" in all_execs: all_execs.remove("")
 # ---------- 4. BUILD TABLE ----------
 date_range = pd.date_range(start_date, end_date).date
 table_data = []
-df_display = pd.DataFrame() # Initialize to prevent NameError
+df_display = pd.DataFrame() 
 
 for d in date_range:
     day_data = df_filtered[df_filtered["DATE_DT"] == d]
@@ -85,46 +83,57 @@ if not df_display.empty and len(all_execs) > 0:
             totals_val[col] = df_display[col].sum()
     df_display = pd.concat([df_display, pd.DataFrame([totals_val])], ignore_index=True)
 
-    # Injecting CSS for Sticky Header and Fixed-Height Scroll Container
+    # SHOW GRAND TOTAL ON TOP
+    grand_total = df_display.iloc[-1]['Store Total']
+    st.success(f"### 💰 Grand Total Sales: ₹{grand_total:,.2f}")
+    st.write(f"Period: **{start_date.strftime('%d-%b-%Y')}** to **{end_date.strftime('%d-%b-%Y')}**")
+
+    # Injecting CSS for Dual-Sticky (Header + Store Total Column)
     st.markdown("""
         <style>
             .table-scroll-container {
-                max-height: 480px; /* Fits approx 15-16 rows comfortably */
-                overflow-y: auto;
+                max-height: 500px;
+                overflow: auto;
                 border: 1px solid #ccc;
-                width: fit-content;
+                width: 100%;
                 margin-bottom: 20px;
-                border-radius: 5px;
+                position: relative;
             }
             .squeezed-table {
-                width: auto !important;
+                width: 100%;
                 border-collapse: separate; 
                 border-spacing: 0;
-                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             }
+            /* STICKY HEADER */
             .squeezed-table thead th {
                 position: sticky;
                 top: 0;
-                z-index: 10;
+                z-index: 20;
                 background-color: #f0f2f6;
-                color: #000000 !important; 
-                font-weight: 900 !important; 
-                padding: 6px 10px !important;
+                color: #000;
+                font-weight: 900;
                 border: 1px solid #ccc;
-                text-align: center;
-                white-space: nowrap;
+                padding: 8px;
+            }
+            /* STICKY STORE TOTAL COLUMN (Right side) */
+            .squeezed-table td:last-child, 
+            .squeezed-table th:last-child {
+                position: sticky;
+                right: 0;
+                z-index: 15;
+                border-left: 2px solid #999 !important;
+            }
+            /* Intersection of Header and Last Column */
+            .squeezed-table thead th:last-child {
+                z-index: 25;
             }
             .squeezed-table td {
-                padding: 4px 8px !important;
+                padding: 4px 8px;
                 border: 1px solid #ccc;
                 text-align: right;
                 white-space: nowrap;
-                color: #333;
+                background-color: inherit;
             }
-            /* Styling for custom scrollbar */
-            .table-scroll-container::-webkit-scrollbar { width: 8px; }
-            .table-scroll-container::-webkit-scrollbar-track { background: #f1f1f1; }
-            .table-scroll-container::-webkit-scrollbar-thumb { background: #888; border-radius: 4px; }
         </style>
     """, unsafe_allow_html=True)
 
@@ -132,25 +141,31 @@ if not df_display.empty and len(all_execs) > 0:
         row_styles = [''] * len(row)
         is_total_row = (row["Date"] == "TOTAL")
         
-        bg_color = ""
+        # Base background colors
+        bg_main = "#ffffff"
         if not is_total_row:
             if row["Store Total"] > 500000:
-                bg_color = "background-color: #2e7d32; color: white;" 
+                bg_main = "#2e7d32; color: white;" 
             elif row["Store Total"] <= 0:
-                bg_color = "background-color: #f8d7da;" 
+                bg_main = "#f8d7da;" 
         else:
-            bg_color = "background-color: #eeeeee; font-weight: 900; color: #000000;"
+            bg_main = "#eeeeee;"
 
         for i, col in enumerate(df_display.columns):
-            cell_style = bg_color
+            style = f"background-color: {bg_main}"
+            
+            # Highlight Total Row or Store Total Column
             if col == "Store Total" or is_total_row:
-                cell_style += " font-weight: 900; color: #000000 !important;"
+                style += " font-weight: 900; color: #000000 !important;"
+                # Re-apply grey for total row intersection
+                if is_total_row: style = "background-color: #eeeeee; font-weight: 900; color: #000;"
+            
             if not is_total_row and col not in ["Date", "Store Total"] and row[col] <= 0:
-                cell_style += " color: #721c24;"
-            row_styles[i] = cell_style
+                style += " color: #721c24;"
+            
+            row_styles[i] = style
         return row_styles
 
-    # Format numeric values
     format_cols = {col: "{:,.2f}" for col in df_display.columns if col != "Date"}
     
     styled_html = (
@@ -162,10 +177,6 @@ if not df_display.empty and len(all_execs) > 0:
         .to_html()
     )
 
-    # Wrap the table in the scroll container
     st.write(f'<div class="table-scroll-container">{styled_html}</div>', unsafe_allow_html=True)
-    
-    st.markdown("---")
-    st.success(f"### 💰 Grand Total Sales: ₹{df_display.iloc[-1]['Store Total']:,.2f}")
 else:
     st.info("No active sales data found for this period.")
