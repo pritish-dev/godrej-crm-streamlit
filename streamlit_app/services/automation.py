@@ -68,7 +68,7 @@ def get_alerts(df, team_df, alert_type="delivery"):
                                pd.to_numeric(df["ADV RECEIVED"], errors='coerce').fillna(0)
         mask = (df["PENDING AMOUNT"] > 0)
 
-    # STRICT FILTER: Only include records where Delivery Date is exactly Tomorrow
+    # STRICT FILTER: Only include records where Delivery Date is exactly Tomorrow (1 day away)
     filtered_df = df[mask & (df["CUSTOMER DELIVERY DATE (TO BE)"].dt.date == tomorrow)].dropna(subset=["CUSTOMER DELIVERY DATE (TO BE)"])
     
     if filtered_df.empty: return []
