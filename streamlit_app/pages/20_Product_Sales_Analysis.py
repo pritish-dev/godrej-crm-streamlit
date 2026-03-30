@@ -68,15 +68,12 @@ summary = analysis_df.groupby("WORK_PROD")["WORK_QTY"].sum().reset_index()
 summary = summary.sort_values(by="WORK_QTY", ascending=False)
 summary.columns = ["PRODUCT NAME", "TOTAL QTY SOLD"]
 
-# ---------- 4. TOP MESSAGE & CSV DOWNLOAD ----------
+# ---------- 4. TOP MESSAGE & DOWNLOAD ----------
 if not summary.empty:
-    # 1. Success Message on Top
     top_row = summary.iloc[0]
     st.success(f"🏆 **Highest Sold:** {top_row['PRODUCT NAME']} ({int(top_row['TOTAL QTY SOLD'])} units)")
     
-    # 2. CSV Download (Universal - No extra libraries needed)
     csv_data = summary.to_csv(index=False).encode('utf-8')
-    
     st.download_button(
         label="📥 Download Report (CSV for Excel)",
         data=csv_data,
@@ -84,38 +81,60 @@ if not summary.empty:
         mime="text/csv",
     )
 
-    # ---------- 5. STYLING & TABLE ----------
+    # ---------- 5. CSS FOR SCROLLABLE TABLE & STICKY HEADERS ----------
     st.markdown("""
         <style>
-            .prod-table { width: auto !important; border-collapse: collapse; margin-top: 10px; }
-            .prod-table th { 
-                background-color: #f0f2f6; color: #000000 !important; 
-                font-weight: 900 !important; padding: 8px 15px !important; 
-                border: 1px solid #ccc; text-align: center;
+            .table-container {
+                max-height: 400px; /* Limits height to ~10-12 rows */
+                overflow-y: auto;
+                overflow-x: hidden;
+                border: 1px solid #ccc;
+                width: fit-content;
+            }
+            .prod-table { 
+                width: auto !important; 
+                border-collapse: collapse; 
+            }
+            .prod-table thead th { 
+                position: sticky; 
+                top: 0; 
+                z-index: 10;
+                background-color: #f0f2f6; 
+                color: #000000 !important; 
+                font-weight: 900 !important; 
+                padding: 8px 15px !important; 
+                border: 1px solid #ccc; 
+                text-align: center;
             }
             .prod-table td { 
-                padding: 6px 15px !important; border: 1px solid #ccc; 
-                text-align: left; font-weight: bold; color: #000000;
+                padding: 6px 15px !important; 
+                border: 1px solid #ccc; 
+                text-align: left; 
+                font-weight: bold; 
+                color: #000000;
+                white-space: nowrap;
             }
         </style>
     """, unsafe_allow_html=True)
 
-    st.write(f"Showing the Sales Figure for **{selected_cat}** in **{selected_year}**")
-    
-    html = (
-        summary.style
-        .format({"TOTAL QTY SOLD": "{:,.0f}"})
-        .set_table_attributes('class="prod-table"')
-        .to_html(index=False)
-    )
-    st.write(html, unsafe_allow_html=True)
+    # ---------- 6. SIDE-BY-SIDE LAYOUT (TABLE & CHART) ----------
+    col_table, col_chart = st.columns([1, 1])
 
-    # ---------- 6. TOP 5 CHART ----------
-    st.markdown("---")
-    st.subheader(f"📊 Top 5 Products: {selected_cat} ({selected_year})")
-    
-    top_5 = summary.head(5).copy()
-    st.bar_chart(data=top_5, x="PRODUCT NAME", y="TOTAL QTY SOLD", color="#2e7d32")
+    with col_table:
+        st.write(f"**{selected_cat} Sales Table**")
+        html = (
+            summary.style
+            .format({"TOTAL QTY SOLD": "{:,.0f}"})
+            .set_table_attributes('class="prod-table"')
+            .to_html(index=False)
+        )
+        # Wrap the HTML in our scrollable container
+        st.write(f'<div class="table-container">{html}</div>', unsafe_allow_html=True)
+
+    with col_chart:
+        st.write(f"**Top 5 Performance Chart**")
+        top_5 = summary.head(5).copy()
+        st.bar_chart(data=top_5, x="PRODUCT NAME", y="TOTAL QTY SOLD", color="#2e7d32")
 
 else:
     st.info(f"No records found for {selected_cat} in {selected_year}.")
