@@ -47,24 +47,40 @@ def create_whatsapp_table(df_group, type_label="DELIVERY"):
     return table_text
 
 def get_delivery_alerts_list(is_test=False):
-    df = get_df("CRM") # Your existing sheet fetcher
-    # ... standard cleaning code here ...
+    # 1. Fetch raw DF
+    df = get_df("CRM") 
+    if df is None or df.empty: return []
+
+    # 2. Basic Header Cleaning
+    df.columns = [c.strip().upper() for c in df.columns]
     
-    # IMPORTANT: Group the data here so the alert includes all products
+    # 3. CRITICAL: Convert Date Column to Datetime before using it
+    df["CUSTOMER DELIVERY DATE (TO BE)"] = pd.to_datetime(
+        df["CUSTOMER DELIVERY DATE (TO BE)"], dayfirst=True, errors='coerce'
+    )
+    
+    # 4. Filter for Pending only
+    df = df[df["DELIVERY REMARKS"].astype(str).str.upper().str.strip() == "PENDING"]
+    df = df.dropna(subset=["CUSTOMER DELIVERY DATE (TO BE)"])
+
+    # 5. Group products so one customer gets one message
     group_cols = ["CUSTOMER NAME", "CONTACT NUMBER", "CUSTOMER DELIVERY DATE (TO BE)"]
-    df_grouped = df.groupby(group_cols).agg({
+    df_grouped = df.groupby(group_cols, as_index=False).agg({
         "PRODUCT NAME": lambda x: ", ".join(x.astype(str).unique())
-    }).reset_index()
+    })
 
     alerts = []
     for _, row in df_grouped.iterrows():
         name = row["CUSTOMER NAME"]
-        phone = row["CONTACT NUMBER"]
-        products = row["PRODUCT NAME"]
-        date_str = row["CUSTOMER DELIVERY DATE (TO BE)"].strftime('%d-%b-%Y')
+        phone = str(row["CONTACT NUMBER"])
+        prods = row["PRODUCT NAME"]
         
-        message = f"Hello {name}, your order for {products} is scheduled for delivery on {date_str}. Please be available."
-        alerts.append((name, phone, message))
+        # Safe Date formatting
+        d_obj = row["CUSTOMER DELIVERY DATE (TO BE)"]
+        d_str = d_obj.strftime('%d-%b-%Y') if pd.notnull(d_obj) else "Scheduled Date"
+        
+        msg = f"Hello {name}, your order for {prods} is scheduled for delivery on {d_str}. Kindly ensure someone is available."
+        alerts.append((name, phone, msg))
         
     return alerts
 
