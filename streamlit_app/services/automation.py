@@ -26,36 +26,60 @@ def generate_whatsapp_link(phone, message):
     encoded_msg = urllib.parse.quote(message)
     return f"https://wa.me/{phone}?text={encoded_msg}"
 
+# services/automation.py
+
 def get_delivery_alerts_list():
     """Returns a list of (phone, message) tuples for tomorrow's deliveries"""
     df = get_df("CRM")
     contacts = get_sales_team_contacts()
-    today = datetime.today().date()
-    target_date = today + timedelta(days=1)
+    
+    # 1. Standardize Today and Tomorrow
+    # We use .date() to remove any time-stamp interference
+    today = datetime.now().date()
+    target_date = today + timedelta(days=1) # This is 31-Mar-2026
     
     alerts = []
     
-    # Standardizing column names to match your app.py logic
+    # 2. Clean Column Names
     df.columns = [c.strip().upper() for c in df.columns]
+    date_col = "CUSTOMER DELIVERY DATE (TO BE)"
     
-    for _, row in df.iterrows():
-        try:
-            # Match the date format you use in app.py (%d-%m-%Y)
-            d_date = pd.to_datetime(row.get("CUSTOMER DELIVERY DATE (TO BE)"), format="%d-%m-%Y", errors='coerce').date()
-        except: continue
+    if date_col not in df.columns:
+        return []
 
-        if d_date == target_date and str(row.get("DELIVERY REMARKS")).upper() == "PENDING":
-            msg = f"🚚 *DELIVERY ALERT*\n\n*Customer:* {row.get('CUSTOMER NAME')}\n*Product:* {row.get('PRODUCT NAME')}\n*Order No:* {row.get('ORDER NO')}\n*Date:* {d_date}\n\n⚠️ Scheduled for tomorrow!"
+    # 3. Process Rows
+    for _, row in df.iterrows():
+        # Convert the row's date to a Python date object for comparison
+        raw_date = row.get(date_col)
+        try:
+            # We try the standard format used in your sheet
+            delivery_date = pd.to_datetime(raw_date, dayfirst=True, errors='coerce').date()
+        except:
+            continue
+
+        # 4. The Logic Check
+        # Check if Date matches Tomorrow AND Remarks is Pending
+        remarks = str(row.get("DELIVERY REMARKS", "")).strip().upper()
+        
+        if delivery_date == target_date and remarks == "PENDING":
+            customer = row.get("CUSTOMER NAME", "Customer")
+            product = row.get("PRODUCT NAME", "Godrej Product")
+            order_no = row.get("ORDER NO", "N/A")
             
-            # Add Salesperson
-            sp = str(row.get("SALES PERSON")).strip().lower()
+            msg = f"🚚 *DELIVERY ALERT*\n\n*Customer:* {customer}\n*Product:* {product}\n*Order No:* {order_no}\n*Date:* {delivery_date.strftime('%d-%b')}\n\n⚠️ Scheduled for tomorrow. Please confirm transport!"
+            
+            # Identify Salesperson
+            sp = str(row.get("SALES PERSON", "")).strip().lower()
+            
+            # Add to list if salesperson exists in contacts
             if sp in contacts:
                 alerts.append((contacts[sp], msg))
             
-            # Add Manager/Admin (Always CC these people)
-            for boss in ["shaktiman", "pritish", "swati"]:
+            # Always alert managers for tomorrow's deliveries
+            for boss in ["shaktiman", "pritish"]:
                 if boss in contacts:
                     alerts.append((contacts[boss], msg))
+                    
     return alerts
 
 def get_payment_alerts_list():
