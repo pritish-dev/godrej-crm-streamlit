@@ -258,43 +258,69 @@ m3.success(f"📦 Total: {len(pending)}")
 # -----------------------------
 st.subheader("💰 Payment Due")
 
-# FORCE CONVERSION: Ensure the column is datetime for this section too
+# 1. FORCE CONVERSION: Ensure the column is datetime for this section
 crm["CUSTOMER DELIVERY DATE (TO BE)"] = pd.to_datetime(
     crm["CUSTOMER DELIVERY DATE (TO BE)"], 
     format="%d-%m-%Y", 
     errors="coerce"
 )
 
+# 2. Calculate Pending Amount
 crm["PENDING AMOUNT"] = crm["ORDER AMOUNT"] - crm["ADV RECEIVED"]
 
-# Filter for rows where money is owed and date exists
+# 3. Filter for rows where money is owed and a delivery date exists
 due = crm[
     (crm["PENDING AMOUNT"] > 0) & 
     (crm["CUSTOMER DELIVERY DATE (TO BE)"].notna())
 ].copy()
 
+# 4. Sort by Delivery Date (Latest on top)
 due = due.sort_values(by="CUSTOMER DELIVERY DATE (TO BE)", ascending=False)
 
-# Metrics
-today_dt = datetime.now().date()
-overdue_p = due[due["CUSTOMER DELIVERY DATE (TO BE)"].dt.date < today_dt]
+# 5. Define the columns to display (THIS FIXES THE ERROR)
+payment_cols = [
+    "CUSTOMER NAME", 
+    "ORDER AMOUNT", 
+    "ADV RECEIVED", 
+    "PENDING AMOUNT", 
+    "CUSTOMER DELIVERY DATE (TO BE)", 
+    "SALES PERSON"
+]
 
-# Styling Function
+# 6. Metrics Logic
+today_dt = datetime.now().date()
+overdue_p_count = (due["CUSTOMER DELIVERY DATE (TO BE)"].dt.date < today_dt).sum()
+
+# 7. Styling Function
 def highlight_overdue_payment(row):
     if row["CUSTOMER DELIVERY DATE (TO BE)"].date() < today_dt:
         return ['background-color: #ffcccc; color: black'] * len(row)
     return [''] * len(row)
 
+# 8. Display Table
+# We use payment_cols here now that it is defined above
 styled_due = due[payment_cols].style.apply(highlight_overdue_payment, axis=1).format({
     "ORDER AMOUNT": "{:.2f}", 
     "ADV RECEIVED": "{:.2f}", 
-    "PENDING AMOUNT": "{:.2f}"
+    "PENDING AMOUNT": "{:.2f}",
+    "CUSTOMER DELIVERY DATE (TO BE)": lambda x: x.strftime('%d-%b-%Y')
 })
 
 st.dataframe(styled_due, use_container_width=True)
 
-# Metrics bar
+# 9. Metrics Bar
 p1, p2, p3 = st.columns(3)
-p1.error(f"🛑 Overdue: {len(overdue_p)}")
+p1.error(f"🛑 Overdue: {overdue_p_count}")
 p2.warning(f"⏳ Total Due: ₹{due['PENDING AMOUNT'].sum():,.2f}")
 p3.info(f"📈 Active Cases: {len(due)}")
+
+# WhatsApp Alerts Button
+if st.button("📲 Prepare Payment Alerts"):
+    alerts = get_payment_alerts_list()
+    if not alerts:
+        st.info("No payments due for delivery in 7 days.")
+    else:
+        st.write(f"Found {len(alerts)} alerts to send:")
+        for phone, msg in alerts:
+            link = generate_whatsapp_link(phone, msg)
+            st.link_button(f"Send to {phone}", link)
