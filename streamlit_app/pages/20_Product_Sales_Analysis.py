@@ -15,44 +15,31 @@ if crm_raw is None or crm_raw.empty:
 
 crm = crm_raw.copy()
 
-# --- STEP 1: Aggressive Header Cleaning ---
+# Force headers to Upper Case and Strip spaces
 crm.columns = [str(c).strip().upper() for c in crm.columns]
 
-# --- STEP 2: Fuzzy Column Mapping (Fixes the __getattr__ error) ---
-# This ensures that even if the column is named "PRODUCT CATEGORY", we find it.
-mapping = {
-    "CATEGORY": ["CATEGORY", "PRODUCT CATEGORY", "CAT"],
-    "PRODUCT NAME": ["PRODUCT NAME", "ITEM NAME", "PRODUCT"],
-    "QTY": ["QTY", "QUANTITY", "NOS"],
-    "DATE": ["DATE", "ORDER DATE"]
-}
+# --- THE PERMANENT FIX: SAFE COLUMN MAPPING ---
+def get_safe_column(df, target_name, alternates):
+    """Finds a column by name or alternates, otherwise creates a dummy."""
+    if target_name in df.columns:
+        return df[target_name]
+    for alt in alternates:
+        match = [c for c in df.columns if alt.upper() in c]
+        if match:
+            return df[match[0]]
+    # Fallback to avoid __getattr__ crash
+    return pd.Series(["UNKNOWN"] * len(df))
 
-for target, alternates in mapping.items():
-    if target not in crm.columns:
-        for alt in alternates:
-            match = [c for c in crm.columns if alt in c]
-            if match:
-                crm.rename(columns={match[0]: target}, inplace=True)
-                break
+# Map the columns safely
+crm["CATEGORY_CLEAN"] = get_safe_column(crm, "CATEGORY", ["PRODUCT CATEGORY", "CAT", "TYPE"]).astype(str).str.strip().upper()
+crm["PRODUCT_CLEAN"] = get_safe_column(crm, "PRODUCT NAME", ["ITEM", "PRODUCT", "NAME"]).astype(str).str.strip().upper()
+crm["QTY_CLEAN"] = pd.to_numeric(get_safe_column(crm, "QTY", ["QUANTITY", "NOS", "UNIT"]), errors='coerce').fillna(1)
+crm["DATE_CLEAN"] = pd.to_datetime(get_safe_column(crm, "DATE", ["ORDER DATE", "DT"]), dayfirst=True, errors='coerce')
 
-# Safety check: if columns are still missing, create them to prevent crash
-if "CATEGORY" not in crm.columns: crm["CATEGORY"] = "HOME STORAGE"
-if "QTY" not in crm.columns: crm["QTY"] = 1
-if "PRODUCT NAME" not in crm.columns: crm["PRODUCT NAME"] = "UNKNOWN"
+# Extract Year
+crm["YEAR"] = crm["DATE_CLEAN"].dt.year.fillna(0).astype(int)
 
-# ---------- 2. PRE-PROCESSING ----------
-# Ensure QTY is numeric
-crm["QTY"] = pd.to_numeric(crm["QTY"], errors="coerce").fillna(1)
-
-# Fix Dates and Year
-crm["DATE_DT"] = pd.to_datetime(crm["DATE"], dayfirst=True, errors="coerce")
-crm["YEAR"] = crm["DATE_DT"].dt.year.fillna(0).astype(int)
-
-# Clean Category and Product Names for filtering
-crm["CATEGORY"] = crm["CATEGORY"].astype(str).str.strip().upper()
-crm["PRODUCT NAME"] = crm["PRODUCT NAME"].astype(str).str.strip().upper()
-
-# ---------- 3. DYNAMIC FILTERS ----------
+# ---------- 2. DYNAMIC FILTERS ----------
 st.subheader("Filter Analysis")
 c1, c2, c3 = st.columns(3)
 
@@ -63,57 +50,49 @@ with c1:
     selected_year = st.selectbox("Select Year", options=available_years, index=default_idx)
 
 with c2:
+    # We only show the two categories you requested
     available_cats = ["HOME STORAGE", "HOME FURNITURE"]
     selected_cat = st.selectbox("Select Category", options=available_cats)
 
 with c3:
-    # Dependent Filter: Only show products from selected year and category
-    filtered_list = crm[(crm["YEAR"] == selected_year) & (crm["CATEGORY"] == selected_cat)]
-    product_options = ["ALL PRODUCTS"] + sorted(filtered_list["PRODUCT NAME"].unique().tolist())
+    # Filter list for the product dropdown based on Year + Category
+    dropdown_mask = (crm["YEAR"] == selected_year) & (crm["CATEGORY_CLEAN"] == selected_cat)
+    filtered_products = crm[dropdown_mask]["PRODUCT_CLEAN"].unique().tolist()
+    product_options = ["ALL PRODUCTS"] + sorted([p for p in filtered_products if p != "UNKNOWN"])
     selected_product = st.selectbox("Select Product", options=product_options)
 
-# ---------- 4. DATA CALCULATION ----------
-final_df = crm[(crm["YEAR"] == selected_year) & (crm["CATEGORY"] == selected_cat)]
+# ---------- 3. DATA CALCULATION ----------
+# Apply final filters to the dataframe
+mask = (crm["YEAR"] == selected_year) & (crm["CATEGORY_CLEAN"] == selected_cat)
+final_df = crm[mask].copy()
 
 if selected_product != "ALL PRODUCTS":
-    final_df = final_df[final_df["PRODUCT NAME"] == selected_product]
+    final_df = final_df[final_df["PRODUCT_CLEAN"] == selected_product]
 
-# Group by Product and sum Quantity
-product_summary = final_df.groupby("PRODUCT NAME")["QTY"].sum().reset_index()
-product_summary = product_summary.sort_values(by="QTY", ascending=False)
+# Grouping logic
+product_summary = final_df.groupby("PRODUCT_CLEAN")["QTY_CLEAN"].sum().reset_index()
+product_summary = product_summary.sort_values(by="QTY_CLEAN", ascending=False)
 product_summary.columns = ["PRODUCT NAME", "TOTAL QUANTITY SOLD"]
 
-# ---------- 5. STYLING & RENDERING ----------
-# Deep Black Bold Headers & Squeezed width
+# ---------- 4. STYLING & RENDERING ----------
 st.markdown("""
     <style>
-        .product-table {
-            width: auto !important;
-            border-collapse: collapse;
-            font-family: Arial, sans-serif;
+        .product-table { width: auto !important; border-collapse: collapse; }
+        .product-table th { 
+            background-color: #f0f2f6; color: #000000 !important; 
+            font-weight: 900 !important; padding: 8px 15px !important; 
+            border: 1px solid #ccc; text-align: center;
         }
-        .product-table th {
-            background-color: #f0f2f6;
-            color: #000000 !important;
-            font-weight: 900 !important;
-            padding: 8px 15px !important;
-            border: 1px solid #ccc;
-            text-align: center;
-        }
-        .product-table td {
-            padding: 6px 15px !important;
-            border: 1px solid #ccc;
-            text-align: left;
-            font-weight: bold;
-            color: #000000;
+        .product-table td { 
+            padding: 6px 15px !important; border: 1px solid #ccc; 
+            text-align: left; font-weight: bold; color: #000000;
         }
     </style>
 """, unsafe_allow_html=True)
 
 if not product_summary.empty:
-    st.write(f"### Product Sales for {selected_cat} in {selected_year}")
+    st.write(f"### Results for {selected_cat} in {selected_year}")
     
-    # Convert to HTML to apply custom "Squeezed" CSS class
     html_table = (
         product_summary.style
         .format({"TOTAL QUANTITY SOLD": "{:,.0f}"})
@@ -122,6 +101,8 @@ if not product_summary.empty:
     )
     st.write(html_table, unsafe_allow_html=True)
     
-    st.success(f"🏆 **Highest Selling Product:** {product_summary.iloc[0]['PRODUCT NAME']} ({product_summary.iloc[0]['TOTAL QUANTITY SOLD']} units)")
+    # Show Top Performer
+    top_row = product_summary.iloc[0]
+    st.success(f"🏆 **Top Selling Product:** {top_row['PRODUCT NAME']} ({top_row['TOTAL QUANTITY SOLD']} units)")
 else:
-    st.info("No data found for the chosen filters.")
+    st.info(f"No records found for {selected_cat} in {selected_year}.")
