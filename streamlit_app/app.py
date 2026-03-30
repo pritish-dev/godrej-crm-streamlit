@@ -97,13 +97,14 @@ c1, c2, c3 = st.columns(3)
 
 with c1:
     if st.button("🚀 Prepare Grouped Delivery Alerts", use_container_width=True):
-        alerts = get_delivery_alerts_list()
-        if not alerts:
+        # is_test=False for real tomorrow's data
+        alerts = get_delivery_alerts_list(is_test=False)
+        if not alerts: 
             st.info("No deliveries scheduled for tomorrow.")
         else:
             st.success(f"Generated {len(alerts)} grouped messages.")
-            for phone, msg in alerts:
-                st.link_button(f"Send Alert to {phone}", generate_whatsapp_link(phone, msg))
+            for label, phone, msg in alerts:
+                st.link_button(f"Send to {label}", generate_whatsapp_link(phone, msg))
 
 with c2:
     if st.button("💰 Prepare Payment Reminders", use_container_width=True):
@@ -115,15 +116,15 @@ with c2:
                 st.link_button(f"Remind {p}", generate_whatsapp_link(p, m))
 
 with c3:
-    # THE TEST BUTTON - Uses tabular format
-    if st.button("🧪 RUN TABULAR TEST ALERT", use_container_width=True, type="primary"):
-        tests = get_test_alerts_list()
+    if st.button("🧪 RUN TABULAR TEST RUN", use_container_width=True, type="primary"):
+        # is_test=True pulls a sample of current pending orders
+        tests = get_delivery_alerts_list(is_test=True)
         if not tests:
-            st.warning("No 'PENDING' orders found to test.")
+            st.warning("No 'PENDING' orders found in CRM to run a test.")
         else:
-            st.info(f"Test Mode: Displaying first 3 pending cases.")
-            for p, m in tests:
-                st.link_button(f"Test WhatsApp ({p})", generate_whatsapp_link(p, m))
+            st.info("🔧 Test Mode: Showing how grouped messages look.")
+            for label, phone, msg in tests:
+                st.link_button(f"Test Send to {label}", generate_whatsapp_link(phone, msg))
 
 # --- 5. PAYMENT DUE SECTION ---
 st.divider()
