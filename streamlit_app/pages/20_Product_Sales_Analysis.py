@@ -71,21 +71,25 @@ summary.columns = ["PRODUCT NAME", "TOTAL QTY SOLD"]
 
 # ---------- 4. TOP MESSAGE & EXCEL DOWNLOAD ----------
 if not summary.empty:
+    # 1. Success Message on Top
     top_row = summary.iloc[0]
     st.success(f"🏆 **Highest Sold:** {top_row['PRODUCT NAME']} ({int(top_row['TOTAL QTY SOLD'])} units)")
     
-    # Excel Download Logic
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        summary.to_excel(writer, index=False, sheet_name='ProductSales')
-    processed_data = output.getvalue()
-    
-    st.download_button(
-        label="📥 Download Report as Excel",
-        data=processed_data,
-        file_name=f"Product_Sales_{selected_cat}_{selected_year}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    # 2. Excel Download (Switched to openpyxl engine for compatibility)
+    try:
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            summary.to_excel(writer, index=False, sheet_name='ProductSales')
+        processed_data = output.getvalue()
+        
+        st.download_button(
+            label="📥 Download Report as Excel",
+            data=processed_data,
+            file_name=f"Product_Sales_{selected_cat}_{selected_year}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    except Exception as e:
+        st.error(f"Excel creation failed: {e}")
 
     # ---------- 5. STYLING & TABLE ----------
     st.markdown("""
@@ -117,8 +121,8 @@ if not summary.empty:
     st.markdown("---")
     st.subheader(f"📊 Top 5 Products: {selected_cat} ({selected_year})")
     
+    # Take only the top 5 for the chart
     top_5 = summary.head(5).copy()
-    # Streamlit native bar chart
     st.bar_chart(data=top_5, x="PRODUCT NAME", y="TOTAL QTY SOLD", color="#2e7d32")
 
 else:
