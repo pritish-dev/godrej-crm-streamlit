@@ -205,7 +205,24 @@ st.dataframe(styled_targets, use_container_width=True)
 
 
 
-# ... inside the Pending Deliveries section ...
+# -----------------------------
+
+# PENDING DELIVERY
+
+# -----------------------------
+
+st.subheader("🚚 Pending Deliveries")
+
+pending = crm[crm["DELIVERY REMARKS"].str.upper() == "PENDING"].copy()
+
+pending = pending.sort_values(by="CUSTOMER DELIVERY DATE (TO BE)")
+
+pending["CUSTOMER DELIVERY DATE (TO BE)"] = pending["CUSTOMER DELIVERY DATE (TO BE)"].apply(format_date)
+
+st.dataframe(pending[cols].style.format({"ORDER AMOUNT": "{:.2f}", "ADV RECEIVED": "{:.2f}"}), use_container_width=True)
+
+
+
 if st.button("📲 Prepare Delivery Alerts"):
     alerts = get_delivery_alerts_list()
     if not alerts:
@@ -216,7 +233,40 @@ if st.button("📲 Prepare Delivery Alerts"):
             link = generate_whatsapp_link(phone, msg)
             st.link_button(f"Send to {phone}", link)
 
-# ... inside the Payment Due section ...
+
+
+# -----------------------------
+
+# PAYMENT DUE
+
+# -----------------------------
+
+st.subheader("💰 Payment Due")
+
+crm["PENDING AMOUNT"] = crm["ORDER AMOUNT"] - crm["ADV RECEIVED"]
+
+due = crm[crm["PENDING AMOUNT"] > 0].copy()
+
+st.dataframe(due[[
+
+    "CUSTOMER NAME","ORDER AMOUNT","ADV RECEIVED",
+
+    "PENDING AMOUNT","CUSTOMER DELIVERY DATE (TO BE)",
+
+    "SALES PERSON"
+
+]].style.format({
+
+    "ORDER AMOUNT": "{:.2f}", 
+
+    "ADV RECEIVED": "{:.2f}", 
+
+    "PENDING AMOUNT": "{:.2f}"
+
+}), use_container_width=True)
+
+
+
 if st.button("📲 Prepare Payment Alerts"):
     alerts = get_payment_alerts_list()
     if not alerts:
