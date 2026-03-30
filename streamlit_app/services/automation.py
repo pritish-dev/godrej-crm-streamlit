@@ -126,3 +126,35 @@ def get_payment_alerts_list():
                 for phone in targets:
                     alerts.append((phone, msg))
     return alerts
+    
+# Add this to services/automation.py
+
+def get_test_alerts_list():
+    """Returns a list of alerts for the first 3 PENDING orders, ignoring the date"""
+    df = get_df("CRM")
+    contacts = get_sales_team_contacts()
+    alerts = []
+    
+    df.columns = [c.strip().upper() for c in df.columns]
+    
+    # Filter for any row that is PENDING, regardless of date
+    pending_df = df[df["DELIVERY REMARKS"].str.upper().str.strip() == "PENDING"].head(3)
+    
+    for _, row in pending_df.iterrows():
+        customer = row.get("CUSTOMER NAME", "Test Customer")
+        product = row.get("PRODUCT NAME", "Test Product")
+        delivery_date = row.get("CUSTOMER DELIVERY DATE (TO BE)", "No Date")
+        
+        msg = f"🧪 *TEST ALERT*\n\n*Customer:* {customer}\n*Product:* {product}\n*Target Date:* {delivery_date}\n\n✅ If you see this, your WhatsApp link is working!"
+        
+        sp = str(row.get("SALES PERSON", "")).strip().lower()
+        
+        # In test mode, we only send to the salesperson or 'pritish' to avoid spamming the whole team
+        targets = set()
+        if sp in contacts: targets.add(contacts[sp])
+        if "pritish" in contacts: targets.add(contacts["pritish"])
+
+        for phone in targets:
+            alerts.append((phone, msg))
+            
+    return alerts

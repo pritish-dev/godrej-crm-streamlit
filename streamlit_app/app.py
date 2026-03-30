@@ -4,7 +4,12 @@ from datetime import datetime
 from services.sheets import get_df
 import gspread
 from google.oauth2.service_account import Credentials
-from services.automation import get_delivery_alerts_list, get_payment_alerts_list, generate_whatsapp_link
+from services.automation import (
+    get_delivery_alerts_list, 
+    get_payment_alerts_list, 
+    generate_whatsapp_link,
+    get_test_alerts_list  # Add this one
+)
 
 st.set_page_config(layout="wide", page_title="Godrej CRM Dashboard")
 
@@ -274,16 +279,29 @@ m1.error(f"🚨 Overdue: {passed_mask.sum()}")
 m2.info(f"📅 Upcoming: {upcoming_mask.sum()}")
 m3.success(f"📦 Total Pending: {len(pending)}")
 
-# WhatsApp Alerts Button
-if st.button("📲 Prepare Delivery Alerts"):
-    alerts = get_delivery_alerts_list()
-    if not alerts:
-        st.info("No deliveries scheduled for tomorrow.")
-    else:
-        st.write(f"Found {len(alerts)} alerts to send:")
-        for phone, msg in alerts:
-            link = generate_whatsapp_link(phone, msg)
-            st.link_button(f"Send to {phone}", link)
+# --- Inside Pending Delivery Section in app.py ---
+
+col_btn1, col_btn2 = st.columns(2)
+
+with col_btn1:
+    if st.button("📲 Prepare Delivery Alerts"):
+        alerts = get_delivery_alerts_list()
+        if not alerts:
+            st.info("No deliveries scheduled for tomorrow.")
+        else:
+            st.write(f"Found {len(alerts)} alerts:")
+            for phone, msg in alerts:
+                st.link_button(f"Send to {phone}", generate_whatsapp_link(phone, msg))
+
+with col_btn2:
+    if st.button("🧪 Run Connection Test"):
+        test_alerts = get_test_alerts_list()
+        if not test_alerts:
+            st.warning("No 'PENDING' orders found in CRM to test with.")
+        else:
+            st.write("🔧 **Testing Mode:** Sending to first 3 pending orders.")
+            for phone, msg in test_alerts:
+                st.link_button(f"Test WhatsApp ({phone})", generate_whatsapp_link(phone, msg))
 
 
 
