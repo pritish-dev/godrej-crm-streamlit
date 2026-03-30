@@ -208,46 +208,82 @@ st.dataframe(styled_targets, use_container_width=True)
 # -----------------------------
 st.subheader("🚚 Pending Deliveries")
 
-# FORCE CONVERSION: Ensure the column is actually a datetime object
+# 1. FORCE CONVERSION: Ensure columns are datetime objects
 crm["CUSTOMER DELIVERY DATE (TO BE)"] = pd.to_datetime(
     crm["CUSTOMER DELIVERY DATE (TO BE)"], 
     format="%d-%m-%Y", 
     errors="coerce"
 )
+crm["DATE"] = pd.to_datetime(crm["DATE"], format="%d-%m-%Y", errors="coerce")
 
-# Filter: Status is PENDING and Date is NOT empty
+# 2. Filter: Status is PENDING and Delivery Date is NOT empty
 pending = crm[
     (crm["DELIVERY REMARKS"].str.upper() == "PENDING") & 
     (crm["CUSTOMER DELIVERY DATE (TO BE)"].notna())
 ].copy()
 
-# Sort by Date (Descending)
+# 3. Sort by Delivery Date (Descending - Latest on top)
 pending = pending.sort_values(by="CUSTOMER DELIVERY DATE (TO BE)", ascending=False)
 
-# Metrics calculation
+# 4. Define and Reorder Columns
+# Reordered as: Delivery Date (Left), Customer, Contact, Product, Order Amt, Adv, Sales Person, Purchase Date, Remarks
+pending_display_cols = [
+    "CUSTOMER DELIVERY DATE (TO BE)",
+    "CUSTOMER NAME",
+    "CONTACT NUMBER",
+    "PRODUCT NAME",
+    "ORDER AMOUNT",
+    "ADV RECEIVED",
+    "SALES PERSON",
+    "DATE",  # This is the Purchase/Order Date
+    "DELIVERY REMARKS"
+]
+
+# Create the display dataframe and rename columns
+df_pending_final = pending[pending_display_cols].copy()
+df_pending_final = df_pending_final.rename(columns={
+    "CUSTOMER DELIVERY DATE (TO BE)": "DELIVERY DATE",
+    "DATE": "PURCHASE DATE"
+})
+
+# 5. Metrics calculation
 today_dt = datetime.now().date()
 passed_mask = pending["CUSTOMER DELIVERY DATE (TO BE)"].dt.date < today_dt
 upcoming_mask = pending["CUSTOMER DELIVERY DATE (TO BE)"].dt.date >= today_dt
 
-# Styling Function
+# 6. Styling Function (Reference the original column name used for logic)
 def highlight_passed(row):
-    if row["CUSTOMER DELIVERY DATE (TO BE)"].date() < today_dt:
+    # We check the first column which is now our 'DELIVERY DATE'
+    if row["DELIVERY DATE"].date() < today_dt:
         return ['background-color: #ffcccc; color: black'] * len(row)
     return [''] * len(row)
 
-# Display Table
-styled_pending = pending[cols].style.apply(highlight_passed, axis=1).format({
+# 7. Display Table
+styled_pending = df_pending_final.style.apply(highlight_passed, axis=1).format({
     "ORDER AMOUNT": "{:.2f}", 
-    "ADV RECEIVED": "{:.2f}"
+    "ADV RECEIVED": "{:.2f}",
+    "DELIVERY DATE": lambda x: x.strftime('%d-%b-%Y'),
+    "PURCHASE DATE": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else ""
 })
 
 st.dataframe(styled_pending, use_container_width=True)
 
-# Summary Metrics
+# 8. Summary Metrics
 m1, m2, m3 = st.columns(3)
 m1.error(f"🚨 Overdue: {passed_mask.sum()}")
 m2.info(f"📅 Upcoming: {upcoming_mask.sum()}")
-m3.success(f"📦 Total: {len(pending)}")
+m3.success(f"📦 Total Pending: {len(pending)}")
+
+# WhatsApp Alerts Button
+if st.button("📲 Prepare Delivery Alerts"):
+    alerts = get_delivery_alerts_list()
+    if not alerts:
+        st.info("No deliveries scheduled for tomorrow.")
+    else:
+        st.write(f"Found {len(alerts)} alerts to send:")
+        for phone, msg in alerts:
+            link = generate_whatsapp_link(phone, msg)
+            st.link_button(f"Send to {phone}", link)
 
 
 
