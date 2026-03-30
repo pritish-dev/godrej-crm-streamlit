@@ -98,33 +98,27 @@ if not due.empty:
         "ORDER AMOUNT": "{:.2f}", "ADV RECEIVED": "{:.2f}", "PENDING AMOUNT": "{:.2f}", "DELIVERY DATE": lambda x: x.strftime('%d-%b-%Y')
     }), use_container_width=True)
 
-# --- WHATSAPP ACTION CENTER ---
+# --- 5. WHATSAPP ACTION CENTER ---
 st.divider()
-st.write("### 📲 WhatsApp Action Center")
-c1, c2, c3 = st.columns(3)
+st.subheader("📲 WhatsApp Action Center")
+st.info("Clicking a button will prepare messages for the Sales Person, Manager, and Yourself.")
+
+c1, c2 = st.columns(2)
 tday, tmrw = datetime.now().date(), datetime.now().date() + timedelta(days=1)
 
 with c1:
-    if st.button("🚀 Delivery (Green Only)", use_container_width=True):
-        alerts = get_delivery_alerts_list()
-        green_phones = pending[pending["DELIVERY DATE"].dt.date.isin([tday, tmrw])]["CONTACT NUMBER"].astype(str).tolist()
-        final = [a for a in alerts if str(a[1]) in green_phones]
-        if not final: st.warning("No Green records.")
-        for l, p, m in final: st.link_button(f"🚚 {l}", generate_whatsapp_link(p, m))
+    if st.button("🚀 Send Delivery Alerts (SP + Mgr + Me)", use_container_width=True):
+        all_alerts = get_delivery_alerts_list()
+        if not all_alerts:
+            st.warning("No pending deliveries found.")
+        else:
+            for label, phone, msg in all_alerts:
+                st.link_button(f"Send to {label}", generate_whatsapp_link(phone, msg))
 
 with c2:
-    if st.button("💰 Payment (Green Only)", use_container_width=True):
-        p_alerts = get_payment_alerts_list()
-        green_p_phones = due[due["DELIVERY DATE"].dt.date.isin([tday, tmrw])]["CONTACT NUMBER"].astype(str).tolist()
-        # Ensure we match SP or Manager alerts based on the customers that are green
-        # Here we show all generated alerts if they are valid
-        if not p_alerts: st.warning("No payments due.")
-        for lbl, p, m in p_alerts: st.link_button(f"💸 {lbl}", generate_whatsapp_link(p, m))
-
-with c3:
-    if st.button("🧪 Test (All Pending)", use_container_width=True):
-        tests = get_delivery_alerts_list(is_test=True)
-        for l, p, m in tests: 
-            with st.expander(f"Preview: {l}"):
-                st.text(m)
-                st.link_button(f"Send Test", generate_whatsapp_link(p, m))
+    if st.button("🧪 Test Full List", use_container_width=True):
+        tests = get_delivery_alerts_list()
+        for label, phone, msg in tests:
+            with st.expander(f"Preview for {label}"):
+                st.text(msg)
+                st.link_button("Open WhatsApp", generate_whatsapp_link(phone, msg))
