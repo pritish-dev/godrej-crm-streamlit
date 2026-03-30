@@ -4,7 +4,7 @@ from datetime import datetime
 from services.sheets import get_df
 import altair as alt
 
-st.set_page_config(page_title="Product Sales Analysis", layout="wide")
+st.set_page_config(page_title="Product Sales Performance", layout="wide")
 st.title("📦 Product Sales Performance")
 
 # ---------- 1. DATA LOADING ----------
@@ -25,13 +25,15 @@ def get_cleaned_list(df, col_name, default="UNKNOWN"):
 
 crm['WORK_CAT'] = get_cleaned_list(crm, "CATEGORY", "UNKNOWN")
 crm['WORK_PROD_RAW'] = get_cleaned_list(crm, "PRODUCT NAME", "UNKNOWN")
-crm['CUSTOMER_NAME'] = get_cleaned_list(crm, "CUSTOMER NAMECONTACT NUMBER", "GUEST") # Adjusted for merged header if applicable
+# Using the specific merged header from your sheet
+crm['CUSTOMER_NAME'] = get_cleaned_list(crm, "CUSTOMER NAMECONTACT NUMBER", "GUEST")
 
-# --- MODULAR PRODUCT UNIFICATION ---
+# --- MODULAR PRODUCT UNIFICATION (ANYTHING STARTING WITH 'KRE') ---
 def unify_modular(name):
-    name = str(name).upper()
-    if "KREATION X3" in name: return "KREATION X3 (MODULAR)"
-    if "KREATION X2" in name: return "KREATION X2 (MODULAR)"
+    name = str(name).upper().strip()
+    # Broad check: If it starts with KRE, it's a modular Kreation unit
+    if name.startswith("KRE"):
+        return "KREATION (MODULAR)"
     return name
 
 crm['WORK_PROD'] = [unify_modular(x) for x in crm['WORK_PROD_RAW']]
@@ -76,11 +78,11 @@ def get_summary_df(df):
     data = []
     for p_name in df['WORK_PROD'].unique():
         sub = df[df['WORK_PROD'] == p_name]
-        if "MODULAR" in p_name:
-            # Count 1 per unique customer
-            val = sub['CUSTOMER_NAME'].nunique()
+        if "KREATION" in p_name:
+            # 1 PER UNIQUE CUSTOMER for anything grouped as Kreation
+            val = int(sub['CUSTOMER_NAME'].nunique())
         else:
-            # Sum total quantity
+            # SUM TOTAL QUANTITY for standard items
             val = int(sub['WORK_QTY'].sum())
         data.append({"PRODUCT NAME": p_name, "TOTAL QTY SOLD": val})
     return pd.DataFrame(data)
@@ -139,7 +141,7 @@ if not summary.empty:
             <div style="background-color:#f0f2f6; padding:20px; border-radius:10px; border: 2px solid #1b5e20; text-align:center;">
                 <h4 style="color:#333; margin:0;">Total Units Sold</h4>
                 <p style="color:#1b5e20; font-size:40px; font-weight:900; margin:10px 0;">{total_cat_units:,}</p>
-                <p style="color:#666; font-size:12px;">Modular items = 1 per client</p>
+                <p style="color:#666; font-size:12px;">(KRE Prefix = 1 unit per client)</p>
             </div>
         """, unsafe_allow_html=True)
 else:
