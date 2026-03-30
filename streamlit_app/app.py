@@ -89,10 +89,35 @@ if not pending.empty:
 else:
     st.info("No pending deliveries found.")
 
-# --- 4. WHATSAPP ACTION CENTER ---
-st.write("### 📲 WhatsApp Action Center")
-st.caption("Grouped alerts will include Manager Shaktiman and Swati for every message.")
-c1, c2, c3 = st.columns(3)
+# --- CLEANER WHATSAPP ACTION CENTER ---
+st.divider()
+st.subheader("📲 WhatsApp Action Center")
+st.info("Click a Salesperson below to see and send their grouped delivery alerts.")
+
+# Fetch the alerts (is_test=False for real data)
+alerts = get_delivery_alerts_list(is_test=False)
+
+if not alerts:
+    st.info("No deliveries scheduled for tomorrow (31-Mar-2026).")
+else:
+    # We group the alerts by the person's name (the first part of the label)
+    # This keeps the UI clean
+    unique_salespeople = sorted(list(set([a[0].split(' (')[0] for a in alerts if "Manager" not in a[0] and "Swati" not in a[0]])))
+
+    for sp in unique_salespeople:
+        with st.expander(f"👤 Alerts for {sp}"):
+            # Find the specific alerts for this SP, Shaktiman, and Swati
+            sp_alerts = [a for a in alerts if sp in a[0] or "Manager" in a[0] or "Swati" in a[0]]
+            
+            # Layout the 3 buttons side-by-side
+            cols = st.columns(3)
+            for i, (label, phone, msg) in enumerate(sp_alerts):
+                with cols[i % 3]:
+                    st.link_button(f"Send to {label.split(' (')[0]}", generate_whatsapp_link(phone, msg), use_container_width=True)
+            
+            # Preview of the message being sent
+            st.caption("📝 **Message Preview:**")
+            st.code(sp_alerts[0][2], language="markdown")
 
 with c1:
     if st.button("🚀 Prepare Grouped Delivery Alerts", use_container_width=True):

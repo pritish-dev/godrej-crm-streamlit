@@ -129,7 +129,11 @@ def get_payment_alerts_list():
     return alerts
 
 def generate_whatsapp_link(phone, message):
-    """Generates the link specifically for WhatsApp Web direct messaging"""
+    """
+    Cleaner redirection logic. 
+    Using api.whatsapp.com works more reliably across both Mobile and Desktop 
+    to trigger the 'click to chat' feature with the message pre-filled.
+    """
     encoded_msg = urllib.parse.quote(message)
-    # Using 'web.whatsapp.com/send' instead of 'wa.me' for better desktop behavior
-    return f"https://web.whatsapp.com/send?phone={phone}&text={encoded_msg}"
+    # This universal link format is the most 'stable' across all devices
+    return f"https://api.whatsapp.com/send?phone={phone}&text={encoded_msg}"
