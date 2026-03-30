@@ -5,6 +5,7 @@ from services.sheets import get_df
 from services.automation import send_delivery_alerts, send_payment_alerts
 import gspread
 from google.oauth2.service_account import Credentials
+from services.automation import get_delivery_alerts_list, get_payment_alerts_list, generate_whatsapp_link
 
 st.set_page_config(layout="wide", page_title="Godrej CRM Dashboard")
 
@@ -203,7 +204,7 @@ styled_targets = df_targets.style.apply(highlight, axis=1).format({
 })
 st.dataframe(styled_targets, use_container_width=True)
 
-from services.automation import get_delivery_alerts_list, get_payment_alerts_list, generate_whatsapp_link
+
 
 # ... inside the Pending Deliveries section ...
 if st.button("📲 Prepare Delivery Alerts"):
