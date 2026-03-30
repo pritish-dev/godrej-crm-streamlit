@@ -53,10 +53,6 @@ def create_whatsapp_table(df_group, type_label="DELIVERY"):
     return table_text
 
 def get_delivery_alerts_list(is_test=False):
-    """
-    Groups deliveries by Salesperson. 
-    If is_test=True, it takes ALL pending orders regardless of date to show you a sample.
-    """
     df = get_df("CRM")
     contacts = get_sales_team_contacts()
     IST = pytz.timezone('Asia/Kolkata')
@@ -66,43 +62,70 @@ def get_delivery_alerts_list(is_test=False):
     df["DATE"] = pd.to_datetime(df["DATE"], dayfirst=True, errors='coerce')
     
     if is_test:
-        # Test mode: just get the first 5 pending orders to demonstrate grouping
         mask = (df["DELIVERY REMARKS"].str.upper().str.strip() == "PENDING")
         display_label = "TEST RUN"
-        tomorrow_df = df[mask].head(10).copy() 
+        alert_df = df[mask].head(10).copy() 
     else:
-        # Real mode: Tomorrow's date only
         target_date = datetime.now(IST).date() + timedelta(days=1)
         mask = (df["DELIVERY REMARKS"].str.upper().str.strip() == "PENDING") & \
                (df["CUSTOMER DELIVERY DATE (TO BE)"].dt.date == target_date)
         display_label = "DAILY ALERT"
-        tomorrow_df = df[mask].copy()
+        alert_df = df[mask].copy()
     
-    if tomorrow_df.empty: return []
+    if alert_df.empty: return []
 
     alerts = []
-    for sp_name, group in tomorrow_df.groupby("SALES PERSON"):
+    for sp_name, group in alert_df.groupby("SALES PERSON"):
         sp_name_clean = str(sp_name).strip().lower()
-        table_msg = create_whatsapp_table(group)
+        table_msg = create_whatsapp_table(group, type_label="DELIVERY")
+        final_msg = f"🚚 *{display_label}*\n\nHello {sp_name.title()},\n\nBelow are the pending deliveries to be scheduled:\n\n{table_msg}\n⚠️ Confirm transport for these orders!"
         
-        final_msg = f"🚚 *{display_label}*\n\nHello {sp_name.title()},\n\nBelow are the pending deliveries that need to be scheduled:\n\n{table_msg}\n⚠️ Please confirm transport for these orders!"
-        
-        # Recipients: Sales Person + Shaktiman + Me (Swati)
-        recipients = set()
-        # 1. The Salesperson
-        if sp_name_clean in contacts: 
-            recipients.add((sp_name.title(), contacts[sp_name_clean]))
-        
-        # 2. Manager Shaktiman
-        if "shaktiman" in contacts: 
-            recipients.add(("Manager Shaktiman", contacts["shaktiman"]))
-        
-        # 3. Me (Swati - Hardcoded as requested)
-        recipients.add(("Swati (Admin)", MY_NUMBER))
+        recipients = [
+            (sp_name.title(), contacts.get(sp_name_clean)),
+            ("Manager Shaktiman", contacts.get("shaktiman")),
+            ("Swati (Admin)", MY_NUMBER)
+        ]
 
         for label, phone in recipients:
-            alerts.append((f"{label} ({phone})", phone, final_msg))
-            
+            if phone:
+                alerts.append((f"{label} ({phone})", phone, final_msg))
+    return alerts
+
+def get_payment_alerts_list():
+    """Groups payment reminders for deliveries happening in 7 days"""
+    df = get_df("CRM")
+    contacts = get_sales_team_contacts()
+    IST = pytz.timezone('Asia/Kolkata')
+    target_date = datetime.now(IST).date() + timedelta(days=7)
+    
+    df.columns = [c.strip().upper() for c in df.columns]
+    df["CUSTOMER DELIVERY DATE (TO BE)"] = pd.to_datetime(df["CUSTOMER DELIVERY DATE (TO BE)"], dayfirst=True, errors='coerce')
+    df["DATE"] = pd.to_datetime(df["DATE"], dayfirst=True, errors='coerce')
+    
+    # Filter: Has Pending Amount AND Delivery is in 7 days
+    df["TEMP_DUE"] = pd.to_numeric(df["ORDER AMOUNT"].astype(str).str.replace(r'[₹,]', '', regex=True), errors='coerce').fillna(0) - \
+                     pd.to_numeric(df["ADV RECEIVED"].astype(str).str.replace(r'[₹,]', '', regex=True), errors='coerce').fillna(0)
+    
+    mask = (df["TEMP_DUE"] > 0) & (df["CUSTOMER DELIVERY DATE (TO BE)"].dt.date == target_date)
+    pay_df = df[mask].copy()
+    
+    if pay_df.empty: return []
+
+    alerts = []
+    for sp_name, group in pay_df.groupby("SALES PERSON"):
+        sp_name_clean = str(sp_name).strip().lower()
+        table_msg = create_whatsapp_table(group, type_label="PAYMENT")
+        final_msg = f"💰 *PAYMENT REMINDER*\n\nHello {sp_name.title()},\n\nBelow are orders with pending payments due for delivery in 7 days:\n\n{table_msg}\n⚠️ Please follow up for balance payments!"
+        
+        recipients = [
+            (sp_name.title(), contacts.get(sp_name_clean)),
+            ("Manager Shaktiman", contacts.get("shaktiman")),
+            ("Swati (Admin)", MY_NUMBER)
+        ]
+
+        for label, phone in recipients:
+            if phone:
+                alerts.append((f"{label} ({phone})", phone, final_msg))
     return alerts
 
 def generate_whatsapp_link(phone, message):
