@@ -1,7 +1,6 @@
 import sys
 import os
 import pandas as pd
-import numpy as np
 from datetime import datetime, timedelta
 
 # --- CRITICAL PATH FIX ---
@@ -44,25 +43,32 @@ if crm.empty:
     st.error("Could not load CRM data. Please check your Google Sheet connection.")
     st.stop()
 
+# --- 2. ALL ORDERS (RESTORED) ---
+st.subheader("📋 All Sales Records (Full History)")
+all_cols = ["DATE", "CUSTOMER NAME", "CONTACT NUMBER", "PRODUCT NAME", "ORDER AMOUNT", "ADV RECEIVED", "SALES PERSON", "CUSTOMER DELIVERY DATE (TO BE)", "DELIVERY REMARKS"]
+st.dataframe(crm[all_cols].style.format({
+    "ORDER AMOUNT": "{:.2f}", "ADV RECEIVED": "{:.2f}",
+    "DATE": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else "",
+    "CUSTOMER DELIVERY DATE (TO BE)": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else ""
+}), use_container_width=True)
+
 # Helper for Grouping
 def group_records(df, is_payment=False):
-    group_cols = ["CUSTOMER NAME", "CONTACT NUMBER", "SALES PERSON"]
+    group_cols = ["CUSTOMER NAME", "CONTACT NUMBER", "SALES PERSON", "CUSTOMER DELIVERY DATE (TO BE)"]
     if not is_payment:
         group_cols.append("DATE") # Purchase Date
-    group_cols.append("CUSTOMER DELIVERY DATE (TO BE)")
     
     agg_dict = {
-        "PRODUCT NAME": lambda x: ", ".join(x.unique()),
+        "PRODUCT NAME": lambda x: ", ".join(x.astype(str).unique()),
         "ORDER AMOUNT": "sum",
         "ADV RECEIVED": "sum"
     }
     return df.groupby(group_cols, as_index=False).agg(agg_dict)
 
-# Helper for Custom Sorting (Upcoming first, Overdue last)
+# Helper for Custom Sorting (Upcoming Green first, Overdue Red last)
 def sort_by_delivery_proximity(df, date_col):
     today = pd.Timestamp(datetime.now().date())
     df['is_overdue'] = df[date_col] < today
-    # Sort: Overdue (False < True, so False/Future comes first), then by date
     df = df.sort_values(by=['is_overdue', date_col], ascending=[True, True])
     return df.drop(columns=['is_overdue'])
 
@@ -70,15 +76,14 @@ def sort_by_delivery_proximity(df, date_col):
 def style_crm_rows(row, date_col):
     today = datetime.now().date()
     delivery_date = row[date_col].date() if pd.notnull(row[date_col]) else None
-    
     if delivery_date:
         if delivery_date < today:
-            return ['background-color: #ffcccc; color: black'] * len(row) # Red for Overdue
+            return ['background-color: #ffcccc; color: black'] * len(row) # Red
         elif delivery_date == today or delivery_date == today + timedelta(days=1):
-            return ['background-color: #c8e6c9; color: black'] * len(row) # Green for Nearest
+            return ['background-color: #c8e6c9; color: black'] * len(row) # Green
     return [''] * len(row)
 
-# --- 2. PENDING DELIVERY SECTION ---
+# --- 3. PENDING DELIVERY SECTION ---
 st.divider()
 st.subheader("🚚 Pending Deliveries")
 
@@ -90,7 +95,10 @@ if not pending_raw.empty:
     pending = pending.rename(columns={"CUSTOMER DELIVERY DATE (TO BE)": "DELIVERY DATE", "DATE": "PURCHASE DATE"})
     pending = sort_by_delivery_proximity(pending, "DELIVERY DATE")
 
-    st.dataframe(pending.style.apply(style_crm_rows, date_col="DELIVERY DATE", axis=1).format({
+    # Column Ordering: Delivery Date 1st
+    pend_cols_ordered = ["DELIVERY DATE", "CUSTOMER NAME", "CONTACT NUMBER", "PRODUCT NAME", "ORDER AMOUNT", "ADV RECEIVED", "SALES PERSON", "PURCHASE DATE"]
+    
+    st.dataframe(pending[pend_cols_ordered].style.apply(style_crm_rows, date_col="DELIVERY DATE", axis=1).format({
         "ORDER AMOUNT": "{:.2f}", "ADV RECEIVED": "{:.2f}",
         "DELIVERY DATE": lambda x: x.strftime('%d-%b-%Y'),
         "PURCHASE DATE": lambda x: x.strftime('%d-%b-%Y')
@@ -101,17 +109,15 @@ if not pending_raw.empty:
     tmrw_dt = today_dt + timedelta(days=1)
     overdue_count = len(pending[pending["DELIVERY DATE"].dt.date < today_dt])
     tmrw_count = len(pending[pending["DELIVERY DATE"].dt.date == tmrw_dt])
-    today_count = len(pending[pending["DELIVERY DATE"].dt.date == today_dt])
-
-    m1, m2, m3, m4 = st.columns(4)
+    
+    m1, m2, m3 = st.columns(3)
     m1.metric("Total Pending", len(pending))
-    m2.metric("For Tomorrow", tmrw_count)
-    m3.metric("Due Today", today_count)
-    m4.metric("Overdue (Missed)", overdue_count, delta_color="inverse", delta=f"{overdue_count} orders")
+    m2.metric("Deliveries Tomorrow", tmrw_count)
+    m3.metric("Missed (Overdue)", overdue_count, delta_color="inverse", delta=f"{overdue_count} orders")
 else:
     st.info("No pending deliveries.")
 
-# --- 3. PAYMENT DUE SECTION ---
+# --- 4. PAYMENT DUE SECTION ---
 st.divider()
 st.subheader("💰 Payment Due")
 
@@ -124,58 +130,38 @@ if not due_raw.empty:
     due = due.rename(columns={"CUSTOMER DELIVERY DATE (TO BE)": "DELIVERY DATE"})
     due = sort_by_delivery_proximity(due, "DELIVERY DATE")
 
-    st.dataframe(due.style.apply(style_crm_rows, date_col="DELIVERY DATE", axis=1).format({
+    # Column Ordering: Delivery Date 1st
+    due_cols_ordered = ["DELIVERY DATE", "CUSTOMER NAME", "CONTACT NUMBER", "ORDER AMOUNT", "ADV RECEIVED", "PENDING AMOUNT", "SALES PERSON"]
+
+    st.dataframe(due[due_cols_ordered].style.apply(style_crm_rows, date_col="DELIVERY DATE", axis=1).format({
         "ORDER AMOUNT": "{:.2f}", "ADV RECEIVED": "{:.2f}", "PENDING AMOUNT": "{:.2f}",
         "DELIVERY DATE": lambda x: x.strftime('%d-%b-%Y')
     }), use_container_width=True)
 
-    # Metrics
-    total_due = due["PENDING AMOUNT"].sum()
-    overdue_payment_count = len(due[due["DELIVERY DATE"].dt.date < today_dt])
-    
-    p1, p2, p3 = st.columns(3)
-    p1.metric("Total Outstanding", f"₹{total_due:,.2f}")
-    p2.metric("Customers with Dues", len(due))
-    p3.metric("Overdue Payments", overdue_payment_count)
-else:
-    st.info("No outstanding payments.")
+    p1, p2 = st.columns(2)
+    p1.metric("Total Outstanding", f"₹{due['PENDING AMOUNT'].sum():,.2f}")
+    p2.metric("Pending Customers", len(due))
 
-# --- 4. WHATSAPP ACTION CENTER ---
+# --- 5. WHATSAPP ACTION CENTER ---
 st.divider()
 st.write("### 📲 WhatsApp Action Center")
-st.caption("Green alerts prioritize upcoming/immediate deliveries.")
-c1, c2, c3 = st.columns(3)
+c1, c2 = st.columns(2)
 
 with c1:
-    if st.button("🚀 Prepare Delivery Alerts (Upcoming)", use_container_width=True):
-        # We filter the pending list for Green records (Today/Tomorrow)
-        target_dates = [today_dt, today_dt + timedelta(days=1)]
-        upcoming_customers = pending[pending["DELIVERY DATE"].dt.date.isin(target_dates)]
+    if st.button("🚀 Send Delivery Reminders (Green Only)", use_container_width=True):
+        # Only trigger for Today or Tomorrow
+        today_val = datetime.now().date()
+        tmrw_val = today_val + timedelta(days=1)
         
-        if upcoming_customers.empty:
-            st.info("No immediate (Green) deliveries scheduled.")
-        else:
-            alerts = get_delivery_alerts_list(is_test=False) 
-            # Note: We filter existing alerts to only those in our 'upcoming' group
-            valid_phones = upcoming_customers["CONTACT NUMBER"].astype(str).tolist()
-            filtered_alerts = [a for a in alerts if str(a[1]) in valid_phones]
-            
-            st.success(f"Found {len(filtered_alerts)} immediate alerts.")
-            for label, phone, msg in filtered_alerts:
-                st.link_button(f"Send to {label}", generate_whatsapp_link(phone, msg))
-
-with c2:
-    if st.button("💰 Prepare Payment Reminders", use_container_width=True):
-        pay_alerts = get_payment_alerts_list()
-        if not pay_alerts:
-            st.info("No payments due soon.")
-        else:
-            for p, m in pay_alerts:
-                st.link_button(f"Remind {p}", generate_whatsapp_link(p, m))
-
-with c3:
-    # Full list for testing purposes
-    if st.button("🧪 TEST ALL PENDING", use_container_width=True, type="secondary"):
-        tests = get_delivery_alerts_list(is_test=True)
-        for label, phone, msg in tests:
-            st.link_button(f"Test {label}", generate_whatsapp_link(phone, msg))
+        # We call the automation service
+        alerts = get_delivery_alerts_list(is_test=False)
+        
+        # Cross-reference with our 'Green' list from the dataframe
+        green_phones = pending[pending["DELIVERY DATE"].dt.date.isin([today_val, tmrw_val])]["CONTACT NUMBER"].astype(str).tolist()
+        
+        final_alerts = [a for a in alerts if str(a[1]) in green_phones]
+        
+        if not final_alerts:
+            st.warning("No Green (Today/Tomorrow) records found to alert.")
+        for label, phone, msg in final_alerts:
+            st.link_button(f"Message {label}", generate_whatsapp_link(phone, msg))

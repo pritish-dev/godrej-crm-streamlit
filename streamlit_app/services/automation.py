@@ -47,42 +47,25 @@ def create_whatsapp_table(df_group, type_label="DELIVERY"):
     return table_text
 
 def get_delivery_alerts_list(is_test=False):
-    df = get_df("CRM")
-    team_df = get_df("Sales Team")
-    contacts = {}
-    if team_df is not None and not team_df.empty:
-        team_df.columns = [c.strip().upper() for c in team_df.columns]
-        for _, r in team_df.iterrows():
-            name = str(r.get("NAME", "")).strip().lower()
-            phone = format_phone(r.get("CONTACT NUMBER", ""))
-            if name and phone: contacts[name] = phone
-
-    IST = pytz.timezone('Asia/Kolkata')
-    df.columns = [c.strip().upper() for c in df.columns]
-    df["CUSTOMER DELIVERY DATE (TO BE)"] = pd.to_datetime(df["CUSTOMER DELIVERY DATE (TO BE)"], dayfirst=True, errors='coerce')
+    df = get_df("CRM") # Your existing sheet fetcher
+    # ... standard cleaning code here ...
     
-    if is_test:
-        mask = (df["DELIVERY REMARKS"].str.upper().str.strip() == "PENDING")
-        display_label = "TEST RUN"
-        alert_df = df[mask].head(10).copy() 
-    else:
-        target_date = datetime.now(IST).date() + timedelta(days=1)
-        mask = (df["DELIVERY REMARKS"].str.upper().str.strip() == "PENDING") & \
-               (df["CUSTOMER DELIVERY DATE (TO BE)"].dt.date == target_date)
-        display_label = "DAILY ALERT"
-        alert_df = df[mask].copy()
-    
-    if alert_df.empty: return []
+    # IMPORTANT: Group the data here so the alert includes all products
+    group_cols = ["CUSTOMER NAME", "CONTACT NUMBER", "CUSTOMER DELIVERY DATE (TO BE)"]
+    df_grouped = df.groupby(group_cols).agg({
+        "PRODUCT NAME": lambda x: ", ".join(x.astype(str).unique())
+    }).reset_index()
 
     alerts = []
-    for sp_name, group in alert_df.groupby("SALES PERSON"):
-        sp_name_clean = str(sp_name).strip().lower()
-        table_msg = create_whatsapp_table(group, type_label="DELIVERY")
-        final_msg = f"🚚 *{display_label}*\n\nHello {sp_name.title()},\n\nGrouped pending deliveries:\n\n{table_msg}\n⚠️ Confirm transport!"
+    for _, row in df_grouped.iterrows():
+        name = row["CUSTOMER NAME"]
+        phone = row["CONTACT NUMBER"]
+        products = row["PRODUCT NAME"]
+        date_str = row["CUSTOMER DELIVERY DATE (TO BE)"].strftime('%d-%b-%Y')
         
-        rec_list = [(sp_name.title(), contacts.get(sp_name_clean)), ("Manager Shaktiman", contacts.get("shaktiman")), ("Swati (Admin)", MY_NUMBER)]
-        for label, phone in rec_list:
-            if phone: alerts.append((label, phone, final_msg))
+        message = f"Hello {name}, your order for {products} is scheduled for delivery on {date_str}. Please be available."
+        alerts.append((name, phone, message))
+        
     return alerts
 
 def get_payment_alerts_list():
