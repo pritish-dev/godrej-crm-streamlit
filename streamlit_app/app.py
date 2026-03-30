@@ -1,10 +1,18 @@
+import sys
+import os
+
+# Get the directory of the current file (app.py)
+current_dir = os.path.dirname(os.path.abspath(__file__))
+# Get the root directory (one level up from streamlit_app/)
+root_dir = os.path.dirname(current_dir)
+
+# Add the root directory to the python path so it can see 'services'
+if root_dir not in sys.path:
+    sys.path.append(root_dir)
+
+# NOW you can do your imports
 import streamlit as st
 import pandas as pd
-from datetime import datetime
-import gspread
-from google.oauth2.service_account import Credentials
-
-# Import the automation and sheet functions
 from services.sheets import get_df
 from services.automation import (
     get_delivery_alerts_list, 
