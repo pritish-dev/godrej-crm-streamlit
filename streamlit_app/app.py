@@ -96,14 +96,14 @@ c1, c2, c3 = st.columns(3)
 
 with c1:
     if st.button("🚀 Prepare Grouped Delivery Alerts", use_container_width=True):
-        # is_test=False for real tomorrow's data
         alerts = get_delivery_alerts_list(is_test=False)
-        if not alerts: 
+        if not alerts:
             st.info("No deliveries scheduled for tomorrow.")
         else:
-            st.success(f"Generated {len(alerts)} grouped messages.")
+            st.success(f"Generated {len(alerts)} grouped alerts.")
             for label, phone, msg in alerts:
-                st.link_button(f"Send to {label}", generate_whatsapp_link(phone, msg))
+                # This opens WhatsApp Web directly in a new tab
+                st.link_button(f"Open Chat with {label}", generate_whatsapp_link(phone, msg))
 
 with c2:
     if st.button("💰 Prepare Payment Reminders", use_container_width=True):

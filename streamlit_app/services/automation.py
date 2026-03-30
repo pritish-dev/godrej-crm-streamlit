@@ -83,7 +83,7 @@ def get_delivery_alerts_list(is_test=False):
         recipients = [
             (sp_name.title(), contacts.get(sp_name_clean)),
             ("Manager Shaktiman", contacts.get("shaktiman")),
-            ("Swati (Admin)", MY_NUMBER)
+            ("Pritish (Admin)", MY_NUMBER)
         ]
 
         for label, phone in recipients:
@@ -129,5 +129,7 @@ def get_payment_alerts_list():
     return alerts
 
 def generate_whatsapp_link(phone, message):
+    """Generates the link specifically for WhatsApp Web direct messaging"""
     encoded_msg = urllib.parse.quote(message)
-    return f"https://wa.me/{phone}?text={encoded_msg}"
+    # Using 'web.whatsapp.com/send' instead of 'wa.me' for better desktop behavior
+    return f"https://web.whatsapp.com/send?phone={phone}&text={encoded_msg}"
