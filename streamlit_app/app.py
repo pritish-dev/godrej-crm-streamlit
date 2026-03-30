@@ -8,39 +8,7 @@ from google.oauth2.service_account import Credentials
 
 st.set_page_config(layout="wide", page_title="Godrej CRM Dashboard")
 
-# -----------------------------
-# 🔐 ADMIN AUTHENTICATION SYSTEM
-# -----------------------------
-if "admin_logged_in" not in st.session_state:
-    st.session_state.admin_logged_in = False
-
-st.sidebar.title("🔐 Admin Access")
-if not st.session_state.admin_logged_in:
-    admin_password = st.sidebar.text_input("Enter Admin Password", type="password")
-    if st.sidebar.button("Login"):
-        if admin_password == "Godrej123": # <--- CHANGE YOUR PASSWORD HERE
-            st.session_state.admin_logged_in = True
-            st.rerun()
-        else:
-            st.sidebar.error("Incorrect Password")
-else:
-    st.sidebar.success("Logged in as Admin")
-    if st.sidebar.button("Logout"):
-        st.session_state.admin_logged_in = False
-        st.rerun()
-
-# -----------------------------
-# 🛑 ACCESS CONTROL CHECK
-# -----------------------------
-if not st.session_state.admin_logged_in:
-    st.title("📊 Godrej Sales Portal")
-    st.info("Welcome! Please use the sidebar to navigate to **Daily Sales** or **Sales Insights**. Admin features are hidden.")
-    st.stop() # Stops the script here for non-admins
-
-# -----------------------------
-# THE REST OF THE CODE ONLY RUNS FOR ADMINS
-# -----------------------------
-st.title("📊 Admin Sales Dashboard")
+st.title("📊 Sales Dashboard")
 
 # -----------------------------
 # GOOGLE SHEETS CONNECTION
