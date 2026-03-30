@@ -1,209 +1,92 @@
 # services/automation.py
-
-import time
+import urllib.parse
 import pandas as pd
 from datetime import datetime, timedelta
-import webbrowser
 from services.sheets import get_df
 
-# -------------------------------
-# FORMAT PHONE
-# -------------------------------
 def format_phone(num):
-    num = str(num).strip()
-    digits = "".join(filter(str.isdigit, num))
+    digits = "".join(filter(str.isdigit, str(num)))
     if len(digits) == 10:
         return "91" + digits
     return digits
 
-# -------------------------------
-# GET SALES TEAM CONTACTS
-# -------------------------------
-def get_sales_team():
+def get_sales_team_contacts():
     df = get_df("Sales Team")
-
     contacts = {}
-
-    for _, row in df.iterrows():
-        name = str(row.get("Name", "")).strip()
-        phone = format_phone(row.get("Contact Number", ""))
-
-        if name and phone:
-            contacts[name.lower()] = phone
-
+    if df is not None and not df.empty:
+        for _, row in df.iterrows():
+            name = str(row.get("NAME", row.get("Name", ""))).strip().lower()
+            phone = format_phone(row.get("CONTACT NUMBER", row.get("Contact Number", "")))
+            if name and phone:
+                contacts[name] = phone
     return contacts
 
+def generate_whatsapp_link(phone, message):
+    # This creates a link that opens WhatsApp with the message pre-filled
+    encoded_msg = urllib.parse.quote(message)
+    return f"https://wa.me/{phone}?text={encoded_msg}"
 
-# -------------------------------
-# SEND WHATSAPP MESSAGE
-# -------------------------------
-def send_whatsapp(phone, message):
-    url = f"https://web.whatsapp.com/send?phone={phone}&text={message}"
-    webbrowser.open(url)
-    time.sleep(20)  # wait for WhatsApp Web load
-
-    import pyautogui
-    pyautogui.press("enter")
-
-    time.sleep(5)
-
-
-# -------------------------------
-# DELIVERY ALERTS (1 DAY BEFORE)
-# -------------------------------
-def send_delivery_alerts():
+def get_delivery_alerts_list():
+    """Returns a list of (phone, message) tuples for tomorrow's deliveries"""
     df = get_df("CRM")
-    contacts = get_sales_team()
-
+    contacts = get_sales_team_contacts()
     today = datetime.today().date()
     target_date = today + timedelta(days=1)
+    
+    alerts = []
+    
+    # Standardizing column names to match your app.py logic
+    df.columns = [c.strip().upper() for c in df.columns]
+    
+    for _, row in df.iterrows():
+        try:
+            # Match the date format you use in app.py (%d-%m-%Y)
+            d_date = pd.to_datetime(row.get("CUSTOMER DELIVERY DATE (TO BE)"), format="%d-%m-%Y", errors='coerce').date()
+        except: continue
 
-    sent = 0
+        if d_date == target_date and str(row.get("DELIVERY REMARKS")).upper() == "PENDING":
+            msg = f"🚚 *DELIVERY ALERT*\n\n*Customer:* {row.get('CUSTOMER NAME')}\n*Product:* {row.get('PRODUCT NAME')}\n*Order No:* {row.get('ORDER NO')}\n*Date:* {d_date}\n\n⚠️ Scheduled for tomorrow!"
+            
+            # Add Salesperson
+            sp = str(row.get("SALES PERSON")).strip().lower()
+            if sp in contacts:
+                alerts.append((contacts[sp], msg))
+            
+            # Add Manager/Admin (Always CC these people)
+            for boss in ["shaktiman", "pritish", "swati"]:
+                if boss in contacts:
+                    alerts.append((contacts[boss], msg))
+    return alerts
+
+def get_payment_alerts_list():
+    """Returns a list of (phone, message) tuples for payments due in 7 days"""
+    df = get_df("CRM")
+    contacts = get_sales_team_contacts()
+    target_date = datetime.today().date() + timedelta(days=7)
+    
+    alerts = []
+    df.columns = [c.strip().upper() for c in df.columns]
 
     for _, row in df.iterrows():
-
         try:
-            delivery_date = pd.to_datetime(
-                row.get("CUSTOMER DELIVERY DATE (TO BE)"), 
-                dayfirst=True, 
-                errors="coerce"
-            ).date()
-        except:
-            continue
+            d_date = pd.to_datetime(row.get("CUSTOMER DELIVERY DATE (TO BE)"), format="%d-%m-%Y", errors='coerce').date()
+        except: continue
 
-        if pd.isna(delivery_date):
-            continue
+        if d_date == target_date:
+            try:
+                order_amt = float(str(row.get("ORDER AMOUNT")).replace(",",""))
+                adv = float(str(row.get("ADV RECEIVED")).replace(",",""))
+                due = order_amt - adv
+            except: due = 0
 
-        if delivery_date == target_date and str(row.get("DELIVERY REMARKS")).lower() == "pending":
-
-            customer = row.get("CUSTOMER NAME", "")
-            product = row.get("PRODUCT NAME", "")
-            order_no = row.get("ORDER NO", "")
-            sales_person = str(row.get("SALES PERSON", "")).lower()
-
-            message = f"""
-🚚 DELIVERY ALERT
-
-Customer: {customer}
-Product: {product}
-Order No: {order_no}
-Delivery Date: {delivery_date}
-
-⚠️ Delivery is scheduled tomorrow. Please plan accordingly.
-"""
-
-            # Send to Salesperson
-            if sales_person in contacts:
-                send_whatsapp(contacts[sales_person], message)
-
-            # Send to Manager
-            if "shaktiman" in contacts:
-                send_whatsapp(contacts["shaktiman"], message)
-
-            # Send to You
-            if "pritish" in contacts:
-                send_whatsapp(contacts["pritish"], message)
-
-            sent += 1
-
-    return f"✅ Delivery alerts sent: {sent}"
-
-
-# -------------------------------
-# PAYMENT DUE ALERTS (7 DAYS BEFORE)
-# -------------------------------
-def send_payment_alerts():
-    df = get_df("CRM")
-    contacts = get_sales_team()
-
-    today = datetime.today().date()
-    target_date = today + timedelta(days=7)
-
-    sent = 0
-
-    for _, row in df.iterrows():
-
-        try:
-            delivery_date = pd.to_datetime(
-                row.get("CUSTOMER DELIVERY DATE (TO BE)"),
-                dayfirst=True,
-                errors="coerce"
-            ).date()
-        except:
-            continue
-
-        if pd.isna(delivery_date):
-            continue
-
-        if delivery_date == target_date:
-
-            order_amt = float(row.get("ORDER AMOUNT", 0) or 0)
-            adv = float(row.get("ADV RECEIVED", 0) or 0)
-            due = order_amt - adv
-
-            if due <= 0:
-                continue
-
-            customer = row.get("CUSTOMER NAME", "")
-            sales_person = str(row.get("SALES PERSON", "")).lower()
-
-            message = f"""
-💰 PAYMENT REMINDER
-
-Customer: {customer}
-Order Amount: ₹{order_amt}
-Advance Paid: ₹{adv}
-Balance Due: ₹{due}
-
-⚠️ Payment pending before delivery (in 7 days).
-"""
-
-            # Salesperson
-            if sales_person in contacts:
-                send_whatsapp(contacts[sales_person], message)
-
-            # Manager
-            if "shaktiman" in contacts:
-                send_whatsapp(contacts["shaktiman"], message)
-
-            # You
-            if "pritish" in contacts:
-                send_whatsapp(contacts["pritish"], message)
-
-            sent += 1
-
-    return f"✅ Payment alerts sent: {sent}"
-
-
-# -------------------------------
-# DAILY REPORT
-# -------------------------------
-def send_daily_report():
-    df = get_df("CRM")
-    contacts = get_sales_team()
-
-    today = datetime.today().date()
-
-    df["DATE"] = pd.to_datetime(df["DATE"], dayfirst=True, errors="coerce").dt.date
-
-    today_df = df[df["DATE"] == today]
-
-    total_sales = pd.to_numeric(today_df["ORDER AMOUNT"], errors="coerce").sum()
-    total_orders = len(today_df)
-
-    message = f"""
-📊 DAILY SALES REPORT
-
-Date: {today}
-
-Orders: {total_orders}
-Sales: ₹{total_sales}
-"""
-
-    if "pritish" in contacts:
-        send_whatsapp(contacts["pritish"], message)
-
-    if "shaktiman" in contacts:
-        send_whatsapp(contacts["shaktiman"], message)
-
-    return "✅ Daily report sent"
+            if due > 0:
+                msg = f"💰 *PAYMENT REMINDER*\n\n*Customer:* {row.get('CUSTOMER NAME')}\n*Due:* ₹{due:,.2f}\n*Delivery Date:* {d_date}\n\n⚠️ Payment required before delivery!"
+                
+                sp = str(row.get("SALES PERSON")).strip().lower()
+                if sp in contacts:
+                    alerts.append((contacts[sp], msg))
+                
+                for boss in ["shaktiman", "pritish", "swati"]:
+                    if boss in contacts:
+                        alerts.append((contacts[boss], msg))
+    return alerts

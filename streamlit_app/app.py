@@ -203,35 +203,26 @@ styled_targets = df_targets.style.apply(highlight, axis=1).format({
 })
 st.dataframe(styled_targets, use_container_width=True)
 
-# -----------------------------
-# PENDING DELIVERY
-# -----------------------------
-st.subheader("🚚 Pending Deliveries")
-pending = crm[crm["DELIVERY REMARKS"].str.upper() == "PENDING"].copy()
-pending = pending.sort_values(by="CUSTOMER DELIVERY DATE (TO BE)")
-pending["CUSTOMER DELIVERY DATE (TO BE)"] = pending["CUSTOMER DELIVERY DATE (TO BE)"].apply(format_date)
-st.dataframe(pending[cols].style.format({"ORDER AMOUNT": "{:.2f}", "ADV RECEIVED": "{:.2f}"}), use_container_width=True)
+from services.automation import get_delivery_alerts_list, get_payment_alerts_list, generate_whatsapp_link
 
-if st.button("📲 Send Delivery Alerts"):
-    send_delivery_alerts()
-    st.success("Alerts Sent")
+# ... inside the Pending Deliveries section ...
+if st.button("📲 Prepare Delivery Alerts"):
+    alerts = get_delivery_alerts_list()
+    if not alerts:
+        st.info("No deliveries scheduled for tomorrow.")
+    else:
+        st.write(f"Found {len(alerts)} alerts to send:")
+        for phone, msg in alerts:
+            link = generate_whatsapp_link(phone, msg)
+            st.link_button(f"Send to {phone}", link)
 
-# -----------------------------
-# PAYMENT DUE
-# -----------------------------
-st.subheader("💰 Payment Due")
-crm["PENDING AMOUNT"] = crm["ORDER AMOUNT"] - crm["ADV RECEIVED"]
-due = crm[crm["PENDING AMOUNT"] > 0].copy()
-st.dataframe(due[[
-    "CUSTOMER NAME","ORDER AMOUNT","ADV RECEIVED",
-    "PENDING AMOUNT","CUSTOMER DELIVERY DATE (TO BE)",
-    "SALES PERSON"
-]].style.format({
-    "ORDER AMOUNT": "{:.2f}", 
-    "ADV RECEIVED": "{:.2f}", 
-    "PENDING AMOUNT": "{:.2f}"
-}), use_container_width=True)
-
-if st.button("📲 Send Payment Alerts"):
-    send_payment_alerts()
-    st.success("Payment Alerts Sent")
+# ... inside the Payment Due section ...
+if st.button("📲 Prepare Payment Alerts"):
+    alerts = get_payment_alerts_list()
+    if not alerts:
+        st.info("No payments due for delivery in 7 days.")
+    else:
+        st.write(f"Found {len(alerts)} alerts to send:")
+        for phone, msg in alerts:
+            link = generate_whatsapp_link(phone, msg)
+            st.link_button(f"Send to {phone}", link)
