@@ -8,28 +8,22 @@ from services.automation import (
     get_delivery_alerts_list, 
     get_payment_alerts_list, 
     generate_whatsapp_link,
-    get_test_alerts_list  # Add this one
+    get_test_alerts_list
 )
 
 st.set_page_config(layout="wide", page_title="Godrej CRM Dashboard")
-
 st.title("📊 Sales Dashboard")
 
-# -----------------------------
-# GOOGLE SHEETS CONNECTION
-# -----------------------------
+# --- CONNECTION ---
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 try:
     CREDS = Credentials.from_service_account_info(st.secrets["google"], scopes=SCOPES)
 except:
     CREDS = Credentials.from_service_account_file("config/credentials.json", scopes=SCOPES)
-
 gc = gspread.authorize(CREDS)
 sh = gc.open_by_key("1wFpK-WokcZB6k1vzG7B6JO5TdGHrUwdgvVm_-UQse54")
 
-# -----------------------------
-# LOAD DATA
-# -----------------------------
+# --- LOAD & CLEAN ---
 crm = get_df("CRM")
 team = get_df("Sales Team")
 targets_sheet = get_df("Targets")
@@ -39,342 +33,69 @@ if crm.empty:
     st.stop()
 
 crm.columns = [c.strip().upper() for c in crm.columns]
-
-# -----------------------------
-# FIX TARGET SHEET STRUCTURE
-# -----------------------------
-required_cols = ["SALES PERSON", "MONTH", "YEAR", "TARGET"]
-
-if targets_sheet.empty or not all(col in targets_sheet.columns for col in required_cols):
-    try:
-        ws = sh.worksheet("Targets")
-    except:
-        ws = sh.add_worksheet(title="Targets", rows=1000, cols=10)
-
-    ws.clear()
-    ws.append_row(required_cols)
-    targets_sheet = pd.DataFrame(columns=required_cols)
-
-targets_sheet.columns = [c.strip().upper() for c in targets_sheet.columns]
-
-# -----------------------------
-# FIX NUMERIC & ROUNDING
-# -----------------------------
 for col in ["ORDER AMOUNT", "ADV RECEIVED"]:
     if col in crm.columns:
-        crm[col] = (
-            crm[col].astype(str)
-            .str.replace(",", "")
-            .str.replace("₹", "")
-            .str.strip()
-        )
-        crm[col] = pd.to_numeric(crm[col], errors="coerce").fillna(0)
+        crm[col] = pd.to_numeric(crm[col].astype(str).str.replace("[₹,]", "", regex=True), errors="coerce").fillna(0)
 
-# -----------------------------
-# DATE FIX
-# -----------------------------
-crm["DATE"] = pd.to_datetime(crm["DATE"], format="%d-%m-%Y", errors="coerce")
-crm = crm.sort_values(by="DATE", ascending=False)
+# Ensure Date objects for logic
+crm["DATE"] = pd.to_datetime(crm["DATE"], dayfirst=True, errors="coerce")
+crm["CUSTOMER DELIVERY DATE (TO BE)"] = pd.to_datetime(crm["CUSTOMER DELIVERY DATE (TO BE)"], dayfirst=True, errors="coerce")
 
-def format_date(x):
-    try:
-        return pd.to_datetime(x).strftime("%d-%b-%Y")
-    except:
-        return x
-
-# -----------------------------
-# SALES TEAM
-# -----------------------------
-sales_people = []
-if not team.empty:
-    team.columns = [c.strip().upper() for c in team.columns]
-    sales_people = (
-        team[team["ROLE"] == "SALES"]["NAME"]
-        .dropna()
-        .str.strip()
-        .str.upper()
-        .unique()
-        .tolist()
-    )
-
-# -----------------------------
-# ALL ORDERS
-# -----------------------------
+# --- ALL ORDERS TABLE ---
 st.subheader("📋 All Orders (Till Date)")
 cols = ["DATE","CUSTOMER NAME","CONTACT NUMBER","PRODUCT NAME","ORDER AMOUNT","ADV RECEIVED","SALES PERSON","CUSTOMER DELIVERY DATE (TO BE)","DELIVERY REMARKS"]
-df_display = crm[cols].copy()
-df_display["DATE"] = df_display["DATE"].apply(format_date)
+df_disp = crm[cols].copy()
+df_disp["DATE"] = df_disp["DATE"].dt.strftime("%d-%b-%Y")
+df_disp["CUSTOMER DELIVERY DATE (TO BE)"] = df_disp["CUSTOMER DELIVERY DATE (TO BE)"].dt.strftime("%d-%b-%Y")
+st.dataframe(df_disp, use_container_width=True)
 
-st.dataframe(df_display.style.format({"ORDER AMOUNT": "{:.2f}", "ADV RECEIVED": "{:.2f}"}), use_container_width=True)
-
-# -----------------------------
-# YEAR SUMMARY
-# -----------------------------
-st.subheader("📊 Year-wise Summary")
-crm["YEAR_VAL"] = crm["DATE"].dt.year
-summary = crm.groupby("YEAR_VAL").agg({
-    "ORDER AMOUNT": "sum",
-    "ADV RECEIVED": "sum",
-    "ORDER NO": "count"
-}).reset_index()
-summary["PENDING"] = summary["ORDER AMOUNT"] - summary["ADV RECEIVED"]
-
-st.dataframe(summary.style.format({
-    "ORDER AMOUNT": "{:.2f}", 
-    "ADV RECEIVED": "{:.2f}", 
-    "PENDING": "{:.2f}"
-}), use_container_width=True)
-
-# -----------------------------
-# TARGET VS ACHIEVEMENT
-# -----------------------------
-current_month = datetime.today().strftime("%B")
-current_year = datetime.today().year
-
-st.subheader(f"🎯 Target vs Achievement ({current_month})")
-col1, col2 = st.columns(2)
-with col1:
-    selected_sales = st.selectbox("Sales Person", sales_people)
-with col2:
-    target_value = st.number_input("Target Value", min_value=0.0, step=10000.0)
-
-if st.button("Save Target"):
-    ws = sh.worksheet("Targets")
-    data = ws.get_all_records()
-    found = False
-    for i, row in enumerate(data):
-        if (row.get("SALES PERSON") == selected_sales and 
-            row.get("MONTH") == current_month and 
-            str(row.get("YEAR")) == str(current_year)):
-            ws.update_cell(i+2, 4, target_value)
-            found = True
-            break
-    if not found:
-        ws.append_row([selected_sales, current_month, current_year, target_value])
-    
-    st.success("Target Saved")
-    st.cache_data.clear() 
-    st.rerun()
-
-# -----------------------------
-# BUILD ACHIEVEMENT TABLE
-# -----------------------------
-rows = []
-month_start = datetime.today().replace(day=1)
-for sp in sales_people:
-    target_row = targets_sheet[
-        (targets_sheet["SALES PERSON"] == sp) &
-        (targets_sheet["MONTH"] == current_month) &
-        (targets_sheet["YEAR"].astype(str) == str(current_year))
-    ]
-    target_val = pd.to_numeric(target_row["TARGET"], errors="coerce").sum() if not target_row.empty else 0
-    sales_df = crm[(crm["SALES PERSON"] == sp) & (crm["DATE"] >= month_start)]
-    
-    home_storage = sales_df[sales_df["CATEGORY"].str.upper() == "HOME STORAGE"]["ORDER AMOUNT"].sum()
-    home_furniture = sales_df[sales_df["CATEGORY"].str.upper() == "HOME FURNITURE"]["ORDER AMOUNT"].sum()
-    total = home_storage + home_furniture
-
-    rows.append({
-        "Sales Person": sp,
-        "Target": round(float(target_val), 2),
-        "Home Storage": round(float(home_storage), 2),
-        "Home Furniture": round(float(home_furniture), 2),
-        "Achievement": round(float(total), 2)
-    })
-
-df_targets = pd.DataFrame(rows)
-df_targets = df_targets[(df_targets["Target"] > 0) | (df_targets["Achievement"] > 0)]
-df_targets = df_targets.sort_values(by="Achievement", ascending=False)
-
-# MEDALS FIX
-medals = ["🥇","🥈","🥉"]
-num_rows = len(df_targets)
-if num_rows > 0:
-    if num_rows > len(medals):
-        df_targets.index = medals + [""] * (num_rows - len(medals))
-    else:
-        df_targets.index = medals[:num_rows]
-
-def highlight(row):
-    if row["Achievement"] >= row["Target"] and row["Target"] > 0:
-        return ['background-color: lightgreen'] * len(row)
-    return [''] * len(row)
-
-styled_targets = df_targets.style.apply(highlight, axis=1).format({
-    "Target": "{:.2f}",
-    "Home Storage": "{:.2f}",
-    "Home Furniture": "{:.2f}",
-    "Achievement": "{:.2f}"
-})
-st.dataframe(styled_targets, use_container_width=True)
-
-# -----------------------------
-# PENDING DELIVERY
-# -----------------------------
+# --- PENDING DELIVERY ---
 st.subheader("🚚 Pending Deliveries")
-
-# 1. FORCE CONVERSION: Ensure columns are datetime objects
-crm["CUSTOMER DELIVERY DATE (TO BE)"] = pd.to_datetime(
-    crm["CUSTOMER DELIVERY DATE (TO BE)"], 
-    format="%d-%m-%Y", 
-    errors="coerce"
-)
-crm["DATE"] = pd.to_datetime(crm["DATE"], format="%d-%m-%Y", errors="coerce")
-
-# 2. Filter: Status is PENDING and Delivery Date is NOT empty
-pending = crm[
-    (crm["DELIVERY REMARKS"].str.upper() == "PENDING") & 
-    (crm["CUSTOMER DELIVERY DATE (TO BE)"].notna())
-].copy()
-
-# 3. Sort by Delivery Date (Descending - Latest on top)
+pending = crm[(crm["DELIVERY REMARKS"].str.upper() == "PENDING") & (crm["CUSTOMER DELIVERY DATE (TO BE)"].notna())].copy()
 pending = pending.sort_values(by="CUSTOMER DELIVERY DATE (TO BE)", ascending=False)
 
-# 4. Define and Reorder Columns
-# Reordered as: Delivery Date (Left), Customer, Contact, Product, Order Amt, Adv, Sales Person, Purchase Date, Remarks
-pending_display_cols = [
-    "CUSTOMER DELIVERY DATE (TO BE)",
-    "CUSTOMER NAME",
-    "CONTACT NUMBER",
-    "PRODUCT NAME",
-    "ORDER AMOUNT",
-    "ADV RECEIVED",
-    "SALES PERSON",
-    "DATE",  # This is the Purchase/Order Date
-    "DELIVERY REMARKS"
-]
-
-# Create the display dataframe and rename columns
-df_pending_final = pending[pending_display_cols].copy()
-df_pending_final = df_pending_final.rename(columns={
-    "CUSTOMER DELIVERY DATE (TO BE)": "DELIVERY DATE",
-    "DATE": "PURCHASE DATE"
-})
-
-# 5. Metrics calculation
 today_dt = datetime.now().date()
-passed_mask = pending["CUSTOMER DELIVERY DATE (TO BE)"].dt.date < today_dt
-upcoming_mask = pending["CUSTOMER DELIVERY DATE (TO BE)"].dt.date >= today_dt
+def style_pending(row):
+    color = 'background-color: #ffcccc' if row["CUSTOMER DELIVERY DATE (TO BE)"].date() < today_dt else ''
+    return [color] * len(row)
 
-# 6. Styling Function (Reference the original column name used for logic)
-def highlight_passed(row):
-    # We check the first column which is now our 'DELIVERY DATE'
-    if row["DELIVERY DATE"].date() < today_dt:
-        return ['background-color: #ffcccc; color: black'] * len(row)
-    return [''] * len(row)
-
-# 7. Display Table
-styled_pending = df_pending_final.style.apply(highlight_passed, axis=1).format({
-    "ORDER AMOUNT": "{:.2f}", 
-    "ADV RECEIVED": "{:.2f}",
-    "DELIVERY DATE": lambda x: x.strftime('%d-%b-%Y'),
-    "PURCHASE DATE": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else ""
+# Reorder Columns as requested
+pend_cols = ["CUSTOMER DELIVERY DATE (TO BE)", "CUSTOMER NAME", "CONTACT NUMBER", "PRODUCT NAME", "ORDER AMOUNT", "ADV RECEIVED", "SALES PERSON", "DATE", "DELIVERY REMARKS"]
+styled_p = pending[pend_cols].style.apply(style_pending, axis=1).format({
+    "ORDER AMOUNT": "{:.2f}", "ADV RECEIVED": "{:.2f}",
+    "CUSTOMER DELIVERY DATE (TO BE)": lambda x: x.strftime('%d-%b-%Y'),
+    "DATE": lambda x: x.strftime('%d-%b-%Y')
 })
+st.dataframe(styled_p, use_container_width=True)
 
-st.dataframe(styled_pending, use_container_width=True)
-
-# 8. Summary Metrics
-m1, m2, m3 = st.columns(3)
-m1.error(f"🚨 Overdue: {passed_mask.sum()}")
-m2.info(f"📅 Upcoming: {upcoming_mask.sum()}")
-m3.success(f"📦 Total Pending: {len(pending)}")
-
-# --- Inside Pending Delivery Section in app.py ---
-
-col_btn1, col_btn2 = st.columns(2)
-
-with col_btn1:
+col_a1, col_a2 = st.columns(2)
+with col_a1:
     if st.button("📲 Prepare Delivery Alerts"):
         alerts = get_delivery_alerts_list()
-        if not alerts:
-            st.info("No deliveries scheduled for tomorrow.")
+        if not alerts: st.info("No deliveries scheduled for tomorrow.")
         else:
-            st.write(f"Found {len(alerts)} alerts:")
-            for phone, msg in alerts:
-                st.link_button(f"Send to {phone}", generate_whatsapp_link(phone, msg))
-
-with col_btn2:
+            for p, m in alerts: st.link_button(f"Send to {p}", generate_whatsapp_link(p, m))
+with col_a2:
     if st.button("🧪 Run Connection Test"):
-        test_alerts = get_test_alerts_list()
-        if not test_alerts:
-            st.warning("No 'PENDING' orders found in CRM to test with.")
-        else:
-            st.write("🔧 **Testing Mode:** Sending to first 3 pending orders.")
-            for phone, msg in test_alerts:
-                st.link_button(f"Test WhatsApp ({phone})", generate_whatsapp_link(phone, msg))
+        tests = get_test_alerts_list()
+        for p, m in tests: st.link_button(f"Test WhatsApp ({p})", generate_whatsapp_link(p, m))
 
-
-
-
-
-# -----------------------------
-# PAYMENT DUE
-# -----------------------------
+# --- PAYMENT DUE ---
 st.subheader("💰 Payment Due")
-
-# 1. FORCE CONVERSION: Ensure the column is datetime for this section
-crm["CUSTOMER DELIVERY DATE (TO BE)"] = pd.to_datetime(
-    crm["CUSTOMER DELIVERY DATE (TO BE)"], 
-    format="%d-%m-%Y", 
-    errors="coerce"
-)
-
-# 2. Calculate Pending Amount
 crm["PENDING AMOUNT"] = crm["ORDER AMOUNT"] - crm["ADV RECEIVED"]
-
-# 3. Filter for rows where money is owed and a delivery date exists
-due = crm[
-    (crm["PENDING AMOUNT"] > 0) & 
-    (crm["CUSTOMER DELIVERY DATE (TO BE)"].notna())
-].copy()
-
-# 4. Sort by Delivery Date (Latest on top)
+due = crm[(crm["PENDING AMOUNT"] > 0) & (crm["CUSTOMER DELIVERY DATE (TO BE)"].notna())].copy()
 due = due.sort_values(by="CUSTOMER DELIVERY DATE (TO BE)", ascending=False)
 
-# 5. Define the columns to display (THIS FIXES THE ERROR)
-payment_cols = [
-    "CUSTOMER NAME", 
-    "ORDER AMOUNT", 
-    "ADV RECEIVED", 
-    "PENDING AMOUNT", 
-    "CUSTOMER DELIVERY DATE (TO BE)", 
-    "SALES PERSON"
-]
+pay_cols = ["CUSTOMER NAME", "ORDER AMOUNT", "ADV RECEIVED", "PENDING AMOUNT", "CUSTOMER DELIVERY DATE (TO BE)", "SALES PERSON"]
+def style_due(row):
+    color = 'background-color: #ffcccc' if row["CUSTOMER DELIVERY DATE (TO BE)"].date() < today_dt else ''
+    return [color] * len(row)
 
-# 6. Metrics Logic
-today_dt = datetime.now().date()
-overdue_p_count = (due["CUSTOMER DELIVERY DATE (TO BE)"].dt.date < today_dt).sum()
-
-# 7. Styling Function
-def highlight_overdue_payment(row):
-    if row["CUSTOMER DELIVERY DATE (TO BE)"].date() < today_dt:
-        return ['background-color: #ffcccc; color: black'] * len(row)
-    return [''] * len(row)
-
-# 8. Display Table
-# We use payment_cols here now that it is defined above
-styled_due = due[payment_cols].style.apply(highlight_overdue_payment, axis=1).format({
-    "ORDER AMOUNT": "{:.2f}", 
-    "ADV RECEIVED": "{:.2f}", 
-    "PENDING AMOUNT": "{:.2f}",
+st.dataframe(due[pay_cols].style.apply(style_due, axis=1).format({
+    "ORDER AMOUNT": "{:.2f}", "ADV RECEIVED": "{:.2f}", "PENDING AMOUNT": "{:.2f}",
     "CUSTOMER DELIVERY DATE (TO BE)": lambda x: x.strftime('%d-%b-%Y')
-})
+}), use_container_width=True)
 
-st.dataframe(styled_due, use_container_width=True)
-
-# 9. Metrics Bar
-p1, p2, p3 = st.columns(3)
-p1.error(f"🛑 Overdue: {overdue_p_count}")
-p2.warning(f"⏳ Total Due: ₹{due['PENDING AMOUNT'].sum():,.2f}")
-p3.info(f"📈 Active Cases: {len(due)}")
-
-# WhatsApp Alerts Button
 if st.button("📲 Prepare Payment Alerts"):
-    alerts = get_payment_alerts_list()
-    if not alerts:
-        st.info("No payments due for delivery in 7 days.")
-    else:
-        st.write(f"Found {len(alerts)} alerts to send:")
-        for phone, msg in alerts:
-            link = generate_whatsapp_link(phone, msg)
-            st.link_button(f"Send to {phone}", link)
+    p_alerts = get_payment_alerts_list()
+    for p, m in p_alerts: st.link_button(f"Remind {p}", generate_whatsapp_link(p, m))
