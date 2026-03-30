@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from services.sheets import get_df
-import io
 
 st.set_page_config(page_title="Product Sales Analysis", layout="wide")
 st.title("📦 Product Sales Performance")
@@ -69,27 +68,21 @@ summary = analysis_df.groupby("WORK_PROD")["WORK_QTY"].sum().reset_index()
 summary = summary.sort_values(by="WORK_QTY", ascending=False)
 summary.columns = ["PRODUCT NAME", "TOTAL QTY SOLD"]
 
-# ---------- 4. TOP MESSAGE & EXCEL DOWNLOAD ----------
+# ---------- 4. TOP MESSAGE & CSV DOWNLOAD ----------
 if not summary.empty:
     # 1. Success Message on Top
     top_row = summary.iloc[0]
     st.success(f"🏆 **Highest Sold:** {top_row['PRODUCT NAME']} ({int(top_row['TOTAL QTY SOLD'])} units)")
     
-    # 2. Excel Download (Switched to openpyxl engine for compatibility)
-    try:
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            summary.to_excel(writer, index=False, sheet_name='ProductSales')
-        processed_data = output.getvalue()
-        
-        st.download_button(
-            label="📥 Download Report as Excel",
-            data=processed_data,
-            file_name=f"Product_Sales_{selected_cat}_{selected_year}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-    except Exception as e:
-        st.error(f"Excel creation failed: {e}")
+    # 2. CSV Download (Universal - No extra libraries needed)
+    csv_data = summary.to_csv(index=False).encode('utf-8')
+    
+    st.download_button(
+        label="📥 Download Report (CSV for Excel)",
+        data=csv_data,
+        file_name=f"Product_Sales_{selected_cat}_{selected_year}.csv",
+        mime="text/csv",
+    )
 
     # ---------- 5. STYLING & TABLE ----------
     st.markdown("""
@@ -121,7 +114,6 @@ if not summary.empty:
     st.markdown("---")
     st.subheader(f"📊 Top 5 Products: {selected_cat} ({selected_year})")
     
-    # Take only the top 5 for the chart
     top_5 = summary.head(5).copy()
     st.bar_chart(data=top_5, x="PRODUCT NAME", y="TOTAL QTY SOLD", color="#2e7d32")
 
