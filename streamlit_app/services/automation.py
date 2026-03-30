@@ -2,19 +2,17 @@ import urllib.parse
 import pandas as pd
 from datetime import datetime, timedelta
 
-def format_phone(num):
-    if not num: return ""
-    digits = "".join(filter(str.isdigit, str(num)))
-    if len(digits) == 10: return "91" + digits
-    return digits
-
 def clean_headers(df):
     df.columns = [c.strip().upper() for c in df.columns]
     return df
 
-def generate_whatsapp_link(phone, message):
+def generate_whatsapp_group_link(message):
+    """
+    Uses the whatsapp:// URI scheme to open the Desktop App directly, bypassing browser tabs.
+    Leaves the phone number blank so you can select a Group to forward the message to.
+    """
     encoded_msg = urllib.parse.quote(message)
-    return f"https://api.whatsapp.com/send?phone={phone}&text={encoded_msg}"
+    return f"whatsapp://send?text={encoded_msg}"
 
 def create_whatsapp_tabular_list(df_group, alert_type="delivery"):
     """Creates a clean text-based table for WhatsApp"""
@@ -42,18 +40,11 @@ def create_whatsapp_tabular_list(df_group, alert_type="delivery"):
     return table_text
 
 def get_alerts(df, team_df, alert_type="delivery"):
+    """Generates one consolidated alert per Sales Person intended for a Group chat."""
     if df is None or df.empty or team_df is None or team_df.empty: return []
     
     df = clean_headers(df)
-    team_df = clean_headers(team_df)
     
-    # Identify Owner and Manager from Sheet dynamically
-    owner_row = team_df[team_df["ROLE"].str.upper() == "OWNER"]
-    mgr_row = team_df[team_df["ROLE"].str.upper() == "MANAGER"]
-    
-    OWNER_PHONE = format_phone(owner_row["CONTACT NUMBER"].values[0]) if not owner_row.empty else ""
-    MGR_PHONE = format_phone(mgr_row["CONTACT NUMBER"].values[0]) if not mgr_row.empty else ""
-
     # Dates for filtering
     df["CUSTOMER DELIVERY DATE (TO BE)"] = pd.to_datetime(df["CUSTOMER DELIVERY DATE (TO BE)"], dayfirst=True, errors='coerce')
     df["DATE"] = pd.to_datetime(df["DATE"], dayfirst=True, errors='coerce')
@@ -85,22 +76,17 @@ def get_alerts(df, team_df, alert_type="delivery"):
     if alert_type == "payment":
         grouped_df["PENDING AMOUNT"] = grouped_df["ORDER AMOUNT"] - grouped_df["ADV RECEIVED"]
 
-    # Contacts Mapping for SPs
-    sp_contacts = {str(r["NAME"]).strip().lower(): format_phone(r["CONTACT NUMBER"]) 
-                   for _, r in team_df.iterrows()}
-
     alerts = []
+    # Generate one message payload per Sales Person
     for sp_name, group in grouped_df.groupby("SALES PERSON"):
-        sp_phone = sp_contacts.get(str(sp_name).strip().lower())
         table_content = create_whatsapp_tabular_list(group, alert_type)
         
-        msg = (f"Dear *{sp_name}*,\n\n"
-               f"Urgent {'Deliveries' if alert_type == 'delivery' else 'Payments'} for TOMORROW:\n\n"
-               f"{table_content}\nAction required!")
+        msg = (f"Attention Team & *{sp_name}*,\n\n"
+               f"Pending {'Deliveries' if alert_type == 'delivery' else 'Payments'} scheduled for TOMORROW:\n\n"
+               f"{table_content}\n"
+               f"Please confirm to action taken.")
 
-        # Dynamic recipients
-        recipients = [(f"SP: {sp_name}", sp_phone), ("Manager", MGR_PHONE), ("Owner", OWNER_PHONE)]
-        for label, phone in recipients:
-            if phone: alerts.append((label, phone, msg))
+        # Return the SP name and the message payload
+        alerts.append((sp_name, msg))
                 
     return alerts
