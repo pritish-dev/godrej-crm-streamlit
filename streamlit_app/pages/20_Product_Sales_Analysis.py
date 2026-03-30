@@ -62,6 +62,9 @@ with c3:
 final_mask = (crm["YEAR"] == selected_year) & (crm["WORK_CAT"] == selected_cat)
 analysis_df = crm[final_mask].copy()
 
+# Calculate Total Units for the Summary Box (before specific product filter)
+total_cat_units = int(analysis_df['WORK_QTY'].sum())
+
 if selected_product != "ALL PRODUCTS":
     analysis_df = analysis_df[analysis_df["WORK_PROD"] == selected_product]
 
@@ -117,33 +120,45 @@ if not summary.empty:
     )
     st.write(f'<div class="table-container">{html}</div>', unsafe_allow_html=True)
 
-    # ---------- 7. ALTAIR CHART WITH GOAL LINE ----------
+    # ---------- 7. CHART & SUMMARY BOX LAYOUT ----------
     st.markdown("---")
-    st.subheader(f"📊 Top 5 Products vs Target (100 Units)")
-    
-    top_5 = summary.head(5).copy()
-    
-    # 1. Bars
-    bars = alt.Chart(top_5).mark_bar(color='#2e7d32').encode(
-        x=alt.X('PRODUCT NAME:N', sort='-y', title='Product Name'),
-        y=alt.Y('TOTAL QTY SOLD:Q', title='Total Quantity Sold')
-    )
+    chart_col, summary_col = st.columns([3, 1])
 
-    # 2. Goal Line (Red Dashed)
-    goal_df = pd.DataFrame({'y': [100]})
-    goal_line = alt.Chart(goal_df).mark_rule(
-        color='red', strokeDash=[5, 5], size=2
-    ).encode(y='y:Q')
+    with chart_col:
+        st.subheader(f"📊 Top 5 Products vs Target")
+        top_5 = summary.head(5).copy()
+        
+        # 1. Bars (Darker Green)
+        bars = alt.Chart(top_5).mark_bar(color='#1b5e20').encode(
+            x=alt.X('PRODUCT NAME:N', sort='-y', title=None, 
+                    axis=alt.Axis(labelAngle=-45, labelColor='black', labelFontWeight='bold', labelFontSize=12)),
+            y=alt.Y('TOTAL QTY SOLD:Q', title='Total Units Sold')
+        )
 
-    # 3. Text Label
-    label_df = pd.DataFrame({'y': [100], 'text': ['Goal: 100 Units']})
-    goal_text = alt.Chart(label_df).mark_text(
-        align='left', dx=5, dy=-10, color='red', fontWeight='bold'
-    ).encode(y='y:Q', text='text:N')
+        # 2. Goal Line (Red Dashed)
+        goal_df = pd.DataFrame({'y': [100]})
+        goal_line = alt.Chart(goal_df).mark_rule(
+            color='red', strokeDash=[5, 5], size=2
+        ).encode(y='y:Q')
 
-    # Combine
-    chart_layout = (bars + goal_line + goal_text).properties(height=400)
-    st.altair_chart(chart_layout, use_container_width=True)
+        # 3. Text Label
+        label_df = pd.DataFrame({'y': [100], 'text': ['Target: 100']})
+        goal_text = alt.Chart(label_df).mark_text(
+            align='left', dx=5, dy=-10, color='red', fontWeight='bold'
+        ).encode(y='y:Q', text='text:N')
+
+        chart_layout = (bars + goal_line + goal_text).properties(height=400)
+        st.altair_chart(chart_layout, use_container_width=True)
+
+    with summary_col:
+        st.subheader("Category Summary")
+        st.markdown(f"""
+            <div style="background-color:#f0f2f6; padding:20px; border-radius:10px; border: 2px solid #1b5e20; text-align:center;">
+                <h4 style="color:#333; margin-bottom:0px;">Total Units Sold</h4>
+                <p style="color:#1b5e20; font-size:40px; font-weight:900; margin-top:10px;">{total_cat_units:,}</p>
+                <p style="color:#666; font-size:14px;">In {selected_cat} ({selected_year})</p>
+            </div>
+        """, unsafe_allow_html=True)
 
 else:
     st.info(f"No records found for {selected_cat} in {selected_year}.")
