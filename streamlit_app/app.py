@@ -1,6 +1,13 @@
+import sys
+import os
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
+
+# --- CRITICAL PATH FIX ---
+# This ensures Python can find the 'services' folder outside the current directory
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from services.sheets import get_df
 from services.automation import get_alerts, generate_whatsapp_group_link
 
@@ -91,7 +98,6 @@ if not pending_del.empty:
             alerts = get_alerts(crm, team_df, "delivery")
             if alerts:
                 for sp_name, msg in alerts:
-                    # Opens the WhatsApp app directly and prompts for group selection
                     st.link_button(f"Forward {sp_name}'s List to Group", generate_whatsapp_group_link(msg))
             else:
                 st.info("No deliveries scheduled for tomorrow.")
