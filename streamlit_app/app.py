@@ -203,105 +203,87 @@ styled_targets = df_targets.style.apply(highlight, axis=1).format({
 })
 st.dataframe(styled_targets, use_container_width=True)
 
-
 # -----------------------------
 # PENDING DELIVERY
 # -----------------------------
 st.subheader("🚚 Pending Deliveries")
 
-# 1. Filter and Clean Data
-# We filter for 'PENDING' status AND ensure a delivery date exists
+# FORCE CONVERSION: Ensure the column is actually a datetime object
+crm["CUSTOMER DELIVERY DATE (TO BE)"] = pd.to_datetime(
+    crm["CUSTOMER DELIVERY DATE (TO BE)"], 
+    format="%d-%m-%Y", 
+    errors="coerce"
+)
+
+# Filter: Status is PENDING and Date is NOT empty
 pending = crm[
     (crm["DELIVERY REMARKS"].str.upper() == "PENDING") & 
     (crm["CUSTOMER DELIVERY DATE (TO BE)"].notna())
 ].copy()
 
-# 2. Sort by Date (Descending - Latest on top)
+# Sort by Date (Descending)
 pending = pending.sort_values(by="CUSTOMER DELIVERY DATE (TO BE)", ascending=False)
 
-# 3. Calculation for Metrics
+# Metrics calculation
 today_dt = datetime.now().date()
-# Note: crm["DATE"] was converted earlier, but let's ensure we compare correctly
 passed_mask = pending["CUSTOMER DELIVERY DATE (TO BE)"].dt.date < today_dt
 upcoming_mask = pending["CUSTOMER DELIVERY DATE (TO BE)"].dt.date >= today_dt
 
-count_passed = passed_mask.sum()
-count_upcoming = upcoming_mask.sum()
-
-# 4. Styling Function (Mark passed dates in Red)
+# Styling Function
 def highlight_passed(row):
-    # Check if the date in this row is before today
     if row["CUSTOMER DELIVERY DATE (TO BE)"].date() < today_dt:
-        return ['background-color: #ffcccc; color: black'] * len(row) # Light red background
+        return ['background-color: #ffcccc; color: black'] * len(row)
     return [''] * len(row)
 
-# 5. Display Table
-# Create a display version to format the date for the user
-df_pending_display = pending[cols].copy()
-
-# Apply styling to the dataframe before formatting the date into a string
-styled_pending = df_pending_display.style.apply(highlight_passed, axis=1).format({
+# Display Table
+styled_pending = pending[cols].style.apply(highlight_passed, axis=1).format({
     "ORDER AMOUNT": "{:.2f}", 
     "ADV RECEIVED": "{:.2f}"
 })
 
-# Note: We display the styled dataframe. 
-# We don't apply format_date() beforehand because the styling function needs the actual date object.
 st.dataframe(styled_pending, use_container_width=True)
 
-# 6. Summary Metrics
-col_m1, col_m2, col_m3 = st.columns(3)
-with col_m1:
-    st.error(f"🚨 Overdue Deliveries: {count_passed}")
-with col_m2:
-    st.info(f"📅 Upcoming Pending: {count_upcoming}")
-with col_m3:
-    st.success(f"📦 Total Pending: {len(pending)}")
+# Summary Metrics
+m1, m2, m3 = st.columns(3)
+m1.error(f"🚨 Overdue: {passed_mask.sum()}")
+m2.info(f"📅 Upcoming: {upcoming_mask.sum()}")
+m3.success(f"📦 Total: {len(pending)}")
 
-# WhatsApp Alerts Button
-if st.button("📲 Prepare Delivery Alerts"):
-    alerts = get_delivery_alerts_list()
-    if not alerts:
-        st.info("No deliveries scheduled for tomorrow.")
-    else:
-        st.write(f"Found {len(alerts)} alerts to send:")
-        for phone, msg in alerts:
-            link = generate_whatsapp_link(phone, msg)
-            st.link_button(f"Send to {phone}", link)
+
+
+
 
 # -----------------------------
 # PAYMENT DUE
 # -----------------------------
 st.subheader("💰 Payment Due")
 
-# 1. Calculate Pending Amount
+# FORCE CONVERSION: Ensure the column is datetime for this section too
+crm["CUSTOMER DELIVERY DATE (TO BE)"] = pd.to_datetime(
+    crm["CUSTOMER DELIVERY DATE (TO BE)"], 
+    format="%d-%m-%Y", 
+    errors="coerce"
+)
+
 crm["PENDING AMOUNT"] = crm["ORDER AMOUNT"] - crm["ADV RECEIVED"]
 
-# 2. Filter for rows where money is still owed AND a delivery date exists
+# Filter for rows where money is owed and date exists
 due = crm[
     (crm["PENDING AMOUNT"] > 0) & 
     (crm["CUSTOMER DELIVERY DATE (TO BE)"].notna())
 ].copy()
 
-# 3. Sort by Delivery Date (Latest on top)
-due = crm_due = due.sort_values(by="CUSTOMER DELIVERY DATE (TO BE)", ascending=False)
+due = due.sort_values(by="CUSTOMER DELIVERY DATE (TO BE)", ascending=False)
 
-# 4. Metrics Calculation
+# Metrics
 today_dt = datetime.now().date()
-overdue_payments = due[due["CUSTOMER DELIVERY DATE (TO BE)"].dt.date < today_dt]
-upcoming_payments = due[due["CUSTOMER DELIVERY DATE (TO BE)"].dt.date >= today_dt]
+overdue_p = due[due["CUSTOMER DELIVERY DATE (TO BE)"].dt.date < today_dt]
 
-# 5. Styling Function (Red for Overdue Payment)
+# Styling Function
 def highlight_overdue_payment(row):
     if row["CUSTOMER DELIVERY DATE (TO BE)"].date() < today_dt:
         return ['background-color: #ffcccc; color: black'] * len(row)
     return [''] * len(row)
-
-# 6. Display Table
-payment_cols = [
-    "CUSTOMER NAME", "ORDER AMOUNT", "ADV RECEIVED", 
-    "PENDING AMOUNT", "CUSTOMER DELIVERY DATE (TO BE)", "SALES PERSON"
-]
 
 styled_due = due[payment_cols].style.apply(highlight_overdue_payment, axis=1).format({
     "ORDER AMOUNT": "{:.2f}", 
@@ -311,22 +293,8 @@ styled_due = due[payment_cols].style.apply(highlight_overdue_payment, axis=1).fo
 
 st.dataframe(styled_due, use_container_width=True)
 
-# 7. Summary Metrics for Payments
-p_col1, p_col2, p_col3 = st.columns(3)
-with p_col1:
-    st.error(f"🛑 Overdue Payments: {len(overdue_payments)}")
-with p_col2:
-    st.warning(f"⏳ Pending Value: ₹{due['PENDING AMOUNT'].sum():,.2f}")
-with p_col3:
-    st.info(f"📈 Total Pending Cases: {len(due)}")
-
-# WhatsApp Alerts Button
-if st.button("📲 Prepare Payment Alerts"):
-    alerts = get_payment_alerts_list()
-    if not alerts:
-        st.info("No payments due for delivery in 7 days.")
-    else:
-        st.write(f"Found {len(alerts)} alerts to send:")
-        for phone, msg in alerts:
-            link = generate_whatsapp_link(phone, msg)
-            st.link_button(f"Send to {phone}", link)
+# Metrics bar
+p1, p2, p3 = st.columns(3)
+p1.error(f"🛑 Overdue: {len(overdue_p)}")
+p2.warning(f"⏳ Total Due: ₹{due['PENDING AMOUNT'].sum():,.2f}")
+p3.info(f"📈 Active Cases: {len(due)}")
