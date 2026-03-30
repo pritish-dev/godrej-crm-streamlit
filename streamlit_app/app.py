@@ -14,154 +14,129 @@ from services.automation import (
 )
 
 st.set_page_config(layout="wide", page_title="Godrej CRM Dashboard")
-
 st.title("📊 Sales Dashboard")
 
-# -----------------------------
-# GOOGLE SHEETS CONNECTION
-# -----------------------------
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+# 1. CONNECTION
 try:
-    CREDS = Credentials.from_service_account_info(st.secrets["google"], scopes=SCOPES)
-except:
-    CREDS = Credentials.from_service_account_file("config/credentials.json", scopes=SCOPES)
-
-gc = gspread.authorize(CREDS)
-sh = gc.open_by_key("1wFpK-WokcZB6k1vzG7B6JO5TdGHrUwdgvVm_-UQse54")
-
-# -----------------------------
-# LOAD & CLEAN DATA
-# -----------------------------
-crm = get_df("CRM")
-team = get_df("Sales Team")
-
-if crm.empty:
-    st.warning("No CRM data found in the sheet.")
+    SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+    try:
+        CREDS = Credentials.from_service_account_info(st.secrets["google"], scopes=SCOPES)
+    except:
+        CREDS = Credentials.from_service_account_file("config/credentials.json", scopes=SCOPES)
+    gc = gspread.authorize(CREDS)
+    sh = gc.open_by_key("1wFpK-WokcZB6k1vzG7B6JO5TdGHrUwdgvVm_-UQse54")
+except Exception as e:
+    st.error(f"Connection Error: {e}")
     st.stop()
 
-# Standardize Columns
-crm.columns = [c.strip().upper() for c in crm.columns]
+# 2. DATA LOADING
+crm = get_df("CRM")
+if crm.empty:
+    st.warning("No CRM data found.")
+    st.stop()
 
-# Numeric Cleaning
+# 3. GLOBAL CLEANING
+crm.columns = [c.strip().upper() for c in crm.columns]
 for col in ["ORDER AMOUNT", "ADV RECEIVED"]:
     if col in crm.columns:
         crm[col] = pd.to_numeric(crm[col].astype(str).str.replace("[₹,]", "", regex=True), errors="coerce").fillna(0)
 
-# Date Cleaning - Crucial for the logic
+# Convert dates globally - using dayfirst=True for DD-MM-YYYY
 crm["DATE"] = pd.to_datetime(crm["DATE"], dayfirst=True, errors="coerce")
 crm["CUSTOMER DELIVERY DATE (TO BE)"] = pd.to_datetime(crm["CUSTOMER DELIVERY DATE (TO BE)"], dayfirst=True, errors="coerce")
 
 # -----------------------------
-# PENDING DELIVERY SECTION
+# ACTION CENTER (Moved UP to ensure visibility)
+# -----------------------------
+st.write("### 📲 WhatsApp Action Center")
+c1, c2, c3 = st.columns(3)
+
+with c1:
+    if st.button("🚀 Tomorrow's Alerts", use_container_width=True):
+        alerts = get_delivery_alerts_list()
+        if not alerts: st.info("No deliveries for tomorrow.")
+        else:
+            for p, m in alerts: st.link_button(f"Send to {p}", generate_whatsapp_link(p, m))
+
+with c2:
+    if st.button("💰 Payment Reminders", use_container_width=True):
+        p_alerts = get_payment_alerts_list()
+        if not p_alerts: st.info("No payments due in 7 days.")
+        else:
+            for p, m in p_alerts: st.link_button(f"Remind {p}", generate_whatsapp_link(p, m))
+
+with c3:
+    # TEST BUTTON
+    if st.button("🧪 Run Connection Test", use_container_width=True):
+        tests = get_test_alerts_list()
+        if not tests: st.warning("No Pending orders to test.")
+        else:
+            st.info("Test mode: First 3 pending orders.")
+            for p, m in tests: st.link_button(f"Test ({p})", generate_whatsapp_link(p, m))
+
+# -----------------------------
+# PENDING DELIVERY TABLE
 # -----------------------------
 st.divider()
 st.subheader("🚚 Pending Deliveries")
 
 try:
-    # 1. Filter and Copy
+    # Filter
     pending = crm[
         (crm["DELIVERY REMARKS"].str.upper().str.strip() == "PENDING") & 
         (crm["CUSTOMER DELIVERY DATE (TO BE)"].notna())
     ].copy()
 
-    # 2. Rename columns
+    # Rename
     pending = pending.rename(columns={
         "CUSTOMER DELIVERY DATE (TO BE)": "DELIVERY DATE",
         "DATE": "PURCHASE DATE"
     })
 
-    # 3. Sort: Latest Delivery Date on Top
+    # Sort
     pending = pending.sort_values(by="DELIVERY DATE", ascending=False)
 
-    # 4. Metrics & Styling
-    today_dt = datetime.now().date()
-
-    def highlight_overdue(row):
+    # Style
+    today = datetime.now().date()
+    def apply_style(row):
         try:
-            # Check if it's a valid date object before calling .date()
-            val = row["DELIVERY DATE"]
-            if pd.notnull(val) and hasattr(val, 'date'):
-                if val.date() < today_dt:
-                    return ['background-color: #ffcccc; color: black'] * len(row)
-        except:
-            pass
+            if pd.notnull(row["DELIVERY DATE"]) and row["DELIVERY DATE"].date() < today:
+                return ['background-color: #ffcccc'] * len(row)
+        except: pass
         return [''] * len(row)
 
-    # 5. Select and Order Columns
-    pend_cols = ["DELIVERY DATE", "CUSTOMER NAME", "CONTACT NUMBER", "PRODUCT NAME", "ORDER AMOUNT", "ADV RECEIVED", "SALES PERSON", "PURCHASE DATE", "DELIVERY REMARKS"]
-
-    # 6. Final Styled Table
-    # We wrap this in a sub-try so if the table fails, the buttons still show
-    try:
-        styled_p = pending[pend_cols].style.apply(highlight_overdue, axis=1).format({
-            "ORDER AMOUNT": "{:.2f}", 
-            "ADV RECEIVED": "{:.2f}",
+    cols_to_show = ["DELIVERY DATE", "CUSTOMER NAME", "CONTACT NUMBER", "PRODUCT NAME", "ORDER AMOUNT", "ADV RECEIVED", "SALES PERSON", "PURCHASE DATE", "DELIVERY REMARKS"]
+    
+    st.dataframe(
+        pending[cols_to_show].style.apply(apply_style, axis=1).format({
+            "ORDER AMOUNT": "{:.2f}", "ADV RECEIVED": "{:.2f}",
             "DELIVERY DATE": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else "",
             "PURCHASE DATE": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else ""
-        })
-        st.dataframe(styled_p, use_container_width=True)
-    except Exception as e:
-        st.error(f"Table display error: {e}")
-        st.dataframe(pending[pend_cols]) # Show raw table if styling fails
-
+        }), 
+        use_container_width=True
+    )
 except Exception as e:
-    st.error(f"Data filtering error: {e}")
+    st.error(f"Table could not load: {e}")
 
-# --- ALERT BUTTONS SECTION ---
-# This is now outside the try/except blocks to ensure visibility
-st.write("### 📲 WhatsApp Action Center")
-col_btn1, col_btn2 = st.columns(2)
-
-with col_btn1:
-    if st.button("🚀 Prepare Tomorrow's Alerts", use_container_width=True):
-        alerts = get_delivery_alerts_list()
-        if not alerts:
-            st.info("No deliveries found for tomorrow.")
-        else:
-            st.success(f"Found {len(alerts)} alerts:")
-            for phone, msg in alerts:
-                st.link_button(f"Send to {phone}", generate_whatsapp_link(phone, msg))
-
-with col_btn2:
-    if st.button("🧪 Run Connection Test", use_container_width=True):
-        test_alerts = get_test_alerts_list()
-        if not test_alerts:
-            st.warning("No 'PENDING' orders found to test.")
-        else:
-            st.info("🔧 Testing Mode: Showing first 3 pending orders.")
-            for phone, msg in test_alerts:
-                st.link_button(f"Test WhatsApp ({phone})", generate_whatsapp_link(phone, msg))
 # -----------------------------
-# PAYMENT DUE SECTION
+# PAYMENT DUE TABLE
 # -----------------------------
 st.divider()
 st.subheader("💰 Payment Due")
 
-crm["PENDING AMOUNT"] = crm["ORDER AMOUNT"] - crm["ADV RECEIVED"]
-due = crm[
-    (crm["PENDING AMOUNT"] > 0) & 
-    (crm["CUSTOMER DELIVERY DATE (TO BE)"].notna())
-].copy()
-
-due = due.sort_values(by="CUSTOMER DELIVERY DATE (TO BE)", ascending=False)
-
-pay_display_cols = ["CUSTOMER NAME", "ORDER AMOUNT", "ADV RECEIVED", "PENDING AMOUNT", "CUSTOMER DELIVERY DATE (TO BE)", "SALES PERSON"]
-
-def style_due(row):
-    color = 'background-color: #ffcccc; color: black' if row["CUSTOMER DELIVERY DATE (TO BE)"].date() < today_dt else ''
-    return [color] * len(row)
-
-st.dataframe(due[pay_display_cols].style.apply(style_due, axis=1).format({
-    "ORDER AMOUNT": "{:.2f}", 
-    "ADV RECEIVED": "{:.2f}", 
-    "PENDING AMOUNT": "{:.2f}",
-    "CUSTOMER DELIVERY DATE (TO BE)": lambda x: x.strftime('%d-%b-%Y')
-}), use_container_width=True)
-
-if st.button("📲 Prepare Payment Reminders"):
-    pay_alerts = get_payment_alerts_list()
-    if not pay_alerts:
-        st.info("No payments due for delivery in 7 days.")
-    else:
-        for p, m in pay_alerts:
-            st.link_button(f"Remind {p}", generate_whatsapp_link(p, m))
+try:
+    crm["PENDING AMOUNT"] = crm["ORDER AMOUNT"] - crm["ADV RECEIVED"]
+    due = crm[(crm["PENDING AMOUNT"] > 0) & (crm["CUSTOMER DELIVERY DATE (TO BE)"].notna())].copy()
+    due = due.sort_values(by="CUSTOMER DELIVERY DATE (TO BE)", ascending=False)
+    
+    pay_cols = ["CUSTOMER NAME", "ORDER AMOUNT", "ADV RECEIVED", "PENDING AMOUNT", "CUSTOMER DELIVERY DATE (TO BE)", "SALES PERSON"]
+    
+    st.dataframe(
+        due[pay_cols].style.format({
+            "ORDER AMOUNT": "{:.2f}", "ADV RECEIVED": "{:.2f}", "PENDING AMOUNT": "{:.2f}",
+            "CUSTOMER DELIVERY DATE (TO BE)": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else ""
+        }), 
+        use_container_width=True
+    )
+except Exception as e:
+    st.error(f"Payment table error: {e}")
