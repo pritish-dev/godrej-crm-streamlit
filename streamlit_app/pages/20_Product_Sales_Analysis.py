@@ -78,4 +78,72 @@ if not summary.empty:
     st.download_button(
         label="📥 Download Report (CSV for Excel)",
         data=csv_data,
-        file_name=f"Product_
+        file_name=f"Product_Sales_{selected_cat}_{selected_year}.csv",
+        mime="text/csv",
+    )
+
+    # ---------- 5. CSS FOR SCROLLABLE TABLE ----------
+    st.markdown("""
+        <style>
+            .table-container {
+                max-height: 400px; 
+                overflow-y: auto;
+                border: 1px solid #ccc;
+                width: fit-content;
+                margin-bottom: 20px;
+            }
+            .prod-table { width: auto !important; border-collapse: collapse; }
+            .prod-table thead th { 
+                position: sticky; top: 0; z-index: 10;
+                background-color: #f0f2f6; color: #000000 !important; 
+                font-weight: 900 !important; padding: 8px 15px !important; 
+                border: 1px solid #ccc; text-align: center;
+            }
+            .prod-table td { 
+                padding: 6px 15px !important; border: 1px solid #ccc; 
+                text-align: left; font-weight: bold; color: #000000;
+                white-space: nowrap;
+            }
+        </style>
+    """, unsafe_allow_html=True)
+
+    # ---------- 6. RENDER TABLE ----------
+    st.write(f"**{selected_cat} Sales Performance Table**")
+    html = (
+        summary.style
+        .format({"TOTAL QTY SOLD": "{:,.0f}"})
+        .set_table_attributes('class="prod-table"')
+        .to_html(index=False)
+    )
+    st.write(f'<div class="table-container">{html}</div>', unsafe_allow_html=True)
+
+    # ---------- 7. ALTAIR CHART WITH GOAL LINE ----------
+    st.markdown("---")
+    st.subheader(f"📊 Top 5 Products vs Target (100 Units)")
+    
+    top_5 = summary.head(5).copy()
+    
+    # 1. Bars
+    bars = alt.Chart(top_5).mark_bar(color='#2e7d32').encode(
+        x=alt.X('PRODUCT NAME:N', sort='-y', title='Product Name'),
+        y=alt.Y('TOTAL QTY SOLD:Q', title='Total Quantity Sold')
+    )
+
+    # 2. Goal Line (Red Dashed)
+    goal_df = pd.DataFrame({'y': [100]})
+    goal_line = alt.Chart(goal_df).mark_rule(
+        color='red', strokeDash=[5, 5], size=2
+    ).encode(y='y:Q')
+
+    # 3. Text Label
+    label_df = pd.DataFrame({'y': [100], 'text': ['Goal: 100 Units']})
+    goal_text = alt.Chart(label_df).mark_text(
+        align='left', dx=5, dy=-10, color='red', fontWeight='bold'
+    ).encode(y='y:Q', text='text:N')
+
+    # Combine
+    chart_layout = (bars + goal_line + goal_text).properties(height=400)
+    st.altair_chart(chart_layout, use_container_width=True)
+
+else:
+    st.info(f"No records found for {selected_cat} in {selected_year}.")
