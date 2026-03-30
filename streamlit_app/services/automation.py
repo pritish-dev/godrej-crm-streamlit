@@ -21,25 +21,37 @@ def get_sales_team_contacts():
     return contacts
 
 def create_whatsapp_table(df_group, type="DELIVERY"):
-    """Creates a text-based table for WhatsApp messages"""
+    """Creates a text-based table for WhatsApp messages with safe numeric handling"""
     table_text = f"*Pending {type.title()}s:*\n"
     table_text += "--------------------------\n"
     
     for _, row in df_group.iterrows():
+        # Helper to safely convert currency strings to numbers
+        def clean_val(val):
+            try:
+                if pd.isna(val): return 0.0
+                # Remove symbols and commas, then convert to float
+                clean = str(val).replace('₹', '').replace(',', '').strip()
+                return float(clean) if clean else 0.0
+            except:
+                return 0.0
+
         d_date = row["CUSTOMER DELIVERY DATE (TO BE)"].strftime('%d-%b') if pd.notnull(row["CUSTOMER DELIVERY DATE (TO BE)"]) else "N/A"
+        order_amt = clean_val(row.get("ORDER AMOUNT", 0))
+        adv_rec = clean_val(row.get("ADV RECEIVED", 0))
+        due = order_amt - adv_rec
         
         if type == "DELIVERY":
-            p_date = row["DATE"].strftime('%d-%b') if pd.notnull(row["DATE"]) else "N/A"
-            due = row["ORDER AMOUNT"] - row["ADV RECEIVED"]
+            p_date = row["DATE"].strftime('%d-%b') if pd.notnull(row.get("DATE")) else "N/A"
             table_text += f"📅 *DD:* {d_date} | *PD:* {p_date}\n"
-            table_text += f"👤 *Cust:* {row['CUSTOMER NAME']}\n"
-            table_text += f"🛋️ *Item:* {row['PRODUCT NAME']}\n"
-            table_text += f"💰 *Due:* ₹{due:,.0f}\n"
+            table_text += f"👤 *Cust:* {row.get('CUSTOMER NAME', 'N/A')}\n"
+            table_text += f"📞 *Ph:* {row.get('CONTACT NUMBER', 'N/A')}\n"
+            table_text += f"🛋️ *Item:* {row.get('PRODUCT NAME', 'N/A')}\n"
+            table_text += f"💰 *Adv:* ₹{adv_rec:,.0f} | *Due:* ₹{due:,.0f}\n"
         else: # PAYMENT
-            pending = row["ORDER AMOUNT"] - row["ADV RECEIVED"]
             table_text += f"📅 *Delivery Date:* {d_date}\n"
-            table_text += f"👤 *Cust:* {row['CUSTOMER NAME']}\n"
-            table_text += f"💰 *Balance Due:* ₹{pending:,.0f}\n"
+            table_text += f"👤 *Cust:* {row.get('CUSTOMER NAME', 'N/A')}\n"
+            table_text += f"💰 *Balance Due:* ₹{due:,.0f}\n"
             
         table_text += "--------------------------\n"
     return table_text
