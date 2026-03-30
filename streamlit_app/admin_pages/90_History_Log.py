@@ -1,15 +1,21 @@
-# pages/90_History_Log.py
 import streamlit as st
 import pandas as pd
-from services.auth import AuthService
 from services.sheets import get_df
 
-st.set_page_config(layout="wide")
-st.title("📝 Change History (Admin View)")
+# 1. PAGE CONFIG
+st.set_page_config(layout="wide", page_title="Admin | Change History")
 
-auth = AuthService()
-if not auth.login_block(min_role="Admin"):
-    st.stop()
+# 2. 🔐 ADMIN RESTRICTION CHECK
+# This looks at the session state we set in app.py
+if "admin_logged_in" not in st.session_state or not st.session_state.admin_logged_in:
+    st.title("📝 Change History")
+    st.error("🚫 **Access Denied.** This page is restricted to Administrators only.")
+    st.info("Please go to the **Home Page** and login with the Admin password to view this log.")
+    st.stop() # Stops the rest of the code from running
+
+# 3. ADMIN CONTENT (Only runs if logged in)
+st.title("📝 Change History (Admin View)")
+st.success(f"Logged in as Admin")
 
 log_df = get_df("History Log")
 

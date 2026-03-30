@@ -6,14 +6,46 @@ from services.automation import send_delivery_alerts, send_payment_alerts
 import gspread
 from google.oauth2.service_account import Credentials
 
-st.set_page_config(layout="wide")
-st.title("📊 Sales Dashboard")
+st.set_page_config(layout="wide", page_title="Godrej CRM Dashboard")
+
+# -----------------------------
+# 🔐 ADMIN AUTHENTICATION SYSTEM
+# -----------------------------
+if "admin_logged_in" not in st.session_state:
+    st.session_state.admin_logged_in = False
+
+st.sidebar.title("🔐 Admin Access")
+if not st.session_state.admin_logged_in:
+    admin_password = st.sidebar.text_input("Enter Admin Password", type="password")
+    if st.sidebar.button("Login"):
+        if admin_password == "Godrej123": # <--- CHANGE YOUR PASSWORD HERE
+            st.session_state.admin_logged_in = True
+            st.rerun()
+        else:
+            st.sidebar.error("Incorrect Password")
+else:
+    st.sidebar.success("Logged in as Admin")
+    if st.sidebar.button("Logout"):
+        st.session_state.admin_logged_in = False
+        st.rerun()
+
+# -----------------------------
+# 🛑 ACCESS CONTROL CHECK
+# -----------------------------
+if not st.session_state.admin_logged_in:
+    st.title("📊 Godrej Sales Portal")
+    st.info("Welcome! Please use the sidebar to navigate to **Daily Sales** or **Sales Insights**. Admin features are hidden.")
+    st.stop() # Stops the script here for non-admins
+
+# -----------------------------
+# THE REST OF THE CODE ONLY RUNS FOR ADMINS
+# -----------------------------
+st.title("📊 Admin Sales Dashboard")
 
 # -----------------------------
 # GOOGLE SHEETS CONNECTION
 # -----------------------------
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-
 try:
     CREDS = Credentials.from_service_account_info(st.secrets["google"], scopes=SCOPES)
 except:
@@ -100,7 +132,6 @@ cols = ["DATE","CUSTOMER NAME","CONTACT NUMBER","PRODUCT NAME","ORDER AMOUNT","A
 df_display = crm[cols].copy()
 df_display["DATE"] = df_display["DATE"].apply(format_date)
 
-# Apply 2 decimal formatting for display
 st.dataframe(df_display.style.format({"ORDER AMOUNT": "{:.2f}", "ADV RECEIVED": "{:.2f}"}), use_container_width=True)
 
 # -----------------------------
@@ -149,7 +180,7 @@ if st.button("Save Target"):
         ws.append_row([selected_sales, current_month, current_year, target_value])
     
     st.success("Target Saved")
-    st.cache_data.clear() # Clears cache so table updates immediately
+    st.cache_data.clear() 
     st.rerun()
 
 # -----------------------------
@@ -182,7 +213,7 @@ df_targets = pd.DataFrame(rows)
 df_targets = df_targets[(df_targets["Target"] > 0) | (df_targets["Achievement"] > 0)]
 df_targets = df_targets.sort_values(by="Achievement", ascending=False)
 
-# MEDALS FIX (Handles case where rows < 3)
+# MEDALS FIX
 medals = ["🥇","🥈","🥉"]
 num_rows = len(df_targets)
 if num_rows > 0:
@@ -196,7 +227,6 @@ def highlight(row):
         return ['background-color: lightgreen'] * len(row)
     return [''] * len(row)
 
-# APPLY FORMATTING TO TABLE
 styled_targets = df_targets.style.apply(highlight, axis=1).format({
     "Target": "{:.2f}",
     "Home Storage": "{:.2f}",
