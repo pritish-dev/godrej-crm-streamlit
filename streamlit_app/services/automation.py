@@ -1,160 +1,102 @@
 import urllib.parse
 import pandas as pd
 from datetime import datetime, timedelta
-import pytz # Standard library for timezones
+import pytz
 from services.sheets import get_df
 
 def format_phone(num):
     digits = "".join(filter(str.isdigit, str(num)))
-    if len(digits) == 10:
-        return "91" + digits
+    if len(digits) == 10: return "91" + digits
     return digits
 
 def get_sales_team_contacts():
     df = get_df("Sales Team")
     contacts = {}
     if df is not None and not df.empty:
-        # Standardize columns to handle mixed case from Sheets
         df.columns = [c.strip().upper() for c in df.columns]
         for _, row in df.iterrows():
             name = str(row.get("NAME", "")).strip().lower()
             phone = format_phone(row.get("CONTACT NUMBER", ""))
-            if name and phone:
-                contacts[name] = phone
+            if name and phone: contacts[name] = phone
     return contacts
+
+def create_whatsapp_table(df_group):
+    """Creates a text-based table for WhatsApp messages"""
+    table_text = "*Deliveries to Schedule:*\n"
+    table_text += "--------------------------\n"
+    
+    for _, row in df_group.iterrows():
+        d_date = row["CUSTOMER DELIVERY DATE (TO BE)"].strftime('%d-%b') if pd.notnull(row["CUSTOMER DELIVERY DATE (TO BE)"]) else "N/A"
+        p_date = row["DATE"].strftime('%d-%b') if pd.notnull(row["DATE"]) else "N/A"
+        due = row["ORDER AMOUNT"] - row["ADV RECEIVED"]
+        
+        table_text += f"📅 *DD:* {d_date} | *PD:* {p_date}\n"
+        table_text += f"👤 *Cust:* {row['CUSTOMER NAME']}\n"
+        table_text += f"📞 *Ph:* {row['CONTACT NUMBER']}\n"
+        table_text += f"🛋️ *Item:* {row['PRODUCT NAME']}\n"
+        table_text += f"💰 *Adv:* ₹{row['ADV RECEIVED']:,} | *Due:* ₹{due:,}\n"
+        table_text += "--------------------------\n"
+    return table_text
+
+def get_delivery_alerts_list():
+    df = get_df("CRM")
+    contacts = get_sales_team_contacts()
+    IST = pytz.timezone('Asia/Kolkata')
+    target_date = datetime.now(IST).date() + timedelta(days=1)
+    
+    df.columns = [c.strip().upper() for c in df.columns]
+    df["CUSTOMER DELIVERY DATE (TO BE)"] = pd.to_datetime(df["CUSTOMER DELIVERY DATE (TO BE)"], dayfirst=True, errors='coerce')
+    df["DATE"] = pd.to_datetime(df["DATE"], dayfirst=True, errors='coerce')
+    
+    # Filter for tomorrow's pending deliveries
+    mask = (df["DELIVERY REMARKS"].str.upper().str.strip() == "PENDING") & \
+           (df["CUSTOMER DELIVERY DATE (TO BE)"].dt.date == target_date)
+    tomorrow_df = df[mask].copy()
+    
+    if tomorrow_df.empty: return []
+
+    alerts = []
+    # Group by Sales Person
+    for sp_name, group in tomorrow_df.groupby("SALES PERSON"):
+        sp_name_clean = str(sp_name).strip().lower()
+        table_msg = create_whatsapp_table(group)
+        final_msg = f"🚚 *DAILY DELIVERY ALERT*\n\nHello {sp_name.title()},\n\n{table_msg}\n⚠️ Please confirm transport for these orders!"
+        
+        # Determine who gets this specific salesperson's list
+        recipients = set()
+        if sp_name_clean in contacts: recipients.add(contacts[sp_name_clean])
+        if "shaktiman" in contacts: recipients.add(contacts["shaktiman"])
+        if "swati" in contacts: recipients.add(contacts["swati"]) # 'Me'
+
+        for phone in recipients:
+            alerts.append((phone, final_msg))
+            
+    return alerts
+
+def get_test_alerts_list():
+    """Generates a sample table using the first 3 pending orders for testing"""
+    df = get_df("CRM")
+    contacts = get_sales_team_contacts()
+    df.columns = [c.strip().upper() for c in df.columns]
+    
+    # Clean data for formatting
+    df["CUSTOMER DELIVERY DATE (TO BE)"] = pd.to_datetime(df["CUSTOMER DELIVERY DATE (TO BE)"], dayfirst=True, errors='coerce')
+    df["DATE"] = pd.to_datetime(df["DATE"], dayfirst=True, errors='coerce')
+    
+    test_df = df[df["DELIVERY REMARKS"].str.upper().str.strip() == "PENDING"].head(3)
+    
+    if test_df.empty: return []
+    
+    sample_table = create_whatsapp_table(test_df)
+    test_msg = f"🧪 *TEST ALERT: TABULAR FORMAT*\n\n{sample_table}\n✅ Link is working!"
+    
+    alerts = []
+    # Test only sends to Shaktiman and Swati to avoid disturbing the team
+    for boss in ["shaktiman", "swati"]:
+        if boss in contacts:
+            alerts.append((contacts[boss], test_msg))
+    return alerts
 
 def generate_whatsapp_link(phone, message):
     encoded_msg = urllib.parse.quote(message)
     return f"https://wa.me/{phone}?text={encoded_msg}"
-
-def get_delivery_alerts_list():
-    """Returns a list of (phone, message) tuples for tomorrow's deliveries"""
-    df = get_df("CRM")
-    contacts = get_sales_team_contacts()
-    
-    # 1. FIX TIMEZONE: Force IST (India Standard Time)
-    # This prevents the "Server is in UTC" bug
-    IST = pytz.timezone('Asia/Kolkata')
-    today = datetime.now(IST).date()
-    target_date = today + timedelta(days=1) 
-    
-    alerts = []
-    
-    # 2. Clean Column Names
-    df.columns = [c.strip().upper() for c in df.columns]
-    date_col = "CUSTOMER DELIVERY DATE (TO BE)"
-    
-    if date_col not in df.columns:
-        return []
-
-    # 3. Process Rows
-    for _, row in df.iterrows():
-        raw_date = row.get(date_col)
-        if pd.isna(raw_date) or str(raw_date).strip() == "":
-            continue
-
-        try:
-            # Try multiple date formats to be safe
-            delivery_date = pd.to_datetime(raw_date, dayfirst=True, errors='coerce').date()
-        except:
-            continue
-
-        if pd.isna(delivery_date):
-            continue
-
-        # 4. The Logic Check
-        remarks = str(row.get("DELIVERY REMARKS", "")).strip().upper()
-        
-        # Check if Date matches Tomorrow AND Remarks is Pending
-        if delivery_date == target_date and remarks == "PENDING":
-            customer = row.get("CUSTOMER NAME", "Customer")
-            product = row.get("PRODUCT NAME", "Godrej Product")
-            order_no = row.get("ORDER NO", "N/A")
-            
-            msg = f"🚚 *DELIVERY ALERT*\n\n*Customer:* {customer}\n*Product:* {product}\n*Order No:* {order_no}\n*Date:* {delivery_date.strftime('%d-%b-%Y')}\n\n⚠️ Scheduled for tomorrow. Please confirm transport!"
-            
-            # Identify Salesperson
-            sp = str(row.get("SALES PERSON", "")).strip().lower()
-            
-            # Use a set to avoid duplicate messages to the same person
-            targets = set()
-            if sp in contacts: targets.add(contacts[sp])
-            if "shaktiman" in contacts: targets.add(contacts["shaktiman"])
-            if "pritish" in contacts: targets.add(contacts["pritish"])
-            if "swati" in contacts: targets.add(contacts["swati"])
-
-            for phone in targets:
-                alerts.append((phone, msg))
-                    
-    return alerts
-
-def get_payment_alerts_list():
-    """Returns a list of (phone, message) tuples for payments due in 7 days"""
-    df = get_df("CRM")
-    contacts = get_sales_team_contacts()
-    
-    IST = pytz.timezone('Asia/Kolkata')
-    target_date = datetime.now(IST).date() + timedelta(days=7)
-    
-    alerts = []
-    df.columns = [c.strip().upper() for c in df.columns]
-
-    for _, row in df.iterrows():
-        try:
-            raw_date = row.get("CUSTOMER DELIVERY DATE (TO BE)")
-            d_date = pd.to_datetime(raw_date, dayfirst=True, errors='coerce').date()
-        except: continue
-
-        if d_date == target_date:
-            try:
-                # Cleaner numeric conversion
-                order_amt = float(str(row.get("ORDER AMOUNT", 0)).replace(",","").replace("₹","").strip())
-                adv = float(str(row.get("ADV RECEIVED", 0)).replace(",","").replace("₹","").strip())
-                due = order_amt - adv
-            except: due = 0
-
-            if due > 0:
-                msg = f"💰 *PAYMENT REMINDER*\n\n*Customer:* {row.get('CUSTOMER NAME')}\n*Due:* ₹{due:,.2f}\n*Delivery Date:* {d_date.strftime('%d-%b-%Y')}\n\n⚠️ Payment required before delivery!"
-                
-                sp = str(row.get("SALES PERSON")).strip().lower()
-                targets = set()
-                if sp in contacts: targets.add(contacts[sp])
-                if "shaktiman" in contacts: targets.add(contacts["shaktiman"])
-                if "pritish" in contacts: targets.add(contacts["pritish"])
-                if "swati" in contacts: targets.add(contacts["swati"])
-
-                for phone in targets:
-                    alerts.append((phone, msg))
-    return alerts
-    
-# Add this to services/automation.py
-
-def get_test_alerts_list():
-    """Returns a list of alerts for the first 3 PENDING orders, ignoring the date"""
-    df = get_df("CRM")
-    contacts = get_sales_team_contacts()
-    alerts = []
-    
-    df.columns = [c.strip().upper() for c in df.columns]
-    
-    # Filter for any row that is PENDING, regardless of date
-    pending_df = df[df["DELIVERY REMARKS"].str.upper().str.strip() == "PENDING"].head(3)
-    
-    for _, row in pending_df.iterrows():
-        customer = row.get("CUSTOMER NAME", "Test Customer")
-        product = row.get("PRODUCT NAME", "Test Product")
-        delivery_date = row.get("CUSTOMER DELIVERY DATE (TO BE)", "No Date")
-        
-        msg = f"🧪 *TEST ALERT*\n\n*Customer:* {customer}\n*Product:* {product}\n*Target Date:* {delivery_date}\n\n✅ If you see this, your WhatsApp link is working!"
-        
-        sp = str(row.get("SALES PERSON", "")).strip().lower()
-        
-        # In test mode, we only send to the salesperson or 'pritish' to avoid spamming the whole team
-        targets = set()
-        if sp in contacts: targets.add(contacts[sp])
-        if "pritish" in contacts: targets.add(contacts["pritish"])
-
-        for phone in targets:
-            alerts.append((phone, msg))
-            
-    return alerts

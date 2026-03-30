@@ -1,9 +1,11 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-from services.sheets import get_df
 import gspread
 from google.oauth2.service_account import Credentials
+
+# Import the automation and sheet functions
+from services.sheets import get_df
 from services.automation import (
     get_delivery_alerts_list, 
     get_payment_alerts_list, 
@@ -14,137 +16,130 @@ from services.automation import (
 st.set_page_config(layout="wide", page_title="Godrej CRM Dashboard")
 st.title("📊 Sales Dashboard")
 
-# --- CONNECTION ---
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-try:
-    CREDS = Credentials.from_service_account_info(st.secrets["google"], scopes=SCOPES)
-except:
-    CREDS = Credentials.from_service_account_file("config/credentials.json", scopes=SCOPES)
-gc = gspread.authorize(CREDS)
-sh = gc.open_by_key("1wFpK-WokcZB6k1vzG7B6JO5TdGHrUwdgvVm_-UQse54")
+# --- 1. CONNECTION & DATA LOADING ---
+@st.cache_data(ttl=60)
+def load_and_clean_crm():
+    df = get_df("CRM")
+    if df is None or df.empty:
+        return pd.DataFrame()
+    
+    # Standardize headers
+    df.columns = [c.strip().upper() for c in df.columns]
+    
+    # Clean Currency/Numbers
+    for col in ["ORDER AMOUNT", "ADV RECEIVED"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col].astype(str).str.replace(r'[₹,]', '', regex=True), errors='coerce').fillna(0)
 
-# --- LOAD & CLEAN ---
-crm = get_df("CRM")
-team = get_df("Sales Team")
-targets_sheet = get_df("Targets")
+    # Clean Dates (Handles DD-MM-YYYY)
+    date_cols = ["DATE", "CUSTOMER DELIVERY DATE (TO BE)"]
+    for col in date_cols:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], dayfirst=True, errors='coerce')
+            
+    return df
+
+crm = load_and_clean_crm()
 
 if crm.empty:
-    st.warning("No CRM data found")
+    st.error("Could not load CRM data. Please check your Google Sheet connection.")
     st.stop()
 
-crm.columns = [c.strip().upper() for c in crm.columns]
-for col in ["ORDER AMOUNT", "ADV RECEIVED"]:
-    if col in crm.columns:
-        crm[col] = pd.to_numeric(crm[col].astype(str).str.replace("[₹,]", "", regex=True), errors="coerce").fillna(0)
+# --- 2. ALL ORDERS TABLE ---
+st.subheader("📋 All Orders (Full History)")
+all_cols = ["DATE", "CUSTOMER NAME", "CONTACT NUMBER", "PRODUCT NAME", "ORDER AMOUNT", "ADV RECEIVED", "SALES PERSON", "CUSTOMER DELIVERY DATE (TO BE)", "DELIVERY REMARKS"]
 
-# Ensure Date objects for logic
-crm["DATE"] = pd.to_datetime(crm["DATE"], dayfirst=True, errors="coerce")
-crm["CUSTOMER DELIVERY DATE (TO BE)"] = pd.to_datetime(crm["CUSTOMER DELIVERY DATE (TO BE)"], dayfirst=True, errors="coerce")
+# Format dates for display only
+all_orders_disp = crm[all_cols].copy()
+st.dataframe(all_orders_disp.style.format({
+    "ORDER AMOUNT": "{:.2f}", "ADV RECEIVED": "{:.2f}",
+    "DATE": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else "",
+    "CUSTOMER DELIVERY DATE (TO BE)": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else ""
+}), use_container_width=True)
 
-# --- ALL ORDERS TABLE ---
-st.subheader("📋 All Orders (Till Date)")
-cols = ["DATE","CUSTOMER NAME","CONTACT NUMBER","PRODUCT NAME","ORDER AMOUNT","ADV RECEIVED","SALES PERSON","CUSTOMER DELIVERY DATE (TO BE)","DELIVERY REMARKS"]
-df_disp = crm[cols].copy()
-df_disp["DATE"] = df_disp["DATE"].dt.strftime("%d-%b-%Y")
-df_disp["CUSTOMER DELIVERY DATE (TO BE)"] = df_disp["CUSTOMER DELIVERY DATE (TO BE)"].dt.strftime("%d-%b-%Y")
-st.dataframe(df_disp, use_container_width=True)
-
-# -----------------------------
-# PENDING DELIVERY SECTION
-# -----------------------------
+# --- 3. PENDING DELIVERY SECTION ---
 st.divider()
 st.subheader("🚚 Pending Deliveries")
 
 # Filter for Pending and valid date
-pending = crm[
-    (crm["DELIVERY REMARKS"].str.upper().str.strip() == "PENDING") & 
-    (crm["CUSTOMER DELIVERY DATE (TO BE)"].notna())
-].copy()
+mask_pending = crm["DELIVERY REMARKS"].astype(str).str.upper().str.strip() == "PENDING"
+mask_date = crm["CUSTOMER DELIVERY DATE (TO BE)"].notna()
+pending = crm[mask_pending & mask_date].copy()
 
-# Sort: Latest Delivery Date on Top
-pending = pending.sort_values(by="CUSTOMER DELIVERY DATE (TO BE)", ascending=False)
+if not pending.empty:
+    pending = pending.rename(columns={"CUSTOMER DELIVERY DATE (TO BE)": "DELIVERY DATE", "DATE": "PURCHASE DATE"})
+    pending = pending.sort_values(by="DELIVERY DATE", ascending=False)
+    
+    today = datetime.now().date()
+    def style_overdue(row):
+        if pd.notnull(row["DELIVERY DATE"]) and row["DELIVERY DATE"].date() < today:
+            return ['background-color: #ffcccc; color: black'] * len(row)
+        return [''] * len(row)
 
-# Metrics & Styling
-today_dt = datetime.now().date()
-def highlight_overdue(row):
-    # Check if delivery date is in the past
-    color = 'background-color: #ffcccc; color: black' if row["DELIVERY DATE"].date() < today_dt else ''
-    return [color] * len(row)
+    pend_cols = ["DELIVERY DATE", "CUSTOMER NAME", "CONTACT NUMBER", "PRODUCT NAME", "ORDER AMOUNT", "ADV RECEIVED", "SALES PERSON", "PURCHASE DATE", "DELIVERY REMARKS"]
+    st.dataframe(pending[pend_cols].style.apply(style_overdue, axis=1).format({
+        "ORDER AMOUNT": "{:.2f}", "ADV RECEIVED": "{:.2f}",
+        "DELIVERY DATE": lambda x: x.strftime('%d-%b-%Y'),
+        "PURCHASE DATE": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else ""
+    }), use_container_width=True)
+else:
+    st.info("No pending deliveries found.")
 
-# Prepare display table
-pend_display = pending.rename(columns={
-    "CUSTOMER DELIVERY DATE (TO BE)": "DELIVERY DATE",
-    "DATE": "PURCHASE DATE"
-})
-
-# Select and Order Columns
-pend_cols = ["DELIVERY DATE", "CUSTOMER NAME", "CONTACT NUMBER", "PRODUCT NAME", "ORDER AMOUNT", "ADV RECEIVED", "SALES PERSON", "PURCHASE DATE", "DELIVERY REMARKS"]
-
-styled_p = pend_display[pend_cols].style.apply(highlight_overdue, axis=1).format({
-    "ORDER AMOUNT": "{:.2f}", 
-    "ADV RECEIVED": "{:.2f}",
-    "DELIVERY DATE": lambda x: x.strftime('%d-%b-%Y'),
-    "PURCHASE DATE": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else ""
-})
-
-st.dataframe(styled_p, use_container_width=True)
-
-# --- ALERT BUTTONS SECTION ---
+# --- 4. WHATSAPP ACTION CENTER ---
 st.write("### 📲 WhatsApp Action Center")
-col_btn1, col_btn2 = st.columns(2)
+st.caption("Grouped alerts will include Manager Shaktiman and Swati for every message.")
+c1, c2, c3 = st.columns(3)
 
-with col_btn1:
-    if st.button("🚀 Prepare Tomorrow's Alerts", use_container_width=True):
+with c1:
+    if st.button("🚀 Prepare Grouped Delivery Alerts", use_container_width=True):
         alerts = get_delivery_alerts_list()
         if not alerts:
-            st.info("No deliveries found for tomorrow (31-Mar-2026).")
+            st.info("No deliveries scheduled for tomorrow.")
         else:
-            st.success(f"Found {len(alerts)} alerts to send:")
+            st.success(f"Generated {len(alerts)} grouped messages.")
             for phone, msg in alerts:
-                st.link_button(f"Send to {phone}", generate_whatsapp_link(phone, msg))
+                st.link_button(f"Send Alert to {phone}", generate_whatsapp_link(phone, msg))
 
-with col_btn2:
-    # THIS IS THE BUTTON YOU WERE MISSING
-    if st.button("🧪 Run Connection Test", use_container_width=True):
-        test_alerts = get_test_alerts_list()
-        if not test_alerts:
-            st.warning("No 'PENDING' orders found in CRM to run a test.")
+with c2:
+    if st.button("💰 Prepare Payment Reminders", use_container_width=True):
+        pay_alerts = get_payment_alerts_list()
+        if not pay_alerts:
+            st.info("No payments due for delivery in 7 days.")
         else:
-            st.info("🔧 Testing Mode: Showing first 3 pending orders.")
-            for phone, msg in test_alerts:
-                st.link_button(f"Test WhatsApp ({phone})", generate_whatsapp_link(phone, msg))
+            for p, m in pay_alerts:
+                st.link_button(f"Remind {p}", generate_whatsapp_link(p, m))
 
-# -----------------------------
-# PAYMENT DUE SECTION
-# -----------------------------
+with c3:
+    # THE TEST BUTTON - Uses tabular format
+    if st.button("🧪 RUN TABULAR TEST ALERT", use_container_width=True, type="primary"):
+        tests = get_test_alerts_list()
+        if not tests:
+            st.warning("No 'PENDING' orders found to test.")
+        else:
+            st.info(f"Test Mode: Displaying first 3 pending cases.")
+            for p, m in tests:
+                st.link_button(f"Test WhatsApp ({p})", generate_whatsapp_link(p, m))
+
+# --- 5. PAYMENT DUE SECTION ---
 st.divider()
 st.subheader("💰 Payment Due")
 
 crm["PENDING AMOUNT"] = crm["ORDER AMOUNT"] - crm["ADV RECEIVED"]
-due = crm[
-    (crm["PENDING AMOUNT"] > 0) & 
-    (crm["CUSTOMER DELIVERY DATE (TO BE)"].notna())
-].copy()
+due = crm[(crm["PENDING AMOUNT"] > 0) & (crm["CUSTOMER DELIVERY DATE (TO BE)"].notna())].copy()
 
-due = due.sort_values(by="CUSTOMER DELIVERY DATE (TO BE)", ascending=False)
+if not due.empty:
+    due = due.rename(columns={"CUSTOMER DELIVERY DATE (TO BE)": "DELIVERY DATE"})
+    due = due.sort_values(by="DELIVERY DATE", ascending=False)
+    
+    def style_due(row):
+        if pd.notnull(row["DELIVERY DATE"]) and row["DELIVERY DATE"].date() < today:
+            return ['background-color: #ffcccc; color: black'] * len(row)
+        return [''] * len(row)
 
-pay_display_cols = ["CUSTOMER NAME", "ORDER AMOUNT", "ADV RECEIVED", "PENDING AMOUNT", "CUSTOMER DELIVERY DATE (TO BE)", "SALES PERSON"]
-
-def style_due(row):
-    color = 'background-color: #ffcccc; color: black' if row["CUSTOMER DELIVERY DATE (TO BE)"].date() < today_dt else ''
-    return [color] * len(row)
-
-st.dataframe(due[pay_display_cols].style.apply(style_due, axis=1).format({
-    "ORDER AMOUNT": "{:.2f}", 
-    "ADV RECEIVED": "{:.2f}", 
-    "PENDING AMOUNT": "{:.2f}",
-    "CUSTOMER DELIVERY DATE (TO BE)": lambda x: x.strftime('%d-%b-%Y')
-}), use_container_width=True)
-
-if st.button("📲 Prepare Payment Reminders"):
-    pay_alerts = get_payment_alerts_list()
-    if not pay_alerts:
-        st.info("No payments due for delivery in 7 days.")
-    else:
-        for p, m in pay_alerts:
-            st.link_button(f"Remind {p}", generate_whatsapp_link(p, m))
+    due_cols = ["DELIVERY DATE", "CUSTOMER NAME", "ORDER AMOUNT", "ADV RECEIVED", "PENDING AMOUNT", "SALES PERSON"]
+    st.dataframe(due[due_cols].style.apply(style_due, axis=1).format({
+        "ORDER AMOUNT": "{:.2f}", "ADV RECEIVED": "{:.2f}", "PENDING AMOUNT": "{:.2f}",
+        "DELIVERY DATE": lambda x: x.strftime('%d-%b-%Y')
+    }), use_container_width=True)
+else:
+    st.info("No outstanding payments found.")
