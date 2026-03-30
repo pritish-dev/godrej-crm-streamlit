@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from services.sheets import get_df
+import altair as alt
 
 st.set_page_config(page_title="Product Sales Analysis", layout="wide")
 st.title("📦 Product Sales Performance")
@@ -77,64 +78,4 @@ if not summary.empty:
     st.download_button(
         label="📥 Download Report (CSV for Excel)",
         data=csv_data,
-        file_name=f"Product_Sales_{selected_cat}_{selected_year}.csv",
-        mime="text/csv",
-    )
-
-    # ---------- 5. CSS FOR SCROLLABLE TABLE & STICKY HEADERS ----------
-    st.markdown("""
-        <style>
-            .table-container {
-                max-height: 400px; /* Limits height to ~10-12 rows */
-                overflow-y: auto;
-                overflow-x: hidden;
-                border: 1px solid #ccc;
-                width: fit-content;
-            }
-            .prod-table { 
-                width: auto !important; 
-                border-collapse: collapse; 
-            }
-            .prod-table thead th { 
-                position: sticky; 
-                top: 0; 
-                z-index: 10;
-                background-color: #f0f2f6; 
-                color: #000000 !important; 
-                font-weight: 900 !important; 
-                padding: 8px 15px !important; 
-                border: 1px solid #ccc; 
-                text-align: center;
-            }
-            .prod-table td { 
-                padding: 6px 15px !important; 
-                border: 1px solid #ccc; 
-                text-align: left; 
-                font-weight: bold; 
-                color: #000000;
-                white-space: nowrap;
-            }
-        </style>
-    """, unsafe_allow_html=True)
-
-    # ---------- 6. SIDE-BY-SIDE LAYOUT (TABLE & CHART) ----------
-    col_table, col_chart = st.columns([1, 1])
-
-    with col_table:
-        st.write(f"**{selected_cat} Sales Table**")
-        html = (
-            summary.style
-            .format({"TOTAL QTY SOLD": "{:,.0f}"})
-            .set_table_attributes('class="prod-table"')
-            .to_html(index=False)
-        )
-        # Wrap the HTML in our scrollable container
-        st.write(f'<div class="table-container">{html}</div>', unsafe_allow_html=True)
-
-    with col_chart:
-        st.write(f"**Top 5 Performance Chart**")
-        top_5 = summary.head(5).copy()
-        st.bar_chart(data=top_5, x="PRODUCT NAME", y="TOTAL QTY SOLD", color="#2e7d32")
-
-else:
-    st.info(f"No records found for {selected_cat} in {selected_year}.")
+        file_name=f"Product_
