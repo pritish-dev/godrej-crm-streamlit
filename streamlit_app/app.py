@@ -57,47 +57,80 @@ crm["CUSTOMER DELIVERY DATE (TO BE)"] = pd.to_datetime(crm["CUSTOMER DELIVERY DA
 st.divider()
 st.subheader("🚚 Pending Deliveries")
 
-# 1. Filter and Copy
-pending = crm[
-    (crm["DELIVERY REMARKS"].str.upper().str.strip() == "PENDING") & 
-    (crm["CUSTOMER DELIVERY DATE (TO BE)"].notna())
-].copy()
+try:
+    # 1. Filter and Copy
+    pending = crm[
+        (crm["DELIVERY REMARKS"].str.upper().str.strip() == "PENDING") & 
+        (crm["CUSTOMER DELIVERY DATE (TO BE)"].notna())
+    ].copy()
 
-# 2. Rename columns FIRST so the styling function can find "DELIVERY DATE"
-pending = pending.rename(columns={
-    "CUSTOMER DELIVERY DATE (TO BE)": "DELIVERY DATE",
-    "DATE": "PURCHASE DATE"
-})
+    # 2. Rename columns
+    pending = pending.rename(columns={
+        "CUSTOMER DELIVERY DATE (TO BE)": "DELIVERY DATE",
+        "DATE": "PURCHASE DATE"
+    })
 
-# 3. Sort: Latest Delivery Date on Top
-pending = pending.sort_values(by="DELIVERY DATE", ascending=False)
+    # 3. Sort: Latest Delivery Date on Top
+    pending = pending.sort_values(by="DELIVERY DATE", ascending=False)
 
-# 4. Metrics & Styling
-today_dt = datetime.now().date()
+    # 4. Metrics & Styling
+    today_dt = datetime.now().date()
 
-def highlight_overdue(row):
-    # CRITICAL FIX: Ensure we use the correct column name and .date() conversion
+    def highlight_overdue(row):
+        try:
+            # Check if it's a valid date object before calling .date()
+            val = row["DELIVERY DATE"]
+            if pd.notnull(val) and hasattr(val, 'date'):
+                if val.date() < today_dt:
+                    return ['background-color: #ffcccc; color: black'] * len(row)
+        except:
+            pass
+        return [''] * len(row)
+
+    # 5. Select and Order Columns
+    pend_cols = ["DELIVERY DATE", "CUSTOMER NAME", "CONTACT NUMBER", "PRODUCT NAME", "ORDER AMOUNT", "ADV RECEIVED", "SALES PERSON", "PURCHASE DATE", "DELIVERY REMARKS"]
+
+    # 6. Final Styled Table
+    # We wrap this in a sub-try so if the table fails, the buttons still show
     try:
-        if pd.notnull(row["DELIVERY DATE"]) and row["DELIVERY DATE"].date() < today_dt:
-            return ['background-color: #ffcccc; color: black'] * len(row)
-    except:
-        pass
-    return [''] * len(row)
+        styled_p = pending[pend_cols].style.apply(highlight_overdue, axis=1).format({
+            "ORDER AMOUNT": "{:.2f}", 
+            "ADV RECEIVED": "{:.2f}",
+            "DELIVERY DATE": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else "",
+            "PURCHASE DATE": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else ""
+        })
+        st.dataframe(styled_p, use_container_width=True)
+    except Exception as e:
+        st.error(f"Table display error: {e}")
+        st.dataframe(pending[pend_cols]) # Show raw table if styling fails
 
-# 5. Select and Order Columns
-pend_cols = ["DELIVERY DATE", "CUSTOMER NAME", "CONTACT NUMBER", "PRODUCT NAME", "ORDER AMOUNT", "ADV RECEIVED", "SALES PERSON", "PURCHASE DATE", "DELIVERY REMARKS"]
+except Exception as e:
+    st.error(f"Data filtering error: {e}")
 
-# 6. Apply Style and Format
-# We use pending[pend_cols] to ensure we only style the columns we are displaying
-styled_p = pending[pend_cols].style.apply(highlight_overdue, axis=1).format({
-    "ORDER AMOUNT": "{:.2f}", 
-    "ADV RECEIVED": "{:.2f}",
-    "DELIVERY DATE": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else "",
-    "PURCHASE DATE": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else ""
-})
+# --- ALERT BUTTONS SECTION ---
+# This is now outside the try/except blocks to ensure visibility
+st.write("### 📲 WhatsApp Action Center")
+col_btn1, col_btn2 = st.columns(2)
 
-st.dataframe(styled_p, use_container_width=True)
+with col_btn1:
+    if st.button("🚀 Prepare Tomorrow's Alerts", use_container_width=True):
+        alerts = get_delivery_alerts_list()
+        if not alerts:
+            st.info("No deliveries found for tomorrow.")
+        else:
+            st.success(f"Found {len(alerts)} alerts:")
+            for phone, msg in alerts:
+                st.link_button(f"Send to {phone}", generate_whatsapp_link(phone, msg))
 
+with col_btn2:
+    if st.button("🧪 Run Connection Test", use_container_width=True):
+        test_alerts = get_test_alerts_list()
+        if not test_alerts:
+            st.warning("No 'PENDING' orders found to test.")
+        else:
+            st.info("🔧 Testing Mode: Showing first 3 pending orders.")
+            for phone, msg in test_alerts:
+                st.link_button(f"Test WhatsApp ({phone})", generate_whatsapp_link(phone, msg))
 # -----------------------------
 # PAYMENT DUE SECTION
 # -----------------------------
