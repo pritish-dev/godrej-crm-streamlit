@@ -4,7 +4,6 @@ from datetime import datetime, timedelta
 import pytz
 from services.sheets import get_df
 
-# Your specific number as the 'Me' contact
 MY_NUMBER = "918867143707"
 
 def format_phone(num):
@@ -13,23 +12,16 @@ def format_phone(num):
     if len(digits) == 10: return "91" + digits
     return digits
 
-def get_sales_team_contacts():
-    df = get_df("Sales Team")
-    contacts = {}
-    if df is not None and not df.empty:
-        df.columns = [c.strip().upper() for c in df.columns]
-        for _, row in df.iterrows():
-            name = str(row.get("NAME", "")).strip().lower()
-            phone = format_phone(row.get("CONTACT NUMBER", ""))
-            if name and phone: contacts[name] = phone
-    return contacts
-
 def create_whatsapp_table(df_group, type_label="DELIVERY"):
-    """Creates a text-based table for WhatsApp messages with safe numeric handling"""
+    """Groups items by Customer and creates a text table"""
     table_text = f"*Pending {type_label.title()}s List:*\n"
     table_text += "--------------------------\n"
     
-    for _, row in df_group.iterrows():
+    # --- NEW CLUBBING LOGIC ---
+    # Group by Customer Name and Number to combine multiple items
+    grouped_cust = df_group.groupby(["CUSTOMER NAME", "CONTACT NUMBER"])
+    
+    for (cust_name, cust_phone), cust_data in grouped_cust:
         def clean_val(val):
             try:
                 if pd.isna(val): return 0.0
@@ -37,29 +29,37 @@ def create_whatsapp_table(df_group, type_label="DELIVERY"):
                 return float(clean) if clean else 0.0
             except: return 0.0
 
-        d_date = row["CUSTOMER DELIVERY DATE (TO BE)"].strftime('%d-%b') if pd.notnull(row["CUSTOMER DELIVERY DATE (TO BE)"]) else "N/A"
-        p_date = row["DATE"].strftime('%d-%b') if pd.notnull(row.get("DATE")) else "N/A"
+        # Club multiple products into one string
+        items_list = ", ".join(cust_data["PRODUCT NAME"].astype(str).unique())
         
-        order_amt = clean_val(row.get("ORDER AMOUNT", 0))
-        adv_rec = clean_val(row.get("ADV RECEIVED", 0))
+        # Take the earliest dates and sum the amounts
+        d_date = cust_data["CUSTOMER DELIVERY DATE (TO BE)"].min().strftime('%d-%b') if pd.notnull(cust_data["CUSTOMER DELIVERY DATE (TO BE)"].min()) else "N/A"
+        order_amt = cust_data["ORDER AMOUNT"].apply(clean_val).sum()
+        adv_rec = cust_data["ADV RECEIVED"].apply(clean_val).sum()
         due = order_amt - adv_rec
         
-        table_text += f"📅 *DD:* {d_date} | *PD:* {p_date}\n"
-        table_text += f"👤 *Cust:* {row.get('CUSTOMER NAME', 'N/A')}\n"
-        table_text += f"📞 *Ph:* {row.get('CONTACT NUMBER', 'N/A')}\n"
-        table_text += f"🛋️ *Item:* {row.get('PRODUCT NAME', 'N/A')}\n"
-        table_text += f"💰 *Adv:* ₹{adv_rec:,.0f} | *Due:* ₹{due:,.0f}\n"
+        table_text += f"👤 *Cust:* {cust_name}\n"
+        table_text += f"📞 *Ph:* {cust_phone}\n"
+        table_text += f"🛋️ *Items:* {items_list}\n"
+        table_text += f"📅 *DD:* {d_date}\n"
+        table_text += f"💰 *Total Due:* ₹{due:,.0f}\n"
         table_text += "--------------------------\n"
     return table_text
 
 def get_delivery_alerts_list(is_test=False):
     df = get_df("CRM")
-    contacts = get_sales_team_contacts()
+    team_df = get_df("Sales Team")
+    contacts = {}
+    if team_df is not None and not team_df.empty:
+        team_df.columns = [c.strip().upper() for c in team_df.columns]
+        for _, r in team_df.iterrows():
+            name = str(r.get("NAME", "")).strip().lower()
+            phone = format_phone(r.get("CONTACT NUMBER", ""))
+            if name and phone: contacts[name] = phone
+
     IST = pytz.timezone('Asia/Kolkata')
-    
     df.columns = [c.strip().upper() for c in df.columns]
     df["CUSTOMER DELIVERY DATE (TO BE)"] = pd.to_datetime(df["CUSTOMER DELIVERY DATE (TO BE)"], dayfirst=True, errors='coerce')
-    df["DATE"] = pd.to_datetime(df["DATE"], dayfirst=True, errors='coerce')
     
     if is_test:
         mask = (df["DELIVERY REMARKS"].str.upper().str.strip() == "PENDING")
@@ -78,62 +78,39 @@ def get_delivery_alerts_list(is_test=False):
     for sp_name, group in alert_df.groupby("SALES PERSON"):
         sp_name_clean = str(sp_name).strip().lower()
         table_msg = create_whatsapp_table(group, type_label="DELIVERY")
-        final_msg = f"🚚 *{display_label}*\n\nHello {sp_name.title()},\n\nBelow are the pending deliveries to be scheduled:\n\n{table_msg}\n⚠️ Confirm transport for these orders!"
+        final_msg = f"🚚 *{display_label}*\n\nHello {sp_name.title()},\n\nGrouped pending deliveries:\n\n{table_msg}\n⚠️ Confirm transport!"
         
-        recipients = [
-            (sp_name.title(), contacts.get(sp_name_clean)),
-            ("Manager Shaktiman", contacts.get("shaktiman")),
-            ("Pritish (Admin)", MY_NUMBER)
-        ]
-
-        for label, phone in recipients:
-            if phone:
-                alerts.append((f"{label} ({phone})", phone, final_msg))
+        rec_list = [(sp_name.title(), contacts.get(sp_name_clean)), ("Manager Shaktiman", contacts.get("shaktiman")), ("Swati (Admin)", MY_NUMBER)]
+        for label, phone in rec_list:
+            if phone: alerts.append((label, phone, final_msg))
     return alerts
 
 def get_payment_alerts_list():
-    """Groups payment reminders for deliveries happening in 7 days"""
     df = get_df("CRM")
-    contacts = get_sales_team_contacts()
+    team_df = get_df("Sales Team")
+    contacts = {str(r.get("NAME", "")).strip().lower(): format_phone(r.get("CONTACT NUMBER", "")) 
+                for _, r in team_df.iterrows()} if team_df is not None else {}
+
     IST = pytz.timezone('Asia/Kolkata')
     target_date = datetime.now(IST).date() + timedelta(days=7)
-    
     df.columns = [c.strip().upper() for c in df.columns]
     df["CUSTOMER DELIVERY DATE (TO BE)"] = pd.to_datetime(df["CUSTOMER DELIVERY DATE (TO BE)"], dayfirst=True, errors='coerce')
-    df["DATE"] = pd.to_datetime(df["DATE"], dayfirst=True, errors='coerce')
     
-    # Filter: Has Pending Amount AND Delivery is in 7 days
-    df["TEMP_DUE"] = pd.to_numeric(df["ORDER AMOUNT"].astype(str).str.replace(r'[₹,]', '', regex=True), errors='coerce').fillna(0) - \
-                     pd.to_numeric(df["ADV RECEIVED"].astype(str).str.replace(r'[₹,]', '', regex=True), errors='coerce').fillna(0)
-    
-    mask = (df["TEMP_DUE"] > 0) & (df["CUSTOMER DELIVERY DATE (TO BE)"].dt.date == target_date)
+    mask = (df["CUSTOMER DELIVERY DATE (TO BE)"].dt.date == target_date)
     pay_df = df[mask].copy()
-    
     if pay_df.empty: return []
 
     alerts = []
     for sp_name, group in pay_df.groupby("SALES PERSON"):
         sp_name_clean = str(sp_name).strip().lower()
         table_msg = create_whatsapp_table(group, type_label="PAYMENT")
-        final_msg = f"💰 *PAYMENT REMINDER*\n\nHello {sp_name.title()},\n\nBelow are orders with pending payments due for delivery in 7 days:\n\n{table_msg}\n⚠️ Please follow up for balance payments!"
+        final_msg = f"💰 *PAYMENT REMINDER*\n\nHello {sp_name.title()},\n\nGrouped payments due in 7 days:\n\n{table_msg}"
         
-        recipients = [
-            (sp_name.title(), contacts.get(sp_name_clean)),
-            ("Manager Shaktiman", contacts.get("shaktiman")),
-            ("Swati (Admin)", MY_NUMBER)
-        ]
-
-        for label, phone in recipients:
-            if phone:
-                alerts.append((f"{label} ({phone})", phone, final_msg))
+        rec_list = [(sp_name.title(), contacts.get(sp_name_clean)), ("Manager Shaktiman", contacts.get("shaktiman")), ("Swati (Admin)", MY_NUMBER)]
+        for label, phone in rec_list:
+            if phone: alerts.append((label, phone, final_msg))
     return alerts
 
 def generate_whatsapp_link(phone, message):
-    """
-    Cleaner redirection logic. 
-    Using api.whatsapp.com works more reliably across both Mobile and Desktop 
-    to trigger the 'click to chat' feature with the message pre-filled.
-    """
     encoded_msg = urllib.parse.quote(message)
-    # This universal link format is the most 'stable' across all devices
     return f"https://api.whatsapp.com/send?phone={phone}&text={encoded_msg}"
