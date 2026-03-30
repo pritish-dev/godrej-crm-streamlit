@@ -13,8 +13,7 @@ from services.sheets import get_df
 from services.automation import (
     get_delivery_alerts_list, 
     get_payment_alerts_list, 
-    generate_whatsapp_link,
-    get_test_alerts_list
+    generate_whatsapp_link
 )
 
 # --- REST OF YOUR CODE ---
