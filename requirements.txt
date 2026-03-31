@@ -13,3 +13,6 @@ pywhatkit
 pyautogui
 selenium
 webdriver-manager
+
+
+PyMuPDF
