@@ -33,7 +33,7 @@ def authenticate_google_services():
 
     # 2. Drive Authentication (Human OAuth)
     drive_creds = None
-    token_path = "../config/token.pickle"
+    token_path = "..\..\config\token.pickle"
     
     # Check if we already have a saved login token
     if os.path.exists(token_path):
