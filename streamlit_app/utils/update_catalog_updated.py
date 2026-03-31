@@ -127,12 +127,14 @@ def process_page_half(page, min_x, max_x, drive_service, doc):
 
     # 3. Grab Images within this half
     image_urls = []
-    for img_info in page.get_image_info(hashes=True):
+    for img_info in page.get_image_info(xrefs=True):
         img_bbox = img_info["bbox"]
         
         # Check if the image starts in this half of the page
         if min_x <= img_bbox[0] < max_x:
-            xref = img_info["xref"]
+            xref = img_info.get("xref")
+            if not xref:
+                continue
             try:
                 base_image = doc.extract_image(xref)
                 if base_image["width"] > 300 and base_image["height"] > 300 and len(base_image["image"]) > 25000:
