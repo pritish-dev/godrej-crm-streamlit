@@ -48,35 +48,34 @@ def upload_image_to_drive(drive_service, image_bytes, filename):
     media = MediaIoBaseUpload(io.BytesIO(image_bytes), mimetype='image/png', resumable=True)
     try:
         file = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-        # FIX 1: Use the Thumbnail API for Streamlit compatibility
         return f"https://drive.google.com/thumbnail?id={file.get('id')}&sz=w1000"
     except Exception as e:
         print(f"      [!] Failed to upload {filename}: {e}")
         return ""
 
 def process_page_half(page, min_x, max_x, drive_service, doc):
-    """Processes only a specific vertical half of the PDF page."""
     page_dict = page.get_text("dict")
-    spans = []
+    half_spans = []
     
-    # 1. Grab Title & Breadcrumbs within this half
+    # 1. Grab all text elements strictly inside this half of the page
     for block in page_dict["blocks"]:
         if block['type'] == 0:  
             for line in block["lines"]:
                 for span in line["spans"]:
-                    # ONLY look at text inside our current half (Left or Right)
-                    if min_x <= span["bbox"][0] < max_x:
+                    span_center_x = (span["bbox"][0] + span["bbox"][2]) / 2
+                    if min_x <= span_center_x < max_x:
                         text = span["text"].strip()
                         if text and "Download PDF" not in text and "interio by godrej" not in text.lower():
-                            spans.append({
+                            half_spans.append({
                                 "text": text, "size": span["size"],
                                 "y0": span["bbox"][1], "x0": span["bbox"][0]  
                             })
 
-    if not spans: return None
+    if not half_spans: return None
 
+    # 2. Extract Title & Breadcrumbs
     page_height = page.rect.height
-    top_half_spans = [s for s in spans if s["y0"] < (page_height / 2)]
+    top_half_spans = [s for s in half_spans if s["y0"] < (page_height / 3)]
     if not top_half_spans: return None
         
     max_size = max(s["size"] for s in top_half_spans)
@@ -85,64 +84,95 @@ def process_page_half(page, min_x, max_x, drive_service, doc):
     product_name = " ".join([s["text"] for s in title_spans])
     title_y0 = min(s["y0"] for s in title_spans) 
 
-    above_title = [s for s in spans if s["y0"] < (title_y0 - 2)]
+    above_title = [s for s in half_spans if s["y0"] < (title_y0 - 2)]
     above_title.sort(key=lambda s: s["x0"]) 
     main_category = above_title[0]["text"] if len(above_title) >= 1 else "Unknown"
     sub_category = above_title[1]["text"] if len(above_title) >= 2 else "Unknown"
 
     if "Unknown" in main_category: return None
 
-    # 2. Grab Features using Paragraph BLOCKS (Fixes Fragmented Sentences)
-    features = []
-    capture = False
-    stop_words = ["Measurements", "Colour & Material", "Proportion", "Details", "In the set", "Fabric", "Standard"]
-    
+    # 3. Extract Features, Measurements, and Colors (State Machine)
     blocks = page.get_text("blocks")
-    # Get blocks in this half, sorted top-to-bottom
-    area_blocks = [b for b in blocks if b[6] == 0 and min_x <= b[0] < max_x and b[1] >= title_y0]
-    area_blocks.sort(key=lambda b: (b[1], b[0]))
-    
-    for b in area_blocks:
-        block_text = b[4].strip()
-        
-        if any(stop.lower() in block_text.lower() for stop in stop_words):
-            capture = False
-            
-        if capture:
-            # Replace physical line breaks with spaces to reconstruct the sentence
-            clean_text = block_text.replace('\n', ' ').strip()
-            
-            # Split multiple bullets if they share the same block
-            if '•' in clean_text:
-                bullets = clean_text.split('•')
-                for bullet in bullets:
-                    if bullet.strip(): features.append(bullet.strip())
-            else:
-                if clean_text: features.append(clean_text.lstrip("*- ").strip())
+    area_blocks = []
+    for b in blocks:
+        if b[6] == 0: # Is text block
+            block_center_x = (b[0] + b[2]) / 2
+            # Only read blocks under the title in this half
+            if min_x <= block_center_x < max_x and b[1] >= title_y0:
+                area_blocks.append(b)
                 
-        if block_text.lower() == "features":
-            capture = True
+    area_blocks.sort(key=lambda b: (b[1], b[0])) # Sort top-to-bottom
+    
+    capture_mode = None
+    features, measurements, colors = [], [], []
 
-    specs = " | ".join(features)
+    for b in area_blocks:
+        text = b[4].strip().replace('\n', ' ')
+        if not text: continue
+        
+        text_lower = text.lower()
+        
+        # Switch gears depending on the header we just hit
+        if text_lower == "features":
+            capture_mode = "features"
+            continue
+        elif "measurements" in text_lower:
+            capture_mode = "measurements"
+            continue
+        elif "colour & material" in text_lower or text_lower == "colour":
+            capture_mode = "colors"
+            continue
+        elif text_lower in ["details", "proportion", "in the set", "design registration"]:
+            capture_mode = None # Stop capturing text to avoid noise
+            continue
+            
+        # Capture the data!
+        if capture_mode == "features":
+            # Safely split by bullet points so they render beautifully in CRM
+            clean_text = text.replace('•', '|||').split('|||')
+            for pt in clean_text:
+                pt = pt.strip(" *-")
+                if pt: features.append(f"✨ {pt}")
+                
+        elif capture_mode == "measurements":
+            # Ignore table headers
+            if "All sizes in cm" not in text and "Width" not in text:
+                measurements.append(f"📏 {text}")
+                
+        elif capture_mode == "colors":
+            if text_lower not in ["fabric", "leatherette", "fabric & leatherette", "standard"]:
+                colors.append(f"🎨 {text}")
 
-    # 3. Grab Images within this half
+    # Combine everything for the Google Sheet
+    specs = " | ".join(features + measurements + colors)
+
+    # 4. Grab Multiple Images (Lowered threshold + Logo Blocker)
     image_urls = []
     for img_info in page.get_image_info(xrefs=True):
         img_bbox = img_info["bbox"]
+        img_center_x = (img_bbox[0] + img_bbox[2]) / 2
         
-        # Check if the image starts in this half of the page
-        if min_x <= img_bbox[0] < max_x:
-            xref = img_info.get("xref")
-            if not xref:
+        # Check if the image belongs to this half
+        if min_x <= img_center_x < max_x:
+            # Smart Blocker: Ignore images placed higher than the product title (e.g., Godrej Logo)
+            if img_bbox[1] < (title_y0 - 20):
                 continue
+                
+            xref = img_info.get("xref")
+            if not xref: continue
+            
             try:
                 base_image = doc.extract_image(xref)
-                if base_image["width"] > 300 and base_image["height"] > 300 and len(base_image["image"]) > 25000:
+                w, h = base_image["width"], base_image["height"]
+                img_bytes = base_image["image"]
+                
+                # We allow images as small as 40x40 to capture Swatches and Detail photos!
+                if w > 40 and h > 40 and len(img_bytes) > 2000:
                     safe_name = "".join([c for c in product_name if c.isalpha() or c.isdigit() or c==' ']).rstrip()
                     filename = f"{safe_name.replace(' ', '_')}_img{xref}.png"
                     
-                    print(f"      Uploading image for {product_name}...")
-                    url = upload_image_to_drive(drive_service, base_image["image"], filename)
+                    print(f"      Uploading image {w}x{h} for {product_name}...")
+                    url = upload_image_to_drive(drive_service, img_bytes, filename)
                     if url: image_urls.append(url)
             except Exception:
                 pass
@@ -176,7 +206,7 @@ def live_process_and_upload(sheets_client, drive_service):
             print(f"\nProcessing Page {page_num + 1}/{len(doc)}...")
             page = doc.load_page(page_num)
             
-            # FIX 3: Slice the page in half to process 2-page spreads
+            # Slice the page exactly in half
             page_width = page.rect.width
             mid_x = page_width / 2
             
