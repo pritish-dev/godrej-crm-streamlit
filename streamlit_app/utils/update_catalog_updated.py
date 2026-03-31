@@ -21,14 +21,9 @@ CATALOG_SHEET_NAME = "Product Catalog"
 DRIVE_IMAGE_FOLDER_ID = "1PGdL47AQXliSpX9i8MIQz3oeAknxJM8I" 
 
 def authenticate_google_services():
-    # 1. Sheets Authentication (Service Account)
-    sheets_creds = Credentials.from_service_account_file(
-        CREDENTIALS_FILE, 
-        scopes=["https://www.googleapis.com/auth/spreadsheets"]
-    )
+    sheets_creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=["https://www.googleapis.com/auth/spreadsheets"])
     sheets_client = gspread.authorize(sheets_creds)
 
-    # 2. Drive Authentication (Human OAuth)
     drive_creds = None
     token_path = "../../config/token.pickle"
     
@@ -40,12 +35,8 @@ def authenticate_google_services():
         if drive_creds and drive_creds.expired and drive_creds.refresh_token:
             drive_creds.refresh(Request())
         else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                CLIENT_SECRET_FILE, 
-                scopes=["https://www.googleapis.com/auth/drive"]
-            )
+            flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRET_FILE, scopes=["https://www.googleapis.com/auth/drive"])
             drive_creds = flow.run_local_server(port=0)
-            
         with open(token_path, 'wb') as token:
             pickle.dump(drive_creds, token)
 
@@ -57,39 +48,38 @@ def upload_image_to_drive(drive_service, image_bytes, filename):
     media = MediaIoBaseUpload(io.BytesIO(image_bytes), mimetype='image/png', resumable=True)
     try:
         file = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-        return f"https://drive.google.com/uc?id={file.get('id')}"
+        # FIX 1: Use the Thumbnail API for Streamlit compatibility
+        return f"https://drive.google.com/thumbnail?id={file.get('id')}&sz=w1000"
     except Exception as e:
         print(f"      [!] Failed to upload {filename}: {e}")
         return ""
 
-def extract_intelligent_layout(page):
+def process_page_half(page, min_x, max_x, drive_service, doc):
+    """Processes only a specific vertical half of the PDF page."""
     page_dict = page.get_text("dict")
     spans = []
     
+    # 1. Grab Title & Breadcrumbs within this half
     for block in page_dict["blocks"]:
         if block['type'] == 0:  
             for line in block["lines"]:
                 for span in line["spans"]:
-                    text = span["text"].strip()
-                    if text and "Download PDF" not in text and "interio by godrej" not in text.lower():
-                        spans.append({
-                            "text": text,
-                            "size": span["size"],
-                            "y0": span["bbox"][1], 
-                            "x0": span["bbox"][0]  
-                        })
+                    # ONLY look at text inside our current half (Left or Right)
+                    if min_x <= span["bbox"][0] < max_x:
+                        text = span["text"].strip()
+                        if text and "Download PDF" not in text and "interio by godrej" not in text.lower():
+                            spans.append({
+                                "text": text, "size": span["size"],
+                                "y0": span["bbox"][1], "x0": span["bbox"][0]  
+                            })
 
-    if not spans:
-        return None, None, None, None
+    if not spans: return None
 
     page_height = page.rect.height
     top_half_spans = [s for s in spans if s["y0"] < (page_height / 2)]
-    
-    if not top_half_spans:
-        return None, None, None, None
+    if not top_half_spans: return None
         
     max_size = max(s["size"] for s in top_half_spans)
-    
     title_spans = [s for s in top_half_spans if abs(s["size"] - max_size) < 1.0]
     title_spans.sort(key=lambda s: s["x0"]) 
     product_name = " ".join([s["text"] for s in title_spans])
@@ -97,120 +87,119 @@ def extract_intelligent_layout(page):
 
     above_title = [s for s in spans if s["y0"] < (title_y0 - 2)]
     above_title.sort(key=lambda s: s["x0"]) 
-    
     main_category = above_title[0]["text"] if len(above_title) >= 1 else "Unknown"
     sub_category = above_title[1]["text"] if len(above_title) >= 2 else "Unknown"
 
+    if "Unknown" in main_category: return None
+
+    # 2. Grab Features using Paragraph BLOCKS (Fixes Fragmented Sentences)
     features = []
     capture = False
-    stop_words = ["Measurements", "Colour & Material", "Proportion", "Details", "In the set", "Fabric"]
+    stop_words = ["Measurements", "Colour & Material", "Proportion", "Details", "In the set", "Fabric", "Standard"]
     
-    below_title = [s for s in spans if s["y0"] >= title_y0 and s not in title_spans]
-    below_title.sort(key=lambda s: (s["y0"], s["x0"]))
+    blocks = page.get_text("blocks")
+    # Get blocks in this half, sorted top-to-bottom
+    area_blocks = [b for b in blocks if b[6] == 0 and min_x <= b[0] < max_x and b[1] >= title_y0]
+    area_blocks.sort(key=lambda b: (b[1], b[0]))
     
-    for s in below_title:
-        txt = s["text"]
+    for b in area_blocks:
+        block_text = b[4].strip()
         
-        if any(stop.lower() in txt.lower() for stop in stop_words):
+        if any(stop.lower() in block_text.lower() for stop in stop_words):
             capture = False
             
         if capture:
-            clean_txt = txt.lstrip("•*- ").strip()
-            if clean_txt and s["size"] > 7.0: 
-                features.append(clean_txt)
+            # Replace physical line breaks with spaces to reconstruct the sentence
+            clean_text = block_text.replace('\n', ' ').strip()
+            
+            # Split multiple bullets if they share the same block
+            if '•' in clean_text:
+                bullets = clean_text.split('•')
+                for bullet in bullets:
+                    if bullet.strip(): features.append(bullet.strip())
+            else:
+                if clean_text: features.append(clean_text.lstrip("*- ").strip())
                 
-        if txt.lower() == "features":
+        if block_text.lower() == "features":
             capture = True
 
     specs = " | ".join(features)
-    return main_category, sub_category, product_name, specs
 
-def process_pdf_and_upload(drive_service):
-    print(f"Opening PDF: {PDF_FILE_PATH}...")
-    try:
-        doc = fitz.open(PDF_FILE_PATH)
-    except Exception as e:
-        print(f"Error opening PDF: {e}")
-        return []
-
-    extracted_products = []
-
-    # Iterate through the pages
-    for page_num in range(8, len(doc)):
-        print(f"\nProcessing Page {page_num + 1}/{len(doc)}...")
-        page = doc.load_page(page_num)
+    # 3. Grab Images within this half
+    image_urls = []
+    for img_info in page.get_image_info(hashes=True):
+        img_bbox = img_info["bbox"]
         
-        main_cat, sub_cat, product_name, specs = extract_intelligent_layout(page)
-        
-        if not product_name or "Unknown" in main_cat:
-            print("   -> Skipping: Does not match standard product layout.")
-            continue 
-            
-        print(f"   -> Found Product: {product_name} ({main_cat} > {sub_cat})")
-            
-        image_urls = []
-        for img_index, img in enumerate(page.get_images(full=True)):
-            xref = img[0]
-            image_info = doc.extract_image(xref)
-            
-            if image_info["width"] > 300 and image_info["height"] > 300 and len(image_info["image"]) > 25000:
-                safe_name = "".join([c for c in product_name if c.isalpha() or c.isdigit() or c==' ']).rstrip()
-                filename = f"{safe_name.replace(' ', '_')}_img{img_index}.png"
-                
-                url = upload_image_to_drive(drive_service, image_info["image"], filename)
-                if url:
-                    image_urls.append(url)
+        # Check if the image starts in this half of the page
+        if min_x <= img_bbox[0] < max_x:
+            xref = img_info["xref"]
+            try:
+                base_image = doc.extract_image(xref)
+                if base_image["width"] > 300 and base_image["height"] > 300 and len(base_image["image"]) > 25000:
+                    safe_name = "".join([c for c in product_name if c.isalpha() or c.isdigit() or c==' ']).rstrip()
+                    filename = f"{safe_name.replace(' ', '_')}_img{xref}.png"
                     
-        extracted_products.append([
-            main_cat,        
-            sub_cat,         
-            product_name,    
-            specs,           
-            ",".join(image_urls)
-        ])
-        
-        # Add a tiny delay to prevent Google Drive from temporarily blocking us for uploading too fast
-        time.sleep(0.5) 
-        
-    return extracted_products
+                    print(f"      Uploading image for {product_name}...")
+                    url = upload_image_to_drive(drive_service, base_image["image"], filename)
+                    if url: image_urls.append(url)
+            except Exception:
+                pass
 
-def update_google_sheet(sheets_client, products_data):
+    return [main_category, sub_category, product_name, specs, ",".join(image_urls)]
+
+
+def live_process_and_upload(sheets_client, drive_service):
     print("\n=========================================")
-    print("UPDATING GOOGLE SHEET...")
+    print("PREPARING GOOGLE SHEET...")
     sh = sheets_client.open_by_key(SPREADSHEET_ID)
-    
     try:
         ws = sh.worksheet(CATALOG_SHEET_NAME)
     except gspread.exceptions.WorksheetNotFound:
         ws = sh.add_worksheet(title=CATALOG_SHEET_NAME, rows=1000, cols=10)
 
-    # Clear old data
     ws.clear()
-    
-    # Use append_rows instead of update to bypass gspread version conflicts
-    payload = [["Main Category", "Sub Category", "Product Name", "Specifications", "Image URLs"]] + products_data
-    ws.append_rows(payload)
-    
-    print(f"✅ SUCCESSFULLY SAVED {len(products_data)} PRODUCTS TO GOOGLE SHEETS!")
-    print("=========================================")
+    ws.append_row(["Main Category", "Sub Category", "Product Name", "Specifications", "Image URLs"])
+    print("✅ Sheet is ready for Live Sync!")
+    print("=========================================\n")
+
+    print(f"Opening PDF: {PDF_FILE_PATH}...")
+    try:
+        doc = fitz.open(PDF_FILE_PATH)
+    except Exception as e:
+        print(f"Error opening PDF: {e}")
+        return
+
+    try:
+        for page_num in range(8, len(doc)):
+            print(f"\nProcessing Page {page_num + 1}/{len(doc)}...")
+            page = doc.load_page(page_num)
+            
+            # FIX 3: Slice the page in half to process 2-page spreads
+            page_width = page.rect.width
+            mid_x = page_width / 2
+            
+            # Process Left Side
+            left_product = process_page_half(page, 0, mid_x, drive_service, doc)
+            if left_product:
+                ws.append_row(left_product)
+                print(f"   ✅ Saved Left Product: '{left_product[2]}'")
+                
+            # Process Right Side
+            right_product = process_page_half(page, mid_x, page_width, drive_service, doc)
+            if right_product:
+                ws.append_row(right_product)
+                print(f"   ✅ Saved Right Product: '{right_product[2]}'")
+            
+            time.sleep(1) # API Safety
+            
+    except KeyboardInterrupt:
+        print("\n\n[!] Script stopped manually. Data saved.")
 
 def main():
     print("Starting Catalog Synchronization...")
     sheets_client, drive_service = authenticate_google_services()
-    products_data = []
-    
-    try:
-        # Wrap the massive processing task in a try block
-        products_data = process_pdf_and_upload(drive_service)
-    except Exception as e:
-        print(f"\n[!] AN ERROR OCCURRED: {e}")
-        print("[!] The script was interrupted, but we will save the data we have collected so far!")
-    finally:
-        # This ALWAYS runs, even if you press Ctrl+C or Google Drive crashes
-        if products_data:
-            update_google_sheet(sheets_client, products_data)
-        else:
-            print("\nNo valid product data was found to save to the sheet.")
+    live_process_and_upload(sheets_client, drive_service)
+    print("\n🎉 Synchronization Complete!")
 
 if __name__ == "__main__":
     main()
