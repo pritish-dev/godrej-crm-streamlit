@@ -1,30 +1,65 @@
 import os
 import io
-import fitz
+import fitz  # PyMuPDF
 import gspread
+import pickle
 from google.oauth2.service_account import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
 # ==========================================
 # CONFIGURATION
 # ==========================================
-PDF_FILE_PATH = r"C:\Users\User\Desktop\AI_Business_Agent\b2c_catalog.pdf"
-CREDENTIALS_FILE = r"..\..\config\credentials.json"
+PDF_FILE_PATH = r"C:\Users\User\Desktop\AI_Business_Agent\b2c_catalog.pdf" 
+CREDENTIALS_FILE = "..\..\config\credentials.json"
+CLIENT_SECRET_FILE = "..\..\config\client_secret.json" # The new file you downloaded
 SPREADSHEET_ID = "1wFpK-WokcZB6k1vzG7B6JO5TdGHrUwdgvVm_-UQse54"
 CATALOG_SHEET_NAME = "Product Catalog"
 DRIVE_IMAGE_FOLDER_ID = "1PGdL47AQXliSpX9i8MIQz3oeAknxJM8I" 
 
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive"
-]
-
 def authenticate_google_services():
-    creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
-    sheets_client = gspread.authorize(creds)
-    drive_service = build('drive', 'v3', credentials=creds)
+    """
+    Authenticates Sheets with the Service Account (Bot).
+    Authenticates Drive with OAuth 2.0 (Human) to use your 15GB storage quota.
+    """
+    # 1. Sheets Authentication (Service Account)
+    sheets_creds = Credentials.from_service_account_file(
+        CREDENTIALS_FILE, 
+        scopes=["https://www.googleapis.com/auth/spreadsheets"]
+    )
+    sheets_client = gspread.authorize(sheets_creds)
+
+    # 2. Drive Authentication (Human OAuth)
+    drive_creds = None
+    token_path = "../config/token.pickle"
+    
+    # Check if we already have a saved login token
+    if os.path.exists(token_path):
+        with open(token_path, 'rb') as token:
+            drive_creds = pickle.load(token)
+            
+    # If there are no (valid) credentials available, let the user log in.
+    if not drive_creds or not drive_creds.valid:
+        if drive_creds and drive_creds.expired and drive_creds.refresh_token:
+            drive_creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(
+                CLIENT_SECRET_FILE, 
+                scopes=["https://www.googleapis.com/auth/drive"]
+            )
+            # This will pop open a web browser to ask you to log in
+            drive_creds = flow.run_local_server(port=0)
+            
+        # Save the credentials for the next run so it doesn't ask you every time
+        with open(token_path, 'wb') as token:
+            pickle.dump(drive_creds, token)
+
+    drive_service = build('drive', 'v3', credentials=drive_creds)
+    
     return sheets_client, drive_service
+
 
 def upload_image_to_drive(drive_service, image_bytes, filename):
     file_metadata = {'name': filename, 'parents': [DRIVE_IMAGE_FOLDER_ID]}
