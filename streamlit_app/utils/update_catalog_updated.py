@@ -91,71 +91,81 @@ def process_page_half(page, min_x, max_x, drive_service, doc):
 
     if "Unknown" in main_category: return None
 
-    # 3. Extract Features, Measurements, and Colors (State Machine)
-    blocks = page.get_text("blocks")
-    area_blocks = []
-    for b in blocks:
-        if b[6] == 0: # Is text block
-            block_center_x = (b[0] + b[2]) / 2
-            # Only read blocks under the title in this half
-            if min_x <= block_center_x < max_x and b[1] >= title_y0:
-                area_blocks.append(b)
-                
-    area_blocks.sort(key=lambda b: (b[1], b[0])) # Sort top-to-bottom
+    # 3. Extract Features, Measurements, and Colors using Y-Coordinate Line Matching
+    below_title_spans = [s for s in half_spans if s["y0"] >= title_y0 and s not in title_spans]
+    below_title_spans.sort(key=lambda s: (s["y0"], s["x0"]))
     
+    # Group text spans into perfectly horizontal lines (Crucial for tables)
+    lines = []
+    current_line = []
+    current_y = None
+    
+    for s in below_title_spans:
+        if current_y is None:
+            current_y = s["y0"]
+            current_line.append(s)
+        elif abs(s["y0"] - current_y) < 6: # 6 pixels tolerance for being on the same line
+            current_line.append(s)
+        else:
+            current_line.sort(key=lambda x: x["x0"])
+            lines.append(current_line)
+            current_y = s["y0"]
+            current_line = [s]
+            
+    if current_line:
+        current_line.sort(key=lambda x: x["x0"])
+        lines.append(current_line)
+
     capture_mode = None
     features, measurements, colors = [], [], []
 
-    for b in area_blocks:
-        text = b[4].strip().replace('\n', ' ')
-        if not text: continue
+    for line_spans in lines:
+        raw_texts = [s["text"].strip() for s in line_spans if s["text"].strip()]
+        if not raw_texts: continue
         
-        text_lower = text.lower()
+        text_spaced = " ".join(raw_texts)
+        text_lower = text_spaced.lower()
         
-        # Switch gears depending on the header we just hit
-        if text_lower == "features":
+        # Switch State Machine gears
+        if "features" in text_lower and len(text_spaced) < 15:
             capture_mode = "features"
             continue
-        elif "measurements" in text_lower:
+        elif "measurements" in text_lower and len(text_spaced) < 20:
             capture_mode = "measurements"
             continue
-        elif "colour & material" in text_lower or text_lower == "colour":
+        elif ("colour & material" in text_lower or "colour" in text_lower) and len(text_spaced) < 25:
             capture_mode = "colors"
             continue
         elif text_lower in ["details", "proportion", "in the set", "design registration"]:
-            capture_mode = None # Stop capturing text to avoid noise
+            capture_mode = None 
             continue
             
-        # Capture the data!
+        # Capture Data
         if capture_mode == "features":
-            # Safely split by bullet points so they render beautifully in CRM
-            clean_text = text.replace('•', '|||').split('|||')
-            for pt in clean_text:
-                pt = pt.strip(" *-")
-                if pt: features.append(f"✨ {pt}")
+            clean = text_spaced.lstrip("•*- ").strip()
+            if clean: features.append(f"✨ {clean}")
                 
         elif capture_mode == "measurements":
-            # Ignore table headers
-            if "All sizes in cm" not in text and "Width" not in text:
-                measurements.append(f"📏 {text}")
+            # For measurements, we join the columns with a pipe (|) so the CRM can easily split them into a table!
+            measurements.append(" | ".join(raw_texts))
                 
         elif capture_mode == "colors":
-            if text_lower not in ["fabric", "leatherette", "fabric & leatherette", "standard"]:
-                colors.append(f"🎨 {text}")
+            colors.append(text_spaced)
 
-    # Combine everything for the Google Sheet
-    specs = " | ".join(features + measurements + colors)
+    specs_str = "\n".join(features)
+    measurements_str = "\n".join(measurements)
+    colors_str = "\n".join(colors)
 
-    # 4. Grab Multiple Images (Lowered threshold + Logo Blocker)
-    image_urls = []
+    # 4. Grab Images & Sort by Size (Product vs Swatch)
+    product_images = []
+    swatch_images = []
+    
     for img_info in page.get_image_info(xrefs=True):
         img_bbox = img_info["bbox"]
         img_center_x = (img_bbox[0] + img_bbox[2]) / 2
         
-        # Check if the image belongs to this half
         if min_x <= img_center_x < max_x:
-            # Smart Blocker: Ignore images placed higher than the product title (e.g., Godrej Logo)
-            if img_bbox[1] < (title_y0 - 20):
+            if img_bbox[1] < (title_y0 - 20): # Ignore logos at the very top
                 continue
                 
             xref = img_info.get("xref")
@@ -166,19 +176,28 @@ def process_page_half(page, min_x, max_x, drive_service, doc):
                 w, h = base_image["width"], base_image["height"]
                 img_bytes = base_image["image"]
                 
-                # We allow images as small as 40x40 to capture Swatches and Detail photos!
-                if w > 40 and h > 40 and len(img_bytes) > 2000:
-                    safe_name = "".join([c for c in product_name if c.isalpha() or c.isdigit() or c==' ']).rstrip()
-                    filename = f"{safe_name.replace(' ', '_')}_img{xref}.png"
+                safe_name = "".join([c for c in product_name if c.isalpha() or c.isdigit() or c==' ']).rstrip()
+                
+                # LARGE IMAGES -> Product Gallery
+                if w > 300 and h > 300 and len(img_bytes) > 20000:
+                    print(f"      Uploading Product Image ({w}x{h}) for {product_name}...")
+                    url = upload_image_to_drive(drive_service, img_bytes, f"{safe_name.replace(' ', '_')}_main_{xref}.png")
+                    if url: product_images.append(url)
+                
+                # SMALL IMAGES -> Swatches / Materials
+                elif w > 40 and h > 40 and len(img_bytes) > 2000:
+                    print(f"      Uploading Swatch Image ({w}x{h}) for {product_name}...")
+                    url = upload_image_to_drive(drive_service, img_bytes, f"{safe_name.replace(' ', '_')}_swatch_{xref}.png")
+                    if url: swatch_images.append(url)
                     
-                    print(f"      Uploading image {w}x{h} for {product_name}...")
-                    url = upload_image_to_drive(drive_service, img_bytes, filename)
-                    if url: image_urls.append(url)
             except Exception:
                 pass
 
-    return [main_category, sub_category, product_name, specs, ",".join(image_urls)]
-
+    return [
+        main_category, sub_category, product_name, 
+        specs_str, measurements_str, colors_str, 
+        ",".join(product_images), ",".join(swatch_images)
+    ]
 
 def live_process_and_upload(sheets_client, drive_service):
     print("\n=========================================")
@@ -190,7 +209,11 @@ def live_process_and_upload(sheets_client, drive_service):
         ws = sh.add_worksheet(title=CATALOG_SHEET_NAME, rows=1000, cols=10)
 
     ws.clear()
-    ws.append_row(["Main Category", "Sub Category", "Product Name", "Specifications", "Image URLs"])
+    ws.append_row([
+        "Main Category", "Sub Category", "Product Name", 
+        "Specifications", "Measurements", "Colour & Material", 
+        "Product Image URLs", "Swatch Image URLs"
+    ])
     print("✅ Sheet is ready for Live Sync!")
     print("=========================================\n")
 
@@ -206,7 +229,6 @@ def live_process_and_upload(sheets_client, drive_service):
             print(f"\nProcessing Page {page_num + 1}/{len(doc)}...")
             page = doc.load_page(page_num)
             
-            # Slice the page exactly in half
             page_width = page.rect.width
             mid_x = page_width / 2
             
