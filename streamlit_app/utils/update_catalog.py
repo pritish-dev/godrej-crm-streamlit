@@ -1,6 +1,6 @@
 import os
 import io
-import fitz  # PyMuPDF
+import fitz
 import gspread
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -9,7 +9,7 @@ from googleapiclient.http import MediaIoBaseUpload
 # ==========================================
 # CONFIGURATION
 # ==========================================
-PDF_FILE_PATH = "C:\Users\User\Desktop\AI_Business_Agent\b2c_catalog.pdf" # Update this
+PDF_FILE_PATH = "C:\Users\User\Desktop\AI_Business_Agent\b2c_catalog.pdf"
 CREDENTIALS_FILE = "../config/credentials.json"
 SPREADSHEET_ID = "1wFpK-WokcZB6k1vzG7B6JO5TdGHrUwdgvVm_-UQse54"
 CATALOG_SHEET_NAME = "Product Catalog"
