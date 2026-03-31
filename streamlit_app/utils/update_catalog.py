@@ -13,8 +13,8 @@ from googleapiclient.http import MediaIoBaseUpload
 # CONFIGURATION
 # ==========================================
 PDF_FILE_PATH = r"C:\Users\User\Desktop\AI_Business_Agent\b2c_catalog.pdf" 
-CREDENTIALS_FILE = "..\..\config\credentials.json"
-CLIENT_SECRET_FILE = "..\..\config\client_secret.json" # The new file you downloaded
+CREDENTIALS_FILE = "../../config/credentials.json"
+CLIENT_SECRET_FILE = "../../config/client_secret.json"
 SPREADSHEET_ID = "1wFpK-WokcZB6k1vzG7B6JO5TdGHrUwdgvVm_-UQse54"
 CATALOG_SHEET_NAME = "Product Catalog"
 DRIVE_IMAGE_FOLDER_ID = "1PGdL47AQXliSpX9i8MIQz3oeAknxJM8I" 
@@ -33,7 +33,7 @@ def authenticate_google_services():
 
     # 2. Drive Authentication (Human OAuth)
     drive_creds = None
-    token_path = "..\..\config\token.pickle"
+    token_path = "../../config/token.pickle"
     
     # Check if we already have a saved login token
     if os.path.exists(token_path):
