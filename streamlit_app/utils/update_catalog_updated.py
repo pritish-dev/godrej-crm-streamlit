@@ -26,8 +26,8 @@ DRIVE_IMAGE_FOLDER_ID = "1PGdL47AQXliSpX9i8MIQz3oeAknxJM8I"
 # --- NEW: ADD YOUR GEMINI API KEY HERE ---
 GEMINI_API_KEY = "AIzaSyAihFdaJwp4FaMF1wfgKXhXp_MUMmzAowA"
 genai.configure(api_key=GEMINI_API_KEY)
-# Using Gemini 1.5 Flash - extremely fast and cheap/free for this type of text extraction
-ai_model = genai.GenerativeModel('gemini-1.5-flash')
+# Using Gemini 2.5 Flash - extremely fast and cheap/free for this type of text extraction
+ai_model = genai.GenerativeModel('gemini-2.5-flash')
 
 def authenticate_google_services():
     sheets_creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=["https://www.googleapis.com/auth/spreadsheets"])
