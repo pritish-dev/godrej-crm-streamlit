@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import gspread
-import google.generativeai as genai
 from google.oauth2.service_account import Credentials
 
 # ==============================
@@ -14,11 +13,6 @@ SPREADSHEET_ID = "1wFpK-WokcZB6k1vzG7B6JO5TdGHrUwdgvVm_-UQse54"
 CATALOG_SHEET_NAME = "Product Catalog"
 DISCONTINUED_SHEET_NAME = "Discontinued Products"
 ITEMS_PER_PAGE = 10
-
-# --- GEMINI AI CONFIGURATION ---
-GEMINI_API_KEY = "YOUR_GEMINI_API_KEY_HERE" # Paste your key here
-genai.configure(api_key=GEMINI_API_KEY)
-ai_model = genai.GenerativeModel('gemini-2.5-flash')
 
 # ==============================
 # DATA FETCHING
@@ -60,28 +54,6 @@ def load_all_data():
     return df_catalog, disc_dict
 
 # ==============================
-# AI SUGGESTION ENGINE
-# ==============================
-@st.cache_data(ttl=3600) # Cache suggestions so typos don't spam the API
-def get_ai_suggestions(search_query, catalog_names):
-    if not GEMINI_API_KEY or GEMINI_API_KEY == "YOUR_GEMINI_API_KEY_HERE":
-        return "AI suggestions are disabled. Please configure your API key."
-        
-    prompt = f"""
-    A user searched a furniture CRM for "{search_query}", but nothing matched.
-    Here is the list of all available products and categories in our catalog:
-    {catalog_names}
-    
-    Based on the user's typo or intent, suggest the top 3 closest items they might be looking for. 
-    Format your response as a simple, friendly bulleted list. Keep it very brief.
-    """
-    try:
-        response = ai_model.generate_content(prompt)
-        return response.text
-    except Exception:
-        return "Could not load suggestions at this time."
-
-# ==============================
 # MAIN APP
 # ==============================
 st.title("🛋️ Godrej Interio Catalog")
@@ -111,15 +83,10 @@ if search_query:
 else:
     filtered_df = df_catalog
 
-# --- NO RESULTS + AI SUGGESTIONS ---
+# --- NO RESULTS FALLBACK (Instant Text) ---
 if filtered_df.empty:
     st.error(f"No exact matches found for '{search_query}'.")
-    with st.expander("✨ Did you mean...?", expanded=True):
-        with st.spinner("Asking AI for suggestions..."):
-            # Grab a unique list of all names and categories to feed to the AI
-            all_items = list(df_catalog['Product Name'].unique()) + list(df_catalog['Main Category'].unique())
-            suggestions = get_ai_suggestions(search_query, ", ".join(all_items))
-            st.markdown(suggestions)
+    st.info("💡 Tip: Try checking your spelling or using a broader search term (e.g., 'Sofa' instead of 'Nebula Sofa').")
     st.stop()
 
 # --- PAGINATION LOGIC ---
