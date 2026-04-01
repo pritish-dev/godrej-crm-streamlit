@@ -12,9 +12,16 @@ from services.automation import get_alerts, generate_whatsapp_group_link
 
 st.set_page_config(layout="wide", page_title="Godrej CRM Dashboard")
 
+def make_columns_unique(df):
+    """Rename duplicate columns by adding a suffix (e.g., COL, COL.1)"""
+    cols = pd.Series(df.columns)
+    for dup in cols[cols.duplicated()].unique(): 
+        cols[cols == dup] = [f"{dup}_{i}" if i != 0 else dup for i in range(sum(cols == dup))]
+    df.columns = cols
+    return df
+
 @st.cache_data(ttl=60)
 def load_data():
-    # 1. Load the Control Sheet
     config_df = get_df("SHEET_DETAILS")
     team = get_df("Sales Team")
     
@@ -29,48 +36,48 @@ def load_data():
 
     dfs_to_combine = []
     
-    # 2. Function to standardize columns based on sheet type
     def process_sheet(name, is_four_s=False):
         df = get_df(name)
         if df is None or df.empty:
             return None
         
-        # Strip whitespace from columns and uppercase for consistency
-        df.columns = [c.strip().upper() for c in df.columns]
+        # 1. Clean whitespace from headers
+        df.columns = [str(c).strip().upper() for c in df.columns]
+        
+        # 2. CRITICAL FIX: Make columns unique before any other operation
+        df = make_columns_unique(df)
         
         if is_four_s:
-            # MAPPING: Map 4S column names to the Master Standard names
+            # MAPPING: Standardizing 4S headers to match Franchise headers
             mapping = {
                 "ORDER NO": "GODREJ SO NO",
                 "SALES REP": "SALES PERSON",
                 "CUSTOMER DELIVERY DATE": "CUSTOMER DELIVERY DATE (TO BE)",
                 "REMARKS": "DELIVERY REMARKS"
             }
-            # Only rename if the column exists in the 4S sheet
-            df = df.rename(columns={k: v for k, v in mapping.items() if k in df.columns})
+            df = df.rename(columns=mapping)
         
         df['SOURCE_SHEET'] = name
         return df
 
-    # 3. Fetch and Process Franchise Sheets
+    # Fetch Franchise
     for name in franchise_names:
-        processed_df = process_sheet(name, is_four_s=False)
-        if processed_df is not None:
-            dfs_to_combine.append(processed_df)
+        processed = process_sheet(name, is_four_s=False)
+        if processed is not None: dfs_to_combine.append(processed)
 
-    # 4. Fetch and Process 4S Sheets
+    # Fetch 4S
     for name in four_s_names:
-        processed_df = process_sheet(name, is_four_s=True)
-        if processed_df is not None:
-            dfs_to_combine.append(processed_df)
+        processed = process_sheet(name, is_four_s=True)
+        if processed is not None: dfs_to_combine.append(processed)
             
     if not dfs_to_combine:
         return pd.DataFrame(), pd.DataFrame()
     
-    # 5. Merge all
-    crm = pd.concat(dfs_to_combine, ignore_index=True)
+    # 3. Combine Dataframes
+    # We use join='outer' to ensure we don't lose unique columns from either sheet type
+    crm = pd.concat(dfs_to_combine, ignore_index=True, sort=False)
     
-    # Final Cleaning
+    # Final cleanup of numeric and date columns
     for col in ["ORDER AMOUNT", "ADV RECEIVED"]:
         if col in crm.columns:
             crm[col] = pd.to_numeric(crm[col].astype(str).str.replace(r'[₹,]', '', regex=True), errors='coerce').fillna(0)
@@ -82,10 +89,11 @@ def load_data():
     
     return crm, team
 
+# --- REST OF THE CODE REMAINS THE SAME ---
 crm, team_df = load_data()
 
 if crm.empty:
-    st.error("No data found. Please check SHEET_DETAILS configuration.")
+    st.error("No data found. Check SHEET_DETAILS.")
     st.stop()
 
 st.title("📊 Master Sales Dashboard - Godrej Interio")
@@ -120,7 +128,7 @@ st.dataframe(all_sales_sorted[display_cols].iloc[start_idx:end_idx].style.format
     "CUSTOMER DELIVERY DATE (TO BE)": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else ""
 }), use_container_width=True)
 
-# --- PENDING DELIVERY & PAYMENT SECTIONS (Using standard names) ---
+# --- PENDING DELIVERY & PAYMENT ---
 def sort_urgent_first(df, date_col):
     today = pd.Timestamp(datetime.now().date())
     df['is_overdue'] = df[date_col] < today
@@ -134,20 +142,17 @@ def highlight_rows(row, date_col):
         elif val == today + timedelta(days=1): return ['background-color: #c8e6c9; color: black'] * len(row)
     return [''] * len(row)
 
-# Deliveries
 st.divider()
 st.subheader("🚚 Pending Deliveries")
-mask_p = (crm["DELIVERY REMARKS"].astype(str).str.upper().str.strip() == "PENDING")
-pending_del = crm[mask_p].copy()
+if "DELIVERY REMARKS" in crm.columns:
+    mask_p = (crm["DELIVERY REMARKS"].astype(str).str.upper().str.strip() == "PENDING")
+    pending_del = crm[mask_p].copy()
+    if not pending_del.empty:
+        pending_del = pending_del.rename(columns={"CUSTOMER DELIVERY DATE (TO BE)": "DELIVERY DATE", "DATE": "ORDER DATE"})
+        pending_del = sort_urgent_first(pending_del, "DELIVERY DATE")
+        p_cols = ["DELIVERY DATE", "GODREJ SO NO", "CUSTOMER NAME", "CONTACT NUMBER", "PRODUCT NAME", "ORDER AMOUNT", "SALES PERSON"]
+        st.dataframe(pending_del[[c for c in p_cols if c in pending_del.columns]].style.apply(highlight_rows, date_col="DELIVERY DATE", axis=1), use_container_width=True)
 
-if not pending_del.empty:
-    pending_del = pending_del.rename(columns={"CUSTOMER DELIVERY DATE (TO BE)": "DELIVERY DATE", "DATE": "ORDER DATE"})
-    pending_del = sort_urgent_first(pending_del, "DELIVERY DATE")
-    p_cols = ["DELIVERY DATE", "GODREJ SO NO", "CUSTOMER NAME", "CONTACT NUMBER", "PRODUCT NAME", "ORDER AMOUNT", "SALES PERSON"]
-    
-    st.dataframe(pending_del[[c for c in p_cols if c in pending_del.columns]].style.apply(highlight_rows, date_col="DELIVERY DATE", axis=1), use_container_width=True)
-
-# Payments
 st.divider()
 st.subheader("💰 Payment Collection")
 crm["PENDING AMOUNT"] = crm["ORDER AMOUNT"] - crm["ADV RECEIVED"]
@@ -157,5 +162,4 @@ if not pending_pay.empty:
     pending_pay = pending_pay.rename(columns={"CUSTOMER DELIVERY DATE (TO BE)": "DELIVERY DATE", "DATE": "ORDER DATE"})
     pending_pay = sort_urgent_first(pending_pay, "DELIVERY DATE")
     pay_cols = ["DELIVERY DATE", "GODREJ SO NO", "CUSTOMER NAME", "ORDER AMOUNT", "ADV RECEIVED", "PENDING AMOUNT", "SALES PERSON"]
-    
     st.dataframe(pending_pay[[c for c in pay_cols if c in pending_pay.columns]].style.apply(highlight_rows, date_col="DELIVERY DATE", axis=1), use_container_width=True)
