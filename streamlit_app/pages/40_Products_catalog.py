@@ -179,40 +179,43 @@ for _, product in page_df.iterrows():
                 clean_features = str(raw_features).replace("\n", "\n\n")
                 st.markdown(clean_features)
                 
-            # Tab 2: Measurements (Smart Tabular Form)
+            # Tab 2: Measurements (Enhanced Consistency Fix)
             with tab2:
-                measurements_raw = str(product.get('Measurements', ''))
+                measurements_raw = str(product.get('Measurements', '')).strip()
                 
-                if measurements_raw.strip():
-                    # Check if it's a "Pipe Table" (extracted correctly) 
-                    # or a "Linear Line" (extracted as a sentence)
+                if measurements_raw:
+                    # 1. Standard Table Logic (If multiple pipes exist)
                     if "|" in measurements_raw:
                         lines = [line.strip() for line in measurements_raw.split('\n') if line.strip()]
-                        try:
-                            # Split by pipe and clean headers/rows
-                            headers = [h.strip() for h in lines[0].split('|')]
-                            rows = [[cell.strip() for cell in line.split('|')] for line in lines[1:]]
-                            
-                            # Standardize column counts
-                            max_cols = len(headers)
-                            padded_rows = [r + ['']*(max_cols - len(r)) for r in rows]
-                            
-                            df_meas = pd.DataFrame(padded_rows, columns=headers)
-                            st.dataframe(df_meas, hide_index=True, use_container_width=True)
-                        except:
-                            st.info(measurements_raw) # Fallback
-                            
-                    else:
-                        # FIX FOR LINEAR LINES: 
-                        # If it's a long sentence, we split by common labels to create a vertical table
-                        labels = ["Width:", "Depth:", "Height:", "Seat Height:", "1 Seater:", "2 Seater:", "3 Seater:"]
-                        processed_text = measurements_raw
-                        for label in labels:
-                            processed_text = processed_text.replace(label, f"\n**{label}**")
                         
-                        st.markdown(processed_text)
+                        # Check if this is a complex string (like Broadway V2) or a proper table
+                        # If there's only one line of text but many pipes, it's a "Linear Pipe Line"
+                        if len(lines) == 1:
+                            # Split the single line into segments and display as a vertical list
+                            segments = [s.strip() for s in measurements_raw.split('|') if s.strip()]
+                            for seg in segments:
+                                st.markdown(f"🔹 {seg}")
+                        else:
+                            # Proper Table Logic
+                            try:
+                                headers = [h.strip() for h in lines[0].split('|')]
+                                rows = [[cell.strip() for cell in line.split('|')] for line in lines[1:]]
+                                max_cols = len(headers)
+                                padded_rows = [r + ['']*(max_cols - len(r)) for r in rows]
+                                
+                                df_meas = pd.DataFrame(padded_rows, columns=headers)
+                                st.dataframe(df_meas, hide_index=True, use_container_width=True)
+                            except:
+                                st.write(measurements_raw) # Safety fallback
+                    
+                    # 2. Linear Sentence Logic (No pipes)
+                    else:
+                        # Split by common keywords to force verticality
+                        for label in ["Width:", "Depth:", "Height:", "Seat Height:", "1 Seater:", "2 Seater:", "3 Seater:"]:
+                            measurements_raw = measurements_raw.replace(label, f"\n\n**{label}**")
+                        st.markdown(measurements_raw)
                 else:
-                    st.write("No detailed measurements available.")
+                    st.info("No detailed measurements available.")
 
             # Tab 3: Swatches and Colors
             with tab3:
