@@ -173,11 +173,11 @@ for _, product in page_df.iterrows():
                 #st.write(product.get('Features', 'No specific Features listed.'))
                 
             with tab1:
-                features = product.get('Features', 'No specific Features listed.')
+                raw_features = product.get('Features', 'No specific Features listed.')
                 # This ensures any '|' separators or single newlines become 
                 # double newlines, which Markdown requires for a clean visual break.
-                formatted_features = features.replace(" | ", "\n\n").replace("\n", "\n\n")
-                st.markdown(formatted_features)
+                clean_features = str(raw_features).replace("\n", "\n\n")
+                st.markdown(clean_features)
             # Tab 2: Measurements Table
             with tab2:
                 measurements_raw = str(product.get('Measurements', ''))
