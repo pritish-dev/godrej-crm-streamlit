@@ -179,7 +179,7 @@ for _, product in page_df.iterrows():
                 clean_features = str(raw_features).replace("\n", "\n\n")
                 st.markdown(clean_features)
             # Tab 2: Measurements Table
-            with tab2:
+            '''with tab2:
                 measurements_raw = str(product.get('Measurements', ''))
                 if "|" in measurements_raw:
                     lines = [line.strip() for line in measurements_raw.split('\n') if line.strip()]
@@ -194,6 +194,41 @@ for _, product in page_df.iterrows():
                         st.dataframe(df_meas, hide_index=True, use_container_width=True)
                     except Exception as e:
                         st.write(measurements_raw) # Fallback to raw text if table parsing fails
+                else:
+                    st.write("No detailed measurements available.")'''
+                    
+            # Tab 2: Measurements (Smart Tabular Form)
+            with tab2:
+                measurements_raw = str(product.get('Measurements', ''))
+                
+                if measurements_raw.strip():
+                    # Check if it's a "Pipe Table" (extracted correctly) 
+                    # or a "Linear Line" (extracted as a sentence)
+                    if "|" in measurements_raw:
+                        lines = [line.strip() for line in measurements_raw.split('\n') if line.strip()]
+                        try:
+                            # Split by pipe and clean headers/rows
+                            headers = [h.strip() for h in lines[0].split('|')]
+                            rows = [[cell.strip() for cell in line.split('|')] for line in lines[1:]]
+                            
+                            # Standardize column counts
+                            max_cols = len(headers)
+                            padded_rows = [r + ['']*(max_cols - len(r)) for r in rows]
+                            
+                            df_meas = pd.DataFrame(padded_rows, columns=headers)
+                            st.dataframe(df_meas, hide_index=True, use_container_width=True)
+                        except:
+                            st.info(measurements_raw) # Fallback
+                            
+                    else:
+                        # FIX FOR LINEAR LINES: 
+                        # If it's a long sentence, we split by common labels to create a vertical table
+                        labels = ["Width:", "Depth:", "Height:", "Seat Height:", "1 Seater:", "2 Seater:", "3 Seater:"]
+                        processed_text = measurements_raw
+                        for label in labels:
+                            processed_text = processed_text.replace(label, f"\n**{label}**")
+                        
+                        st.markdown(processed_text)
                 else:
                     st.write("No detailed measurements available.")
 
