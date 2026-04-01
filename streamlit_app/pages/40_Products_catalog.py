@@ -178,25 +178,7 @@ for _, product in page_df.iterrows():
                 # double newlines, which Markdown requires for a clean visual break.
                 clean_features = str(raw_features).replace("\n", "\n\n")
                 st.markdown(clean_features)
-            # Tab 2: Measurements Table
-            '''with tab2:
-                measurements_raw = str(product.get('Measurements', ''))
-                if "|" in measurements_raw:
-                    lines = [line.strip() for line in measurements_raw.split('\n') if line.strip()]
-                    try:
-                        headers = [h.strip() for h in lines[0].split('|')]
-                        rows = [[cell.strip() for cell in line.split('|')] for line in lines[1:]]
-                        # Pad rows that might be missing columns to prevent pandas errors
-                        max_cols = len(headers)
-                        padded_rows = [r + ['']*(max_cols - len(r)) for r in rows]
-                        
-                        df_meas = pd.DataFrame(padded_rows, columns=headers)
-                        st.dataframe(df_meas, hide_index=True, use_container_width=True)
-                    except Exception as e:
-                        st.write(measurements_raw) # Fallback to raw text if table parsing fails
-                else:
-                    st.write("No detailed measurements available.")'''
-                    
+                
             # Tab 2: Measurements (Smart Tabular Form)
             with tab2:
                 measurements_raw = str(product.get('Measurements', ''))
