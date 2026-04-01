@@ -14,3 +14,8 @@ __pycache__/
 # OS/editor
 .DS_Store
 Thumbs.db
+
+
+**/config/client_secret.json
+**/config/credentials.json
+**/config/token.pickle

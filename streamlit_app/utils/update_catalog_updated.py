@@ -4,6 +4,9 @@ import fitz  # PyMuPDF
 import gspread
 import pickle
 import time
+import json
+import re
+import google.generativeai as genai
 from google.oauth2.service_account import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -19,6 +22,12 @@ CLIENT_SECRET_FILE = "../../config/client_secret.json"
 SPREADSHEET_ID = "1wFpK-WokcZB6k1vzG7B6JO5TdGHrUwdgvVm_-UQse54"
 CATALOG_SHEET_NAME = "Product Catalog"
 DRIVE_IMAGE_FOLDER_ID = "1PGdL47AQXliSpX9i8MIQz3oeAknxJM8I" 
+
+# --- NEW: ADD YOUR GEMINI API KEY HERE ---
+GEMINI_API_KEY = "AIzaSyAihFdaJwp4FaMF1wfgKXhXp_MUMmzAowA"
+genai.configure(api_key=GEMINI_API_KEY)
+# Using Gemini 1.5 Flash - extremely fast and cheap/free for this type of text extraction
+ai_model = genai.GenerativeModel('gemini-1.5-flash')
 
 def authenticate_google_services():
     sheets_creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=["https://www.googleapis.com/auth/spreadsheets"])
@@ -53,6 +62,39 @@ def upload_image_to_drive(drive_service, image_bytes, filename):
         print(f"      [!] Failed to upload {filename}: {e}")
         return ""
 
+def ask_ai_to_parse_text(raw_text):
+    """Sends the messy PDF text to Gemini AI to intelligently structure it."""
+    prompt = f"""
+    You are a data extraction assistant. I am giving you raw, messy text scraped from a furniture catalog PDF. 
+    Analyze the text and extract the details. 
+    
+    Return ONLY a valid JSON object with the following keys. Do not use markdown blocks, just return the JSON:
+    {{
+      "main_category": "The broad category (e.g., 'Living Room', 'Bedroom'). If none, return 'Unknown'.",
+      "sub_category": "The specific category (e.g., 'Sofa', 'Bed'). If none, return 'Unknown'.",
+      "product_name": "The actual name of the furniture product.",
+      "features": "A string of the product features, bulleted. Put '✨ ' before each distinct feature and separate them with a newline.",
+      "measurements": "A pipe-separated string of the measurements so they can be read as a table. (e.g., 'Width: 100cm | Depth: 90cm | Height: 80cm').",
+      "colour_material": "The colors and materials mentioned. Separate them with a newline if there are multiple."
+    }}
+    
+    Raw Text to Analyze:
+    {raw_text}
+    """
+    try:
+        response = ai_model.generate_content(prompt)
+        text_response = response.text
+        
+        # Clean up the response in case the AI wraps it in markdown (```json ... ```)
+        json_match = re.search(r'\{.*\}', text_response, re.DOTALL)
+        if json_match:
+            clean_json = json_match.group(0)
+            return json.loads(clean_json)
+        return None
+    except Exception as e:
+        print(f"      [!] AI Parsing Error: {e}")
+        return None
+
 def process_page_half(page, min_x, max_x, drive_service, doc):
     page_dict = page.get_text("dict")
     half_spans = []
@@ -66,97 +108,40 @@ def process_page_half(page, min_x, max_x, drive_service, doc):
                     if min_x <= span_center_x < max_x:
                         text = span["text"].strip()
                         if text and "Download PDF" not in text and "interio by godrej" not in text.lower():
-                            half_spans.append({
-                                "text": text, "size": span["size"],
-                                "y0": span["bbox"][1], "x0": span["bbox"][0]  
-                            })
+                            # We keep the y0 coordinate just to find the title height for images later
+                            half_spans.append({"text": text, "y0": span["bbox"][1], "size": span["size"]})
 
     if not half_spans: return None
 
-    # 2. Extract Title & Breadcrumbs
+    # Determine Title Height (so we can filter out top-page logos later)
     page_height = page.rect.height
     top_half_spans = [s for s in half_spans if s["y0"] < (page_height / 3)]
-    if not top_half_spans: return None
-        
-    max_size = max(s["size"] for s in top_half_spans)
-    title_spans = [s for s in top_half_spans if abs(s["size"] - max_size) < 1.0]
-    title_spans.sort(key=lambda s: s["x0"]) 
-    product_name = " ".join([s["text"] for s in title_spans])
-    title_y0 = min(s["y0"] for s in title_spans) 
+    title_y0 = 0
+    if top_half_spans:
+        max_size = max(s["size"] for s in top_half_spans)
+        title_spans = [s for s in top_half_spans if abs(s["size"] - max_size) < 1.0]
+        if title_spans: title_y0 = min(s["y0"] for s in title_spans) 
 
-    above_title = [s for s in half_spans if s["y0"] < (title_y0 - 2)]
-    above_title.sort(key=lambda s: s["x0"]) 
-    main_category = above_title[0]["text"] if len(above_title) >= 1 else "Unknown"
-    sub_category = above_title[1]["text"] if len(above_title) >= 2 else "Unknown"
-
-    if "Unknown" in main_category: return None
-
-    # 3. Extract Features, Measurements, and Colors using Y-Coordinate Line Matching
-    below_title_spans = [s for s in half_spans if s["y0"] >= title_y0 and s not in title_spans]
-    below_title_spans.sort(key=lambda s: (s["y0"], s["x0"]))
+    # 2. Mash all the text together and give it to the AI
+    raw_text_blob = "\n".join([s["text"] for s in half_spans])
     
-    # Group text spans into perfectly horizontal lines (Crucial for tables)
-    lines = []
-    current_line = []
-    current_y = None
+    if len(raw_text_blob) < 20: 
+        return None # Page is empty
+
+    # Call the Gemini AI
+    ai_data = ask_ai_to_parse_text(raw_text_blob)
     
-    for s in below_title_spans:
-        if current_y is None:
-            current_y = s["y0"]
-            current_line.append(s)
-        elif abs(s["y0"] - current_y) < 6: # 6 pixels tolerance for being on the same line
-            current_line.append(s)
-        else:
-            current_line.sort(key=lambda x: x["x0"])
-            lines.append(current_line)
-            current_y = s["y0"]
-            current_line = [s]
-            
-    if current_line:
-        current_line.sort(key=lambda x: x["x0"])
-        lines.append(current_line)
+    if not ai_data or not ai_data.get("product_name") or "Unknown" in ai_data.get("product_name", "Unknown"):
+        return None
 
-    capture_mode = None
-    features, measurements, colors = [], [], []
+    main_category = ai_data.get("main_category", "Unknown")
+    sub_category = ai_data.get("sub_category", "Unknown")
+    product_name = ai_data.get("product_name", "Unknown Product")
+    specs_str = ai_data.get("features", "")
+    measurements_str = ai_data.get("measurements", "")
+    colors_str = ai_data.get("colour_material", "")
 
-    for line_spans in lines:
-        raw_texts = [s["text"].strip() for s in line_spans if s["text"].strip()]
-        if not raw_texts: continue
-        
-        text_spaced = " ".join(raw_texts)
-        text_lower = text_spaced.lower()
-        
-        # Switch State Machine gears
-        if "features" in text_lower and len(text_spaced) < 15:
-            capture_mode = "features"
-            continue
-        elif "measurements" in text_lower and len(text_spaced) < 20:
-            capture_mode = "measurements"
-            continue
-        elif ("colour & material" in text_lower or "colour" in text_lower) and len(text_spaced) < 25:
-            capture_mode = "colors"
-            continue
-        elif text_lower in ["details", "proportion", "in the set", "design registration"]:
-            capture_mode = None 
-            continue
-            
-        # Capture Data
-        if capture_mode == "features":
-            clean = text_spaced.lstrip("•*- ").strip()
-            if clean: features.append(f"✨ {clean}")
-                
-        elif capture_mode == "measurements":
-            # For measurements, we join the columns with a pipe (|) so the CRM can easily split them into a table!
-            measurements.append(" | ".join(raw_texts))
-                
-        elif capture_mode == "colors":
-            colors.append(text_spaced)
-
-    specs_str = "\n".join(features)
-    measurements_str = "\n".join(measurements)
-    colors_str = "\n".join(colors)
-
-    # 4. Grab Images & Sort by Size (Product vs Swatch)
+    # 3. Grab Images & Sort by Size (Product vs Swatch)
     product_images = []
     swatch_images = []
     
@@ -244,13 +229,14 @@ def live_process_and_upload(sheets_client, drive_service):
                 ws.append_row(right_product)
                 print(f"   ✅ Saved Right Product: '{right_product[2]}'")
             
-            time.sleep(1) # API Safety
+            # API Safety Sleep - Gives the Google Sheets & Gemini APIs time to breathe
+            time.sleep(4) 
             
     except KeyboardInterrupt:
         print("\n\n[!] Script stopped manually. Data saved.")
 
 def main():
-    print("Starting Catalog Synchronization...")
+    print("Starting AI Catalog Synchronization...")
     sheets_client, drive_service = authenticate_google_services()
     live_process_and_upload(sheets_client, drive_service)
     print("\n🎉 Synchronization Complete!")
