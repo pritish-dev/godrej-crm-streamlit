@@ -24,35 +24,20 @@ def fix_duplicate_columns(df):
 def load_4s_data():
     config_df = get_df("SHEET_DETAILS")
     team_df = get_df("Sales Team")
-    
     if config_df is None or "four_s_sheets" not in config_df.columns:
         return pd.DataFrame(), team_df
-        
     sheet_names = config_df["four_s_sheets"].dropna().unique().tolist()
     all_dfs = []
-    
     for name in sheet_names:
         df = get_df(name)
         if df is not None and not df.empty:
-            # 1. Fix duplicates first
             df = fix_duplicate_columns(df)
-            
-            # 2. Map 4S specific columns to Standard names
-            mapping = {
-                "SALES REP": "SALES PERSON",
-                "ORDER NO": "GODREJ SO NO"
-            }
-            df = df.rename(columns=mapping)
-            
-            # 3. Fix duplicates again (in case a renamed column clashes with an existing one)
-            df = fix_duplicate_columns(df)
+            # 4S Mapping
+            df = df.rename(columns={"SALES REP": "SALES PERSON", "ORDER NO": "GODREJ SO NO"})
+            df = fix_duplicate_columns(df) # Second pass after rename
             all_dfs.append(df)
-            
-    if not all_dfs:
-        return pd.DataFrame(), team_df
-        
-    combined_df = pd.concat(all_dfs, ignore_index=True, sort=False)
-    return combined_df, team_df
+    if not all_dfs: return pd.DataFrame(), team_df
+    return pd.concat(all_dfs, ignore_index=True, sort=False), team_df
 
 crm_raw, team_df = load_4s_data()
 
