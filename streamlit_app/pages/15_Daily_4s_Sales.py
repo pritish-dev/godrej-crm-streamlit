@@ -6,7 +6,20 @@ from services.sheets import get_df
 st.set_page_config(page_title="4S Interiors Sales", layout="wide")
 st.title("📅 Daily 4S Interiors Sales by Executive")
 
-# ---------- 1. DATA LOADING (WITH MAPPING) ----------
+def fix_duplicate_columns(df):
+    cols = []
+    count = {}
+    for col in df.columns:
+        col_name = str(col).strip().upper()
+        if col_name in count:
+            count[col_name] += 1
+            cols.append(f"{col_name}_{count[col_name]}")
+        else:
+            count[col_name] = 0
+            cols.append(col_name)
+    df.columns = cols
+    return df
+
 @st.cache_data(ttl=60)
 def load_4s_data():
     config_df = get_df("SHEET_DETAILS")
@@ -21,22 +34,32 @@ def load_4s_data():
     for name in sheet_names:
         df = get_df(name)
         if df is not None and not df.empty:
-            df.columns = [str(c).strip().upper() for c in df.columns]
-            # Map 4S specific names to Standard names
-            mapping = {"SALES REP": "SALES PERSON"}
+            # 1. Fix duplicates first
+            df = fix_duplicate_columns(df)
+            
+            # 2. Map 4S specific columns to Standard names
+            mapping = {
+                "SALES REP": "SALES PERSON",
+                "ORDER NO": "GODREJ SO NO"
+            }
             df = df.rename(columns=mapping)
+            
+            # 3. Fix duplicates again (in case a renamed column clashes with an existing one)
+            df = fix_duplicate_columns(df)
             all_dfs.append(df)
             
     if not all_dfs:
         return pd.DataFrame(), team_df
         
-    return pd.concat(all_dfs, ignore_index=True), team_df
+    combined_df = pd.concat(all_dfs, ignore_index=True, sort=False)
+    return combined_df, team_df
 
 crm_raw, team_df = load_4s_data()
 
 if crm_raw.empty:
-    st.warning("No 4S Interiors CRM data found in the specified sheets.")
+    st.warning("No 4S Interiors data found. Check SHEET_DETAILS.")
     st.stop()
+
 
 crm = crm_raw.copy()
 

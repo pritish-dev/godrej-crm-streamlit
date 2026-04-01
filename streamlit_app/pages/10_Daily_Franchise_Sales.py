@@ -6,7 +6,20 @@ from services.sheets import get_df
 st.set_page_config(page_title="Franchise B2C Sales", layout="wide")
 st.title("📅 Daily Franchise B2C Sales by Executive")
 
-# ---------- 1. DATA LOADING (DYNAMIC) ----------
+def fix_duplicate_columns(df):
+    cols = []
+    count = {}
+    for col in df.columns:
+        col_name = str(col).strip().upper()
+        if col_name in count:
+            count[col_name] += 1
+            cols.append(f"{col_name}_{count[col_name]}")
+        else:
+            count[col_name] = 0
+            cols.append(col_name)
+    df.columns = cols
+    return df
+
 @st.cache_data(ttl=60)
 def load_franchise_data():
     config_df = get_df("SHEET_DETAILS")
@@ -21,18 +34,21 @@ def load_franchise_data():
     for name in sheet_names:
         df = get_df(name)
         if df is not None and not df.empty:
-            df.columns = [str(c).strip().upper() for c in df.columns]
+            # Fix duplicates immediately upon loading
+            df = fix_duplicate_columns(df)
             all_dfs.append(df)
             
     if not all_dfs:
         return pd.DataFrame(), team_df
         
-    return pd.concat(all_dfs, ignore_index=True), team_df
+    # Standardize columns across all found sheets
+    combined_df = pd.concat(all_dfs, ignore_index=True, sort=False)
+    return combined_df, team_df
 
 crm_raw, team_df = load_franchise_data()
 
 if crm_raw.empty:
-    st.warning("No Franchise CRM data found in the specified sheets.")
+    st.warning("No Franchise CRM data found. Check SHEET_DETAILS.")
     st.stop()
 
 crm = crm_raw.copy()
