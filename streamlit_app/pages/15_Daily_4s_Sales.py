@@ -46,7 +46,7 @@ def load_4s_data():
             mapping = {"SALES REP": "SALES PERSON", "ORDER NO": "GODREJ SO NO"}
             df = df.rename(columns=mapping)
             
-            # Fallback for Order Amount (check both common 4S headers)
+            # Fallback for Order Amount
             if "ORDER AMOUNT" not in df.columns and "GROSS ORDER VALUE" in df.columns:
                 df = df.rename(columns={"GROSS ORDER VALUE": "ORDER AMOUNT"})
             
@@ -67,14 +67,12 @@ if crm_raw.empty:
 # --- 1. DATA PRE-PROCESSING ---
 crm = crm_raw.copy()
 
-# AGGRESSIVE NUMERIC CLEANING (Fixes the 0 value issue)
+# Fix Numeric Values
 if "ORDER AMOUNT" in crm.columns:
-    # 1. Convert to string and remove all non-numeric characters except decimal
     crm["ORDER AMOUNT"] = crm["ORDER AMOUNT"].astype(str).str.replace(r'[^\d.]', '', regex=True)
-    # 2. Convert empty strings (from non-numeric cells) to 0
     crm["ORDER AMOUNT"] = pd.to_numeric(crm["ORDER AMOUNT"], errors='coerce').fillna(0)
 
-# Date Conversion
+# Fix Dates
 crm["DATE_DT"] = pd.to_datetime(crm["DATE"], dayfirst=True, errors="coerce").dt.date
 
 # --- 2. FILTERS ---
@@ -86,31 +84,26 @@ with c1:
 with c2:
     end_date = st.date_input("End date", value=today)
 
-# --- 3. DYNAMIC SALES PERSON LOGIC ---
-# Filter data by the selected date range FIRST
-mask = (crm["DATE_DT"] >= start_date) & (crm["DATE_DT"] <= end_date)
-df_filtered = crm.loc[mask].copy()
-
-# A. Get official Sales People from 'Sales Team' sheet with Role == 'Sales'
-official_sales_list = []
+# --- 3. SALES PERSON LOGIC (REVISED) ---
+# We take EVERYONE from Sales Team with Role 'SALES'
+all_execs = []
 if team_df is not None and not team_df.empty:
     team_df.columns = [str(c).strip().upper() for c in team_df.columns]
     if "ROLE" in team_df.columns and "NAME" in team_df.columns:
-        official_sales_list = (
+        all_execs = (
             team_df[team_df["ROLE"].str.strip().str.upper() == "SALES"]["NAME"]
             .dropna().str.strip().str.upper().unique().tolist()
         )
 
-# B. Filter names: Only show columns for people who have AT LEAST ONE sale in the selected range
-active_execs = []
-if "SALES PERSON" in df_filtered.columns:
-    # Find names in the sales records that are also in our official Sales list
-    names_in_records = df_filtered["SALES PERSON"].astype(str).str.strip().str.upper().unique()
-    active_execs = [name for name in official_sales_list if name in names_in_records]
+# Filter CRM data by date
+mask = (crm["DATE_DT"] >= start_date) & (crm["DATE_DT"] <= end_date)
+df_filtered = crm.loc[mask].copy()
 
-all_execs = sorted(active_execs)
+# Ensure we have a SALES PERSON column to work with
+if "SALES PERSON" not in df_filtered.columns:
+    df_filtered["SALES PERSON"] = "UNKNOWN"
 
-# --- 4. BUILD TABLE (Newest First) ---
+# --- 4. BUILD TABLE ---
 date_range = sorted(pd.date_range(start_date, end_date).date, reverse=True)
 table_data = []
 
@@ -118,20 +111,43 @@ for d in date_range:
     day_data = df_filtered[df_filtered["DATE_DT"] == d]
     row = {"Date": d.strftime("%d-%b-%Y")}
     day_store_total = 0
+    
     for sp in all_execs:
-        # Match Sales Person name
-        sp_mask = day_data["SALES PERSON"].astype(str).str.strip().str.upper() == sp
-        sp_total = day_data[sp_mask]["ORDER AMOUNT"].sum()
+        # Standardize search to handle spaces/case
+        sp_total = day_data[day_data["SALES PERSON"].astype(str).str.strip().str.upper() == sp]["ORDER AMOUNT"].sum()
         row[sp] = round(float(sp_total), 2)
         day_store_total += sp_total
+        
     row["Store Total"] = round(float(day_store_total), 2)
     table_data.append(row)
 
-df_display = pd.DataFrame(table_data) if table_data else pd.DataFrame()
+# IMPORTANT: Always generate the dataframe even if values are zero
+df_display = pd.DataFrame(table_data)
 
 # --- 5. STYLING & DISPLAY ---
 if not df_display.empty and len(all_execs) > 0:
+    # Add Total Row
     totals_val = {"Date": "TOTAL"}
     for col in df_display.columns:
         if col != "Date":
             totals_val[col] = df_display[col].sum()
+    df_display = pd.concat([df_display, pd.DataFrame([totals_val])], ignore_index=True)
+
+    # Show Grand Total
+    st.success(f"### 💰 Total 4S Sales: ₹{totals_val['Store Total']:,.2f}")
+    
+    st.markdown("""
+        <style>
+            .table-scroll-container { max-height: 600px; overflow: auto; border: 1px solid #ccc; position: relative; }
+            .squeezed-table { width: 100%; border-collapse: separate; border-spacing: 0; }
+            .squeezed-table thead th { position: sticky; top: 0; z-index: 20; background-color: #f0f2f6; border: 1px solid #ccc; padding: 8px; font-weight: 900; }
+            .squeezed-table td:last-child, .squeezed-table th:last-child { position: sticky; right: 0; z-index: 15; border-left: 2px solid #999 !important; background-color: #fff; font-weight: bold; }
+            .squeezed-table td { padding: 4px 8px; border: 1px solid #ccc; text-align: right; white-space: nowrap; }
+        </style>
+    """, unsafe_allow_html=True)
+
+    format_cols = {col: "{:,.2f}" for col in df_display.columns if col != "Date"}
+    styled_html = df_display.style.format(format_cols).set_table_attributes('class="squeezed-table"').hide(axis='index').to_html()
+    st.write(f'<div class="table-scroll-container">{styled_html}</div>', unsafe_allow_html=True)
+else:
+    st.error("Table could not be built. Please check if your 'Sales Team' sheet has names with the role 'SALES'.")
