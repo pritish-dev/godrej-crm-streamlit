@@ -1,10 +1,11 @@
 import streamlit as st
 import pandas as pd
 import gspread
+import google.generativeai as genai
 from google.oauth2.service_account import Credentials
 
 # ==============================
-# CONFIGURATION & CONSTANTS
+# CONFIGURATION
 # ==============================
 st.set_page_config(page_title="Product Catalog", layout="wide")
 
@@ -12,9 +13,15 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 SPREADSHEET_ID = "1wFpK-WokcZB6k1vzG7B6JO5TdGHrUwdgvVm_-UQse54"
 CATALOG_SHEET_NAME = "Product Catalog"
 DISCONTINUED_SHEET_NAME = "Discontinued Products"
+ITEMS_PER_PAGE = 10
+
+# --- GEMINI AI CONFIGURATION ---
+GEMINI_API_KEY = "YOUR_GEMINI_API_KEY_HERE" # Paste your key here
+genai.configure(api_key=GEMINI_API_KEY)
+ai_model = genai.GenerativeModel('gemini-2.5-flash')
 
 # ==============================
-# GOOGLE CLIENT (From sheets.py)
+# DATA FETCHING
 # ==============================
 @st.cache_resource
 def _get_client():
@@ -24,132 +31,213 @@ def _get_client():
         creds = Credentials.from_service_account_file("config/credentials.json", scopes=SCOPES)
     return gspread.authorize(creds)
 
-@st.cache_resource
-def _get_spreadsheet():
-    return _get_client().open_by_key(SPREADSHEET_ID)
-
-# ==============================
-# GET DATA LOGIC
-# ==============================
-@st.cache_data(ttl=60)
-def get_df(sheet_name):
-    """Fetches data from a specific sheet and returns a Pandas DataFrame."""
-    sh = _get_spreadsheet()
-    try:
-        ws = sh.worksheet(sheet_name)
-    except Exception:
-        st.error(f"Sheet '{sheet_name}' not found in Google Sheets.")
-        return pd.DataFrame()
-        
-    data = ws.get_all_values()
-    if not data or len(data) < 2:
-        return pd.DataFrame()
-    return pd.DataFrame(data[1:], columns=data[0])
-
-def load_catalog_data():
-    """Formats the raw dataframe into a structured list of dictionaries."""
-    df_catalog = get_df(CATALOG_SHEET_NAME)
-    df_disc = get_df(DISCONTINUED_SHEET_NAME)
+@st.cache_data(ttl=300) # Cache for 5 minutes
+def load_all_data():
+    sh = _get_client().open_by_key(SPREADSHEET_ID)
     
-    # Create a quick lookup dictionary for discontinued products: {'product name': 'date'}
-    discontinued_dict = {}
-    if not df_disc.empty and "Product Name" in df_disc.columns and "Discontinued Date" in df_disc.columns:
-        for _, row in df_disc.iterrows():
-            name = str(row["Product Name"]).strip().lower()
-            discontinued_dict[name] = str(row["Discontinued Date"]).strip()
+    # 1. Fetch Catalog
+    try:
+        ws_catalog = sh.worksheet(CATALOG_SHEET_NAME)
+        cat_data = ws_catalog.get_all_values()
+        df_catalog = pd.DataFrame(cat_data[1:], columns=cat_data[0]) if len(cat_data) > 1 else pd.DataFrame()
+    except Exception:
+        df_catalog = pd.DataFrame()
 
-    products = []
-    if not df_catalog.empty:
-        for _, row in df_catalog.iterrows():
-            name = str(row.get("Product Name", "")).strip()
+    # 2. Fetch Discontinued
+    try:
+        ws_disc = sh.worksheet(DISCONTINUED_SHEET_NAME)
+        disc_data = ws_disc.get_all_values()
+        df_disc = pd.DataFrame(disc_data[1:], columns=disc_data[0]) if len(disc_data) > 1 else pd.DataFrame()
+    except Exception:
+        df_disc = pd.DataFrame()
+        
+    # Build a fast lookup dictionary for discontinued items
+    disc_dict = {}
+    if not df_disc.empty and "Product Name" in df_disc.columns:
+        for _, row in df_disc.iterrows():
+            disc_dict[str(row["Product Name"]).strip().lower()] = str(row.get("Discontinued Date", "Unknown Date"))
+
+    return df_catalog, disc_dict
+
+# ==============================
+# AI SUGGESTION ENGINE
+# ==============================
+@st.cache_data(ttl=3600) # Cache suggestions so typos don't spam the API
+def get_ai_suggestions(search_query, catalog_names):
+    if not GEMINI_API_KEY or GEMINI_API_KEY == "YOUR_GEMINI_API_KEY_HERE":
+        return "AI suggestions are disabled. Please configure your API key."
+        
+    prompt = f"""
+    A user searched a furniture CRM for "{search_query}", but nothing matched.
+    Here is the list of all available products and categories in our catalog:
+    {catalog_names}
+    
+    Based on the user's typo or intent, suggest the top 3 closest items they might be looking for. 
+    Format your response as a simple, friendly bulleted list. Keep it very brief.
+    """
+    try:
+        response = ai_model.generate_content(prompt)
+        return response.text
+    except Exception:
+        return "Could not load suggestions at this time."
+
+# ==============================
+# MAIN APP
+# ==============================
+st.title("🛋️ Godrej Interio Catalog")
+
+df_catalog, disc_dict = load_all_data()
+
+if df_catalog.empty:
+    st.warning("Catalog is empty or could not be loaded.")
+    st.stop()
+
+# --- SEARCH BAR ---
+search_query = st.text_input("🔍 Search by Product Name, Main Category, or Sub Category...", "").lower()
+
+# Reset pagination to page 0 if the user types a new search query
+if "last_search" not in st.session_state or st.session_state.last_search != search_query:
+    st.session_state.page_num = 0
+    st.session_state.last_search = search_query
+
+# Filter Data
+if search_query:
+    mask = (
+        df_catalog['Product Name'].str.lower().str.contains(search_query, na=False) |
+        df_catalog['Main Category'].str.lower().str.contains(search_query, na=False) |
+        df_catalog['Sub Category'].str.lower().str.contains(search_query, na=False)
+    )
+    filtered_df = df_catalog[mask]
+else:
+    filtered_df = df_catalog
+
+# --- NO RESULTS + AI SUGGESTIONS ---
+if filtered_df.empty:
+    st.error(f"No exact matches found for '{search_query}'.")
+    with st.expander("✨ Did you mean...?", expanded=True):
+        with st.spinner("Asking AI for suggestions..."):
+            # Grab a unique list of all names and categories to feed to the AI
+            all_items = list(df_catalog['Product Name'].unique()) + list(df_catalog['Main Category'].unique())
+            suggestions = get_ai_suggestions(search_query, ", ".join(all_items))
+            st.markdown(suggestions)
+    st.stop()
+
+# --- PAGINATION LOGIC ---
+total_items = len(filtered_df)
+total_pages = (total_items - 1) // ITEMS_PER_PAGE + 1
+
+if "page_num" not in st.session_state:
+    st.session_state.page_num = 0
+
+# Pagination Controls (Top)
+col1, col2, col3 = st.columns([1, 8, 1])
+with col1:
+    if st.button("◀ Prev", disabled=(st.session_state.page_num == 0)):
+        st.session_state.page_num -= 1
+        st.rerun()
+with col2:
+    st.markdown(f"<div style='text-align: center; padding-top: 5px;'>Showing Page <b>{st.session_state.page_num + 1}</b> of {total_pages} ({total_items} total products)</div>", unsafe_allow_html=True)
+with col3:
+    if st.button("Next ▶", disabled=(st.session_state.page_num >= total_pages - 1)):
+        st.session_state.page_num += 1
+        st.rerun()
+
+st.markdown("---")
+
+# Slice the dataframe for the current page
+start_idx = st.session_state.page_num * ITEMS_PER_PAGE
+end_idx = start_idx + ITEMS_PER_PAGE
+page_df = filtered_df.iloc[start_idx:end_idx]
+
+# --- RENDER PRODUCTS ---
+for _, product in page_df.iterrows():
+    p_name = product.get('Product Name', 'Unknown Product')
+    is_discontinued = p_name.lower() in disc_dict
+    
+    with st.container():
+        # Discontinued Marquee Alert
+        if is_discontinued:
+            disc_date = disc_dict[p_name.lower()]
+            st.markdown(
+                f"""
+                <marquee style="color: white; background-color: #d9534f; padding: 5px; font-weight: bold; border-radius: 4px;">
+                🚨 THIS PRODUCT HAS BEEN DISCONTINUED SINCE {disc_date.upper()} 🚨
+                </marquee>
+                """, 
+                unsafe_allow_html=True
+            )
             
-            # Assuming specs are separated by a pipe character "|" in the sheet
-            raw_specs = str(row.get("Specifications", ""))
-            specs = [s.strip() for s in raw_specs.split("|") if s.strip()]
-            
-            # Assuming image URLs are separated by commas
-            raw_images = str(row.get("Image URLs", ""))
+        # Breadcrumbs & Title
+        st.caption(f"{product.get('Main Category', '')} > {product.get('Sub Category', '')}")
+        st.subheader(p_name)
+        
+        # Discontinued Sub-label
+        if is_discontinued:
+            st.markdown("<h5 style='color: #d9534f; margin-top: -10px;'><b>DISCONTINUED</b></h5>", unsafe_allow_html=True)
+        
+        layout_col1, layout_col2 = st.columns([1.2, 2])
+        
+        # LEFT COLUMN: Large Images
+        with layout_col1:
+            raw_images = product.get('Product Image URLs', "")
             images = [url.strip() for url in raw_images.split(",") if url.strip()]
             
-            if name:
-                products.append({
-                    "name": name,
-                    "specs": specs,
-                    "images": images,
-                    "is_discontinued": name.lower() in discontinued_dict,
-                    "discontinued_date": discontinued_dict.get(name.lower(), "")
-                })
-    return products
-
-# ==============================
-# UI RENDERING
-# ==============================
-st.title("🛋️ Product Catalog")
-
-# Fetch all compiled data
-catalog_data = load_catalog_data()
-
-if not catalog_data:
-    st.info(f"No products found. Please ensure the '{CATALOG_SHEET_NAME}' tab exists in your Google Sheet and has data.")
-else:
-    # Search Filter
-    search_query = st.text_input("Search products (e.g., 'Sofa', 'Recliner', 'Wardrobe')...", "").lower()
-    
-    # Filter products based on search
-    filtered_products = [p for p in catalog_data if search_query in p['name'].lower()] if search_query else catalog_data
-    
-    if not filtered_products:
-        st.warning("No products found matching your search.")
-    
-    # Render Products
-    for product in filtered_products:
-        product_name = product['name']
-        
-        with st.container():
-            st.markdown("---")
-            
-            # Discontinued Banner
-            if product['is_discontinued']:
-                st.error(f"🚨 **DISCONTINUED SINCE: {product['discontinued_date']}**")
+            if images:
+                state_key = f"img_{p_name}"
+                if state_key not in st.session_state:
+                    st.session_state[state_key] = 0
+                    
+                nav1, nav2, nav3 = st.columns([1, 3, 1])
+                with nav1:
+                    if st.button("<", key=f"p_{p_name}"): st.session_state[state_key] = (st.session_state[state_key] - 1) % len(images)
+                with nav3:
+                    if st.button(">", key=f"n_{p_name}"): st.session_state[state_key] = (st.session_state[state_key] + 1) % len(images)
                 
-            st.subheader(product_name)
+                st.image(images[st.session_state[state_key]], use_container_width=True)
+            else:
+                st.info("No product image available.")
+                
+        # RIGHT COLUMN: Details
+        with layout_col2:
+            tab1, tab2, tab3 = st.tabs(["Specifications", "Measurements", "Colour & Material"])
             
-            col1, col2 = st.columns([2, 1])
-            
-            # Column 1: Image Pagination
-            with col1:
-                images = product['images']
-                if images:
-                    # Session state to track the current image index for this specific product
-                    state_key = f"img_idx_{product_name}"
-                    if state_key not in st.session_state:
-                        st.session_state[state_key] = 0
-    
-                    # Navigation Buttons
-                    nav_col1, nav_col2, nav_col3 = st.columns([1, 4, 1])
-                    
-                    with nav_col1:
-                        if st.button("◀ Prev", key=f"prev_{product_name}"):
-                            st.session_state[state_key] = (st.session_state[state_key] - 1) % len(images)
-                            
-                    with nav_col3:
-                        if st.button("Next ▶", key=f"next_{product_name}"):
-                            st.session_state[state_key] = (st.session_state[state_key] + 1) % len(images)
-                    
-                    # Display current image
-                    current_image_idx = st.session_state[state_key]
+            # Tab 1: Specs
+            with tab1:
+                st.write(product.get('Specifications', 'No specifications listed.'))
+                
+            # Tab 2: Measurements Table
+            with tab2:
+                measurements_raw = str(product.get('Measurements', ''))
+                if "|" in measurements_raw:
+                    lines = [line.strip() for line in measurements_raw.split('\n') if line.strip()]
                     try:
-                        st.image(images[current_image_idx], use_container_width=True, caption=f"Image {current_image_idx + 1} of {len(images)}")
+                        headers = [h.strip() for h in lines[0].split('|')]
+                        rows = [[cell.strip() for cell in line.split('|')] for line in lines[1:]]
+                        # Pad rows that might be missing columns to prevent pandas errors
+                        max_cols = len(headers)
+                        padded_rows = [r + ['']*(max_cols - len(r)) for r in rows]
+                        
+                        df_meas = pd.DataFrame(padded_rows, columns=headers)
+                        st.dataframe(df_meas, hide_index=True, use_container_width=True)
                     except Exception as e:
-                        st.warning(f"Could not load image. Ensure the URL is publicly accessible. Error: {e}")
+                        st.write(measurements_raw) # Fallback to raw text if table parsing fails
                 else:
-                    st.info("No images available for this product.")
-    
-            # Column 2: Specifications
-            with col2:
-                st.markdown("**Specifications:**")
-                if product['specs']:
-                    for spec in product['specs']:
-                        st.markdown(f"- {spec}")
-                else:
-                    st.write("No specifications listed.")
+                    st.write("No detailed measurements available.")
+
+            # Tab 3: Swatches and Colors
+            with tab3:
+                st.write(product.get('Colour & Material', 'No details available.'))
+                
+                raw_swatches = product.get('Swatch Image URLs', "")
+                swatches = [url.strip() for url in raw_swatches.split(",") if url.strip()]
+                
+                if swatches:
+                    st.write("**Available Options:**")
+                    # Display swatches side-by-side cleanly
+                    swatch_cols = st.columns(min(len(swatches), 8)) 
+                    for idx, swatch_url in enumerate(swatches):
+                        if idx < 8: # Limit to 8 swatches per row to avoid UI clutter
+                            with swatch_cols[idx]:
+                                st.image(swatch_url, width=50)
+
+        st.markdown("<br><hr><br>", unsafe_allow_html=True) # Divider
