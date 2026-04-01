@@ -12,11 +12,21 @@ from services.automation import get_alerts, generate_whatsapp_group_link
 
 st.set_page_config(layout="wide", page_title="Godrej CRM Dashboard")
 
-def make_columns_unique(df):
-    """Rename duplicate columns by adding a suffix (e.g., COL, COL.1)"""
-    cols = pd.Series(df.columns)
-    for dup in cols[cols.duplicated()].unique(): 
-        cols[cols == dup] = [f"{dup}_{i}" if i != 0 else dup for i in range(sum(cols == dup))]
+def fix_duplicate_columns(df):
+    """
+    Rename duplicate columns aggressively. 
+    If two columns are named 'DATE', they become 'DATE' and 'DATE_1'.
+    """
+    cols = []
+    count = {}
+    for col in df.columns:
+        col_name = str(col).strip().upper()
+        if col_name in count:
+            count[col_name] += 1
+            cols.append(f"{col_name}_{count[col_name]}")
+        else:
+            count[col_name] = 0
+            cols.append(col_name)
     df.columns = cols
     return df
 
@@ -36,19 +46,22 @@ def load_data():
 
     dfs_to_combine = []
     
+    # Track sheets already loaded to prevent loading the same sheet twice
+    loaded_sheets = set()
+
     def process_sheet(name, is_four_s=False):
+        if name in loaded_sheets:
+            return None
+        
         df = get_df(name)
         if df is None or df.empty:
             return None
         
-        # 1. Clean whitespace from headers
-        df.columns = [str(c).strip().upper() for c in df.columns]
-        
-        # 2. CRITICAL FIX: Make columns unique before any other operation
-        df = make_columns_unique(df)
+        # 1. Clean and fix duplicate columns immediately
+        df = fix_duplicate_columns(df)
         
         if is_four_s:
-            # MAPPING: Standardizing 4S headers to match Franchise headers
+            # MAPPING: Standardizing 4S headers
             mapping = {
                 "ORDER NO": "GODREJ SO NO",
                 "SALES REP": "SALES PERSON",
@@ -56,8 +69,12 @@ def load_data():
                 "REMARKS": "DELIVERY REMARKS"
             }
             df = df.rename(columns=mapping)
+            # After renaming, we must fix duplicates AGAIN in case 'ORDER NO' 
+            # was renamed to 'GODREJ SO NO' but that column already existed.
+            df = fix_duplicate_columns(df)
         
         df['SOURCE_SHEET'] = name
+        loaded_sheets.add(name)
         return df
 
     # Fetch Franchise
@@ -74,8 +91,11 @@ def load_data():
         return pd.DataFrame(), pd.DataFrame()
     
     # 3. Combine Dataframes
-    # We use join='outer' to ensure we don't lose unique columns from either sheet type
+    # Use sort=False to maintain original order and avoid re-indexing errors
     crm = pd.concat(dfs_to_combine, ignore_index=True, sort=False)
+    
+    # Ensure result index is unique and clean
+    crm = crm.loc[:, ~crm.columns.duplicated()].copy()
     
     # Final cleanup of numeric and date columns
     for col in ["ORDER AMOUNT", "ADV RECEIVED"]:
@@ -89,7 +109,7 @@ def load_data():
     
     return crm, team
 
-# --- REST OF THE CODE REMAINS THE SAME ---
+# --- UI & LOGIC ---
 crm, team_df = load_data()
 
 if crm.empty:
@@ -98,7 +118,7 @@ if crm.empty:
 
 st.title("📊 Master Sales Dashboard - Godrej Interio")
 
-# --- UI LOGIC (PAGINATION) ---
+# --- PAGINATION ---
 all_cols = ["DATE", "GODREJ SO NO", "CUSTOMER NAME", "CONTACT NUMBER", "PRODUCT NAME", "ORDER AMOUNT", "ADV RECEIVED", "SALES PERSON", "CUSTOMER DELIVERY DATE (TO BE)", "DELIVERY REMARKS", "SOURCE_SHEET"]
 display_cols = [c for c in all_cols if c in crm.columns]
 all_sales_sorted = crm.sort_values(by="DATE", ascending=False)
@@ -155,11 +175,12 @@ if "DELIVERY REMARKS" in crm.columns:
 
 st.divider()
 st.subheader("💰 Payment Collection")
-crm["PENDING AMOUNT"] = crm["ORDER AMOUNT"] - crm["ADV RECEIVED"]
-pending_pay = crm[crm["PENDING AMOUNT"] > 0].copy()
+if "ORDER AMOUNT" in crm.columns and "ADV RECEIVED" in crm.columns:
+    crm["PENDING AMOUNT"] = crm["ORDER AMOUNT"] - crm["ADV RECEIVED"]
+    pending_pay = crm[crm["PENDING AMOUNT"] > 0].copy()
 
-if not pending_pay.empty:
-    pending_pay = pending_pay.rename(columns={"CUSTOMER DELIVERY DATE (TO BE)": "DELIVERY DATE", "DATE": "ORDER DATE"})
-    pending_pay = sort_urgent_first(pending_pay, "DELIVERY DATE")
-    pay_cols = ["DELIVERY DATE", "GODREJ SO NO", "CUSTOMER NAME", "ORDER AMOUNT", "ADV RECEIVED", "PENDING AMOUNT", "SALES PERSON"]
-    st.dataframe(pending_pay[[c for c in pay_cols if c in pending_pay.columns]].style.apply(highlight_rows, date_col="DELIVERY DATE", axis=1), use_container_width=True)
+    if not pending_pay.empty:
+        pending_pay = pending_pay.rename(columns={"CUSTOMER DELIVERY DATE (TO BE)": "DELIVERY DATE", "DATE": "ORDER DATE"})
+        pending_pay = sort_urgent_first(pending_pay, "DELIVERY DATE")
+        pay_cols = ["DELIVERY DATE", "GODREJ SO NO", "CUSTOMER NAME", "ORDER AMOUNT", "ADV RECEIVED", "PENDING AMOUNT", "SALES PERSON"]
+        st.dataframe(pending_pay[[c for c in pay_cols if c in pending_pay.columns]].style.apply(highlight_rows, date_col="DELIVERY DATE", axis=1), use_container_width=True)
