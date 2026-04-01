@@ -28,40 +28,30 @@ def fix_duplicate_columns(df):
 @st.cache_data(ttl=60)
 def load_4s_data():
     config_df = get_df("SHEET_DETAILS")
-    if config_df is None or "four_s_sheets" not in config_df.columns:
-        return pd.DataFrame()
+    if config_df is None:
+        st.sidebar.error("❌ Could not find SHEET_DETAILS")
+        return pd.DataFrame(), pd.DataFrame()
         
     sheet_names = config_df["four_s_sheets"].dropna().unique().tolist()
-    all_dfs = []
+    st.sidebar.write(f"🔍 Searching for: {sheet_names}") # DEBUG LINE
     
+    all_dfs = []
     for name in sheet_names:
         df = get_df(name)
-        if df is not None and not df.empty:
-            # 1. Clean headers thoroughly
+        if df is not None:
+            st.sidebar.success(f"✅ Found {name} with {len(df)} rows") # DEBUG LINE
             df.columns = [str(c).strip().upper() for c in df.columns]
             df = fix_duplicate_columns(df)
-            
-            # 2. Flexible Mapping (Checks for 4S variations)
-            # This ensures even if a space is missing, it still finds the column
-            mapping = {
-                "SALES REP": "SALES PERSON",
-                "SALESREP": "SALES PERSON",
-                "ORDER AMOUNT": "ORDER AMOUNT",
-                "ORDERAMOUNT": "ORDER AMOUNT",
-                "DATE": "DATE"
-            }
+            mapping = {"SALES REP": "SALES PERSON", "ORDER NO": "GODREJ SO NO"}
             df = df.rename(columns=mapping)
-            
-            # Fallback if ORDER AMOUNT is still missing but Gross Value exists
             if "ORDER AMOUNT" not in df.columns and "GROSS ORDER VALUE" in df.columns:
                 df = df.rename(columns={"GROSS ORDER VALUE": "ORDER AMOUNT"})
-                
             all_dfs.append(df)
+        else:
+            st.sidebar.warning(f"⚠️ Could not find sheet: '{name}'") # DEBUG LINE
             
-    if not all_dfs:
-        return pd.DataFrame()
-        
-    return pd.concat(all_dfs, ignore_index=True, sort=False)
+    if not all_dfs: return pd.DataFrame(), get_df("Sales Team")
+    return pd.concat(all_dfs, ignore_index=True, sort=False), get_df("Sales Team")
 
 crm_raw = load_4s_data()
 
