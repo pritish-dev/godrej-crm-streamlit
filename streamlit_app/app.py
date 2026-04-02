@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 
 # 1. Define each page with a custom Title and Icon
 # "app.py" is your current main file - we rename it here to "Main Dashboard"
-dash_page = st.Page("views/app.py", title="interio by Godrej Patia Franchise Sales Dashboard", icon="📊", default=True)
+dash_page = st.Page("app.py", title="interio by Godrej Patia Franchise Sales Dashboard", icon="📊", default=True)
 
 # Define your other files from the /pages folder
 four_s_page = st.Page("pages/2_4sinteriors_Dashboard.py", title="4sinteriors Sales Dashboard", icon="📊")
