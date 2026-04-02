@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 
 # 1. Define each page with a custom Title and Icon
 # "app.py" is your current main file - we rename it here to "Main Dashboard"
-dash_page = st.Page("app.py", title="interio by Godrej Patia Franchise Sales Dashboard", icon="📊", default=True)
+dash_page = st.Page("views/app.py", title="interio by Godrej Patia Franchise Sales Dashboard", icon="📊", default=True)
 
 # Define your other files from the /pages folder
 four_s_page = st.Page("pages/2_4sinteriors_Dashboard.py", title="4sinteriors Sales Dashboard", icon="📊", default=True)
@@ -18,6 +18,9 @@ strategy_page = st.Page("pages/30_Sales_Strategy_Insights.py", title="Strategy I
 catalog_page = st.Page("pages/40_Products_catalog.py", title="Product Catalog", icon="📋")
 
 #st.logo("path/to/interio_by_godrej_logo.png") # Adds a small logo at the top of the sidebar
+
+# --- SHARED SIDEBAR ELEMENTS (Optional) ---
+st.sidebar.text("Made for Interio by Godrej Patia, Bhubaneswar")
 
 # 2. Create the Navigation Structure (You can even group them!)
 pg = st.navigation({
