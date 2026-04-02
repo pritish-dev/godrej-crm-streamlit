@@ -44,7 +44,8 @@ def load_4s_data():
             df['SOURCE_SHEET'] = name
             dfs.append(df)
     
-    if not dfs: return pd.DataFrame(), team
+    if not dfs: 
+        return pd.DataFrame(), team
     
     crm = pd.concat(dfs, ignore_index=True, sort=False)
     
