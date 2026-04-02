@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 dash_page = st.Page("views/app.py", title="interio by Godrej Patia Franchise Sales Dashboard", icon="📊", default=True)
 
 # Define your other files from the /pages folder
-four_s_page = st.Page("pages/2_4sinteriors_Dashboard.py", title="4sinteriors Sales Dashboard", icon="📊", default=True)
+four_s_page = st.Page("pages/2_4sinteriors_Dashboard.py", title="4sinteriors Sales Dashboard", icon="📊")
 franchise_page = st.Page("pages/10_Daily_Franchise_Sales.py", title="Daily B2C Franchise Sales", icon="🏪")
 sales_4s_page = st.Page("pages/15_Daily_4s_Sales.py", title="Daily B2C 4s Sales", icon="🚛")
 analysis_page = st.Page("pages/20_Product_Sales_Analysis.py", title="Product Analysis", icon="📈")
