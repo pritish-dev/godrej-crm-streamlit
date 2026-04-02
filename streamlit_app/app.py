@@ -10,13 +10,9 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from services.sheets import get_df
 from services.automation import get_alerts, generate_whatsapp_group_link
 
-st.set_page_config(layout="wide", page_title="Godrej CRM Dashboard")
+st.set_page_config(layout="wide", page_title="Godrej Franchise CRM")
 
 def fix_duplicate_columns(df):
-    """
-    Rename duplicate columns aggressively. 
-    If two columns are named 'DATE', they become 'DATE' and 'DATE_1'.
-    """
     cols = []
     count = {}
     for col in df.columns:
@@ -35,73 +31,31 @@ def load_data():
     config_df = get_df("SHEET_DETAILS")
     team = get_df("Sales Team")
     
-    franchise_names = []
-    four_s_names = []
-    
-    if config_df is not None and not config_df.empty:
-        if "Franchise_sheets" in config_df.columns:
-            franchise_names = config_df["Franchise_sheets"].dropna().unique().tolist()
-        if "four_s_sheets" in config_df.columns:
-            four_s_names = config_df["four_s_sheets"].dropna().unique().tolist()
+    if config_df is None or "Franchise_sheets" not in config_df.columns:
+        return pd.DataFrame(), team
 
+    franchise_names = config_df["Franchise_sheets"].dropna().unique().tolist()
     dfs_to_combine = []
-    
-    # Track sheets already loaded to prevent loading the same sheet twice
-    loaded_sheets = set()
 
-    def process_sheet(name, is_four_s=False):
-        if name in loaded_sheets:
-            return None
-        
-        df = get_df(name)
-        if df is None or df.empty:
-            return None
-        
-        # 1. Clean and fix duplicate columns immediately
-        df = fix_duplicate_columns(df)
-        
-        if is_four_s:
-            # MAPPING: Standardizing 4S headers
-            mapping = {
-                "ORDER NO": "GODREJ SO NO",
-                "SALES REP": "SALES PERSON",
-                "CUSTOMER DELIVERY DATE": "CUSTOMER DELIVERY DATE (TO BE)",
-                "REMARKS": "DELIVERY REMARKS"
-            }
-            df = df.rename(columns=mapping)
-            # After renaming, we must fix duplicates AGAIN in case 'ORDER NO' 
-            # was renamed to 'GODREJ SO NO' but that column already existed.
-            df = fix_duplicate_columns(df)
-        
-        df['SOURCE_SHEET'] = name
-        loaded_sheets.add(name)
-        return df
-
-    # Fetch Franchise
     for name in franchise_names:
-        processed = process_sheet(name, is_four_s=False)
-        if processed is not None: dfs_to_combine.append(processed)
-
-    # Fetch 4S
-    for name in four_s_names:
-        processed = process_sheet(name, is_four_s=True)
-        if processed is not None: dfs_to_combine.append(processed)
+        df = get_df(name)
+        if df is not None and not df.empty:
+            df = fix_duplicate_columns(df)
+            df['SOURCE_SHEET'] = name
+            dfs_to_combine.append(df)
             
     if not dfs_to_combine:
-        return pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame(), team
     
-    # 3. Combine Dataframes
-    # Use sort=False to maintain original order and avoid re-indexing errors
     crm = pd.concat(dfs_to_combine, ignore_index=True, sort=False)
-    
-    # Ensure result index is unique and clean
     crm = crm.loc[:, ~crm.columns.duplicated()].copy()
     
-    # Final cleanup of numeric and date columns
+    # Numeric Cleanup
     for col in ["ORDER AMOUNT", "ADV RECEIVED"]:
         if col in crm.columns:
             crm[col] = pd.to_numeric(crm[col].astype(str).str.replace(r'[₹,]', '', regex=True), errors='coerce').fillna(0)
     
+    # Date Cleanup
     date_cols = ["DATE", "CUSTOMER DELIVERY DATE (TO BE)"]
     for col in date_cols:
         if col in crm.columns:
@@ -113,10 +67,10 @@ def load_data():
 crm, team_df = load_data()
 
 if crm.empty:
-    st.error("No data found. Check SHEET_DETAILS.")
+    st.error("No Franchise data found. Check SHEET_DETAILS.")
     st.stop()
 
-st.title("📊 Master Sales Dashboard - Godrej Interio")
+st.title("📊 Franchise Sales Dashboard - Godrej Interio")
 
 # --- PAGINATION ---
 all_cols = ["DATE", "GODREJ SO NO", "CUSTOMER NAME", "CONTACT NUMBER", "PRODUCT NAME", "ORDER AMOUNT", "ADV RECEIVED", "SALES PERSON", "CUSTOMER DELIVERY DATE (TO BE)", "DELIVERY REMARKS", "SOURCE_SHEET"]
