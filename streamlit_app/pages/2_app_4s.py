@@ -71,11 +71,7 @@ if crm.empty:
 
 st.title("🚛 4S Sales Dashboard - Godrej Interio")
 
-
-
-
-###################################EDIT FROM HERE############################
-
+'''
 # --- CUSTOM SORTING & STYLING LOGIC ---
 def sort_urgent_first(df, date_col):
     """Sorts upcoming dates on top (nearest first), and pushes overdue dates to the bottom."""
@@ -94,7 +90,7 @@ def highlight_rows(row, date_col):
             return ['background-color: #ffcccc; color: black'] * len(row) # Red
         elif val == today + timedelta(days=1):
             return ['background-color: #c8e6c9; color: black'] * len(row) # Green
-    return [''] * len(row)
+    return [''] * len(row)'''
 
 # --- TOP STATS ---
 total_sales_val = crm["ORDER AMOUNT"].sum()
@@ -109,12 +105,33 @@ all_4s_cols = [
     "CUSTOMER DELIVERY DATE", "NAME OF ASSEMBLER", "SOURCE_SHEET"
 ]
 
+display_cols = [c for c in all_4s_cols if c in crm.columns]
 all_sales_sorted = crm.sort_values(by="DATE", ascending=False)
 
-st.dataframe(all_sales_sorted[all_cols].style.format({
-    "ORDER AMOUNT": "{:.2f}", "ADV RECEIVED": "{:.2f}",
-    "DATE": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else "",
-    "CUSTOMER DELIVERY DATE (TO BE)": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else ""
+# Pagination Logic
+page_size = 20
+total_pages = max((len(all_sales_sorted) // page_size) + (1 if len(all_sales_sorted) % page_size > 0 else 0), 1)
+
+if 'page_4s' not in st.session_state:
+    st.session_state.page_4s = 1
+
+p1, p2, p3 = st.columns([1, 2, 1])
+with p1:
+    if st.button("⬅️ Previous") and st.session_state.page_4s > 1:
+        st.session_state.page_4s -= 1
+with p3:
+    if st.button("Next ➡️") and st.session_state.page_4s < total_pages:
+        st.session_state.page_4s += 1
+with p2:
+    st.write(f"**Page {st.session_state.page_4s}** of {total_pages}")
+
+start_idx = (st.session_state.page_4s - 1) * page_size
+end_idx = start_idx + page_size
+
+st.dataframe(all_sales_sorted[display_cols].iloc[start_idx:end_idx].style.format({
+    "ORDER AMOUNT": "{:.2f}", "ADV RECEIVED": "{:.2f}",
+    "DATE": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else "",
+    "CUSTOMER DELIVERY DATE": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else ""
 }), use_container_width=True)
 
 '''
