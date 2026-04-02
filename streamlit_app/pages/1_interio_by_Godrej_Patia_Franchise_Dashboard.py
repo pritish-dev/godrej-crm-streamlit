@@ -10,7 +10,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from services.sheets import get_df
 from services.automation import get_alerts, generate_whatsapp_group_link
 
-st.set_page_config(layout="wide", page_title="Godrej Franchise CRM")
+st.set_page_config(layout="wide", page_title="interio by Godrej patia Franchise CRM")
 
 def fix_duplicate_columns(df):
     cols = []
@@ -70,7 +70,7 @@ if crm.empty:
     st.error("No Franchise data found. Check SHEET_DETAILS.")
     st.stop()
 
-st.title("📊 Franchise Sales Dashboard - Godrej Interio")
+st.title("📊 Franchise Sales Dashboard - Interio by Godrej Patia, Bhubaneswar")
 
 # --- CUSTOM SORTING & STYLING LOGIC ---
 def sort_urgent_first(df, date_col):
@@ -123,7 +123,7 @@ if not pending_del.empty:
     })
     
     pending_del = sort_urgent_first(pending_del, "DELIVERY DATE")
-    pending_cols = ["DELIVERY DATE", "CUSTOMER NAME", "CONTACT NUMBER", "PRODUCT NAME", "ORDER AMOUNT", "ADV RECEIVED", "SALES PERSON", "ORDER DATE", "DELIVERY REMARKS"]
+    pending_cols = ["DELIVERY DATE", "ORDER DATE", "CUSTOMER NAME", "CONTACT NUMBER", "PRODUCT NAME", "ORDER AMOUNT", "ADV RECEIVED", "SALES PERSON", "DELIVERY REMARKS"]
     
     d1, d2 = st.columns([3, 1])
     with d2:
@@ -170,7 +170,7 @@ if not pending_pay.empty:
     })
     
     pending_pay = sort_urgent_first(pending_pay, "DELIVERY DATE")
-    pay_cols = ["DELIVERY DATE", "CUSTOMER NAME", "CONTACT NUMBER", "ORDER AMOUNT", "ADV RECEIVED", "PENDING AMOUNT", "SALES PERSON", "ORDER DATE"]
+    pay_cols = ["DELIVERY DATE", "ORDER DATE", "CUSTOMER NAME", "CONTACT NUMBER", "ORDER AMOUNT", "ADV RECEIVED", "PENDING AMOUNT", "SALES PERSON"]
     
     p1, p2 = st.columns([3, 1])
     with p2:
