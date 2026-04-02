@@ -109,7 +109,7 @@ all_4s_cols = [
 
 all_sales_sorted = crm.sort_values(by="DATE", ascending=False)
 
-st.dataframe(all_sales_sorted[all_cols].style.format({
+st.dataframe(all_sales_sorted[all_4s_cols].style.format({
     "ORDER AMOUNT": "{:.2f}", "ADV RECEIVED": "{:.2f}",
     "DATE": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else "",
     "CUSTOMER DELIVERY DATE (TO BE)": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else ""
