@@ -119,12 +119,12 @@ st.dataframe(all_sales_sorted[all_4s_cols].style.format({
 
 # --- PENDING DELIVERY SECTION ---
 st.divider()
-st.subheader("🚚 Pending Deliveries")
-mask_p = (crm["DELIVERY REMARKS"].astype(str).str.upper().str.strip() == "PENDING")
-pending_del = crm[mask_p].copy()
+st.subheader("💰 Payment Collection")
+crm["PENDING AMOUNT"] = crm["ORDER AMOUNT"] - crm["ADV RECEIVED"]
+pending_pay = crm[crm["PENDING AMOUNT"] > 0].copy()
 
-if not pending_del.empty:
-    pending_del = pending_del.rename(columns={
+if not pending_pay.empty:
+    pending_pay = pending_pay.rename(columns={
         "CUSTOMER DELIVERY DATE": "DELIVERY DATE",
         "SALES REP": "SALES PERSON",
         "REMARKS": "DELIVERY REMARKS",
@@ -179,6 +179,8 @@ if not pending_pay.empty:
         "REMARKS": "DELIVERY REMARKS",
         "DATE": "ORDER DATE"
     })
+
+    pending_pay["DELIVERY DATE"] = pd.to_datetime(pending_pay["DELIVERY DATE"], errors='coerce')
     
     pending_pay = sort_urgent_first(pending_pay, "DELIVERY DATE")
     pay_cols = ["DELIVERY DATE", "CUSTOMER NAME", "CONTACT NUMBER", "ORDER AMOUNT", "ADV RECEIVED", "PENDING AMOUNT", "SALES PERSON", "ORDER DATE"]
