@@ -5,33 +5,6 @@ import pandas as pd
 from datetime import datetime, timedelta
 
 
-# 1. Define each page with a custom Title and Icon
-# "app.py" is your current main file - we rename it here to "Main Dashboard"
-dash_page = st.Page("app.py", title="interio by Godrej Patia Franchise Sales Dashboard", icon="📊", default=True)
-
-# Define your other files from the /pages folder
-four_s_page = st.Page("pages/2_4sinteriors_Dashboard.py", title="4sinteriors Sales Dashboard", icon="📊")
-franchise_page = st.Page("pages/10_Daily_Franchise_Sales.py", title="Daily B2C Franchise Sales", icon="🏪")
-sales_4s_page = st.Page("pages/15_Daily_4s_Sales.py", title="Daily B2C 4s Sales", icon="🚛")
-analysis_page = st.Page("pages/20_Product_Sales_Analysis.py", title="Product Analysis", icon="📈")
-strategy_page = st.Page("pages/30_Sales_Strategy_Insights.py", title="Strategy Insights", icon="💡")
-catalog_page = st.Page("pages/40_Products_catalog.py", title="Product Catalog", icon="📋")
-
-#st.logo("path/to/interio_by_godrej_logo.png") # Adds a small logo at the top of the sidebar
-
-# --- SHARED SIDEBAR ELEMENTS (Optional) ---
-st.sidebar.text("Made for Interio by Godrej Patia, Bhubaneswar")
-
-# 2. Create the Navigation Structure (You can even group them!)
-pg = st.navigation({
-    "Overview": [dash_page, four_s_page ],
-    "Daily Operations": [franchise_page, sales_4s_page],
-    "Analytics & Catalog": [analysis_page, strategy_page, catalog_page]
-})
-
-# 3. Run the Navigation
-pg.run()
-
 # --- CRITICAL PATH FIX ---
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
