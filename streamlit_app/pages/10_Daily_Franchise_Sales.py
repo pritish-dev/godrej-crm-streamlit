@@ -104,7 +104,7 @@ if not df_display.empty and len(all_execs) > 0:
     grand_total = totals_val['Store Total']
     st.success(f"### 💰 Grand Total Franchise Sales: ₹{grand_total:,.2f}")
 
-    # CSS for sticky header/columns (same as before)
+    # CSS for sticky header/columns. (same as before)
     st.markdown("""<style>
         .table-scroll-container { max-height: 600px; overflow: auto; border: 1px solid #ccc; width: 100%; position: relative; }
         .squeezed-table { width: 100%; border-collapse: separate; border-spacing: 0; }

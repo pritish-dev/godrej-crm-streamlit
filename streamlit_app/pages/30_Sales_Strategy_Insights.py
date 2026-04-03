@@ -132,7 +132,6 @@ st.markdown("---")
 st.subheader("🗓️ Upcoming Boost Opportunities (Bhubaneswar)")
 
 festivals = [
-    {"Date": "01-Apr-2026", "Festival": "Odisha Day (Utkala Dibasa)", "Type": "Regional Pride", "Decoration": "Pattachitra Hangings"},
     {"Date": "14-Apr-2026", "Festival": "Odia New Year", "Type": "Major Festival", "Decoration": "Marigold Flowers & Jhoti"},
     {"Date": "14-Jun-2026", "Festival": "Raja Parba", "Type": "Regional Celebration", "Decoration": "Floral Swings & Ethnic Drapes"},
     {"Date": "16-Jul-2026", "Festival": "Ratha Yatra", "Type": "Massive Peak", "Decoration": "Chariot Motifs & Red/Yellow Fabrics"},

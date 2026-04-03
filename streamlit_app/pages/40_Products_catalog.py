@@ -111,7 +111,7 @@ with col3:
 
 st.markdown("---")
 
-# Slice the dataframe for the current page
+# Slice the dataframe for the current page.
 start_idx = st.session_state.page_num * ITEMS_PER_PAGE
 end_idx = start_idx + ITEMS_PER_PAGE
 page_df = filtered_df.iloc[start_idx:end_idx]

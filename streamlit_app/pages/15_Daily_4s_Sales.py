@@ -62,7 +62,7 @@ if crm_raw.empty:
 # --- 1. DEEP CLEANING DATA ---
 crm = crm_raw.copy()
 
-# CLEAN AMOUNT: Remove everything except digits and dots
+# CLEAN AMOUNT: Remove everything. except digits and dots
 if "ORDER AMOUNT" in crm.columns:
     crm["ORDER AMOUNT"] = (
         crm["ORDER AMOUNT"]

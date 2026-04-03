@@ -4,8 +4,8 @@ from datetime import datetime
 from services.sheets import get_df
 import altair as alt
 
-st.set_page_config(page_title="Product Sales Analysis", layout="wide")
-st.title("📦 Product Sales Performance")
+st.set_page_config(page_title="Franchise Product Sales Analysis", layout="wide")
+st.title("📦 Franchise Product Sales Performance")
 
 # ---------- 1. DATA LOADING ----------
 crm_raw = get_df("CRM")
