@@ -1,9 +1,12 @@
 import sys
 import os
-import streamlit as st
+#import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 
+
+import streamlit as st
+st.write("Page Loaded Successfully")
 # --- CRITICAL PATH FIX ---
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
