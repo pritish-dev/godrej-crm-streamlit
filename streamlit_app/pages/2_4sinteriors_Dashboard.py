@@ -56,11 +56,14 @@ def load_4s_data():
         if col in crm.columns:
             crm[col] = pd.to_numeric(crm[col].astype(str).str.replace(r'[₹,]', '', regex=True), errors='coerce').fillna(0)
     
-    # Date Cleaning for 4S Columns
+    # Date Cleaning for 4S Columns (Improved)
     date_cols = ["DATE", "CUSTOMER DELIVERY DATE", "INVOICE DATE"]
     for col in date_cols:
-        if col in crm.columns:
-            crm[col] = pd.to_datetime(crm[col], dayfirst=True, errors='coerce')
+        # Check for the column even if there are slight naming variations
+        actual_col = [c for c in crm.columns if c.strip().upper() == col]
+        if actual_col:
+            target = actual_col[0]
+            crm[target] = pd.to_datetime(crm[target], dayfirst=True, errors='coerce')
             
     return crm, team
 
