@@ -11,8 +11,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from services.sheets import get_df
 from services.automation import get_alerts, generate_whatsapp_group_link
 
-st.set_page_config(layout="wide", page_title="interio by Godrej patia Franchise CRM")
-
+st.set_page_config(layout="wide", page_title="interio by Godrej patia Franchise CRM", initial_sidebar_state="expanded")
+st.sidebar.markdown("### 🏢 4sinteriors Admin")
 def fix_duplicate_columns(df):
     cols = []
     count = {}
