@@ -1,16 +1,10 @@
-import sys
-import os
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
-
-# --- CRITICAL PATH FIX ---
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
+from datetime import datetime
 from services.sheets import get_df
-from services.automation import get_alerts, generate_whatsapp_group_link
 
-st.set_page_config(layout="wide", page_title="4Sinteriors CRM Dashboard")
+st.set_page_config(page_title="4S Interiors Sales", layout="wide")
+st.title("📅 Daily 4S Interiors Sales by Executive")
 
 def fix_duplicate_columns(df):
     cols = []
@@ -29,194 +23,98 @@ def fix_duplicate_columns(df):
 @st.cache_data(ttl=60)
 def load_4s_data():
     config_df = get_df("SHEET_DETAILS")
-    team = get_df("Sales Team")
-    
+    team_df = get_df("Sales Team")
     if config_df is None or "four_s_sheets" not in config_df.columns:
-        return pd.DataFrame(), team
-
+        return pd.DataFrame(), team_df
     sheet_names = config_df["four_s_sheets"].dropna().unique().tolist()
-    dfs = []
-
+    all_dfs = []
     for name in sheet_names:
         df = get_df(name)
         if df is not None and not df.empty:
             df = fix_duplicate_columns(df)
-            # GLOBAL RENAME: DATE -> Order Date
-            if "DATE" in df.columns:
-                df = df.rename(columns={"DATE": "Order Date"})
-            df['SOURCE_SHEET'] = name
-            dfs.append(df)
-    
-    if not dfs: 
-        return pd.DataFrame(), team
-    
-    crm = pd.concat(dfs, ignore_index=True, sort=False)
-    
-    # 1. Currency Cleaning
-    money_cols = ["ORDER AMOUNT", "ADV RECEIVED", "MRP", "GROSS ORDER VALUE"]
-    for col in money_cols:
-        if col in crm.columns:
-            crm[col] = pd.to_numeric(crm[col].astype(str).str.replace(r'[₹,]', '', regex=True), errors='coerce').fillna(0)
-    
-    # 2. STRICT Date Conversion (This fixes the sorting and the .dt error)
-    # We convert them here so the entire app sees them as actual Dates
-    date_map = {"Order Date": "Order Date", "CUSTOMER DELIVERY DATE": "CUSTOMER DELIVERY DATE"}
-    for original, target in date_map.items():
-        if original in crm.columns:
-            # We try multiple formats to be safe
-            crm[original] = pd.to_datetime(crm[original], errors='coerce', dayfirst=True)
-            
-    return crm, team
+            all_dfs.append(df)
+    if not all_dfs: return pd.DataFrame(), team_df
+    return pd.concat(all_dfs, ignore_index=True, sort=False), team_df
 
-# --- UI & LOGIC ---
-crm, team_df = load_4s_data()
+crm_raw, team_df = load_4s_data()
 
-if crm.empty:
-    st.error("No 4S data found. Check SHEET_DETAILS.")
+if crm_raw.empty:
+    st.warning("No 4Sinteriors CRM data found.")
     st.stop()
 
-st.title("🚛 4SINTERIORS Sales Dashboard")
+crm = crm_raw.copy()
+for col in ["ORDER AMOUNT", "ADV RECEIVED"]:
+    if col in crm.columns:
+        crm[col] = pd.to_numeric(crm[col].astype(str).str.replace(r'[₹,]', '', regex=True), errors='coerce').fillna(0)
 
-# --- CUSTOM SORTING & STYLING LOGIC ---
-def sort_urgent_first(df, date_col):
-    """Sorts upcoming dates on top (nearest first), and pushes overdue dates to the bottom."""
-    today = pd.Timestamp(datetime.now().date())
-    # Ensure date_col is datetime
-    df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
-    df['is_overdue'] = df[date_col] < today
-    sorted_df = df.sort_values(by=['is_overdue', date_col], ascending=[True, True])
-    return sorted_df.drop(columns=['is_overdue'])
+crm["DATE_DT"] = pd.to_datetime(crm["DATE"], dayfirst=True, errors="coerce").dt.date
 
-def highlight_rows(row, date_col):
-    today = datetime.now().date()
-    val = row[date_col].date() if pd.notnull(row[date_col]) else None
-    if val:
-        if val < today:
-            return ['background-color: #ffcccc; color: black'] * len(row)
-        elif val == today + timedelta(days=1):
-            return ['background-color: #c8e6c9; color: black'] * len(row)
-    return [''] * len(row)
+# ---------- 2. FILTERS ----------
+today = datetime.today().date()
+month_start = today.replace(day=1)
+c1, c2 = st.columns(2)
+with c1: start_date = st.date_input("Start date", value=month_start)
+with c2: end_date = st.date_input("End date", value=today)
 
-# --- TOP STATS ---
-total_sales_val = crm["ORDER AMOUNT"].sum()
-total_orders = len(crm)
-st.metric("Total Sale (Till Date)", f"₹{total_sales_val:,.2f}", delta=f"{total_orders} Orders")
+# ---------- 3. SALES TEAM LOGIC ----------
+official_sales_people = []
+if team_df is not None and not team_df.empty:
+    team_df.columns = [str(c).strip().upper() for c in team_df.columns]
+    if "ROLE" in team_df.columns and "NAME" in team_df.columns:
+        official_sales_people = team_df[team_df["ROLE"].str.upper() == "SALES"]["NAME"].dropna().str.strip().str.upper().unique().tolist()
 
-# --- ALL SALES RECORDS TABLE ---
-st.subheader("📋 All Sales Records")
-# Sorting by Order Date - LATEST FIRST
-all_sales_sorted = crm.sort_values(by="Order Date", ascending=False)
+mask = (crm["DATE_DT"] >= start_date) & (crm["DATE_DT"] <= end_date)
+df_filtered = crm.loc[mask].copy()
 
-all_4s_cols = [
-    "Order Date", "ORDER NO", "CUSTOMER NAME", "CONTACT NUMBER", "PRODUCT NAME", 
-    "ORDER AMOUNT", "ADV RECEIVED", "SALES REP", "INV NO", 
-    "CUSTOMER DELIVERY DATE", "NAME OF ASSEMBLER", "SOURCE_SHEET"
-]
+active_in_period = []
+if "SALES PERSON" in df_filtered.columns:
+    sales_sums = df_filtered.groupby("SALES PERSON")["ORDER AMOUNT"].sum()
+    active_in_period = sales_sums[sales_sums > 0].index.str.strip().str.upper().tolist()
 
-st.dataframe(all_sales_sorted[all_4s_cols].style.format({
-    "ORDER AMOUNT": "{:.2f}", "ADV RECEIVED": "{:.2f}",
-    "Order Date": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else "",
-    "CUSTOMER DELIVERY DATE": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else ""
-}), use_container_width=True)
+all_execs = sorted(list(set(official_sales_people + active_in_period)))
+if "" in all_execs: all_execs.remove("")
 
+# ---------- 4. BUILD TABLE (SORTED NEWEST FIRST) ----------
+# Sort date_range descending so newest is on top
+date_range = sorted(pd.date_range(start_date, end_date).date, reverse=True)
+table_data = []
 
-# --- PENDING DELIVERY SECTION ---
-st.divider()
-st.subheader("🚚 Pending Deliveries")
-mask_p = (crm["DELIVERY REMARKS"].astype(str).str.upper().str.strip() == "PENDING")
-pending_del = crm[mask_p].copy()
+for d in date_range:
+    day_data = df_filtered[df_filtered["DATE_DT"] == d]
+    row = {"Date": d.strftime("%d-%b-%Y")}
+    day_store_total = 0
+    for sp in all_execs:
+        sp_total = day_data[day_data["SALES PERSON"].str.strip().str.upper() == sp]["ORDER AMOUNT"].sum()
+        row[sp] = round(float(sp_total), 2)
+        day_store_total += sp_total
+    row["Store Total"] = round(float(day_store_total), 2)
+    table_data.append(row)
 
-if not pending_del.empty:
-    # Rename and Reorder: Delivery Date first
-    pending_del = pending_del.rename(columns={
-        "CUSTOMER DELIVERY DATE": "DELIVERY DATE",
-        "SALES REP": "SALES PERSON"
-    })
+df_display = pd.DataFrame(table_data) if table_data else pd.DataFrame()
+
+# ---------- 5. TOTALS & DISPLAY ----------
+if not df_display.empty and len(all_execs) > 0:
+    totals_val = {"Date": "TOTAL"}
+    for col in df_display.columns:
+        if col != "Date": totals_val[col] = df_display[col].sum()
     
-    # FORCED CONVERSION to prevent .dt crash
-    pending_del["DELIVERY DATE"] = pd.to_datetime(pending_del["DELIVERY DATE"], errors='coerce')
-    
-    pending_del = sort_urgent_first(pending_del, "DELIVERY DATE")
-    pending_cols = ["DELIVERY DATE", "Order Date", "CUSTOMER NAME", "CONTACT NUMBER", "PRODUCT NAME", "ORDER AMOUNT", "ADV RECEIVED", "SALES PERSON", "DELIVERY REMARKS"]
-    
-    d1, d2 = st.columns([3, 1])
-    with d2:
-        if st.button("🚀 Push Delivery Alerts to App", key="btn_delivery", use_container_width=True):
-            alerts = get_alerts(crm, team_df, "delivery")
-            if alerts:
-                for sp_name, msg in alerts:
-                    st.link_button(f"Forward {sp_name}'s List to Group", generate_whatsapp_group_link(msg))
-    
-    with d1:
-        st.info("Green = Tomorrow's Deliveries | Red = Overdue/Missed")
-        
-    st.dataframe(pending_del[pending_cols].style.apply(highlight_rows, date_col="DELIVERY DATE", axis=1).format({
-        "ORDER AMOUNT": "{:.2f}", "ADV RECEIVED": "{:.2f}",
-        "DELIVERY DATE": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else "",
-        "Order Date": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else ""
-    }), use_container_width=True)
+    # Concatenate to put TOTAL at the very bottom
+    df_display = pd.concat([df_display, pd.DataFrame([totals_val])], ignore_index=True)
 
-    today = datetime.now().date()
-    tmrw = today + timedelta(days=1)
-    
-    # These lines use .dt safely now
-    tot_del = len(pending_del)
-    tmrw_del = len(pending_del[pending_del["DELIVERY DATE"].dt.date == tmrw])
-    overdue_del = len(pending_del[pending_del["DELIVERY DATE"].dt.date < today])
-    
-    c1, c2, c3 = st.columns(3)
-    c1.metric("📦 Total Pending Deliveries", tot_del)
-    c2.metric("🟢 Pending For Tomorrow", tmrw_del)
-    c3.metric("🔴 Overdue or Missed", overdue_del)
+    grand_total = totals_val['Store Total']
+    st.success(f"### 💰 Grand Total 4sinteriors Sales: ₹{grand_total:,.2f}")
 
+    # CSS for sticky header/columns. (same as before)
+    st.markdown("""<style>
+        .table-scroll-container { max-height: 600px; overflow: auto; border: 1px solid #ccc; width: 100%; position: relative; }
+        .squeezed-table { width: 100%; border-collapse: separate; border-spacing: 0; }
+        .squeezed-table thead th { position: sticky; top: 0; z-index: 20; background-color: #f0f2f6; border: 1px solid #ccc; padding: 8px; font-weight: 900; }
+        .squeezed-table td:last-child, .squeezed-table th:last-child { position: sticky; right: 0; z-index: 15; border-left: 2px solid #999 !important; background-color: #fff; }
+        .squeezed-table td { padding: 4px 8px; border: 1px solid #ccc; text-align: right; white-space: nowrap; }
+    </style>""", unsafe_allow_html=True)
 
-# --- PAYMENT DUE SECTION ---
-st.divider()
-st.subheader("💰 Payment Collection")
-crm["PENDING AMOUNT"] = crm["ORDER AMOUNT"] - crm["ADV RECEIVED"]
-pending_pay = crm[crm["PENDING AMOUNT"] > 0].copy()
-
-if not pending_pay.empty:
-    pending_pay = pending_pay.rename(columns={
-        "CUSTOMER DELIVERY DATE": "DELIVERY DATE",
-        "SALES REP": "SALES PERSON"
-    })
-    
-    # FORCED CONVERSION to fix line 209 crash
-    pending_pay["DELIVERY DATE"] = pd.to_datetime(pending_pay["DELIVERY DATE"], errors='coerce')
-    
-    pending_pay = sort_urgent_first(pending_pay, "DELIVERY DATE")
-    
-    # Reordered Columns: Delivery Date first
-    pay_cols = ["DELIVERY DATE", "Order Date", "CUSTOMER NAME", "CONTACT NUMBER", "ORDER AMOUNT", "ADV RECEIVED", "PENDING AMOUNT", "SALES PERSON"]
-    
-    p1, p2 = st.columns([3, 1])
-    with p2:
-        if st.button("💸 Push Payment Alerts to App", key="btn_payment", use_container_width=True):
-            alerts = get_alerts(crm, team_df, "payment")
-            if alerts:
-                for sp_name, msg in alerts:
-                    st.link_button(f"Forward {sp_name}'s List to Group", generate_whatsapp_group_link(msg))
-                
-    with p1:
-        total_due = pending_pay["PENDING AMOUNT"].sum()
-        st.warning(f"Total Outstanding Balance: ₹{total_due:,.2f}")
-        
-    st.dataframe(pending_pay[pay_cols].style.apply(highlight_rows, date_col="DELIVERY DATE", axis=1).format({
-        "ORDER AMOUNT": "{:.2f}", "ADV RECEIVED": "{:.2f}", "PENDING AMOUNT": "{:.2f}",
-        "DELIVERY DATE": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else "",
-        "Order Date": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else ""
-    }), use_container_width=True)
-
-    today = datetime.now().date()
-    tmrw = today + timedelta(days=1)
-    
-    # FIX FOR LINE 209
-    tot_pay = len(pending_pay)
-    tmrw_pay = len(pending_pay[pending_pay["DELIVERY DATE"].dt.date == tmrw])
-    overdue_pay = len(pending_pay[pending_pay["DELIVERY DATE"].dt.date < today])
-    
-    c4, c5, c6 = st.columns(3)
-    c4.metric("🧾 Total Payment Collections", tot_pay)
-    c5.metric("🟢 Payments Due Tomorrow", tmrw_pay)
-    c6.metric("🔴 Overdue Collections", overdue_pay)
+    format_cols = {col: "{:,.2f}" for col in df_display.columns if col != "Date"}
+    styled_html = df_display.style.format(format_cols).set_table_attributes('class="squeezed-table"').hide(axis='index').to_html()
+    st.write(f'<div class="table-scroll-container">{styled_html}</div>', unsafe_allow_html=True)
+else:
+    st.info("No active sales data found.")
