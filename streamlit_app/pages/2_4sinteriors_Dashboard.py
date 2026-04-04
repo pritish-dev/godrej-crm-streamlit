@@ -54,8 +54,8 @@ def load_data():
     crm["ORDER AMOUNT"] = pd.to_numeric(crm.get("ORDER AMOUNT"), errors="coerce").fillna(0)
     crm["ADV RECEIVED"] = pd.to_numeric(crm.get("ADV RECEIVED"), errors="coerce").fillna(0)
 
-    crm["DATE"] = pd.to_datetime(crm.get("DATE"), errors="coerce")
-    crm["CUSTOMER DELIVERY DATE"] = pd.to_datetime(crm.get("CUSTOMER DELIVERY DATE"), errors="coerce")
+    crm["DATE"] = parse_mixed_dates(crm.get("DATE"))
+    crm["CUSTOMER DELIVERY DATE"] = parse_mixed_dates(crm.get("CUSTOMER DELIVERY DATE"))
 
     crm = crm[crm["ORDER AMOUNT"] > 0]
 
