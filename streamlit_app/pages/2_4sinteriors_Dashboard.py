@@ -13,35 +13,31 @@ st.set_page_config(layout="wide", page_title="4SINTERIORS CRM Dashboard")
 
 def parse_mixed_dates(series):
     series = series.astype(str).str.strip()
-
     parsed_dates = []
 
     for val in series:
         date = pd.NaT
 
-        # Try format: 05-04-2025
         try:
             date = datetime.strptime(val, "%d-%m-%Y")
         except:
             pass
 
-        # Try format: 4-Apr-2025
         if pd.isna(date):
             try:
                 date = datetime.strptime(val, "%d-%b-%Y")
             except:
                 pass
 
-        # Try generic (fallback)
         if pd.isna(date):
-            try:
-                date = pd.to_datetime(val, dayfirst=True, errors='coerce')
-            except:
-                pass
+            date = pd.to_datetime(val, dayfirst=True, errors='coerce')
 
         parsed_dates.append(date)
 
-    return pd.Series(parsed_dates)
+    return pd.Series(parsed_dates, index=series.index)  # ✅ FIX
+
+def format_date_display(series):
+    return series.dt.strftime("%d-%B-%Y").str.upper()
 
 
 # ---------- LOAD DATA ----------
@@ -142,11 +138,19 @@ sales_cols = [
 
 sales_cols = [col for col in sales_cols if col in crm.columns]
 
-sales_df = crm[sales_cols].copy()
+sales_df = sales_df[sales_cols].copy()
+
+# Format dates for display
+if "ORDER DATE" in sales_df.columns:
+    sales_df["ORDER DATE"] = format_date_display(sales_df["ORDER DATE"])
+
+if "DELIVERY DATE" in sales_df.columns:
+    sales_df["DELIVERY DATE"] = format_date_display(sales_df["DELIVERY DATE"])
 
 # Drop invalid dates
 sales_df = sales_df[pd.notnull(sales_df["ORDER DATE"])]
 
+sales_df["ORDER DATE"] = pd.to_datetime(sales_df["ORDER DATE"], errors="coerce")
 # FINAL STRICT SORT
 sales_df = sales_df.sort_values(
     by="ORDER DATE",
@@ -202,16 +206,22 @@ if not pending_del.empty:
         alerts = get_alerts(crm, team_df, "delivery")
         for sp, msg in alerts:
             st.link_button(f"Send to {sp}", generate_whatsapp_group_link(msg))
+    pending_del_display = pending_del.copy()
 
+    if "ORDER DATE" in pending_del_display.columns:
+        pending_del_display["ORDER DATE"] = format_date_display(pending_del_display["ORDER DATE"])
+
+    if "DELIVERY DATE" in pending_del_display.columns:
+        pending_del_display["DELIVERY DATE"] = format_date_display(pending_del_display["DELIVERY DATE"])
     st.dataframe(
-        pending_del[del_cols].style.apply(highlight_delivery, axis=1),
+        pending_del_display[del_cols].style.apply(highlight_delivery, axis=1),
         use_container_width=True
     )
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("📦 Total Pending Deliveries", len(pending_del))
-    c2.metric("🟢 Tomorrow", len(pending_del[pending_del["DELIVERY DATE"].dt.date == tomorrow]))
-    c3.metric("🔴 Overdue", len(pending_del[pending_del["DELIVERY DATE"].dt.date < today]))
+    c1.metric("📦 Total Pending Deliveries", len(pending_del_display))
+    c2.metric("🟢 Tomorrow", len(pending_del_display[pending_del_display["DELIVERY DATE"].dt.date == tomorrow]))
+    c3.metric("🔴 Overdue", len(pending_del_display[pending_del_display["DELIVERY DATE"].dt.date < today]))
 
 # ---------- PAYMENT ----------
 st.divider()
@@ -234,13 +244,19 @@ if not pending_pay.empty:
         alerts = get_alerts(crm, team_df, "payment")
         for sp, msg in alerts:
             st.link_button(f"Send to {sp}", generate_whatsapp_group_link(msg))
+    pending_pay_display = pending_pay.copy()
 
+    if "ORDER DATE" in pending_pay_display.columns:
+        pending_pay_display["ORDER DATE"] = format_date_display(pending_pay_display["ORDER DATE"])
+
+    if "DELIVERY DATE" in pending_pay_display.columns:
+        pending_pay_display["DELIVERY DATE"] = format_date_display(pending_pay_display["DELIVERY DATE"])
     st.dataframe(
-        pending_pay[pay_cols].style.apply(highlight_payment, axis=1),
+        pending_pay_display[pay_cols].style.apply(highlight_payment, axis=1),
         use_container_width=True
     )
 
     c4, c5, c6 = st.columns(3)
-    c4.metric("🧾 Total Payment Cases", len(pending_pay))
-    c5.metric("🟢 Tomorrow", len(pending_pay[pending_pay["DELIVERY DATE"].dt.date == tomorrow]))
-    c6.metric("🔴 Overdue", len(pending_pay[pending_pay["DELIVERY DATE"].dt.date < today]))
+    c4.metric("🧾 Total Payment Cases", len(pending_pay_display))
+    c5.metric("🟢 Tomorrow", len(pending_pay_display[pending_pay_display["DELIVERY DATE"].dt.date == tomorrow]))
+    c6.metric("🔴 Overdue", len(pending_pay_display[pending_pay_display["DELIVERY DATE"].dt.date < today]))
