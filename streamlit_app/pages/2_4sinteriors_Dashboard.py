@@ -62,11 +62,15 @@ def load_data():
     return crm, team
 
 def parse_mixed_dates(series):
-    # First attempt: standard parsing with dayfirst
+    # Convert everything to string first
+    series = series.astype(str).str.strip()
+
+    # First parse (day-first)
     parsed = pd.to_datetime(series, errors='coerce', dayfirst=True)
 
-    # Second attempt: handle cases like '4-Apr-2025'
+    # Second parse (explicit formats fallback)
     mask = parsed.isna()
+
     if mask.any():
         parsed_alt = pd.to_datetime(series[mask], format='%d-%b-%Y', errors='coerce')
         parsed.loc[mask] = parsed_alt
@@ -118,7 +122,14 @@ sales_cols = [
 
 sales_cols = [col for col in sales_cols if col in crm.columns]
 
-sales_df = crm[sales_cols].sort_values(by="ORDER DATE", ascending=False)
+# Ensure ORDER DATE is proper datetime
+sales_df["ORDER DATE"] = pd.to_datetime(sales_df["ORDER DATE"], errors="coerce")
+
+# Drop invalid dates (optional but recommended)
+sales_df = sales_df.dropna(subset=["ORDER DATE"])
+
+# FINAL SORT
+sales_df = sales_df.sort_values(by="ORDER DATE", ascending=False).reset_index(drop=True)
 
 # Pagination
 page_size = 20
