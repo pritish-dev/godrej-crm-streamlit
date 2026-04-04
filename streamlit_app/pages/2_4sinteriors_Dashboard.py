@@ -9,7 +9,21 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from services.sheets import get_df
 from services.automation import get_alerts, generate_whatsapp_group_link
 
-st.set_page_config(layout="wide", page_title="4Sinteriors CRM Dashboard")
+st.set_page_config(layout="wide", page_title="4SINTERIORS CRM Dashboard")
+
+# ---------- DATE PARSER ----------
+def parse_mixed_dates(series):
+    series = series.astype(str).str.strip()
+
+    parsed = pd.to_datetime(series, errors='coerce', dayfirst=True)
+
+    mask = parsed.isna()
+    if mask.any():
+        parsed_alt = pd.to_datetime(series[mask], format='%d-%b-%Y', errors='coerce')
+        parsed.loc[mask] = parsed_alt
+
+    return parsed
+
 
 # ---------- LOAD DATA ----------
 @st.cache_data(ttl=60)
@@ -50,32 +64,19 @@ def load_data():
 
     crm = pd.concat(dfs, ignore_index=True, sort=False)
 
-    # Cleaning
+    # Clean numeric
     crm["ORDER AMOUNT"] = pd.to_numeric(crm.get("ORDER AMOUNT"), errors="coerce").fillna(0)
     crm["ADV RECEIVED"] = pd.to_numeric(crm.get("ADV RECEIVED"), errors="coerce").fillna(0)
 
+    # Clean dates (IMPORTANT FIX)
     crm["DATE"] = parse_mixed_dates(crm.get("DATE"))
     crm["CUSTOMER DELIVERY DATE"] = parse_mixed_dates(crm.get("CUSTOMER DELIVERY DATE"))
 
+    # Remove junk
     crm = crm[crm["ORDER AMOUNT"] > 0]
 
     return crm, team
 
-def parse_mixed_dates(series):
-    # Convert everything to string first
-    series = series.astype(str).str.strip()
-
-    # First parse (day-first)
-    parsed = pd.to_datetime(series, errors='coerce', dayfirst=True)
-
-    # Second parse (explicit formats fallback)
-    mask = parsed.isna()
-
-    if mask.any():
-        parsed_alt = pd.to_datetime(series[mask], format='%d-%b-%Y', errors='coerce')
-        parsed.loc[mask] = parsed_alt
-
-    return parsed
 
 crm, team_df = load_data()
 
@@ -122,13 +123,12 @@ sales_cols = [
 
 sales_cols = [col for col in sales_cols if col in crm.columns]
 
-# Ensure ORDER DATE is proper datetime
-sales_df["ORDER DATE"] = pd.to_datetime(sales_df["ORDER DATE"], errors="coerce")
+sales_df = crm[sales_cols].copy()
 
-# Drop invalid dates (optional but recommended)
+# 🔥 CRITICAL FIX: CLEAN + SORT
+sales_df["ORDER DATE"] = pd.to_datetime(sales_df["ORDER DATE"], errors="coerce")
 sales_df = sales_df.dropna(subset=["ORDER DATE"])
 
-# FINAL SORT
 sales_df = sales_df.sort_values(by="ORDER DATE", ascending=False).reset_index(drop=True)
 
 # Pagination
