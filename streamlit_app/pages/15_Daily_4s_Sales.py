@@ -28,74 +28,79 @@ def fix_duplicate_columns(df):
 @st.cache_data(ttl=60)
 def load_4s_data():
     config_df = get_df("SHEET_DETAILS")
-    if config_df is None:
-        st.sidebar.error("❌ Could not find SHEET_DETAILS")
-        return pd.DataFrame(), pd.DataFrame()
+    team_df = get_df("Sales Team")
+    
+    if config_df is None or "four_s_sheets" not in config_df.columns:
+        return pd.DataFrame(), team_df
         
     sheet_names = config_df["four_s_sheets"].dropna().unique().tolist()
-    st.sidebar.write(f"🔍 Searching for: {sheet_names}") # DEBUG LINE
-    
     all_dfs = []
+    
     for name in sheet_names:
         df = get_df(name)
-        if df is not None:
-            st.sidebar.success(f"✅ Found {name} with {len(df)} rows") # DEBUG LINE
-            df.columns = [str(c).strip().upper() for c in df.columns]
+        if df is not None and not df.empty:
             df = fix_duplicate_columns(df)
-            mapping = {"SALES REP": "SALES PERSON", "ORDER NO": "GODREJ SO NO"}
+            # Standardize 4S column names to match logic
+            mapping = {"SALES REP": "SALES PERSON", "DATE": "DATE"}
             df = df.rename(columns=mapping)
+            
+            # Use ORDER AMOUNT if available, else fallback to GROSS ORDER VALUE
             if "ORDER AMOUNT" not in df.columns and "GROSS ORDER VALUE" in df.columns:
                 df = df.rename(columns={"GROSS ORDER VALUE": "ORDER AMOUNT"})
+                
             all_dfs.append(df)
-        else:
-            st.sidebar.warning(f"⚠️ Could not find sheet: '{name}'") # DEBUG LINE
             
-    if not all_dfs: return pd.DataFrame(), get_df("Sales Team")
-    return pd.concat(all_dfs, ignore_index=True, sort=False), get_df("Sales Team")
+    if not all_dfs: 
+        return pd.DataFrame(), team_df
+        
+    return pd.concat(all_dfs, ignore_index=True, sort=False), team_df
 
-crm_raw = load_4s_data()
+crm_raw, team_df = load_4s_data()
 
 if crm_raw.empty:
-    st.warning("Could not find any sheets listed in SHEET_DETAILS > four_s_sheets.")
+    st.warning("No 4S Interiors CRM data found.")
     st.stop()
 
-# --- 1. DEEP CLEANING DATA ---
+# ---------- 1. DATA CLEANING ----------
 crm = crm_raw.copy()
 
-# CLEAN AMOUNT: Remove everything. except digits and dots
+# Clean Currency
 if "ORDER AMOUNT" in crm.columns:
-    crm["ORDER AMOUNT"] = (
-        crm["ORDER AMOUNT"]
-        .astype(str)
-        .str.replace(r'[^\d.]', '', regex=True)
-    )
-    crm["ORDER AMOUNT"] = pd.to_numeric(crm["ORDER AMOUNT"], errors='coerce').fillna(0)
+    crm["ORDER AMOUNT"] = pd.to_numeric(crm["ORDER AMOUNT"].astype(str).str.replace(r'[₹,]', '', regex=True), errors='coerce').fillna(0)
 
-# CLEAN DATE: Try multiple formats (DD/MM/YYYY and YYYY-MM-DD)
-# This is usually why data doesn't appear in the filtered range
+# Clean Dates
 crm["DATE_DT"] = pd.to_datetime(crm["DATE"], dayfirst=True, errors="coerce").dt.date
 
-# --- 2. FILTERS ---
+# ---------- 2. FILTERS ----------
 today = datetime.today().date()
 month_start = today.replace(day=1)
 c1, c2 = st.columns(2)
-with c1:
-    start_date = st.date_input("Start date", value=month_start)
-with c2:
-    end_date = st.date_input("End date", value=today)
+with c1: start_date = st.date_input("Start date", value=month_start)
+with c2: end_date = st.date_input("End date", value=today)
 
-# --- 3. FILTERING & DYNAMIC COLS ---
+# ---------- 3. SALES TEAM LOGIC ----------
+official_sales_people = []
+if team_df is not None and not team_df.empty:
+    # Ensure team_df columns are clean
+    team_df.columns = [str(c).strip().upper() for c in team_df.columns]
+    if "ROLE" in team_df.columns and "NAME" in team_df.columns:
+        official_sales_people = team_df[team_df["ROLE"].str.upper() == "SALES"]["NAME"].dropna().str.strip().str.upper().unique().tolist()
+
 mask = (crm["DATE_DT"] >= start_date) & (crm["DATE_DT"] <= end_date)
 df_filtered = crm.loc[mask].copy()
 
-# Dynamically identify people with sales > 0 in this range
-active_execs = []
+# Find people who made sales in this range but aren't in the official list
+active_in_period = []
 if "SALES PERSON" in df_filtered.columns:
     df_filtered["SALES PERSON"] = df_filtered["SALES PERSON"].astype(str).str.strip().str.upper()
-    active_execs = sorted(df_filtered[df_filtered["ORDER AMOUNT"] > 0]["SALES PERSON"].unique().tolist())
-    active_execs = [x for x in active_execs if x not in ["NAN", "NONE", "0", ""]]
+    sales_sums = df_filtered.groupby("SALES PERSON")["ORDER AMOUNT"].sum()
+    active_in_period = sales_sums[sales_sums > 0].index.tolist()
 
-# --- 4. BUILD TABLE ---
+# Combine and unique list of executives
+all_execs = sorted(list(set(official_sales_people + active_in_period)))
+all_execs = [x for x in all_execs if x not in ["NAN", "NONE", "0", ""]]
+
+# ---------- 4. BUILD TABLE (SORTED NEWEST FIRST) ----------
 date_range = sorted(pd.date_range(start_date, end_date).date, reverse=True)
 table_data = []
 
@@ -103,48 +108,48 @@ for d in date_range:
     day_data = df_filtered[df_filtered["DATE_DT"] == d]
     row = {"Date": d.strftime("%d-%b-%Y")}
     day_store_total = 0
-    for sp in active_execs:
+    for sp in all_execs:
         sp_total = day_data[day_data["SALES PERSON"] == sp]["ORDER AMOUNT"].sum()
         row[sp] = round(float(sp_total), 2)
         day_store_total += sp_total
     row["Store Total"] = round(float(day_store_total), 2)
     table_data.append(row)
 
-df_master = pd.DataFrame(table_data)
+df_display = pd.DataFrame(table_data) if table_data else pd.DataFrame()
 
-# --- 5. PAGINATION & DISPLAY ---
-if not df_master.empty and active_execs:
-    page_size = 31
-    total_pages = max((len(df_master) // page_size) + (1 if len(df_master) % page_size > 0 else 0), 1)
+# ---------- 5. TOTALS & DISPLAY ----------
+if not df_display.empty and len(all_execs) > 0:
+    # Calculate the bottom "TOTAL" row
+    totals_val = {"Date": "TOTAL"}
+    for col in df_display.columns:
+        if col != "Date": 
+            totals_val[col] = df_display[col].sum()
+    
+    # Append the TOTAL row to the dataframe
+    df_display = pd.concat([df_display, pd.DataFrame([totals_val])], ignore_index=True)
 
-    if 'p4s' not in st.session_state: st.session_state.p4s = 1
+    # Display Grand Total metric
+    grand_total = totals_val['Store Total']
+    st.success(f"### 💰 Grand Total 4S Interiors Sales: ₹{grand_total:,.2f}")
 
-    col_n1, col_n2, col_n3 = st.columns([1, 2, 1])
-    with col_n1:
-        if st.button("⬅️ Previous") and st.session_state.p4s > 1: st.session_state.p4s -= 1
-    with col_n3:
-        if st.button("Next ➡️") and st.session_state.p4s < total_pages: st.session_state.p4s += 1
-    with col_n2:
-        st.write(f"Page {st.session_state.p4s} of {total_pages}")
+    # CSS for sticky header and sticky "Store Total" column
+    st.markdown("""<style>
+        .table-scroll-container { max-height: 650px; overflow: auto; border: 1px solid #ccc; width: 100%; position: relative; }
+        .squeezed-table { width: 100%; border-collapse: separate; border-spacing: 0; }
+        .squeezed-table thead th { position: sticky; top: 0; z-index: 20; background-color: #f0f2f6; border: 1px solid #ccc; padding: 10px; font-weight: 900; }
+        .squeezed-table td:last-child, .squeezed-table th:last-child { position: sticky; right: 0; z-index: 15; border-left: 2px solid #999 !important; background-color: #fff; font-weight: bold; }
+        .squeezed-table td { padding: 8px; border: 1px solid #ccc; text-align: right; white-space: nowrap; }
+        .squeezed-table tr:last-child td { background-color: #eee; font-weight: bold; border-top: 2px solid #333; }
+    </style>""", unsafe_allow_html=True)
 
-    start_idx = (st.session_state.p4s - 1) * page_size
-    df_page = df_master.iloc[start_idx:start_idx + page_size].copy()
-
-    st.success(f"### 💰 Total 4S Sales (Full Period): ₹{df_master['Store Total'].sum():,.2f}")
-
-    # Custom Table Styling
-    st.markdown("""
-        <style>
-            .table-scroll { max-height: 700px; overflow: auto; border: 1px solid #ccc; position: relative; }
-            .squeezed-table { width: 100%; border-collapse: separate; border-spacing: 0; }
-            .squeezed-table thead th { position: sticky; top: 0; z-index: 20; background-color: #f0f2f6; border: 1px solid #ccc; padding: 10px; font-weight: 900; }
-            .squeezed-table td:last-child, .squeezed-table th:last-child { position: sticky; right: 0; z-index: 15; border-left: 2px solid #999 !important; background-color: #fff; font-weight: bold; }
-            .squeezed-table td { padding: 8px; border: 1px solid #ccc; text-align: right; white-space: nowrap; }
-        </style>
-    """, unsafe_allow_html=True)
-
-    format_cols = {col: "{:,.2f}" for col in df_page.columns if col != "Date"}
-    styled_html = df_page.style.format(format_cols).set_table_attributes('class="squeezed-table"').hide(axis='index').to_html()
-    st.write(f'<div class="table-scroll">{styled_html}</div>', unsafe_allow_html=True)
+    # Apply formatting and convert to HTML
+    format_cols = {col: "{:,.2f}" for col in df_display.columns if col != "Date"}
+    styled_html = (df_display.style
+                   .format(format_cols)
+                   .set_table_attributes('class="squeezed-table"')
+                   .hide(axis='index')
+                   .to_html())
+    
+    st.write(f'<div class="table-scroll-container">{styled_html}</div>', unsafe_allow_html=True)
 else:
-    st.info("No 4S Interiors sales records found. Double check your sheet names in SHEET_DETAILS and the date format in the 4S sheets.")
+    st.info("No active sales data found for the selected period.")
