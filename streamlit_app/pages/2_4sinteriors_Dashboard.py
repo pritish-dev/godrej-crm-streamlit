@@ -13,6 +13,7 @@ st.set_page_config(layout="wide", page_title="4Sinteriors CRM Dashboard")
 
 # ---------- LOAD DATA ----------
 @st.cache_data(ttl=60)
+@st.cache_data(ttl=60)
 def load_data():
     config_df = get_df("SHEET_DETAILS")
     team = get_df("Sales Team")
@@ -27,30 +28,54 @@ def load_data():
     )
 
     dfs = []
+
     for name in sheet_names:
         try:
             df = get_df(name)
+
             if df is None or df.empty:
                 continue
+
+            # ✅ FIX 1: Normalize column names
+            df.columns = [str(col).strip().upper() for col in df.columns]
+
+            # ✅ FIX 2: Remove duplicate columns safely
+            df = df.loc[:, ~df.columns.duplicated()]
+
+            # ✅ FIX 3: Remove fully empty columns
+            df = df.dropna(axis=1, how="all")
+
             df["SOURCE"] = name
+
             dfs.append(df)
-        except:
+
+        except Exception:
             continue
 
     if not dfs:
         return pd.DataFrame(), team
 
-    crm = pd.concat(dfs, ignore_index=True)
+    # ✅ FIX 4: Safe concat (handles different columns across sheets)
+    crm = pd.concat(dfs, ignore_index=True, sort=False)
 
-    # Cleaning
-    crm["ORDER AMOUNT"] = pd.to_numeric(crm["ORDER AMOUNT"], errors="coerce").fillna(0)
-    crm["ADV RECEIVED"] = pd.to_numeric(crm["ADV RECEIVED"], errors="coerce").fillna(0)
+    # ✅ CLEANING
+    if "ORDER AMOUNT" in crm.columns:
+        crm["ORDER AMOUNT"] = pd.to_numeric(crm["ORDER AMOUNT"], errors="coerce").fillna(0)
 
-    crm["DATE"] = pd.to_datetime(crm["DATE"], errors="coerce")
-    crm["CUSTOMER DELIVERY DATE"] = pd.to_datetime(crm["CUSTOMER DELIVERY DATE"], errors="coerce")
+    if "ADV RECEIVED" in crm.columns:
+        crm["ADV RECEIVED"] = pd.to_numeric(crm["ADV RECEIVED"], errors="coerce").fillna(0)
 
-    # Remove junk
-    crm = crm[crm["ORDER AMOUNT"] > 0]
+    if "DATE" in crm.columns:
+        crm["DATE"] = pd.to_datetime(crm["DATE"], errors="coerce")
+
+    if "CUSTOMER DELIVERY DATE" in crm.columns:
+        crm["CUSTOMER DELIVERY DATE"] = pd.to_datetime(
+            crm["CUSTOMER DELIVERY DATE"], errors="coerce"
+        )
+
+    # ✅ Remove invalid rows
+    if "ORDER AMOUNT" in crm.columns:
+        crm = crm[crm["ORDER AMOUNT"] > 0]
 
     return crm, team
 
