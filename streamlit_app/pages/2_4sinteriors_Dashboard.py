@@ -13,7 +13,6 @@ st.set_page_config(layout="wide", page_title="4Sinteriors CRM Dashboard")
 
 # ---------- LOAD DATA ----------
 @st.cache_data(ttl=60)
-@st.cache_data(ttl=60)
 def load_data():
     config_df = get_df("SHEET_DETAILS")
     team = get_df("Sales Team")
@@ -36,46 +35,33 @@ def load_data():
             if df is None or df.empty:
                 continue
 
-            # ✅ FIX 1: Normalize column names
+            # Normalize columns
             df.columns = [str(col).strip().upper() for col in df.columns]
 
-            # ✅ FIX 2: Remove duplicate columns safely
+            # Remove duplicates + empty columns
             df = df.loc[:, ~df.columns.duplicated()]
-
-            # ✅ FIX 3: Remove fully empty columns
             df = df.dropna(axis=1, how="all")
 
             df["SOURCE"] = name
-
             dfs.append(df)
 
-        except Exception:
+        except:
             continue
 
     if not dfs:
         return pd.DataFrame(), team
 
-    # ✅ FIX 4: Safe concat (handles different columns across sheets)
     crm = pd.concat(dfs, ignore_index=True, sort=False)
 
-    # ✅ CLEANING
-    if "ORDER AMOUNT" in crm.columns:
-        crm["ORDER AMOUNT"] = pd.to_numeric(crm["ORDER AMOUNT"], errors="coerce").fillna(0)
+    # Cleaning
+    crm["ORDER AMOUNT"] = pd.to_numeric(crm.get("ORDER AMOUNT", 0), errors="coerce").fillna(0)
+    crm["ADV RECEIVED"] = pd.to_numeric(crm.get("ADV RECEIVED", 0), errors="coerce").fillna(0)
 
-    if "ADV RECEIVED" in crm.columns:
-        crm["ADV RECEIVED"] = pd.to_numeric(crm["ADV RECEIVED"], errors="coerce").fillna(0)
+    crm["DATE"] = pd.to_datetime(crm.get("DATE"), errors="coerce")
+    crm["CUSTOMER DELIVERY DATE"] = pd.to_datetime(crm.get("CUSTOMER DELIVERY DATE"), errors="coerce")
 
-    if "DATE" in crm.columns:
-        crm["DATE"] = pd.to_datetime(crm["DATE"], errors="coerce")
-
-    if "CUSTOMER DELIVERY DATE" in crm.columns:
-        crm["CUSTOMER DELIVERY DATE"] = pd.to_datetime(
-            crm["CUSTOMER DELIVERY DATE"], errors="coerce"
-        )
-
-    # ✅ Remove invalid rows
-    if "ORDER AMOUNT" in crm.columns:
-        crm = crm[crm["ORDER AMOUNT"] > 0]
+    # Remove junk
+    crm = crm[crm["ORDER AMOUNT"] > 0]
 
     return crm, team
 
@@ -101,9 +87,10 @@ tomorrow = today + timedelta(days=1)
 # ---------- PAYMENT LOGIC ----------
 crm["PENDING AMOUNT"] = crm["ORDER AMOUNT"] - crm["ADVANCE RECEIVED"]
 
+# ✅ FIXED CONDITION
 pending_pay = crm[
     (crm["ADVANCE RECEIVED"] > 0) &
-    (crm["PENDING AMOUNT"] > 0)
+    (crm["ADVANCE RECEIVED"] < crm["ORDER AMOUNT"])
 ].copy()
 
 # ---------- TOP METRICS ----------
@@ -160,16 +147,10 @@ def highlight_delivery(row):
         return [''] * len(row)
     d = row["DELIVERY DATE"].date()
     if d < today:
-        return ['background-color:#ffcccc'] * len(row)  # RED
+        return ['background-color:#ffcccc'] * len(row)
     elif d == tomorrow:
-        return ['background-color:#c8e6c9'] * len(row)  # GREEN
+        return ['background-color:#c8e6c9'] * len(row)
     return [''] * len(row)
-
-del_cols = [
-    "DELIVERY DATE","ORDER DATE","CUSTOMER NAME","CONTACT NUMBER",
-    "PRODUCT NAME","ORDER AMOUNT","ADVANCE RECEIVED",
-    "SALES PERSON","DELIVERY STATUS","SOURCE"
-]
 
 if not pending_del.empty:
 
@@ -179,34 +160,23 @@ if not pending_del.empty:
             st.link_button(f"Send to {sp}", generate_whatsapp_group_link(msg))
 
     st.dataframe(
-        pending_del[del_cols].style.apply(highlight_delivery, axis=1),
+        pending_del[sales_cols].style.apply(highlight_delivery, axis=1),
         use_container_width=True
     )
 
-    # Counters
-    total = len(pending_del)
-    tomorrow_cnt = len(pending_del[pending_del["DELIVERY DATE"].dt.date == tomorrow])
-    overdue = len(pending_del[pending_del["DELIVERY DATE"].dt.date < today])
-
     c1, c2, c3 = st.columns(3)
-    c1.metric("📦 Total Pending Deliveries", total)
-    c2.metric("🟢 Tomorrow Deliveries", tomorrow_cnt)
-    c3.metric("🔴 Overdue Deliveries", overdue)
+    c1.metric("📦 Total Pending Deliveries", len(pending_del))
+    c2.metric("🟢 Tomorrow", len(pending_del[pending_del["DELIVERY DATE"].dt.date == tomorrow]))
+    c3.metric("🔴 Overdue", len(pending_del[pending_del["DELIVERY DATE"].dt.date < today]))
 
 # ---------- PAYMENT ----------
 st.divider()
 st.subheader("💰 Payment Collection")
 
 def highlight_payment(row):
-    if str(row["DELIVERY STATUS"]).upper() == "DELIVERED" and row["PENDING AMOUNT"] > 0:
+    if row["DELIVERY DATE"] and row["DELIVERY DATE"].date() < today:
         return ['background-color:red;color:white'] * len(row)
     return [''] * len(row)
-
-pay_cols = [
-    "DELIVERY DATE","ORDER DATE","CUSTOMER NAME","CONTACT NUMBER",
-    "ORDER AMOUNT","ADVANCE RECEIVED","PENDING AMOUNT",
-    "SALES PERSON","DELIVERY STATUS","SOURCE"
-]
 
 pending_pay = pending_pay.sort_values(by="DELIVERY DATE", ascending=False)
 
@@ -218,16 +188,12 @@ if not pending_pay.empty:
             st.link_button(f"Send to {sp}", generate_whatsapp_group_link(msg))
 
     st.dataframe(
-        pending_pay[pay_cols].style.apply(highlight_payment, axis=1),
+        pending_pay[sales_cols + ["PENDING AMOUNT"]]
+        .style.apply(highlight_payment, axis=1),
         use_container_width=True
     )
 
-    # Counters
-    total_pay = len(pending_pay)
-    tomorrow_pay = len(pending_pay[pending_pay["DELIVERY DATE"].dt.date == tomorrow])
-    overdue_pay = len(pending_pay[pending_pay["DELIVERY DATE"].dt.date < today])
-
     c4, c5, c6 = st.columns(3)
-    c4.metric("🧾 Total Payment Cases", total_pay)
-    c5.metric("🟢 Due Tomorrow", tomorrow_pay)
-    c6.metric("🔴 Overdue Payments", overdue_pay)
+    c4.metric("🧾 Total Payment Cases", len(pending_pay))
+    c5.metric("🟢 Tomorrow", len(pending_pay[pending_pay["DELIVERY DATE"].dt.date == tomorrow]))
+    c6.metric("🔴 Overdue", len(pending_pay[pending_pay["DELIVERY DATE"].dt.date < today]))
