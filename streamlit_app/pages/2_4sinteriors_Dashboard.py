@@ -35,10 +35,7 @@ def load_data():
             if df is None or df.empty:
                 continue
 
-            # Normalize columns
             df.columns = [str(col).strip().upper() for col in df.columns]
-
-            # Remove duplicates + empty columns
             df = df.loc[:, ~df.columns.duplicated()]
             df = df.dropna(axis=1, how="all")
 
@@ -54,13 +51,12 @@ def load_data():
     crm = pd.concat(dfs, ignore_index=True, sort=False)
 
     # Cleaning
-    crm["ORDER AMOUNT"] = pd.to_numeric(crm.get("ORDER AMOUNT", 0), errors="coerce").fillna(0)
-    crm["ADV RECEIVED"] = pd.to_numeric(crm.get("ADV RECEIVED", 0), errors="coerce").fillna(0)
+    crm["ORDER AMOUNT"] = pd.to_numeric(crm.get("ORDER AMOUNT"), errors="coerce").fillna(0)
+    crm["ADV RECEIVED"] = pd.to_numeric(crm.get("ADV RECEIVED"), errors="coerce").fillna(0)
 
     crm["DATE"] = pd.to_datetime(crm.get("DATE"), errors="coerce")
     crm["CUSTOMER DELIVERY DATE"] = pd.to_datetime(crm.get("CUSTOMER DELIVERY DATE"), errors="coerce")
 
-    # Remove junk
     crm = crm[crm["ORDER AMOUNT"] > 0]
 
     return crm, team
@@ -87,7 +83,6 @@ tomorrow = today + timedelta(days=1)
 # ---------- PAYMENT LOGIC ----------
 crm["PENDING AMOUNT"] = crm["ORDER AMOUNT"] - crm["ADVANCE RECEIVED"]
 
-# ✅ FIXED CONDITION
 pending_pay = crm[
     (crm["ADVANCE RECEIVED"] > 0) &
     (crm["ADVANCE RECEIVED"] < crm["ORDER AMOUNT"])
@@ -109,6 +104,8 @@ sales_cols = [
     "PRODUCT NAME","ORDER AMOUNT","ADVANCE RECEIVED",
     "SALES PERSON","DELIVERY DATE","DELIVERY STATUS","SOURCE"
 ]
+
+sales_cols = [col for col in sales_cols if col in crm.columns]
 
 sales_df = crm[sales_cols].sort_values(by="ORDER DATE", ascending=False)
 
@@ -143,14 +140,16 @@ pending_del = crm[
 pending_del = pending_del.sort_values(by="DELIVERY DATE", ascending=False)
 
 def highlight_delivery(row):
-    if pd.isnull(row["DELIVERY DATE"]):
-        return [''] * len(row)
-    d = row["DELIVERY DATE"].date()
-    if d < today:
-        return ['background-color:#ffcccc'] * len(row)
-    elif d == tomorrow:
-        return ['background-color:#c8e6c9'] * len(row)
+    delivery_date = row.get("DELIVERY DATE")
+    if pd.notnull(delivery_date):
+        d = delivery_date.date()
+        if d < today:
+            return ['background-color:#ffcccc'] * len(row)
+        elif d == tomorrow:
+            return ['background-color:#c8e6c9'] * len(row)
     return [''] * len(row)
+
+del_cols = [col for col in sales_cols if col in pending_del.columns]
 
 if not pending_del.empty:
 
@@ -160,7 +159,7 @@ if not pending_del.empty:
             st.link_button(f"Send to {sp}", generate_whatsapp_group_link(msg))
 
     st.dataframe(
-        pending_del[sales_cols].style.apply(highlight_delivery, axis=1),
+        pending_del[del_cols].style.apply(highlight_delivery, axis=1),
         use_container_width=True
     )
 
@@ -174,11 +173,15 @@ st.divider()
 st.subheader("💰 Payment Collection")
 
 def highlight_payment(row):
-    if row["DELIVERY DATE"] and row["DELIVERY DATE"].date() < today:
-        return ['background-color:red;color:white'] * len(row)
+    delivery_date = row.get("DELIVERY DATE")
+    if pd.notnull(delivery_date):
+        if delivery_date.date() < today:
+            return ['background-color:red; color:white'] * len(row)
     return [''] * len(row)
 
 pending_pay = pending_pay.sort_values(by="DELIVERY DATE", ascending=False)
+
+pay_cols = [col for col in sales_cols + ["PENDING AMOUNT"] if col in pending_pay.columns]
 
 if not pending_pay.empty:
 
@@ -188,8 +191,7 @@ if not pending_pay.empty:
             st.link_button(f"Send to {sp}", generate_whatsapp_group_link(msg))
 
     st.dataframe(
-        pending_pay[sales_cols + ["PENDING AMOUNT"]]
-        .style.apply(highlight_payment, axis=1),
+        pending_pay[pay_cols].style.apply(highlight_payment, axis=1),
         use_container_width=True
     )
 
