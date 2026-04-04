@@ -11,19 +11,40 @@ from services.automation import get_alerts, generate_whatsapp_group_link
 
 st.set_page_config(layout="wide", page_title="4SINTERIORS CRM Dashboard")
 
-# ---------- DATE PARSER ----------
 def parse_mixed_dates(series):
     series = series.astype(str).str.strip()
 
-    parsed = pd.to_datetime(series, errors='coerce', dayfirst=True)
+    parsed_dates = []
 
-    mask = parsed.isna()
-    if mask.any():
-        parsed_alt = pd.to_datetime(series[mask], format='%d-%b-%Y', errors='coerce')
-        parsed.loc[mask] = parsed_alt
+    for val in series:
+        date = pd.NaT
 
-    return parsed
+        # Try format: 05-04-2025
+        try:
+            date = datetime.strptime(val, "%d-%m-%Y")
+        except:
+            pass
 
+        # Try format: 4-Apr-2025
+        if pd.isna(date):
+            try:
+                date = datetime.strptime(val, "%d-%b-%Y")
+            except:
+                pass
+
+        # Try generic (fallback)
+        if pd.isna(date):
+            try:
+                date = pd.to_datetime(val, dayfirst=True, errors='coerce')
+            except:
+                pass
+
+        parsed_dates.append(date)
+
+    return pd.Series(parsed_dates)
+
+
+st.write("DEBUG DATE CHECK", crm[["DATE"]].sort_values(by="DATE", ascending=False).head(10))
 
 # ---------- LOAD DATA ----------
 @st.cache_data(ttl=60)
@@ -125,11 +146,15 @@ sales_cols = [col for col in sales_cols if col in crm.columns]
 
 sales_df = crm[sales_cols].copy()
 
-# 🔥 CRITICAL FIX: CLEAN + SORT
-sales_df["ORDER DATE"] = pd.to_datetime(sales_df["ORDER DATE"], errors="coerce")
-sales_df = sales_df.dropna(subset=["ORDER DATE"])
+# Drop invalid dates
+sales_df = sales_df[pd.notnull(sales_df["ORDER DATE"])]
 
-sales_df = sales_df.sort_values(by="ORDER DATE", ascending=False).reset_index(drop=True)
+# FINAL STRICT SORT
+sales_df = sales_df.sort_values(
+    by="ORDER DATE",
+    ascending=False,
+    kind="mergesort"   # stable sort (important)
+).reset_index(drop=True)
 
 # Pagination
 page_size = 20
