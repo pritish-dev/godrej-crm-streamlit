@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from services.sheets import get_df
-from services.automation import get_alerts, generate_whatsapp_group_link
+from services.automation4s import get_alerts, generate_whatsapp_group_link
 
 st.set_page_config(layout="wide", page_title="4SINTERIORS CRM Dashboard")
 
