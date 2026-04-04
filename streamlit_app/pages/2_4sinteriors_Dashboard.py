@@ -40,6 +40,13 @@ def format_date_display(series):
     return series.dt.strftime("%d-%B-%Y").str.upper()
 
 
+def format_numeric(df):
+    numeric_cols = df.select_dtypes(include=["float", "int"]).columns
+    df[numeric_cols] = df[numeric_cols].applymap(lambda x: round(x, 2))
+    return df
+
+
+
 # ---------- LOAD DATA ----------
 @st.cache_data(ttl=60)
 def load_data():
@@ -124,8 +131,8 @@ st.title("🚛 4SINTERIORS Sales Dashboard")
 
 c1, c2, c3 = st.columns(3)
 c1.metric("📦 Total Orders", len(crm))
-c2.metric("💰 Total Sales", f"₹{crm['ORDER AMOUNT'].sum():,.0f}")
-c3.metric("🧾 Pending Amount", f"₹{pending_pay['PENDING AMOUNT'].sum():,.0f}")
+c2.metric("💰 Total Sales", f"₹{crm['ORDER AMOUNT'].sum():,.2f}")
+c3.metric("🧾 Pending Amount", f"₹{pending_pay['PENDING AMOUNT'].sum():,.2f}")
 
 # ---------- SALES TABLE ----------
 st.subheader("📋 All Sales Records")
@@ -139,6 +146,7 @@ sales_cols = [
 sales_cols = [col for col in sales_cols if col in crm.columns]
 
 sales_df = sales_df[sales_cols].copy()
+sales_df = format_numeric(sales_df)
 
 # Format dates for display
 if "ORDER DATE" in sales_df.columns:
@@ -207,6 +215,7 @@ if not pending_del.empty:
         for sp, msg in alerts:
             st.link_button(f"Send to {sp}", generate_whatsapp_group_link(msg))
     pending_del_display = pending_del.copy()
+    pending_del_display = format_numeric(pending_del_display)
 
     if "ORDER DATE" in pending_del_display.columns:
         pending_del_display["ORDER DATE"] = format_date_display(pending_del_display["ORDER DATE"])
@@ -245,7 +254,7 @@ if not pending_pay.empty:
         for sp, msg in alerts:
             st.link_button(f"Send to {sp}", generate_whatsapp_group_link(msg))
     pending_pay_display = pending_pay.copy()
-
+    pending_pay_display = format_numeric(pending_pay_display)
     if "ORDER DATE" in pending_pay_display.columns:
         pending_pay_display["ORDER DATE"] = format_date_display(pending_pay_display["ORDER DATE"])
 
