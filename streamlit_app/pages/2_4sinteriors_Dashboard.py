@@ -18,6 +18,7 @@ def parse_mixed_dates(series):
 
     for val in series:
         date = pd.NaT
+
         try:
             date = datetime.strptime(val, "%d-%m-%Y")
         except:
@@ -36,13 +37,22 @@ def parse_mixed_dates(series):
 
     return pd.Series(parsed_dates, index=series.index)
 
+
 def format_date_display(series):
-    return series.dt.strftime("%d-%B-%Y").str.upper()
+    return pd.to_datetime(series, errors="coerce").dt.strftime("%d-%B-%Y").str.upper()
+
 
 def format_numeric(df):
-    numeric_cols = df.select_dtypes(include=["float", "int"]).columns
-    df[numeric_cols] = df[numeric_cols].applymap(lambda x: round(x, 2))
+    numeric_cols = df.select_dtypes(include=["number"]).columns
+
+    if len(numeric_cols) == 0:
+        return df
+
+    for col in numeric_cols:
+        df[col] = pd.to_numeric(df[col], errors="coerce").round(2)
+
     return df
+
 
 # ---------- LOAD DATA ----------
 @st.cache_data(ttl=60)
@@ -60,6 +70,7 @@ def load_data():
     for name in sheet_names:
         try:
             df = get_df(name)
+
             if df is None or df.empty:
                 continue
 
@@ -69,6 +80,7 @@ def load_data():
 
             df["SOURCE"] = name
             dfs.append(df)
+
         except:
             continue
 
@@ -77,15 +89,18 @@ def load_data():
 
     crm = pd.concat(dfs, ignore_index=True, sort=False)
 
+    # numeric cleanup
     crm["ORDER AMOUNT"] = pd.to_numeric(crm.get("ORDER AMOUNT"), errors="coerce").fillna(0)
     crm["ADV RECEIVED"] = pd.to_numeric(crm.get("ADV RECEIVED"), errors="coerce").fillna(0)
 
+    # date cleanup
     crm["DATE"] = parse_mixed_dates(crm.get("DATE"))
     crm["CUSTOMER DELIVERY DATE"] = parse_mixed_dates(crm.get("CUSTOMER DELIVERY DATE"))
 
     crm = crm[crm["ORDER AMOUNT"] > 0]
 
     return crm, team
+
 
 # ---------- MAIN ----------
 crm, team_df = load_data()
@@ -105,6 +120,7 @@ crm = crm.rename(columns={
 today = datetime.now().date()
 tomorrow = today + timedelta(days=1)
 
+# ---------- PAYMENT LOGIC ----------
 crm["PENDING AMOUNT"] = crm["ORDER AMOUNT"] - crm["ADVANCE RECEIVED"]
 
 pending_pay = crm[
@@ -112,7 +128,7 @@ pending_pay = crm[
     (crm["ADVANCE RECEIVED"] < crm["ORDER AMOUNT"])
 ].copy()
 
-# ---------- TOP ----------
+# ---------- TOP METRICS ----------
 st.title("🚛 4SINTERIORS Sales Dashboard")
 
 c1, c2, c3 = st.columns(3)
@@ -131,15 +147,16 @@ sales_cols = [
 
 sales_cols = [col for col in sales_cols if col in crm.columns]
 
-# ✅ FIXED
+# correct creation
 sales_df = crm[sales_cols].copy()
 
-# keep datetime for sorting
+# keep valid dates
 sales_df = sales_df[pd.notnull(sales_df["ORDER DATE"])]
 
+# sort properly
 sales_df = sales_df.sort_values(by="ORDER DATE", ascending=False).reset_index(drop=True)
 
-# 👉 display copy
+# display copy
 sales_display = sales_df.copy()
 sales_display = format_numeric(sales_display)
 
@@ -156,6 +173,16 @@ end = start + page_size
 
 st.dataframe(sales_display.iloc[start:end], use_container_width=True)
 
+col1, col2, col3 = st.columns([1,2,1])
+with col1:
+    if st.button("⬅️ Prev") and st.session_state.page > 0:
+        st.session_state.page -= 1
+with col3:
+    if st.button("Next ➡️") and end < len(sales_display):
+        st.session_state.page += 1
+with col2:
+    st.markdown(f"Page {st.session_state.page+1}")
+
 # ---------- PENDING DELIVERY ----------
 st.divider()
 st.subheader("🚚 Pending Deliveries")
@@ -168,6 +195,11 @@ pending_del = pending_del.sort_values(by="DELIVERY DATE", ascending=False)
 
 if not pending_del.empty:
 
+    if st.button("🚀 Send WhatsApp Alerts - Delivery"):
+        alerts = get_alerts(crm, team_df, "delivery")
+        for sp, msg in alerts:
+            st.link_button(f"Send to {sp}", generate_whatsapp_group_link(msg))
+
     pending_del_display = pending_del.copy()
     pending_del_display = format_numeric(pending_del_display)
 
@@ -176,13 +208,25 @@ if not pending_del.empty:
 
     st.dataframe(pending_del_display[sales_cols], use_container_width=True)
 
+    c1, c2, c3 = st.columns(3)
+    c1.metric("📦 Total Pending Deliveries", len(pending_del))
+    c2.metric("🟢 Tomorrow", len(pending_del[pending_del["DELIVERY DATE"].dt.date == tomorrow]))
+    c3.metric("🔴 Overdue", len(pending_del[pending_del["DELIVERY DATE"].dt.date < today]))
+
 # ---------- PAYMENT ----------
 st.divider()
 st.subheader("💰 Payment Collection")
 
 pending_pay = pending_pay.sort_values(by="DELIVERY DATE", ascending=False)
 
+pay_cols = [col for col in sales_cols + ["PENDING AMOUNT"] if col in pending_pay.columns]
+
 if not pending_pay.empty:
+
+    if st.button("💸 Send WhatsApp Alerts - Payment"):
+        alerts = get_alerts(crm, team_df, "payment")
+        for sp, msg in alerts:
+            st.link_button(f"Send to {sp}", generate_whatsapp_group_link(msg))
 
     pending_pay_display = pending_pay.copy()
     pending_pay_display = format_numeric(pending_pay_display)
@@ -190,4 +234,9 @@ if not pending_pay.empty:
     pending_pay_display["ORDER DATE"] = format_date_display(pending_pay_display["ORDER DATE"])
     pending_pay_display["DELIVERY DATE"] = format_date_display(pending_pay_display["DELIVERY DATE"])
 
-    st.dataframe(pending_pay_display[sales_cols + ["PENDING AMOUNT"]], use_container_width=True)
+    st.dataframe(pending_pay_display[pay_cols], use_container_width=True)
+
+    c4, c5, c6 = st.columns(3)
+    c4.metric("🧾 Total Payment Cases", len(pending_pay))
+    c5.metric("🟢 Tomorrow", len(pending_pay[pending_pay["DELIVERY DATE"].dt.date == tomorrow]))
+    c6.metric("🔴 Overdue", len(pending_pay[pending_pay["DELIVERY DATE"].dt.date < today]))
