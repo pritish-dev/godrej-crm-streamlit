@@ -99,8 +99,6 @@ def load_data():
 
 crm, team_df = load_data()
 
-st.write("DEBUG DATE CHECK", crm[["DATE"]].sort_values(by="DATE", ascending=False).head(10))
-
 if crm.empty:
     st.error("No valid data found")
     st.stop()
