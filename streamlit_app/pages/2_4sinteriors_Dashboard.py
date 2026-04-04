@@ -34,7 +34,15 @@ def load_4s_data():
     if config_df is None or "four_s_sheets" not in config_df.columns:
         return pd.DataFrame(), team
 
-    sheet_names = config_df["four_s_sheets"].dropna().unique().tolist()
+    #sheet_names = config_df["four_s_sheets"].dropna().unique().tolist()
+    sheet_names = (
+        config_df["four_s_sheets"]
+        .dropna()
+        .astype(str)
+        .str.strip()
+        .unique()
+        .tolist()
+    )
     dfs = []
 
     for name in sheet_names:
