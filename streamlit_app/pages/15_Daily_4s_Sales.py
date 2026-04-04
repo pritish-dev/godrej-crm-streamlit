@@ -39,14 +39,27 @@ def load_4s_data():
     for name in sheet_names:
         df = get_df(name)
         if df is not None and not df.empty:
+            # 1. Clean headers immediately (Remove spaces, convert to UPPER)
+            df.columns = [str(c).strip().upper() for c in df.columns]
             df = fix_duplicate_columns(df)
-            # Standardize 4S column names to match logic
-            mapping = {"SALES REP": "SALES PERSON", "DATE": "DATE"}
-            df = df.rename(columns=mapping)
             
-            # Use ORDER AMOUNT if available, else fallback to GROSS ORDER VALUE
-            if "ORDER AMOUNT" not in df.columns and "GROSS ORDER VALUE" in df.columns:
-                df = df.rename(columns={"GROSS ORDER VALUE": "ORDER AMOUNT"})
+            # 2. Robust Column Mapping (Handles different naming styles)
+            # Find DATE column
+            if "DATE" in df.columns:
+                df = df.rename(columns={"DATE": "ORDER DATE"})
+            elif "ORDER DATE" in df.columns:
+                pass # Already correct
+            
+            # Find SALES PERSON column
+            if "SALES REP" in df.columns:
+                df = df.rename(columns={"SALES REP": "SALES PERSON"})
+            
+            # Find AMOUNT column
+            if "ORDER AMOUNT" not in df.columns:
+                if "GROSS ORDER VALUE" in df.columns:
+                    df = df.rename(columns={"GROSS ORDER VALUE": "ORDER AMOUNT"})
+                elif "MRP" in df.columns:
+                    df = df.rename(columns={"MRP": "ORDER AMOUNT"})
                 
             all_dfs.append(df)
             
@@ -58,7 +71,7 @@ def load_4s_data():
 crm_raw, team_df = load_4s_data()
 
 if crm_raw.empty:
-    st.warning("No 4S Interiors CRM data found.")
+    st.warning("No 4S Interiors CRM data found. Check your sheet names in SHEET_DETAILS.")
     st.stop()
 
 # ---------- 1. DATA CLEANING ----------
@@ -68,8 +81,12 @@ crm = crm_raw.copy()
 if "ORDER AMOUNT" in crm.columns:
     crm["ORDER AMOUNT"] = pd.to_numeric(crm["ORDER AMOUNT"].astype(str).str.replace(r'[₹,]', '', regex=True), errors='coerce').fillna(0)
 
-# Clean Dates
-crm["DATE_DT"] = pd.to_datetime(crm["DATE"], dayfirst=True, errors="coerce").dt.date
+# Clean Dates - Using the standardized name 'ORDER DATE'
+if "ORDER DATE" in crm.columns:
+    crm["DATE_DT"] = pd.to_datetime(crm["ORDER DATE"], dayfirst=True, errors="coerce").dt.date
+else:
+    st.error("Could not find a Date column in your sheets. Please check the headers.")
+    st.stop()
 
 # ---------- 2. FILTERS ----------
 today = datetime.today().date()
@@ -81,26 +98,26 @@ with c2: end_date = st.date_input("End date", value=today)
 # ---------- 3. SALES TEAM LOGIC ----------
 official_sales_people = []
 if team_df is not None and not team_df.empty:
-    # Ensure team_df columns are clean
     team_df.columns = [str(c).strip().upper() for c in team_df.columns]
     if "ROLE" in team_df.columns and "NAME" in team_df.columns:
         official_sales_people = team_df[team_df["ROLE"].str.upper() == "SALES"]["NAME"].dropna().str.strip().str.upper().unique().tolist()
 
+# Apply Date Filter
 mask = (crm["DATE_DT"] >= start_date) & (crm["DATE_DT"] <= end_date)
 df_filtered = crm.loc[mask].copy()
 
-# Find people who made sales in this range but aren't in the official list
+# Identify Active People
 active_in_period = []
 if "SALES PERSON" in df_filtered.columns:
     df_filtered["SALES PERSON"] = df_filtered["SALES PERSON"].astype(str).str.strip().str.upper()
     sales_sums = df_filtered.groupby("SALES PERSON")["ORDER AMOUNT"].sum()
     active_in_period = sales_sums[sales_sums > 0].index.tolist()
 
-# Combine and unique list of executives
+# Combine lists
 all_execs = sorted(list(set(official_sales_people + active_in_period)))
-all_execs = [x for x in all_execs if x not in ["NAN", "NONE", "0", ""]]
+all_execs = [x for x in all_execs if x not in ["NAN", "NONE", "0", "", "NULL"]]
 
-# ---------- 4. BUILD TABLE (SORTED NEWEST FIRST) ----------
+# ---------- 4. BUILD TABLE ----------
 date_range = sorted(pd.date_range(start_date, end_date).date, reverse=True)
 table_data = []
 
@@ -109,6 +126,7 @@ for d in date_range:
     row = {"Date": d.strftime("%d-%b-%Y")}
     day_store_total = 0
     for sp in all_execs:
+        # Match names strictly
         sp_total = day_data[day_data["SALES PERSON"] == sp]["ORDER AMOUNT"].sum()
         row[sp] = round(float(sp_total), 2)
         day_store_total += sp_total
@@ -119,20 +137,16 @@ df_display = pd.DataFrame(table_data) if table_data else pd.DataFrame()
 
 # ---------- 5. TOTALS & DISPLAY ----------
 if not df_display.empty and len(all_execs) > 0:
-    # Calculate the bottom "TOTAL" row
     totals_val = {"Date": "TOTAL"}
     for col in df_display.columns:
         if col != "Date": 
             totals_val[col] = df_display[col].sum()
     
-    # Append the TOTAL row to the dataframe
     df_display = pd.concat([df_display, pd.DataFrame([totals_val])], ignore_index=True)
 
-    # Display Grand Total metric
     grand_total = totals_val['Store Total']
     st.success(f"### 💰 Grand Total 4S Interiors Sales: ₹{grand_total:,.2f}")
 
-    # CSS for sticky header and sticky "Store Total" column
     st.markdown("""<style>
         .table-scroll-container { max-height: 650px; overflow: auto; border: 1px solid #ccc; width: 100%; position: relative; }
         .squeezed-table { width: 100%; border-collapse: separate; border-spacing: 0; }
@@ -142,7 +156,6 @@ if not df_display.empty and len(all_execs) > 0:
         .squeezed-table tr:last-child td { background-color: #eee; font-weight: bold; border-top: 2px solid #333; }
     </style>""", unsafe_allow_html=True)
 
-    # Apply formatting and convert to HTML
     format_cols = {col: "{:,.2f}" for col in df_display.columns if col != "Date"}
     styled_html = (df_display.style
                    .format(format_cols)
@@ -152,4 +165,4 @@ if not df_display.empty and len(all_execs) > 0:
     
     st.write(f'<div class="table-scroll-container">{styled_html}</div>', unsafe_allow_html=True)
 else:
-    st.info("No active sales data found for the selected period.")
+    st.info("No active sales data found. Check if dates in the Google Sheet are in DD-MM-YYYY format.")
