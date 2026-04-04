@@ -41,7 +41,7 @@ def load_4s_data():
         df = get_df(name)
         if df is not None and not df.empty:
             df = fix_duplicate_columns(df)
-            # Global Rename: DATE -> Order Date
+            # GLOBAL RENAME: DATE -> Order Date
             if "DATE" in df.columns:
                 df = df.rename(columns={"DATE": "Order Date"})
             df['SOURCE_SHEET'] = name
@@ -52,18 +52,19 @@ def load_4s_data():
     
     crm = pd.concat(dfs, ignore_index=True, sort=False)
     
-    # Currency Cleaning
-    money_cols = ["ORDER AMOUNT", "ADV RECEIVED", "MRP", "GROSS ORDER VALUE", "UNIT PRICE= (AFTER DISC + TAX)"]
+    # 1. Currency Cleaning
+    money_cols = ["ORDER AMOUNT", "ADV RECEIVED", "MRP", "GROSS ORDER VALUE"]
     for col in money_cols:
         if col in crm.columns:
             crm[col] = pd.to_numeric(crm[col].astype(str).str.replace(r'[₹,]', '', regex=True), errors='coerce').fillna(0)
     
-    # Date Cleaning - Crucial for Sorting
-    date_cols = ["Order Date", "CUSTOMER DELIVERY DATE", "INVOICE DATE"]
-    for col in date_cols:
-        if col in crm.columns:
-            # We use errors='coerce' to turn bad data into NaT so it doesn't crash the sort
-            crm[col] = pd.to_datetime(crm[col], dayfirst=True, errors='coerce')
+    # 2. STRICT Date Conversion (This fixes the sorting and the .dt error)
+    # We convert them here so the entire app sees them as actual Dates
+    date_map = {"Order Date": "Order Date", "CUSTOMER DELIVERY DATE": "CUSTOMER DELIVERY DATE"}
+    for original, target in date_map.items():
+        if original in crm.columns:
+            # We try multiple formats to be safe
+            crm[original] = pd.to_datetime(crm[original], errors='coerce', dayfirst=True)
             
     return crm, team
 
@@ -80,20 +81,20 @@ st.title("🚛 4SINTERIORS Sales Dashboard")
 def sort_urgent_first(df, date_col):
     """Sorts upcoming dates on top (nearest first), and pushes overdue dates to the bottom."""
     today = pd.Timestamp(datetime.now().date())
+    # Ensure date_col is datetime
+    df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
     df['is_overdue'] = df[date_col] < today
     sorted_df = df.sort_values(by=['is_overdue', date_col], ascending=[True, True])
     return sorted_df.drop(columns=['is_overdue'])
 
 def highlight_rows(row, date_col):
-    """Highlights Tomorrow as Green, and Overdue as Red."""
     today = datetime.now().date()
     val = row[date_col].date() if pd.notnull(row[date_col]) else None
-    
     if val:
         if val < today:
-            return ['background-color: #ffcccc; color: black'] * len(row) # Red
+            return ['background-color: #ffcccc; color: black'] * len(row)
         elif val == today + timedelta(days=1):
-            return ['background-color: #c8e6c9; color: black'] * len(row) # Green
+            return ['background-color: #c8e6c9; color: black'] * len(row)
     return [''] * len(row)
 
 # --- TOP STATS ---
@@ -103,14 +104,14 @@ st.metric("Total Sale (Till Date)", f"₹{total_sales_val:,.2f}", delta=f"{total
 
 # --- ALL SALES RECORDS TABLE ---
 st.subheader("📋 All Sales Records")
+# Sorting by Order Date - LATEST FIRST
+all_sales_sorted = crm.sort_values(by="Order Date", ascending=False)
+
 all_4s_cols = [
     "Order Date", "ORDER NO", "CUSTOMER NAME", "CONTACT NUMBER", "PRODUCT NAME", 
     "ORDER AMOUNT", "ADV RECEIVED", "SALES REP", "INV NO", 
     "CUSTOMER DELIVERY DATE", "NAME OF ASSEMBLER", "SOURCE_SHEET"
 ]
-
-# Sorting by Order Date Latest First
-all_sales_sorted = crm.sort_values(by="Order Date", ascending=False)
 
 st.dataframe(all_sales_sorted[all_4s_cols].style.format({
     "ORDER AMOUNT": "{:.2f}", "ADV RECEIVED": "{:.2f}",
@@ -126,14 +127,16 @@ mask_p = (crm["DELIVERY REMARKS"].astype(str).str.upper().str.strip() == "PENDIN
 pending_del = crm[mask_p].copy()
 
 if not pending_del.empty:
+    # Rename and Reorder: Delivery Date first
     pending_del = pending_del.rename(columns={
         "CUSTOMER DELIVERY DATE": "DELIVERY DATE",
         "SALES REP": "SALES PERSON"
     })
     
-    pending_del = sort_urgent_first(pending_del, "DELIVERY DATE")
+    # FORCED CONVERSION to prevent .dt crash
+    pending_del["DELIVERY DATE"] = pd.to_datetime(pending_del["DELIVERY DATE"], errors='coerce')
     
-    # Reordered Columns: Delivery Date first, then Order Date
+    pending_del = sort_urgent_first(pending_del, "DELIVERY DATE")
     pending_cols = ["DELIVERY DATE", "Order Date", "CUSTOMER NAME", "CONTACT NUMBER", "PRODUCT NAME", "ORDER AMOUNT", "ADV RECEIVED", "SALES PERSON", "DELIVERY REMARKS"]
     
     d1, d2 = st.columns([3, 1])
@@ -143,8 +146,6 @@ if not pending_del.empty:
             if alerts:
                 for sp_name, msg in alerts:
                     st.link_button(f"Forward {sp_name}'s List to Group", generate_whatsapp_group_link(msg))
-            else:
-                st.info("No deliveries scheduled for tomorrow.")
     
     with d1:
         st.info("Green = Tomorrow's Deliveries | Red = Overdue/Missed")
@@ -158,6 +159,7 @@ if not pending_del.empty:
     today = datetime.now().date()
     tmrw = today + timedelta(days=1)
     
+    # These lines use .dt safely now
     tot_del = len(pending_del)
     tmrw_del = len(pending_del[pending_del["DELIVERY DATE"].dt.date == tmrw])
     overdue_del = len(pending_del[pending_del["DELIVERY DATE"].dt.date < today])
@@ -180,9 +182,12 @@ if not pending_pay.empty:
         "SALES REP": "SALES PERSON"
     })
     
+    # FORCED CONVERSION to fix line 209 crash
+    pending_pay["DELIVERY DATE"] = pd.to_datetime(pending_pay["DELIVERY DATE"], errors='coerce')
+    
     pending_pay = sort_urgent_first(pending_pay, "DELIVERY DATE")
     
-    # Reordered Columns: Delivery Date first, then Order Date
+    # Reordered Columns: Delivery Date first
     pay_cols = ["DELIVERY DATE", "Order Date", "CUSTOMER NAME", "CONTACT NUMBER", "ORDER AMOUNT", "ADV RECEIVED", "PENDING AMOUNT", "SALES PERSON"]
     
     p1, p2 = st.columns([3, 1])
@@ -192,8 +197,6 @@ if not pending_pay.empty:
             if alerts:
                 for sp_name, msg in alerts:
                     st.link_button(f"Forward {sp_name}'s List to Group", generate_whatsapp_group_link(msg))
-            else:
-                st.info("No payments due for tomorrow.")
                 
     with p1:
         total_due = pending_pay["PENDING AMOUNT"].sum()
@@ -205,6 +208,10 @@ if not pending_pay.empty:
         "Order Date": lambda x: x.strftime('%d-%b-%Y') if pd.notnull(x) else ""
     }), use_container_width=True)
 
+    today = datetime.now().date()
+    tmrw = today + timedelta(days=1)
+    
+    # FIX FOR LINE 209
     tot_pay = len(pending_pay)
     tmrw_pay = len(pending_pay[pending_pay["DELIVERY DATE"].dt.date == tmrw])
     overdue_pay = len(pending_pay[pending_pay["DELIVERY DATE"].dt.date < today])
