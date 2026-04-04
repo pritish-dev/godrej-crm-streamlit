@@ -61,6 +61,17 @@ def load_data():
 
     return crm, team
 
+def parse_mixed_dates(series):
+    # First attempt: standard parsing with dayfirst
+    parsed = pd.to_datetime(series, errors='coerce', dayfirst=True)
+
+    # Second attempt: handle cases like '4-Apr-2025'
+    mask = parsed.isna()
+    if mask.any():
+        parsed_alt = pd.to_datetime(series[mask], format='%d-%b-%Y', errors='coerce')
+        parsed.loc[mask] = parsed_alt
+
+    return parsed
 
 crm, team_df = load_data()
 
