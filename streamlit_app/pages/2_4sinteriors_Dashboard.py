@@ -44,8 +44,6 @@ def parse_mixed_dates(series):
     return pd.Series(parsed_dates)
 
 
-st.write("DEBUG DATE CHECK", crm[["DATE"]].sort_values(by="DATE", ascending=False).head(10))
-
 # ---------- LOAD DATA ----------
 @st.cache_data(ttl=60)
 def load_data():
@@ -100,6 +98,8 @@ def load_data():
 
 
 crm, team_df = load_data()
+
+st.write("DEBUG DATE CHECK", crm[["DATE"]].sort_values(by="DATE", ascending=False).head(10))
 
 if crm.empty:
     st.error("No valid data found")
