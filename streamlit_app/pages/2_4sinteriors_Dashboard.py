@@ -4,7 +4,8 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, BASE_DIR)
 
 from services.sheets import get_df
 from services.automation4s import get_alerts, generate_whatsapp_group_link
