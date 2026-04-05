@@ -6,11 +6,20 @@ def clean_headers(df):
     df.columns = [c.strip().upper() for c in df.columns]
     return df
 
+# ✅ HELPER: Safe column getter
+def get_col(df, *possible_names):
+    for name in possible_names:
+        if name in df.columns:
+            return name
+    return None
+
 def generate_whatsapp_group_link(message):
     encoded_msg = urllib.parse.quote(message)
     return f"whatsapp://send?text={encoded_msg}"
 
-def create_whatsapp_tabular_list(df_group, alert_type="delivery"):
+def create_whatsapp_tabular_list(df_group, alert_type="delivery",
+                                 delivery_col, order_col, adv_col):
+    
     if alert_type == "delivery":
         header = "*DD | Customer | Products | OrderDate*\n"
     else:
@@ -19,80 +28,91 @@ def create_whatsapp_tabular_list(df_group, alert_type="delivery"):
     table_text = header + "------------------------------------------\n"
     
     for _, row in df_group.iterrows():
-        dd = row["CUSTOMER DELIVERY DATE"].strftime('%d-%b') if pd.notnull(row["CUSTOMER DELIVERY DATE"]) else "N/A"
+        dd = row[delivery_col].strftime('%d-%b') if pd.notnull(row[delivery_col]) else "N/A"
         cust = str(row["CUSTOMER NAME"])[:10]
         prods = str(row["PRODUCT NAME"])[:12]
         
         if alert_type == "delivery":
-            od = row["DATE"].strftime('%d-%b') if pd.notnull(row["DATE"]) else "N/A"
+            od = row[order_col].strftime('%d-%b') if pd.notnull(row[order_col]) else "N/A"
             table_text += f"📅 {dd} | {cust} | {prods} | 📝 {od}\n"
         else:
-            adv = int(row["ADV RECEIVED"]) if pd.notnull(row["ADV RECEIVED"]) else 0
+            adv = int(row[adv_col]) if pd.notnull(row[adv_col]) else 0
             bal = int(row["PENDING AMOUNT"]) if pd.notnull(row["PENDING AMOUNT"]) else 0
             table_text += f"💰 {dd} | {cust} | ₹{adv} | *₹{bal}*\n"
     
     table_text += "------------------------------------------\n"
     return table_text
 
+
 def get_alerts(df, team_df, alert_type="delivery"):
     if df is None or df.empty or team_df is None or team_df.empty:
         return []
     
     df = clean_headers(df)
-    
-    # Date Parsing
-    df["CUSTOMER DELIVERY DATE"] = pd.to_datetime(df["CUSTOMER DELIVERY DATE"], dayfirst=True, errors='coerce')
-    df["DATE"] = pd.to_datetime(df["DATE"], dayfirst=True, errors='coerce')
+
+    # ✅ COLUMN MAPPING (Handles both RAW + RENAMED)
+    delivery_col = get_col(df, "CUSTOMER DELIVERY DATE", "DELIVERY DATE")
+    order_col = get_col(df, "DATE", "ORDER DATE")
+    adv_col = get_col(df, "ADV RECEIVED", "ADVANCE RECEIVED")
+    remarks_col = get_col(df, "REMARKS", "DELIVERY STATUS")
+    sales_col = get_col(df, "SALES REP", "SALES PERSON")
+
+    if not all([delivery_col, order_col, adv_col, remarks_col, sales_col]):
+        return []
+
+    # Parse Dates
+    df[delivery_col] = pd.to_datetime(df[delivery_col], dayfirst=True, errors='coerce')
+    df[order_col] = pd.to_datetime(df[order_col], dayfirst=True, errors='coerce')
 
     today = datetime.now().date()
     tomorrow = today + timedelta(days=1)
-    
-    # ---------- FILTER LOGIC ----------
+
+    # ---------- FILTER ----------
     if alert_type == "delivery":
-        # ✅ UPDATED COLUMN NAME
-        mask = (df["REMARKS"].astype(str).str.upper().str.strip() == "PENDING")
+        mask = (df[remarks_col].astype(str).str.upper().str.strip() == "PENDING")
     else:
-        df["ORDER AMOUNT"] = pd.to_numeric(df["ORDER AMOUNT"], errors='coerce').fillna(0)
-        df["ADV RECEIVED"] = pd.to_numeric(df["ADV RECEIVED"], errors='coerce').fillna(0)
+        df["ORDER AMOUNT"] = pd.to_numeric(df.get("ORDER AMOUNT"), errors='coerce').fillna(0)
+        df[adv_col] = pd.to_numeric(df[adv_col], errors='coerce').fillna(0)
 
-        df["PENDING AMOUNT"] = df["ORDER AMOUNT"] - df["ADV RECEIVED"]
+        df["PENDING AMOUNT"] = df["ORDER AMOUNT"] - df[adv_col]
 
-        # ✅ FIXED LOGIC (ADV > 0 only)
-        mask = (df["ADV RECEIVED"] > 0) & (df["PENDING AMOUNT"] > 0)
+        # ✅ ADV > 0 condition
+        mask = (df[adv_col] > 0) & (df["PENDING AMOUNT"] > 0)
 
-    # Only Tomorrow Records
     filtered_df = df[
-        mask & (df["CUSTOMER DELIVERY DATE"].dt.date == tomorrow)
-    ].dropna(subset=["CUSTOMER DELIVERY DATE"])
-    
+        mask & (df[delivery_col].dt.date == tomorrow)
+    ].dropna(subset=[delivery_col])
+
     if filtered_df.empty:
         return []
 
-    # ---------- GROUPING ----------
+    # ---------- GROUP ----------
     group_cols = [
         "CUSTOMER NAME",
         "CONTACT NUMBER",
-        "SALES REP",
-        "CUSTOMER DELIVERY DATE"
+        sales_col,
+        delivery_col
     ]
 
     if alert_type == "delivery":
-        group_cols.append("DATE")
-    
+        group_cols.append(order_col)
+
     grouped_df = filtered_df.groupby(group_cols, as_index=False).agg({
         "PRODUCT NAME": lambda x: ", ".join(x.astype(str).unique()),
         "ORDER AMOUNT": "sum",
-        "ADV RECEIVED": "sum"
+        adv_col: "sum"
     })
 
     if alert_type == "payment":
-        grouped_df["PENDING AMOUNT"] = grouped_df["ORDER AMOUNT"] - grouped_df["ADV RECEIVED"]
+        grouped_df["PENDING AMOUNT"] = grouped_df["ORDER AMOUNT"] - grouped_df[adv_col]
 
     alerts = []
 
-    # ---------- MESSAGE CREATION ----------
-    for sp_name, group in grouped_df.groupby("SALES REP"):
-        table_content = create_whatsapp_tabular_list(group, alert_type)
+    for sp_name, group in grouped_df.groupby(sales_col):
+        table_content = create_whatsapp_tabular_list(
+            group, alert_type,
+            delivery_col, order_col, adv_col
+        )
         
         msg = (
             f"Attention Team & *{sp_name}*,\n\n"
@@ -102,5 +122,5 @@ def get_alerts(df, team_df, alert_type="delivery"):
         )
 
         alerts.append((sp_name, msg))
-                
+
     return alerts
