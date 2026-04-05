@@ -7,8 +7,10 @@ from datetime import datetime, timedelta
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 st.write("FILES IN SERVICES:", os.listdir(os.path.join(BASE_DIR, "services")))
+import services.automation4s as test
+st.write("IMPORT SUCCESS")
 from services.sheets import get_df
-from services.automation4s import get_alerts, generate_whatsapp_group_link
+#from services.automation4s import get_alerts, generate_whatsapp_group_link
 
 st.set_page_config(layout="wide", page_title="4SINTERIORS CRM Dashboard")
 
