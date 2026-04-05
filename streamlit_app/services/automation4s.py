@@ -114,11 +114,10 @@ def get_alerts(df, team_df, alert_type="delivery"):
             delivery_col, order_col, adv_col
         )
         
-        msg = (
-            f"Attention Team & *{sp_name}*,\n\n"
-            f"Pending {'Deliveries' if alert_type == 'delivery' else 'Payments'} scheduled for TOMORROW:\n\n"
-            f"{table_content}\n"
-            f"Please confirm once action is taken."
+       msg = "Attention Team & *{}*,\n\nPending {} scheduled for TOMORROW:\n\n{}\nPlease confirm once action is taken.".format(
+            sp_name,
+            "Deliveries" if alert_type == "delivery" else "Payments",
+            table_content
         )
 
         alerts.append((sp_name, msg))
