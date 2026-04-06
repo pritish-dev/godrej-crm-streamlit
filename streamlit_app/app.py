@@ -160,6 +160,20 @@ st.dataframe(
     use_container_width=True
 )
 
+
+def sort_urgent_first(df, date_col):
+    today = pd.Timestamp(datetime.now().date())
+    
+    # Handle null safely
+    df = df.copy()
+    df["is_overdue"] = df[date_col].dt.date < today
+
+    df = df.sort_values(
+        by=["is_overdue", date_col],
+        ascending=[True, True]
+    )
+
+    return df.drop(columns=["is_overdue"])
 # ---------------- PENDING DELIVERY ----------------
 
 st.divider()
