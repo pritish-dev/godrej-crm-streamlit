@@ -162,11 +162,15 @@ st.dataframe(
 
 
 def sort_urgent_first(df, date_col):
-    today = pd.Timestamp(datetime.now().date())
-    
-    # Handle null safely
     df = df.copy()
-    df["is_overdue"] = df[date_col].dt.date < today
+    
+    # ✅ Ensure column is datetime
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+
+    today = pd.Timestamp(datetime.now().date())
+
+    # ✅ Safe comparison
+    df["is_overdue"] = df[date_col] < today
 
     df = df.sort_values(
         by=["is_overdue", date_col],
