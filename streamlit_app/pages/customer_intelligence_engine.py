@@ -104,7 +104,7 @@ def get_primary_name(df):
         df.groupby([PHONE_COL, NAME_COL])
         .size()
         .reset_index(name="count")
-        .sort_values(["PHONE_COL", "count"], ascending=[True, False])
+        .sort_values([PHONE_COL, "count"], ascending=[True, False])  # ✅ FIXED
         .drop_duplicates(subset=[PHONE_COL])
         [[PHONE_COL, NAME_COL]]
     )
