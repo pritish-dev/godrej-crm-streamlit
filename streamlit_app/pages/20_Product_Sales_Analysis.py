@@ -13,6 +13,22 @@ def standardize_columns(df):
     df.columns = [str(c).strip().upper() for c in df.columns]
     return df
 
+def fix_duplicate_columns(df):
+    """Ensure all column names are unique"""
+    cols = []
+    count = {}
+
+    for col in df.columns:
+        if col in count:
+            count[col] += 1
+            cols.append(f"{col}_{count[col]}")
+        else:
+            count[col] = 0
+            cols.append(col)
+
+    df.columns = cols
+    return df
+
 def get_cleaned_list(df, col_name, default="UNKNOWN"):
     if col_name and col_name in df.columns:
         return [str(x).strip().upper() if pd.notna(x) else default for x in df[col_name]]
@@ -46,7 +62,7 @@ def load_all_franchise_data():
     if "FOUR_S_SHEETS" in config_df.columns:
         four_s_sheets = config_df["FOUR_S_SHEETS"].dropna().unique().tolist()
 
-    # Combine both (change if you want only franchise)
+    # Combine both (change here if only franchise needed)
     all_sheets = list(set(franchise_sheets + four_s_sheets))
 
     all_dfs = []
@@ -56,13 +72,24 @@ def load_all_franchise_data():
 
         if df is not None and not df.empty:
             df = standardize_columns(df)
+
+            # 🔥 FIX: remove duplicate columns
+            df = fix_duplicate_columns(df)
+
             df["SOURCE_SHEET"] = sheet
+
             all_dfs.append(df)
 
     if not all_dfs:
         return pd.DataFrame()
 
-    return pd.concat(all_dfs, ignore_index=True, sort=False)
+    # 🔥 FINAL SAFETY BEFORE CONCAT
+    clean_dfs = []
+    for df in all_dfs:
+        df = df.loc[:, ~df.columns.duplicated()]
+        clean_dfs.append(df)
+
+    return pd.concat(clean_dfs, ignore_index=True, sort=False)
 
 
 crm_raw = load_all_franchise_data()
@@ -115,6 +142,7 @@ c1, c2, c3 = st.columns(3)
 
 with c1:
     years = sorted([y for y in crm["YEAR"].unique() if y > 0], reverse=True)
+
     if not years:
         st.warning("No valid year data found.")
         st.stop()
