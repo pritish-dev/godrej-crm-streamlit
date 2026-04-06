@@ -1,5 +1,6 @@
 import sys
 import os
+import urllib.parse
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -78,7 +79,7 @@ def load_employee_data():
 
 
 # =========================================================
-# NORMALIZE PHONES
+# PHONE NORMALIZATION
 # =========================================================
 def normalize_phones(phone):
     phones = str(phone).replace("/", ",").replace(";", ",").split(",")
@@ -102,7 +103,6 @@ def merge_duplicate_orders(df):
     df[AMOUNT_COL] = pd.to_numeric(df[AMOUNT_COL], errors="coerce").fillna(0)
 
     df["PHONE_LIST"] = df[PHONE_COL].apply(normalize_phones)
-
     df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
 
     df["ORDER_KEY"] = df[NAME_COL] + "|" + df[AMOUNT_COL].astype(str)
@@ -146,6 +146,37 @@ def paginate_df(df, page_size=10, key="pagination"):
 
 
 # =========================================================
+# WHATSAPP HELPERS
+# =========================================================
+def generate_whatsapp_link(phone, message):
+    phone = str(phone).replace(",", "").strip()
+    encoded_msg = urllib.parse.quote(message)
+    return f"https://wa.me/91{phone}?text={encoded_msg}"
+
+
+def create_followup_message(name, days, products):
+    return f"""
+Hi {name},
+
+We noticed it’s been {days} days since your last purchase with us 😊
+
+We truly value your association with *Interio by Godrej Patia*.
+
+Based on your past interest in:
+{products[:100]}...
+
+We would love to assist you with new arrivals, exclusive offers, and personalized recommendations.
+
+Please feel free to visit us or reply here for assistance.
+
+Best Wishes,
+Team Interio by Godrej Patia,
+Bhubaneswar
+Mob: 9937423954
+"""
+
+
+# =========================================================
 # CUSTOMER ANALYSIS
 # =========================================================
 def analyze_customers(df):
@@ -167,21 +198,20 @@ def analyze_customers(df):
     if DATE_COL not in df.columns:
         df[DATE_COL] = None
 
-    # STEP 1: Merge duplicate orders
+    # Merge duplicates
     df = merge_duplicate_orders(df)
 
-    # STEP 2: Explode phones
+    # Explode phones
     df = df.assign(**{PHONE_COL: df[PHONE_COL].str.split(", ")}).explode(PHONE_COL)
 
-    # STEP 3: Remove employees
+    # Remove employees
     emp_names, emp_phones = load_employee_data()
-
     df = df[
         ~df[NAME_COL].isin(emp_names) &
         ~df[PHONE_COL].isin(emp_phones)
     ]
 
-    # STEP 4: Aggregate
+    # Aggregate
     customer_summary = df.groupby(NAME_COL).agg(
         phones=(PHONE_COL, lambda x: ", ".join(sorted(set(x)))),
         total_orders=(NAME_COL, "count"),
@@ -190,14 +220,12 @@ def analyze_customers(df):
         last_purchase_date=(DATE_COL, lambda x: pd.to_datetime(x, errors="coerce").max())
     ).reset_index()
 
-    # Remove invalid dates
     customer_summary = customer_summary.dropna(subset=["last_purchase_date"])
 
-    # ✅ FIX FUTURE DATES
+    # Fix future dates
     today = pd.Timestamp.today().normalize()
-
     customer_summary["last_purchase_date"] = customer_summary["last_purchase_date"].apply(
-        lambda x: min(x, today) if pd.notnull(x) else x
+        lambda x: min(x, today)
     )
 
     # Days since last order
@@ -205,7 +233,7 @@ def analyze_customers(df):
         today - customer_summary["last_purchase_date"]
     ).dt.days
 
-    # ✅ FORMAT DATE
+    # Format date
     customer_summary["last_purchase_date"] = customer_summary["last_purchase_date"].dt.strftime("%d-%B-%Y")
 
     # Repeat buyers
@@ -213,7 +241,7 @@ def analyze_customers(df):
         customer_summary["total_orders"] > 1
     ].sort_values(by="total_orders", ascending=False)
 
-    # MVC filter
+    # MVC
     mvc = customer_summary[
         customer_summary["total_value"] > 500000
     ].sort_values(by="total_value", ascending=False)
@@ -225,7 +253,6 @@ def analyze_customers(df):
 # MAIN
 # =========================================================
 crm_raw = load_all_franchise_data()
-
 repeat_buyers_df, mvc_df = analyze_customers(crm_raw)
 
 
@@ -238,31 +265,69 @@ st.title("👥 Customer Intelligence Dashboard")
 st.subheader("🔁 Repeat Buyers")
 
 if not repeat_buyers_df.empty:
-    repeat_buyers_df = repeat_buyers_df.sort_values(by="total_orders", ascending=False)
 
-    paginated_repeat = paginate_df(
-        repeat_buyers_df,
-        page_size=10,
-        key="repeat_page"
-    )
+    paginated_repeat = paginate_df(repeat_buyers_df, 10, "repeat_page")
 
-    st.dataframe(paginated_repeat, use_container_width=True)
+    for _, row in paginated_repeat.iterrows():
+        cols = st.columns([3,2,1,1,2,2,1,1])
+
+        cols[0].write(row["CUSTOMER NAME"])
+        cols[1].write(row["phones"])
+        cols[2].write(row["total_orders"])
+        cols[3].write(row["total_value"])
+        cols[4].write(row["products_purchased"])
+        cols[5].write(row["last_purchase_date"])
+        cols[6].write(row["days_since_last_order"])
+
+        if row["days_since_last_order"] > 90:
+            phone = row["phones"].split(",")[0]
+
+            msg = create_followup_message(
+                row["CUSTOMER NAME"],
+                row["days_since_last_order"],
+                row["products_purchased"]
+            )
+
+            wa_link = generate_whatsapp_link(phone, msg)
+            cols[7].markdown(f"[📲 Follow Up]({wa_link})")
+
+        st.divider()
+
 else:
     st.info("No repeat buyers found")
 
 
-# 💎 Most Valuable Customers
+# 💎 MVC
 st.subheader("💎 Most Valuable Customers (> ₹5L)")
 
 if not mvc_df.empty:
-    mvc_df = mvc_df.sort_values(by="total_value", ascending=False)
 
-    paginated_mvc = paginate_df(
-        mvc_df,
-        page_size=10,
-        key="mvc_page"
-    )
+    paginated_mvc = paginate_df(mvc_df, 10, "mvc_page")
 
-    st.dataframe(paginated_mvc, use_container_width=True)
+    for _, row in paginated_mvc.iterrows():
+        cols = st.columns([3,2,1,1,2,2,1,1])
+
+        cols[0].write(row["CUSTOMER NAME"])
+        cols[1].write(row["phones"])
+        cols[2].write(row["total_orders"])
+        cols[3].write(row["total_value"])
+        cols[4].write(row["products_purchased"])
+        cols[5].write(row["last_purchase_date"])
+        cols[6].write(row["days_since_last_order"])
+
+        if row["days_since_last_order"] > 90:
+            phone = row["phones"].split(",")[0]
+
+            msg = create_followup_message(
+                row["CUSTOMER NAME"],
+                row["days_since_last_order"],
+                row["products_purchased"]
+            )
+
+            wa_link = generate_whatsapp_link(phone, msg)
+            cols[7].markdown(f"[📲 Follow Up]({wa_link})")
+
+        st.divider()
+
 else:
     st.info("No high value customers found")
