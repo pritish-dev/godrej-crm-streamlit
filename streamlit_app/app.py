@@ -1,7 +1,7 @@
 import streamlit as st
 
 st.set_page_config(
-    layout="wide", 
+    layout="wide",
     page_title="Interio by Godrej Patia CRM",
     initial_sidebar_state="expanded"
 )
@@ -33,17 +33,16 @@ def fix_duplicate_columns(df):
     return df
 
 
-def sort_urgent_first(df, date_col):
-    today = pd.Timestamp(datetime.now().date())
-    df['is_overdue'] = df[date_col] < today
-    df = df.sort_values(by=['is_overdue', date_col], ascending=[True, True])
-    return df.drop(columns=['is_overdue'])
+def format_date(x):
+    if pd.notnull(x):
+        return x.strftime("%d-%B-%Y").upper()
+    return ""
 
 
 def highlight_rows(row, date_col):
     today = datetime.now().date()
     val = row[date_col].date() if pd.notnull(row[date_col]) else None
-    
+
     if val:
         if val < today:
             return ['background-color:#ffcccc'] * len(row)
@@ -88,9 +87,13 @@ def load_data():
 
 crm, team_df = load_data()
 
+if crm.empty:
+    st.error("No data found")
+    st.stop()
+
 st.title("📊 Franchise Sales Dashboard - Interio by Godrej Patia")
 
-# ---------------- GROUPING (MAIN TABLE) ----------------
+# ---------------- GROUPED SALES ----------------
 
 group_cols = ["CUSTOMER NAME", "GODREJ SO NO", "DATE"]
 
@@ -104,22 +107,19 @@ grouped = crm.groupby(group_cols).agg({
     "DELIVERY REMARKS": "first"
 }).reset_index()
 
-# Rename columns
 grouped.rename(columns={
     "DATE": "ORDER DATE",
     "CUSTOMER DELIVERY DATE (TO BE)": "DELIVERY DATE"
 }, inplace=True)
 
-# Pending logic
 grouped["PENDING AMOUNT"] = grouped.apply(
     lambda x: x["ORDER AMOUNT"] - x["ADV RECEIVED"]
     if x["ADV RECEIVED"] > 0 else 0,
     axis=1
 )
 
-# Reorder columns (ORDER DATE first)
-cols = ["ORDER DATE"] + [c for c in grouped.columns if c != "ORDER DATE"]
-grouped = grouped[cols]
+# Reorder columns
+grouped = grouped[["ORDER DATE"] + [c for c in grouped.columns if c != "ORDER DATE"]]
 
 # ---------------- METRICS ----------------
 
@@ -128,7 +128,7 @@ c1.metric("Total Sale", f"₹{grouped['ORDER AMOUNT'].sum():,.0f}")
 c2.metric("Total Orders", len(grouped))
 c3.metric("Pending Amount", f"₹{grouped['PENDING AMOUNT'].sum():,.0f}")
 
-# ---------------- ALL SALES TABLE ----------------
+# ---------------- ALL SALES ----------------
 
 st.subheader("📋 All Sales Records")
 
@@ -141,22 +141,22 @@ if len(date_range) == 2:
         (filtered["ORDER DATE"].dt.date <= date_range[1])
     ]
 
-# Column selector
-selected_cols = st.multiselect("Select Columns", list(filtered.columns), default=list(filtered.columns))
-filtered = filtered[selected_cols]
+cols = st.multiselect("Select Columns", list(filtered.columns), default=list(filtered.columns))
+filtered = filtered[cols]
 
-# Pagination
 rows_per_page = 20
 page = st.number_input("Page", 1, max(1, len(filtered)//rows_per_page + 1), 1)
-
-start = (page - 1) * rows_per_page
-end = start + rows_per_page
 
 filtered = filtered.sort_values(by="ORDER DATE", ascending=False)
 
 st.dataframe(
-    filtered.iloc[start:end]
-    .style.apply(highlight_delivered, axis=1),
+    filtered.iloc[(page-1)*rows_per_page: page*rows_per_page]
+    .style
+    .apply(highlight_delivered, axis=1)
+    .format({
+        "ORDER DATE": format_date,
+        "DELIVERY DATE": format_date
+    }),
     use_container_width=True
 )
 
@@ -167,11 +167,13 @@ st.subheader("🚚 Pending Deliveries")
 
 pending = crm[crm["DELIVERY REMARKS"].str.upper() == "PENDING"].copy()
 
-pending_grouped = pending.groupby(group_cols).agg({
+pending_grouped = pending.groupby(
+    ["CUSTOMER NAME", "CUSTOMER DELIVERY DATE (TO BE)"]
+).agg({
     "PRODUCT NAME": lambda x: ", ".join(x.astype(str)),
     "CONTACT NUMBER": "first",
     "SALES PERSON": "first",
-    "CUSTOMER DELIVERY DATE (TO BE)": "max",
+    "DATE": "min",
     "DELIVERY REMARKS": "first"
 }).reset_index()
 
@@ -182,7 +184,7 @@ pending_grouped.rename(columns={
 
 pending_grouped = pending_grouped.sort_values(by="DELIVERY DATE", ascending=False)
 
-# WhatsApp
+# WhatsApp Alerts
 if st.button("🚀 Push Delivery Alerts to App"):
     alerts = get_alerts(crm, team_df, "delivery")
     for sp, msg in alerts:
@@ -192,11 +194,17 @@ st.dataframe(
     pending_grouped[[
         "DELIVERY DATE","ORDER DATE","CUSTOMER NAME",
         "CONTACT NUMBER","PRODUCT NAME","SALES PERSON","DELIVERY REMARKS"
-    ]].style.apply(highlight_rows, date_col="DELIVERY DATE", axis=1),
+    ]]
+    .style
+    .apply(highlight_rows, date_col="DELIVERY DATE", axis=1)
+    .format({
+        "DELIVERY DATE": format_date,
+        "ORDER DATE": format_date
+    }),
     use_container_width=True
 )
 
-# ---------------- PAYMENT ----------------
+# ---------------- PAYMENT DUE ----------------
 
 st.divider()
 st.subheader("💰 Payment Due")
@@ -209,14 +217,16 @@ crm["PENDING AMOUNT"] = crm.apply(
 
 payment = crm[crm["PENDING AMOUNT"] > 0].copy()
 
-payment_grouped = payment.groupby(group_cols).agg({
+payment_grouped = payment.groupby(
+    ["CUSTOMER NAME", "CUSTOMER DELIVERY DATE (TO BE)"]
+).agg({
     "PRODUCT NAME": lambda x: ", ".join(x.astype(str)),
     "ORDER AMOUNT": "sum",
     "ADV RECEIVED": "sum",
     "PENDING AMOUNT": "sum",
     "CONTACT NUMBER": "first",
     "SALES PERSON": "first",
-    "CUSTOMER DELIVERY DATE (TO BE)": "max"
+    "DATE": "min"
 }).reset_index()
 
 payment_grouped.rename(columns={
@@ -226,7 +236,7 @@ payment_grouped.rename(columns={
 
 payment_grouped = payment_grouped.sort_values(by="DELIVERY DATE", ascending=False)
 
-# WhatsApp
+# WhatsApp Alerts
 if st.button("💸 Push Payment Alerts to App"):
     alerts = get_alerts(crm, team_df, "payment")
     for sp, msg in alerts:
@@ -236,6 +246,12 @@ st.dataframe(
     payment_grouped[[
         "DELIVERY DATE","ORDER DATE","CUSTOMER NAME","CONTACT NUMBER",
         "PRODUCT NAME","ORDER AMOUNT","ADV RECEIVED","PENDING AMOUNT","SALES PERSON"
-    ]].style.apply(highlight_rows, date_col="DELIVERY DATE", axis=1),
+    ]]
+    .style
+    .apply(highlight_rows, date_col="DELIVERY DATE", axis=1)
+    .format({
+        "DELIVERY DATE": format_date,
+        "ORDER DATE": format_date
+    }),
     use_container_width=True
 )
