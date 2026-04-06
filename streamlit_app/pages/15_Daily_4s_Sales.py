@@ -11,57 +11,110 @@ from services.sheets import get_df
 st.set_page_config(page_title="4S Interiors Sales", layout="wide")
 st.title("📅 Daily 4S Interiors Sales by Executive")
 
+# ---------- HELPERS ----------
+
+def standardize_columns(df):
+    """Clean and standardize column names"""
+    df.columns = [str(c).strip().upper().replace(" ", "_") for c in df.columns]
+    return df
+
 def fix_duplicate_columns(df):
-    """Ensures all column names are unique by appending _1, _2 etc."""
+    """Ensure unique column names"""
     cols = []
     count = {}
     for col in df.columns:
-        col_name = str(col).strip().upper()
-        if col_name in count:
-            count[col_name] += 1
-            cols.append(f"{col_name}_{count[col_name]}")
+        if col in count:
+            count[col] += 1
+            cols.append(f"{col}_{count[col]}")
         else:
-            count[col_name] = 0
-            cols.append(col_name)
+            count[col] = 0
+            cols.append(col)
     df.columns = cols
     return df
+
+def unify_order_amount(df):
+    """Merge multiple ORDER AMOUNT columns safely"""
+    order_cols = [col for col in df.columns if "ORDER_AMOUNT" in col]
+
+    if len(order_cols) > 1:
+        df["ORDER_AMOUNT"] = df[order_cols].apply(
+            lambda x: pd.to_numeric(
+                x.astype(str).str.replace(r'[₹,]', '', regex=True),
+                errors='coerce'
+            )
+        ).sum(axis=1)
+
+    elif len(order_cols) == 1:
+        df["ORDER_AMOUNT"] = pd.to_numeric(
+            df[order_cols[0]].astype(str).str.replace(r'[₹,]', '', regex=True),
+            errors='coerce'
+        )
+
+    else:
+        df["ORDER_AMOUNT"] = 0.0
+
+    return df
+
+
+def unify_sales_person(df):
+    """Ensure SALES_PERSON column exists"""
+    possible_cols = [
+        "SALES_PERSON", "SALES_REP", "SALES_EXECUTIVE",
+        "EXECUTIVE", "OWNER", "SALES"
+    ]
+
+    for col in possible_cols:
+        if col in df.columns:
+            df["SALES_PERSON"] = df[col]
+            break
+
+    if "SALES_PERSON" not in df.columns:
+        df["SALES_PERSON"] = "UNKNOWN"
+
+    df["SALES_PERSON"] = df["SALES_PERSON"].astype(str).str.strip().str.upper()
+    return df
+
 
 @st.cache_data(ttl=60)
 def load_4s_data():
     config_df = get_df("SHEET_DETAILS")
     team_df = get_df("Sales Team")
+
     if config_df is None or "four_s_sheets" not in config_df.columns:
         return pd.DataFrame(), team_df
-    
+
     sheet_names = config_df["four_s_sheets"].dropna().unique().tolist()
     all_dfs = []
-    
+
     for name in sheet_names:
         df = get_df(name)
+
         if df is not None and not df.empty:
-            # 1. Standardize Headers
-            df.columns = [str(c).strip().upper() for c in df.columns]
-            
-            # 2. Rename to 'ORDER AMOUNT' from various possible 4S headers
+            df = standardize_columns(df)
+
+            # Rename possible columns
             mapping = {
-                "SALES REP": "SALES PERSON", 
-                "GROSS ORDER VALUE": "ORDER AMOUNT",
-                "ORDER VALUE": "ORDER AMOUNT",
-                "TOTAL AMOUNT": "ORDER AMOUNT",
-                "MRP": "ORDER AMOUNT"
+                "SALES_REP": "SALES_PERSON",
+                "GROSS_ORDER_VALUE": "ORDER_AMOUNT",
+                "ORDER_VALUE": "ORDER_AMOUNT",
+                "TOTAL_AMOUNT": "ORDER_AMOUNT",
+                "MRP": "ORDER_AMOUNT"
             }
             df = df.rename(columns=mapping)
-            
-            # 3. Handle duplicates created by the rename step
+
             df = fix_duplicate_columns(df)
-            
+            df = unify_order_amount(df)
+            df = unify_sales_person(df)
+
             all_dfs.append(df)
-            
-    if not all_dfs: 
+
+    if not all_dfs:
         return pd.DataFrame(), team_df
-    
+
     return pd.concat(all_dfs, ignore_index=True, sort=False), team_df
 
+
+# ---------- LOAD DATA ----------
 crm_raw, team_df = load_4s_data()
 
 if crm_raw.empty:
@@ -70,100 +123,135 @@ if crm_raw.empty:
 
 crm = crm_raw.copy()
 
-# ---------- 1. DATA CLEANING (ORDER AMOUNT ONLY) ----------
-if "ORDER AMOUNT" in crm.columns:
-    crm["ORDER AMOUNT"] = pd.to_numeric(
-        crm["ORDER AMOUNT"].astype(str).str.replace(r'[₹,]', '', regex=True), 
-        errors='coerce'
-    ).fillna(0)
-else:
-    crm["ORDER AMOUNT"] = 0.0
-
-if "DATE" in crm.columns:
-    crm["DATE_DT"] = pd.to_datetime(crm["DATE"], dayfirst=True, errors="coerce").dt.date
-else:
-    st.error("Column 'DATE' not found in source sheets. Please check your headers.")
+# ---------- DATE HANDLING ----------
+if "DATE" not in crm.columns:
+    st.error("Column 'DATE' not found in source sheets.")
     st.stop()
 
-# ---------- 2. FILTERS ----------
+crm["DATE_DT"] = pd.to_datetime(
+    crm["DATE"],
+    errors="coerce",
+    infer_datetime_format=True
+).dt.date
+
+# ---------- DEBUG ----------
+st.write("🔍 Columns:", crm.columns.tolist())
+st.write("🔍 Sample Data:", crm.head())
+st.write("🔍 Null Dates:", crm["DATE_DT"].isna().sum())
+st.write("🔍 Total Order Amount:", crm["ORDER_AMOUNT"].sum())
+
+# ---------- FILTERS ----------
 today = datetime.today().date()
 month_start = today.replace(day=1)
-c1, c2 = st.columns(2)
-with c1: start_date = st.date_input("Start date", value=month_start)
-with c2: end_date = st.date_input("End date", value=today)
 
-# ---------- 3. SALES TEAM LOGIC ----------
-official_sales_people = []
-if team_df is not None and not team_df.empty:
-    team_df.columns = [str(c).strip().upper() for c in team_df.columns]
-    if "ROLE" in team_df.columns and "NAME" in team_df.columns:
-        official_sales_people = team_df[team_df["ROLE"].str.upper() == "SALES"]["NAME"].dropna().str.strip().str.upper().unique().tolist()
+c1, c2 = st.columns(2)
+with c1:
+    start_date = st.date_input("Start date", value=month_start)
+with c2:
+    end_date = st.date_input("End date", value=today)
 
 mask = (crm["DATE_DT"] >= start_date) & (crm["DATE_DT"] <= end_date)
 df_filtered = crm.loc[mask].copy()
 
-# Identify Active People based on Order Amount
-active_in_period = []
-if "SALES PERSON" in df_filtered.columns:
-    df_filtered["SALES PERSON"] = df_filtered["SALES PERSON"].astype(str).str.strip().str.upper()
-    sales_sums = df_filtered.groupby("SALES PERSON")["ORDER AMOUNT"].sum()
-    active_in_period = sales_sums[sales_sums > 0].index.tolist()
+st.write("🔍 Filtered Rows:", len(df_filtered))
+
+# ---------- TEAM LOGIC ----------
+official_sales_people = []
+
+if team_df is not None and not team_df.empty:
+    team_df = standardize_columns(team_df)
+
+    if "ROLE" in team_df.columns and "NAME" in team_df.columns:
+        official_sales_people = (
+            team_df[team_df["ROLE"].str.upper() == "SALES"]["NAME"]
+            .dropna()
+            .str.strip()
+            .str.upper()
+            .unique()
+            .tolist()
+        )
+
+# Active people
+sales_sums = df_filtered.groupby("SALES_PERSON")["ORDER_AMOUNT"].sum()
+active_in_period = sales_sums[sales_sums > 0].index.tolist()
 
 all_execs = sorted(list(set(official_sales_people + active_in_period)))
-all_execs = [x for x in all_execs if x not in ["", "NAN", "NONE", "0"]]
+all_execs = [x for x in all_execs if x not in ["", "NAN", "NONE", "0", "UNKNOWN"]]
 
-# ---------- 4. BUILD TABLE ----------
+# ---------- BUILD TABLE ----------
 date_range = sorted(pd.date_range(start_date, end_date).date, reverse=True)
 table_data = []
 
 for d in date_range:
     day_data = df_filtered[df_filtered["DATE_DT"] == d]
+
     row = {"Date": d.strftime("%d-%b-%Y")}
-    day_store_total = 0
-    
+    day_total = 0
+
     for sp in all_execs:
-        if "SALES PERSON" in day_data.columns:
-            sp_total = day_data[day_data["SALES PERSON"] == sp]["ORDER AMOUNT"].sum()
-            row[sp] = round(float(sp_total), 2)
-            day_store_total += sp_total
-        else:
-            row[sp] = 0.0
-            
-    row["Store Total"] = round(float(day_store_total), 2)
+        sp_total = day_data[day_data["SALES_PERSON"] == sp]["ORDER_AMOUNT"].sum()
+        row[sp] = round(float(sp_total), 2)
+        day_total += sp_total
+
+    row["Store Total"] = round(float(day_total), 2)
     table_data.append(row)
 
 df_display = pd.DataFrame(table_data)
 
-# ---------- 5. TOTALS & DISPLAY ----------
+# ---------- TOTAL ----------
 if not df_display.empty and len(all_execs) > 0:
-    # Calculation for the 'TOTAL' row at the bottom
-    totals_val = {"Date": "TOTAL"}
+    totals = {"Date": "TOTAL"}
+
     for col in df_display.columns:
-        if col != "Date": 
-            totals_val[col] = df_display[col].sum()
-    
-    df_display = pd.concat([df_display, pd.DataFrame([totals_val])], ignore_index=True)
+        if col != "Date":
+            totals[col] = df_display[col].sum()
 
-    grand_total = totals_val['Store Total']
-    st.success(f"### 💰 Grand Total 4S Interiors Sales (Order Amount): ₹{grand_total:,.2f}")
+    df_display = pd.concat([df_display, pd.DataFrame([totals])], ignore_index=True)
 
-    # Sticky Header/Column CSS
-    st.markdown("""<style>
-        .table-scroll-container { max-height: 600px; overflow: auto; border: 1px solid #ccc; width: 100%; position: relative; }
+    grand_total = totals["Store Total"]
+
+    st.success(f"### 💰 Grand Total 4S Interiors Sales: ₹{grand_total:,.2f}")
+
+    # ---------- TABLE UI ----------
+    st.markdown("""
+    <style>
+        .table-scroll-container { max-height: 600px; overflow: auto; border: 1px solid #ccc; }
         .squeezed-table { width: 100%; border-collapse: separate; border-spacing: 0; }
-        .squeezed-table thead th { position: sticky; top: 0; z-index: 20; background-color: #f0f2f6; border: 1px solid #ccc; padding: 8px; font-weight: 900; }
-        .squeezed-table td:last-child, .squeezed-table th:last-child { position: sticky; right: 0; z-index: 15; border-left: 2px solid #999 !important; background-color: #fff; font-weight: bold; }
-        .squeezed-table td { padding: 4px 8px; border: 1px solid #ccc; text-align: right; white-space: nowrap; }
-        .squeezed-table tr:last-child td { background-color: #eee; font-weight: bold; }
-    </style>""", unsafe_allow_html=True)
+        .squeezed-table thead th {
+            position: sticky; top: 0; z-index: 20;
+            background-color: #f0f2f6;
+            border: 1px solid #ccc;
+            padding: 8px; font-weight: 900;
+        }
+        .squeezed-table td:last-child, .squeezed-table th:last-child {
+            position: sticky; right: 0; z-index: 15;
+            border-left: 2px solid #999;
+            background-color: #fff; font-weight: bold;
+        }
+        .squeezed-table td {
+            padding: 4px 8px;
+            border: 1px solid #ccc;
+            text-align: right;
+            white-space: nowrap;
+        }
+        .squeezed-table tr:last-child td {
+            background-color: #eee;
+            font-weight: bold;
+        }
+    </style>
+    """, unsafe_allow_html=True)
 
     format_cols = {col: "{:,.2f}" for col in df_display.columns if col != "Date"}
-    styled_html = (df_display.style
-                   .format(format_cols)
-                   .set_table_attributes('class="squeezed-table"')
-                   .hide(axis='index')
-                   .to_html())
-    
+
+    styled_html = (
+        df_display.style
+        .format(format_cols)
+        .set_table_attributes('class="squeezed-table"')
+        .hide(axis='index')
+        .to_html()
+    )
+
     st.write(f'<div class="table-scroll-container">{styled_html}</div>', unsafe_allow_html=True)
+
 else:
-    st.info("No active sales data found for the selected period.")
+    st.warning("No sales data available for selected filters.")
