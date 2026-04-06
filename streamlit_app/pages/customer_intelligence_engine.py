@@ -34,7 +34,6 @@ def load_all_franchise_data():
     config_df = standardize_columns(config_df)
 
     sheet_list = []
-
     if "FRANCHISE_SHEETS" in config_df.columns:
         sheet_list += config_df["FRANCHISE_SHEETS"].dropna().tolist()
 
@@ -44,14 +43,11 @@ def load_all_franchise_data():
     sheet_list = list(set(sheet_list))
 
     all_dfs = []
-
     for sheet in sheet_list:
         df = get_df(sheet)
-
         if df is not None and not df.empty:
             df = standardize_columns(df)
             df = fix_duplicate_columns(df)
-            df["SOURCE_SHEET"] = sheet
             all_dfs.append(df)
 
     if not all_dfs:
@@ -61,7 +57,7 @@ def load_all_franchise_data():
 
 
 # =========================================================
-# LOAD EMPLOYEE DATA
+# EMPLOYEE DATA
 # =========================================================
 @st.cache_data(ttl=300)
 def load_employee_data():
@@ -72,45 +68,57 @@ def load_employee_data():
 
     df = standardize_columns(df)
 
-    emp_names = set(df["EMPLOYEE NAME"].astype(str).str.strip())
-    emp_phones = set(df["CONTACT NUMBER"].astype(str).str[-10:])
-
-    return emp_names, emp_phones
+    return (
+        set(df["EMPLOYEE NAME"].astype(str).str.strip()),
+        set(df["CONTACT NUMBER"].astype(str).str[-10:])
+    )
 
 
 # =========================================================
-# NORMALIZE PHONES
+# UTIL FUNCTIONS
 # =========================================================
 def normalize_phones(phone):
     phones = str(phone).replace("/", ",").replace(";", ",").split(",")
-
     clean = []
     for p in phones:
         p = "".join(filter(str.isdigit, p))[-10:]
         if len(p) == 10:
             clean.append(p)
-
     return sorted(set(clean))
 
 
+def clean_products_list(x):
+    return list(dict.fromkeys(x.astype(str)))
+
+
+def generate_whatsapp_link(phone, message):
+    phone = str(phone).split(",")[0].strip()
+    encoded_msg = urllib.parse.quote(message)
+    return f"https://wa.me/91{phone}?text={encoded_msg}"
+
+
+def create_followup_message(name, days, products):
+    return f"""
+Hi {name},
+
+We noticed it’s been {days} days since your last purchase with us 😊
+
+We truly value your association with *Interio by Godrej Patia*.
+
+Based on your past interest in:
+{", ".join(products[:5])}
+
+We would love to assist you with new arrivals and exclusive offers.
+
+Best Wishes,
+Team Interio by Godrej Patia,
+Bhubaneswar
+Mob: 9937423954
+"""
+
+
 # =========================================================
-# CLEAN PRODUCTS (UI FRIENDLY)
-# =========================================================
-def clean_products(x):
-    unique_items = list(dict.fromkeys(x.astype(str)))
-    top_items = unique_items[:5]
-
-    extra = len(unique_items) - 5
-    text = ", ".join(top_items)
-
-    if extra > 0:
-        text += f" (+{extra} more)"
-
-    return text
-
-
-# =========================================================
-# MERGE DUPLICATE ORDERS
+# MERGE ORDERS
 # =========================================================
 def merge_duplicate_orders(df):
     df = df.copy()
@@ -127,73 +135,23 @@ def merge_duplicate_orders(df):
         NAME_COL: "first",
         AMOUNT_COL: "first",
         "PHONE_LIST": lambda x: sorted(set(sum(x, []))),
-        ITEM_COL: clean_products,
-        DATE_COL: lambda x: pd.to_datetime(x, errors="coerce").max()
+        ITEM_COL: clean_products_list,
+        DATE_COL: lambda x: pd.to_datetime(x).max()
     }).reset_index(drop=True)
 
-    merged[PHONE_COL] = merged["PHONE_LIST"].apply(lambda x: ", ".join(x))
+    merged["phones"] = merged["PHONE_LIST"].apply(lambda x: ", ".join(x))
 
     return merged
 
 
 # =========================================================
-# WHATSAPP HELPERS
-# =========================================================
-def generate_whatsapp_link(phone, message):
-    phone = str(phone).split(",")[0].strip()  # ✅ first number only
-    encoded_msg = urllib.parse.quote(message)
-    return f"https://wa.me/91{phone}?text={encoded_msg}"
-
-
-def create_followup_message(name, days, products):
-    return f"""
-Hi {name},
-
-We noticed it’s been {days} days since your last purchase with us 😊
-
-We truly value your association with *Interio by Godrej Patia*.
-
-Based on your past interest in:
-{products}
-
-We would love to assist you with new arrivals and exclusive offers.
-
-Best Wishes,
-Team Interio by Godrej Patia,
-Bhubaneswar
-Mob: 9937423954
-"""
-
-
-# =========================================================
-# PAGINATION
-# =========================================================
-def paginate_df(df, page_size=10, key="pagination"):
-    total_rows = len(df)
-    total_pages = (total_rows // page_size) + (1 if total_rows % page_size else 0)
-
-    if total_pages == 0:
-        return df
-
-    page = st.number_input("Page", 1, total_pages, 1, key=key)
-
-    start = (page - 1) * page_size
-    end = start + page_size
-
-    return df.iloc[start:end]
-
-
-# =========================================================
-# CUSTOMER ANALYSIS
+# ANALYSIS
 # =========================================================
 def analyze_customers(df):
 
-    if df.empty:
-        return pd.DataFrame(), pd.DataFrame()
-
     df = merge_duplicate_orders(df)
 
-    df = df.assign(**{PHONE_COL: df[PHONE_COL].str.split(", ")}).explode(PHONE_COL)
+    df = df.explode("PHONE_LIST").rename(columns={"PHONE_LIST": PHONE_COL})
 
     emp_names, emp_phones = load_employee_data()
     df = df[
@@ -201,78 +159,113 @@ def analyze_customers(df):
         ~df[PHONE_COL].isin(emp_phones)
     ]
 
-    customer_summary = df.groupby(NAME_COL).agg(
-        phones=(PHONE_COL, lambda x: ", ".join(sorted(set(x))[:3])),
+    summary = df.groupby(NAME_COL).agg(
+        phones=(PHONE_COL, lambda x: list(set(x))),
         total_orders=(NAME_COL, "count"),
         total_value=(AMOUNT_COL, "sum"),
-        products_purchased=(ITEM_COL, "first"),
-        last_purchase_date=(DATE_COL, lambda x: pd.to_datetime(x).max())
+        products=(ITEM_COL, lambda x: sum(x, [])),
+        last_purchase_date=(DATE_COL, "max")
     ).reset_index()
 
-    customer_summary = customer_summary.dropna(subset=["last_purchase_date"])
-
     today = pd.Timestamp.today().normalize()
+    summary["last_purchase_date"] = summary["last_purchase_date"].apply(lambda x: min(x, today))
+    summary["days_since_last_order"] = (today - summary["last_purchase_date"]).dt.days
 
-    customer_summary["last_purchase_date"] = customer_summary["last_purchase_date"].apply(
-        lambda x: min(x, today)
-    )
+    return summary
 
-    customer_summary["days_since_last_order"] = (
-        today - customer_summary["last_purchase_date"]
-    ).dt.days
 
-    customer_summary["last_purchase_date"] = customer_summary["last_purchase_date"].dt.strftime("%d-%B-%Y")
+# =========================================================
+# PAGINATION
+# =========================================================
+def paginate_df(df, page_size, key):
+    total = len(df)
+    pages = (total // page_size) + (1 if total % page_size else 0)
 
-    # WhatsApp column
-    customer_summary["Follow Up"] = customer_summary.apply(
-        lambda row: generate_whatsapp_link(
-            row["phones"],
-            create_followup_message(
-                row[NAME_COL],
-                row["days_since_last_order"],
-                row["products_purchased"]
-            )
-        ) if row["days_since_last_order"] > 90 else "",
-        axis=1
-    )
+    page = st.number_input("Page", 1, max(pages,1), 1, key=key)
 
-    repeat_buyers = customer_summary[customer_summary["total_orders"] > 1]
-    mvc = customer_summary[customer_summary["total_value"] > 500000]
+    start = (page - 1) * page_size
+    return df.iloc[start:start+page_size]
 
-    return repeat_buyers, mvc
+
+# =========================================================
+# UI RENDER
+# =========================================================
+def render_table(df, title, sort_col, filter_func=None, key="x"):
+    st.subheader(title)
+
+    if filter_func:
+        df = df[filter_func(df)]
+
+    if df.empty:
+        st.info("No data available")
+        return
+
+    df = df.sort_values(by=sort_col, ascending=False)
+    df_page = paginate_df(df, 10, key)
+
+    for _, row in df_page.iterrows():
+
+        with st.container():
+            cols = st.columns([3,2,1,1,2,2,1,1,1])
+
+            # Name
+            cols[0].write(row[NAME_COL])
+
+            # Phones (tooltip)
+            phone_display = ", ".join(row["phones"][:2])
+            all_phones = ", ".join(row["phones"])
+            cols[1].markdown(f"<span title='{all_phones}'>{phone_display}</span>", unsafe_allow_html=True)
+
+            # Copy button
+            if cols[2].button("📋", key=f"copy_{row[NAME_COL]}"):
+                st.toast(f"Copied: {all_phones}")
+
+            # Orders & Value
+            cols[3].write(row["total_orders"])
+            cols[4].write(row["total_value"])
+
+            # Products (expand)
+            with cols[5].expander("View Products"):
+                for p in row["products"]:
+                    st.write(f"• {p}")
+
+            # Date
+            cols[6].write(row["last_purchase_date"].strftime("%d-%B-%Y"))
+            cols[7].write(row["days_since_last_order"])
+
+            # WhatsApp
+            if row["days_since_last_order"] > 90:
+                msg = create_followup_message(
+                    row[NAME_COL],
+                    row["days_since_last_order"],
+                    row["products"]
+                )
+                wa = generate_whatsapp_link(row["phones"][0], msg)
+                cols[8].markdown(f"[💬]({wa})")
+
+            st.divider()
 
 
 # =========================================================
 # MAIN
 # =========================================================
-crm_raw = load_all_franchise_data()
-repeat_buyers_df, mvc_df = analyze_customers(crm_raw)
-
-
-# =========================================================
-# UI
-# =========================================================
 st.title("👥 Customer Intelligence Dashboard")
 
-# 🔁 Repeat Buyers
-st.subheader("🔁 Repeat Buyers")
+crm_raw = load_all_franchise_data()
+summary = analyze_customers(crm_raw)
 
-if not repeat_buyers_df.empty:
-    df_page = paginate_df(repeat_buyers_df.sort_values(by="total_orders", ascending=False), 10, "r")
+render_table(
+    summary,
+    "🔁 Repeat Buyers",
+    "total_orders",
+    lambda df: df["total_orders"] > 1,
+    "repeat"
+)
 
-    st.dataframe(df_page, use_container_width=True)
-
-else:
-    st.info("No repeat buyers found")
-
-
-# 💎 MVC
-st.subheader("💎 Most Valuable Customers (> ₹5L)")
-
-if not mvc_df.empty:
-    df_page = paginate_df(mvc_df.sort_values(by="total_value", ascending=False), 10, "m")
-
-    st.dataframe(df_page, use_container_width=True)
-
-else:
-    st.info("No high value customers found")
+render_table(
+    summary,
+    "💎 Most Valuable Customers (> ₹5L)",
+    "total_value",
+    lambda df: df["total_value"] > 500000,
+    "mvc"
+)
