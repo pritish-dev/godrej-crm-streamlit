@@ -187,8 +187,8 @@ pending_grouped = pending_grouped.sort_values(by="DELIVERY DATE", ascending=Fals
 # WhatsApp Alerts
 if st.button("🚀 Push Delivery Alerts to App"):
     alerts = get_alerts(crm, team_df, "delivery")
-    for sp, msg in alerts:
-        st.link_button(sp, generate_whatsapp_group_link(msg))
+    for sp_name, msg in alerts:
+        st.link_button(f"Forward {sp_name}'s List to Group", generate_whatsapp_group_link(msg))
 
 st.dataframe(
     pending_grouped[[
@@ -203,7 +203,17 @@ st.dataframe(
     }),
     use_container_width=True
 )
-
+today = datetime.now().date()
+tmrw = today + timedelta(days=1)
+    
+tot_del = len(pending_del)
+tmrw_del = len(pending_del[pending_del["DELIVERY DATE"].dt.date == tmrw])
+overdue_del = len(pending_del[pending_del["DELIVERY DATE"].dt.date < today])
+    
+c1, c2, c3 = st.columns(3)
+c1.metric("📦 Total Pending Deliveries", tot_del)
+c2.metric("🟢 Pending For Tomorrow", tmrw_del)
+c3.metric("🔴 Overdue or Missed", overdue_del)
 # ---------------- PAYMENT DUE ----------------
 
 st.divider()
@@ -239,8 +249,8 @@ payment_grouped = payment_grouped.sort_values(by="DELIVERY DATE", ascending=Fals
 # WhatsApp Alerts
 if st.button("💸 Push Payment Alerts to App"):
     alerts = get_alerts(crm, team_df, "payment")
-    for sp, msg in alerts:
-        st.link_button(sp, generate_whatsapp_group_link(msg))
+    for sp_name, msg in alerts:
+        st.link_button(f"Forward {sp_name}'s List to Group", generate_whatsapp_group_link(msg))
 
 st.dataframe(
     payment_grouped[[
@@ -255,3 +265,12 @@ st.dataframe(
     }),
     use_container_width=True
 )
+
+tot_pay = len(pending_pay)
+tmrw_pay = len(pending_pay[pending_pay["DELIVERY DATE"].dt.date == tmrw])
+overdue_pay = len(pending_pay[pending_pay["DELIVERY DATE"].dt.date < today])
+    
+c4, c5, c6 = st.columns(3)
+c4.metric("🧾 Total Payment Collections", tot_pay)
+c5.metric("🟢 Payments Due Tomorrow", tmrw_pay)
+c6.metric("🔴 Overdue Collections", overdue_pay)
