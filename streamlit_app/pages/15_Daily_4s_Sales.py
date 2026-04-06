@@ -148,10 +148,6 @@ crm["DATE_PARSED"] = crm["DATE"].apply(parse_mixed_date)
 # Final clean date
 crm["DATE_DT"] = crm["DATE_PARSED"].dt.date
 
-# ---------- DEBUG ----------
-st.write("🔍 Raw DATE Sample:", crm["DATE"].head(10))
-st.write("🔍 Parsed DATE Sample:", crm["DATE_DT"].head(10))
-st.write("🔍 Null Dates Count:", crm["DATE_DT"].isna().sum())
 # ---------- FILTERS ----------
 today = datetime.today().date()
 month_start = today.replace(day=1)
