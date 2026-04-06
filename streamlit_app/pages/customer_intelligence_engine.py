@@ -7,7 +7,7 @@ from utils.helpers import standardize_columns, fix_duplicate_columns
 # =========================================================
 # CONFIG
 # =========================================================
-PHONE_COL = "PHONE NUMBER"
+PHONE_COL = "CONTACT NUMBER"
 NAME_COL = "CUSTOMER NAME"
 AMOUNT_COL = "ORDER AMOUNT"
 
