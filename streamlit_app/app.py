@@ -267,7 +267,7 @@ st.dataframe(
 )
 
 tot_pay = len(payment_grouped)
-tmrw_pay = len(payment_grouped[v["DELIVERY DATE"].dt.date == tmrw])
+tmrw_pay = len(payment_grouped[payment_grouped["DELIVERY DATE"].dt.date == tmrw])
 overdue_pay = len(payment_grouped[payment_grouped["DELIVERY DATE"].dt.date < today])
     
 c4, c5, c6 = st.columns(3)
