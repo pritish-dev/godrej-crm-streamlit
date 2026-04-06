@@ -167,7 +167,7 @@ def analyze_customers(df):
     if DATE_COL not in df.columns:
         df[DATE_COL] = None
 
-    # STEP 1: Merge duplicates
+    # STEP 1: Merge duplicate orders
     df = merge_duplicate_orders(df)
 
     # STEP 2: Explode phones
@@ -193,11 +193,20 @@ def analyze_customers(df):
     # Remove invalid dates
     customer_summary = customer_summary.dropna(subset=["last_purchase_date"])
 
+    # ✅ FIX FUTURE DATES
+    today = pd.Timestamp.today().normalize()
+
+    customer_summary["last_purchase_date"] = customer_summary["last_purchase_date"].apply(
+        lambda x: min(x, today) if pd.notnull(x) else x
+    )
+
     # Days since last order
-    today = pd.Timestamp.today()
     customer_summary["days_since_last_order"] = (
         today - customer_summary["last_purchase_date"]
     ).dt.days
+
+    # ✅ FORMAT DATE
+    customer_summary["last_purchase_date"] = customer_summary["last_purchase_date"].dt.strftime("%d-%B-%Y")
 
     # Repeat buyers
     repeat_buyers = customer_summary[
@@ -229,10 +238,7 @@ st.title("👥 Customer Intelligence Dashboard")
 st.subheader("🔁 Repeat Buyers")
 
 if not repeat_buyers_df.empty:
-
-    repeat_buyers_df = repeat_buyers_df.sort_values(
-        by="total_orders", ascending=False
-    )
+    repeat_buyers_df = repeat_buyers_df.sort_values(by="total_orders", ascending=False)
 
     paginated_repeat = paginate_df(
         repeat_buyers_df,
@@ -241,7 +247,6 @@ if not repeat_buyers_df.empty:
     )
 
     st.dataframe(paginated_repeat, use_container_width=True)
-
 else:
     st.info("No repeat buyers found")
 
@@ -250,10 +255,7 @@ else:
 st.subheader("💎 Most Valuable Customers (> ₹5L)")
 
 if not mvc_df.empty:
-
-    mvc_df = mvc_df.sort_values(
-        by="total_value", ascending=False
-    )
+    mvc_df = mvc_df.sort_values(by="total_value", ascending=False)
 
     paginated_mvc = paginate_df(
         mvc_df,
@@ -262,6 +264,5 @@ if not mvc_df.empty:
     )
 
     st.dataframe(paginated_mvc, use_container_width=True)
-
 else:
     st.info("No high value customers found")
