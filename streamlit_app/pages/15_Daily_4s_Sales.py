@@ -123,23 +123,35 @@ if crm_raw.empty:
 
 crm = crm_raw.copy()
 
-# ---------- DATE HANDLING ----------
+# ---------- DATE HANDLING (ROBUST) ----------
+
 if "DATE" not in crm.columns:
-    st.error("Column 'DATE' not found in source sheets.")
+    st.error(f"❌ 'DATE' column not found. Available columns: {crm.columns.tolist()}")
     st.stop()
 
-crm["DATE_DT"] = pd.to_datetime(
-    crm["DATE"],
-    errors="coerce",
-    infer_datetime_format=True
-).dt.date
+# Clean raw DATE column first
+crm["DATE"] = crm["DATE"].astype(str).str.strip()
+
+# Handle Excel serial numbers (very common in Google Sheets exports)
+def parse_mixed_date(x):
+    try:
+        # If numeric → treat as Excel serial date
+        if str(x).isdigit():
+            return pd.to_datetime("1899-12-30") + pd.to_timedelta(int(x), unit="D")
+        else:
+            return pd.to_datetime(x, errors="coerce", dayfirst=True)
+    except:
+        return pd.NaT
+
+crm["DATE_PARSED"] = crm["DATE"].apply(parse_mixed_date)
+
+# Final clean date
+crm["DATE_DT"] = crm["DATE_PARSED"].dt.date
 
 # ---------- DEBUG ----------
-st.write("🔍 Columns:", crm.columns.tolist())
-st.write("🔍 Sample Data:", crm.head())
-st.write("🔍 Null Dates:", crm["DATE_DT"].isna().sum())
-st.write("🔍 Total Order Amount:", crm["ORDER_AMOUNT"].sum())
-
+st.write("🔍 Raw DATE Sample:", crm["DATE"].head(10))
+st.write("🔍 Parsed DATE Sample:", crm["DATE_DT"].head(10))
+st.write("🔍 Null Dates Count:", crm["DATE_DT"].isna().sum())
 # ---------- FILTERS ----------
 today = datetime.today().date()
 month_start = today.replace(day=1)
