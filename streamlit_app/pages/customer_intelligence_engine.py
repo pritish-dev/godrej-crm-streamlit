@@ -60,7 +60,7 @@ def load_all_franchise_data():
 
 
 # =========================================================
-# LOAD EMPLOYEE DATA (TO EXCLUDE)
+# LOAD EMPLOYEE DATA
 # =========================================================
 @st.cache_data(ttl=300)
 def load_employee_data():
@@ -78,7 +78,7 @@ def load_employee_data():
 
 
 # =========================================================
-# CLEAN PHONES (NO EXPLODE YET)
+# NORMALIZE PHONES
 # =========================================================
 def normalize_phones(phone):
     phones = str(phone).replace("/", ",").replace(";", ",").split(",")
@@ -93,7 +93,7 @@ def normalize_phones(phone):
 
 
 # =========================================================
-# MERGE DUPLICATE ORDERS (FIXED)
+# MERGE DUPLICATE ORDERS
 # =========================================================
 def merge_duplicate_orders(df):
     df = df.copy()
@@ -101,28 +101,48 @@ def merge_duplicate_orders(df):
     df[NAME_COL] = df[NAME_COL].astype(str).str.strip()
     df[AMOUNT_COL] = pd.to_numeric(df[AMOUNT_COL], errors="coerce").fillna(0)
 
-    # Normalize phones (list format)
     df["PHONE_LIST"] = df[PHONE_COL].apply(normalize_phones)
 
-    # Convert date
     df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
 
-    # Create order key
     df["ORDER_KEY"] = df[NAME_COL] + "|" + df[AMOUNT_COL].astype(str)
 
-    # Merge duplicates
     merged = df.groupby("ORDER_KEY").agg({
         NAME_COL: "first",
         AMOUNT_COL: "first",
         "PHONE_LIST": lambda x: sorted(set(sum(x, []))),
         ITEM_COL: lambda x: ", ".join(sorted(set(x.astype(str)))),
-        DATE_COL: "max"
+        DATE_COL: lambda x: pd.to_datetime(x, errors="coerce").max()
     }).reset_index(drop=True)
 
-    # Convert phone list to string
     merged[PHONE_COL] = merged["PHONE_LIST"].apply(lambda x: ", ".join(x))
 
     return merged
+
+
+# =========================================================
+# PAGINATION
+# =========================================================
+def paginate_df(df, page_size=10, key="pagination"):
+    total_rows = len(df)
+    total_pages = (total_rows // page_size) + (1 if total_rows % page_size else 0)
+
+    if total_pages == 0:
+        return df
+
+    page = st.number_input(
+        "Page",
+        min_value=1,
+        max_value=total_pages,
+        value=1,
+        step=1,
+        key=key
+    )
+
+    start = (page - 1) * page_size
+    end = start + page_size
+
+    return df.iloc[start:end]
 
 
 # =========================================================
@@ -141,22 +161,19 @@ def analyze_customers(df):
 
     df = df.copy()
 
-    # Fix missing columns
     if ITEM_COL not in df.columns:
         df[ITEM_COL] = ""
 
     if DATE_COL not in df.columns:
         df[DATE_COL] = None
 
-    # ✅ STEP 1: MERGE DUPLICATE ORDERS (BEFORE EXPLODE)
+    # STEP 1: Merge duplicates
     df = merge_duplicate_orders(df)
 
-    # ✅ STEP 2: EXPLODE PHONES AFTER MERGE
+    # STEP 2: Explode phones
     df = df.assign(**{PHONE_COL: df[PHONE_COL].str.split(", ")}).explode(PHONE_COL)
 
-    # =====================================================
-    # REMOVE EMPLOYEES
-    # =====================================================
+    # STEP 3: Remove employees
     emp_names, emp_phones = load_employee_data()
 
     df = df[
@@ -164,16 +181,17 @@ def analyze_customers(df):
         ~df[PHONE_COL].isin(emp_phones)
     ]
 
-    # =====================================================
-    # CUSTOMER AGGREGATION
-    # =====================================================
+    # STEP 4: Aggregate
     customer_summary = df.groupby(NAME_COL).agg(
         phones=(PHONE_COL, lambda x: ", ".join(sorted(set(x)))),
         total_orders=(NAME_COL, "count"),
         total_value=(AMOUNT_COL, "sum"),
         products_purchased=(ITEM_COL, lambda x: ", ".join(sorted(set(x)))),
-        last_purchase_date=(DATE_COL, "max")
+        last_purchase_date=(DATE_COL, lambda x: pd.to_datetime(x, errors="coerce").max())
     ).reset_index()
+
+    # Remove invalid dates
+    customer_summary = customer_summary.dropna(subset=["last_purchase_date"])
 
     # Days since last order
     today = pd.Timestamp.today()
@@ -186,14 +204,12 @@ def analyze_customers(df):
         customer_summary["total_orders"] > 1
     ].sort_values(by="total_orders", ascending=False)
 
-    # MVC
-    mvc = customer_summary.sort_values(by="total_value", ascending=False)
+    # MVC filter
+    mvc = customer_summary[
+        customer_summary["total_value"] > 500000
+    ].sort_values(by="total_value", ascending=False)
 
-    # Ranking
-    repeat_buyers["rank"] = repeat_buyers["total_orders"].rank(method="dense", ascending=False)
-    mvc["rank"] = mvc["total_value"].rank(method="dense", ascending=False)
-
-    return repeat_buyers.head(10), mvc.head(10)
+    return repeat_buyers, mvc
 
 
 # =========================================================
@@ -209,8 +225,43 @@ repeat_buyers_df, mvc_df = analyze_customers(crm_raw)
 # =========================================================
 st.title("👥 Customer Intelligence Dashboard")
 
-st.subheader("🔁 Top 10 Repeat Buyers")
-st.dataframe(repeat_buyers_df, use_container_width=True)
+# 🔁 Repeat Buyers
+st.subheader("🔁 Repeat Buyers")
 
-st.subheader("💎 Top 10 Most Valuable Customers")
-st.dataframe(mvc_df, use_container_width=True)
+if not repeat_buyers_df.empty:
+
+    repeat_buyers_df = repeat_buyers_df.sort_values(
+        by="total_orders", ascending=False
+    )
+
+    paginated_repeat = paginate_df(
+        repeat_buyers_df,
+        page_size=10,
+        key="repeat_page"
+    )
+
+    st.dataframe(paginated_repeat, use_container_width=True)
+
+else:
+    st.info("No repeat buyers found")
+
+
+# 💎 Most Valuable Customers
+st.subheader("💎 Most Valuable Customers (> ₹5L)")
+
+if not mvc_df.empty:
+
+    mvc_df = mvc_df.sort_values(
+        by="total_value", ascending=False
+    )
+
+    paginated_mvc = paginate_df(
+        mvc_df,
+        page_size=10,
+        key="mvc_page"
+    )
+
+    st.dataframe(paginated_mvc, use_container_width=True)
+
+else:
+    st.info("No high value customers found")
