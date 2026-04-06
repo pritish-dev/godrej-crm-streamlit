@@ -155,7 +155,7 @@ def paginate_df(df, page_size=10, key="pagination"):
 
 
 # =========================================================
-# CUSTOMER ANALYSIS
+# CUSTOMER ANALYSIS (FIXED VERSION)
 # =========================================================
 def analyze_customers(df):
     if df.empty:
@@ -163,45 +163,55 @@ def analyze_customers(df):
 
     df = merge_duplicate_orders(df)
     
-    # Explode to filter out employees if their phone matches ANY in the customer's list
+    # Explode to filter out employees
     df = df.explode("PHONE_LIST")
+    
+    # Ensure PHONE_LIST is string to prevent sorting errors later
+    df["PHONE_LIST"] = df["PHONE_LIST"].astype(str).replace('nan', None)
+    
     emp_names, emp_phones = load_employee_data()
     df = df[~df[NAME_COL].isin(emp_names) & ~df["PHONE_LIST"].isin(emp_phones)]
 
+    # Fixed the lambda here to drop nulls/nans before sorting
     customer_summary = df.groupby(NAME_COL).agg(
-        phone_list=("PHONE_LIST", lambda x: sorted(set(x))),
+        phone_list=("PHONE_LIST", lambda x: sorted(set(str(v) for v in x if pd.notna(v)))),
         total_orders=(NAME_COL, "count"),
         total_value=(AMOUNT_COL, "sum"),
         products_purchased=(ITEM_COL, "first"),
-        last_purchase_date=(DATE_COL, lambda x: pd.to_datetime(x).max())
+        last_purchase_date=(DATE_COL, lambda x: pd.to_datetime(x, errors='coerce').max())
     ).reset_index()
 
     customer_summary = customer_summary.dropna(subset=["last_purchase_date"])
     today = pd.Timestamp.today().normalize()
     
+    # Safety: Ensure last_purchase_date is datetime
+    customer_summary["last_purchase_date"] = pd.to_datetime(customer_summary["last_purchase_date"])
     customer_summary["days_since_last_order"] = (today - customer_summary["last_purchase_date"]).dt.days
-    customer_summary["last_purchase_date"] = customer_summary["last_purchase_date"].dt.strftime("%d-%B-%Y")
+    
+    # Format for display AFTER calculating days
+    customer_summary["last_purchase_date_str"] = customer_summary["last_purchase_date"].dt.strftime("%d-%B-%Y")
 
     # Generate links for 1st and 2nd numbers
-    customer_summary["WhatsApp"] = customer_summary.apply(
-        lambda row: generate_whatsapp_link(
-            row["phone_list"][0] if len(row["phone_list"]) > 0 else None,
-            create_followup_message(row[NAME_COL], row["days_since_last_order"], row["products_purchased"])
-        ) if row["days_since_last_order"] > 90 else None, axis=1
-    )
+    def get_wa_link(row, index):
+        try:
+            plist = row["phone_list"]
+            if len(plist) > index and row["days_since_last_order"] > 90:
+                return generate_whatsapp_link(
+                    plist[index],
+                    create_followup_message(row[NAME_COL], row["days_since_last_order"], row["products_purchased"])
+                )
+        except:
+            pass
+        return None
 
-    customer_summary["Alt WhatsApp"] = customer_summary.apply(
-        lambda row: generate_whatsapp_link(
-            row["phone_list"][1] if len(row["phone_list"]) > 1 else None,
-            create_followup_message(row[NAME_COL], row["days_since_last_order"], row["products_purchased"])
-        ) if row["days_since_last_order"] > 90 and len(row["phone_list"]) > 1 else None, axis=1
-    )
+    customer_summary["WhatsApp"] = customer_summary.apply(lambda r: get_wa_link(r, 0), axis=1)
+    customer_summary["Alt WhatsApp"] = customer_summary.apply(lambda r: get_wa_link(r, 1), axis=1)
 
     # Convert list to string for display
     customer_summary["Contact Numbers"] = customer_summary["phone_list"].apply(lambda x: ", ".join(x))
 
-    repeat_buyers = customer_summary[customer_summary["total_orders"] > 1]
-    mvc = customer_summary[customer_summary["total_value"] > 500000]
+    repeat_buyers = customer_summary[customer_summary["total_orders"] > 1].copy()
+    mvc = customer_summary[customer_summary["total_value"] > 500000].copy()
 
     return repeat_buyers, mvc
 
