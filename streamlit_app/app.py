@@ -165,59 +165,81 @@ st.dataframe(
 st.divider()
 st.subheader("🚚 Pending Deliveries")
 
-pending = crm[crm["DELIVERY REMARKS"].str.upper() == "PENDING"].copy()
+mask_p = crm["DELIVERY REMARKS"].astype(str).str.upper().str.strip() == "PENDING"
+pending = crm[mask_p].copy()
 
-pending_grouped = pending.groupby(
-    ["CUSTOMER NAME", "CUSTOMER DELIVERY DATE (TO BE)"]
-).agg({
-    "PRODUCT NAME": lambda x: ", ".join(x.astype(str)),
-    "CONTACT NUMBER": "first",
-    "SALES PERSON": "first",
-    "DATE": "min",
-    "DELIVERY REMARKS": "first"
-}).reset_index()
+if not pending.empty:
 
-pending_grouped.rename(columns={
-    "DATE": "ORDER DATE",
-    "CUSTOMER DELIVERY DATE (TO BE)": "DELIVERY DATE"
-}, inplace=True)
+    # GROUPING (NO DUPLICATES)
+    pending_grouped = pending.groupby(
+        ["CUSTOMER NAME", "CUSTOMER DELIVERY DATE (TO BE)"]
+    ).agg({
+        "PRODUCT NAME": lambda x: ", ".join(x.astype(str)),
+        "CONTACT NUMBER": "first",
+        "SALES PERSON": "first",
+        "DATE": "min",
+        "DELIVERY REMARKS": "first"
+    }).reset_index()
 
-pending_grouped = pending_grouped.sort_values(by="DELIVERY DATE", ascending=False)
+    pending_grouped.rename(columns={
+        "DATE": "ORDER DATE",
+        "CUSTOMER DELIVERY DATE (TO BE)": "DELIVERY DATE"
+    }, inplace=True)
 
-# WhatsApp Alerts
-if st.button("🚀 Push Delivery Alerts to App"):
-    alerts = get_alerts(crm, team_df, "delivery")
-    for sp_name, msg in alerts:
-        st.link_button(f"Forward {sp_name}'s List to Group", generate_whatsapp_group_link(msg))
+    # SORT USING OLD LOGIC
+    pending_grouped = sort_urgent_first(pending_grouped, "DELIVERY DATE")
 
-st.dataframe(
-    pending_grouped[[
+    pending_cols = [
         "DELIVERY DATE","ORDER DATE","CUSTOMER NAME",
         "CONTACT NUMBER","PRODUCT NAME","SALES PERSON","DELIVERY REMARKS"
-    ]]
-    .style
-    .apply(highlight_rows, date_col="DELIVERY DATE", axis=1)
-    .format({
-        "DELIVERY DATE": format_date,
-        "ORDER DATE": format_date
-    }),
-    use_container_width=True
-)
-today = datetime.now().date()
-tmrw = today + timedelta(days=1)
-    
-tot_del = len(pending_grouped)
-tmrw_del = len(pending_grouped[pending_grouped["DELIVERY DATE"].dt.date == tmrw])
-overdue_del = len(pending_grouped[pending_grouped["DELIVERY DATE"].dt.date < today])
-    
-c1, c2, c3 = st.columns(3)
-c1.metric("📦 Total Pending Deliveries", tot_del)
-c2.metric("🟢 Pending For Tomorrow", tmrw_del)
-c3.metric("🔴 Overdue or Missed", overdue_del)
+    ]
+
+    d1, d2 = st.columns([3, 1])
+
+    with d2:
+        if st.button("🚀 Push Delivery Alerts to App", key="btn_delivery", use_container_width=True):
+            alerts = get_alerts(crm, team_df, "delivery")
+            if alerts:
+                for sp_name, msg in alerts:
+                    st.link_button(
+                        f"Forward {sp_name}'s List to Group",
+                        generate_whatsapp_group_link(msg)
+                    )
+            else:
+                st.info("No deliveries scheduled for tomorrow.")
+
+    with d1:
+        st.info("Green = Tomorrow's Deliveries | Red = Overdue/Missed")
+
+    st.dataframe(
+        pending_grouped[pending_cols]
+        .style
+        .apply(highlight_rows, date_col="DELIVERY DATE", axis=1)
+        .format({
+            "DELIVERY DATE": format_date,
+            "ORDER DATE": format_date
+        }),
+        use_container_width=True
+    )
+
+    # METRICS
+    today = datetime.now().date()
+    tmrw = today + timedelta(days=1)
+
+    tot_del = len(pending_grouped)
+    tmrw_del = len(pending_grouped[pending_grouped["DELIVERY DATE"].dt.date == tmrw])
+    overdue_del = len(pending_grouped[pending_grouped["DELIVERY DATE"].dt.date < today])
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("📦 Total Pending Deliveries", tot_del)
+    c2.metric("🟢 Pending For Tomorrow", tmrw_del)
+    c3.metric("🔴 Overdue or Missed", overdue_del)
+
+
 # ---------------- PAYMENT DUE ----------------
 
 st.divider()
-st.subheader("💰 Payment Due")
+st.subheader("💰 Payment Collection")
 
 crm["PENDING AMOUNT"] = crm.apply(
     lambda x: x["ORDER AMOUNT"] - x["ADV RECEIVED"]
@@ -225,52 +247,74 @@ crm["PENDING AMOUNT"] = crm.apply(
     axis=1
 )
 
-payment = crm[crm["PENDING AMOUNT"] > 0].copy()
+pending_pay = crm[crm["PENDING AMOUNT"] > 0].copy()
 
-payment_grouped = payment.groupby(
-    ["CUSTOMER NAME", "CUSTOMER DELIVERY DATE (TO BE)"]
-).agg({
-    "PRODUCT NAME": lambda x: ", ".join(x.astype(str)),
-    "ORDER AMOUNT": "sum",
-    "ADV RECEIVED": "sum",
-    "PENDING AMOUNT": "sum",
-    "CONTACT NUMBER": "first",
-    "SALES PERSON": "first",
-    "DATE": "min"
-}).reset_index()
+if not pending_pay.empty:
 
-payment_grouped.rename(columns={
-    "DATE": "ORDER DATE",
-    "CUSTOMER DELIVERY DATE (TO BE)": "DELIVERY DATE"
-}, inplace=True)
+    # GROUPING (NO DUPLICATES)
+    payment_grouped = pending_pay.groupby(
+        ["CUSTOMER NAME", "CUSTOMER DELIVERY DATE (TO BE)"]
+    ).agg({
+        "PRODUCT NAME": lambda x: ", ".join(x.astype(str)),
+        "ORDER AMOUNT": "sum",
+        "ADV RECEIVED": "sum",
+        "PENDING AMOUNT": "sum",
+        "CONTACT NUMBER": "first",
+        "SALES PERSON": "first",
+        "DATE": "min"
+    }).reset_index()
 
-payment_grouped = payment_grouped.sort_values(by="DELIVERY DATE", ascending=False)
+    payment_grouped.rename(columns={
+        "DATE": "ORDER DATE",
+        "CUSTOMER DELIVERY DATE (TO BE)": "DELIVERY DATE"
+    }, inplace=True)
 
-# WhatsApp Alerts
-if st.button("💸 Push Payment Alerts to App"):
-    alerts = get_alerts(crm, team_df, "payment")
-    for sp_name, msg in alerts:
-        st.link_button(f"Forward {sp_name}'s List to Group", generate_whatsapp_group_link(msg))
+    # SORT USING OLD LOGIC
+    payment_grouped = sort_urgent_first(payment_grouped, "DELIVERY DATE")
 
-st.dataframe(
-    payment_grouped[[
+    pay_cols = [
         "DELIVERY DATE","ORDER DATE","CUSTOMER NAME","CONTACT NUMBER",
         "PRODUCT NAME","ORDER AMOUNT","ADV RECEIVED","PENDING AMOUNT","SALES PERSON"
-    ]]
-    .style
-    .apply(highlight_rows, date_col="DELIVERY DATE", axis=1)
-    .format({
-        "DELIVERY DATE": format_date,
-        "ORDER DATE": format_date
-    }),
-    use_container_width=True
-)
+    ]
 
-tot_pay = len(payment_grouped)
-tmrw_pay = len(payment_grouped[payment_grouped["DELIVERY DATE"].dt.date == tmrw])
-overdue_pay = len(payment_grouped[payment_grouped["DELIVERY DATE"].dt.date < today])
-    
-c4, c5, c6 = st.columns(3)
-c4.metric("🧾 Total Payment Collections", tot_pay)
-c5.metric("🟢 Payments Due Tomorrow", tmrw_pay)
-c6.metric("🔴 Overdue Collections", overdue_pay)
+    p1, p2 = st.columns([3, 1])
+
+    with p2:
+        if st.button("💸 Push Payment Alerts to App", key="btn_payment", use_container_width=True):
+            alerts = get_alerts(crm, team_df, "payment")
+            if alerts:
+                for sp_name, msg in alerts:
+                    st.link_button(
+                        f"Forward {sp_name}'s List to Group",
+                        generate_whatsapp_group_link(msg)
+                    )
+            else:
+                st.info("No payments due for tomorrow.")
+
+    with p1:
+        total_due = payment_grouped["PENDING AMOUNT"].sum()
+        st.warning(f"Total Outstanding Balance: ₹{total_due:,.2f}")
+
+    st.dataframe(
+        payment_grouped[pay_cols]
+        .style
+        .apply(highlight_rows, date_col="DELIVERY DATE", axis=1)
+        .format({
+            "DELIVERY DATE": format_date,
+            "ORDER DATE": format_date,
+            "ORDER AMOUNT": "{:.2f}",
+            "ADV RECEIVED": "{:.2f}",
+            "PENDING AMOUNT": "{:.2f}"
+        }),
+        use_container_width=True
+    )
+
+    # METRICS
+    tot_pay = len(payment_grouped)
+    tmrw_pay = len(payment_grouped[payment_grouped["DELIVERY DATE"].dt.date == tmrw])
+    overdue_pay = len(payment_grouped[payment_grouped["DELIVERY DATE"].dt.date < today])
+
+    c4, c5, c6 = st.columns(3)
+    c4.metric("🧾 Total Payment Collections", tot_pay)
+    c5.metric("🟢 Payments Due Tomorrow", tmrw_pay)
+    c6.metric("🔴 Overdue Collections", overdue_pay)
