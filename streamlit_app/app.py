@@ -206,9 +206,9 @@ st.dataframe(
 today = datetime.now().date()
 tmrw = today + timedelta(days=1)
     
-tot_del = len(pending_del)
-tmrw_del = len(pending_del[pending_del["DELIVERY DATE"].dt.date == tmrw])
-overdue_del = len(pending_del[pending_del["DELIVERY DATE"].dt.date < today])
+tot_del = len(pending_grouped)
+tmrw_del = len(pending_grouped[pending_grouped["DELIVERY DATE"].dt.date == tmrw])
+overdue_del = len(pending_grouped[pending_grouped["DELIVERY DATE"].dt.date < today])
     
 c1, c2, c3 = st.columns(3)
 c1.metric("📦 Total Pending Deliveries", tot_del)
@@ -266,9 +266,9 @@ st.dataframe(
     use_container_width=True
 )
 
-tot_pay = len(pending_pay)
-tmrw_pay = len(pending_pay[pending_pay["DELIVERY DATE"].dt.date == tmrw])
-overdue_pay = len(pending_pay[pending_pay["DELIVERY DATE"].dt.date < today])
+tot_pay = len(payment_grouped)
+tmrw_pay = len(payment_grouped[v["DELIVERY DATE"].dt.date == tmrw])
+overdue_pay = len(payment_grouped[payment_grouped["DELIVERY DATE"].dt.date < today])
     
 c4, c5, c6 = st.columns(3)
 c4.metric("🧾 Total Payment Collections", tot_pay)
