@@ -1,8 +1,15 @@
+import sys
+import os
+
+# Fix import path for Streamlit pages
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 import pandas as pd
 import streamlit as st
 
 from services.sheets import get_df
 from utils.helpers import standardize_columns, fix_duplicate_columns
+
 
 # =========================================================
 # CONFIG
@@ -10,10 +17,12 @@ from utils.helpers import standardize_columns, fix_duplicate_columns
 PHONE_COL = "CONTACT NUMBER"
 NAME_COL = "CUSTOMER NAME"
 AMOUNT_COL = "ORDER AMOUNT"
+ITEM_COL = "ITEM NAME"       # update if needed
+DATE_COL = "ORDER DATE"     # update if needed
 
 
 # =========================================================
-# LOAD DATA (YOUR ORIGINAL LOGIC)
+# LOAD DATA
 # =========================================================
 @st.cache_data(ttl=120)
 def load_all_franchise_data():
@@ -62,7 +71,6 @@ def load_all_franchise_data():
 def explode_phone_numbers(df):
     df = df.copy()
 
-    # Normalize separators
     df[PHONE_COL] = (
         df[PHONE_COL]
         .astype(str)
@@ -70,13 +78,10 @@ def explode_phone_numbers(df):
         .str.replace(";", ",")
     )
 
-    # Split into list
     df[PHONE_COL] = df[PHONE_COL].str.split(",")
 
-    # Explode rows
     df = df.explode(PHONE_COL)
 
-    # Clean numbers
     df[PHONE_COL] = (
         df[PHONE_COL]
         .astype(str)
@@ -84,10 +89,8 @@ def explode_phone_numbers(df):
         .str.replace(r"\D", "", regex=True)
     )
 
-    # Keep last 10 digits (India normalization)
     df[PHONE_COL] = df[PHONE_COL].str[-10:]
 
-    # Remove invalid
     df = df[df[PHONE_COL] != ""]
     df = df[df[PHONE_COL].str.len() >= 10]
 
@@ -95,16 +98,40 @@ def explode_phone_numbers(df):
 
 
 # =========================================================
-# GET BEST NAME PER PHONE
+# MERGE DUPLICATE ORDERS
+# =========================================================
+def merge_duplicate_orders(df):
+    df = df.copy()
+
+    df["ORDER_KEY"] = (
+        df[NAME_COL].astype(str).str.strip() + "|" +
+        df[AMOUNT_COL].astype(str)
+    )
+
+    merged = df.groupby("ORDER_KEY").agg({
+        NAME_COL: "first",
+        AMOUNT_COL: "first",
+        PHONE_COL: lambda x: ", ".join(sorted(set(x))),
+        ITEM_COL: lambda x: ", ".join(sorted(set(x.astype(str)))),
+        DATE_COL: lambda x: ", ".join(sorted(set(x.astype(str))))
+    }).reset_index(drop=True)
+
+    return merged
+
+
+# =========================================================
+# GET PRIMARY NAME PER PHONE
 # =========================================================
 def get_primary_name(df):
     df = df.copy()
 
     name_map = (
-        df.groupby([PHONE_COL, NAME_COL])
+        df.assign(**{PHONE_COL: df[PHONE_COL].str.split(", ")})
+        .explode(PHONE_COL)
+        .groupby([PHONE_COL, NAME_COL])
         .size()
         .reset_index(name="count")
-        .sort_values([PHONE_COL, "count"], ascending=[True, False])  # ✅ FIXED
+        .sort_values([PHONE_COL, "count"], ascending=[True, False])
         .drop_duplicates(subset=[PHONE_COL])
         [[PHONE_COL, NAME_COL]]
     )
@@ -113,7 +140,7 @@ def get_primary_name(df):
 
 
 # =========================================================
-# CUSTOMER ANALYTICS
+# CUSTOMER ANALYSIS
 # =========================================================
 def analyze_customers(df):
 
@@ -128,48 +155,68 @@ def analyze_customers(df):
 
     df = df.copy()
 
-    # Clean base fields
+    # Clean base data
     df[NAME_COL] = df[NAME_COL].astype(str).str.strip()
     df[AMOUNT_COL] = pd.to_numeric(df[AMOUNT_COL], errors="coerce").fillna(0)
 
-    # 🚀 Handle multiple phone numbers
+    if ITEM_COL not in df.columns:
+        df[ITEM_COL] = ""
+
+    if DATE_COL not in df.columns:
+        df[DATE_COL] = ""
+
+    # Step 1: explode phones
     df = explode_phone_numbers(df)
 
-    # ---------- NAME MAPPING ----------
+    # Step 2: merge duplicate orders
+    df = merge_duplicate_orders(df)
+
+    # Step 3: name mapping
     name_map = get_primary_name(df)
 
-    # ---------- AGGREGATION ----------
+    # Step 4: explode again for aggregation
+    df = df.assign(**{PHONE_COL: df[PHONE_COL].str.split(", ")}).explode(PHONE_COL)
+
+    # Step 5: aggregate per phone
     customer_summary = df.groupby(PHONE_COL).agg(
         total_orders=(PHONE_COL, "count"),
-        total_value=(AMOUNT_COL, "sum")
+        total_value=(AMOUNT_COL, "sum"),
+        products_purchased=(ITEM_COL, lambda x: ", ".join(sorted(set(x)))),
+        order_dates=(DATE_COL, lambda x: ", ".join(sorted(set(x))))
     ).reset_index()
 
-    # Merge name
+    # Step 6: attach name
     customer_summary = customer_summary.merge(
         name_map, on=PHONE_COL, how="left"
     )
 
-    # Reorder
+    # Reorder columns
     customer_summary = customer_summary[
-        [NAME_COL, PHONE_COL, "total_orders", "total_value"]
+        [
+            NAME_COL,
+            PHONE_COL,
+            "total_orders",
+            "total_value",
+            "products_purchased",
+            "order_dates"
+        ]
     ]
 
-    # ---------- REPEAT BUYERS ----------
+    # Repeat buyers
     repeat_buyers = customer_summary[
         customer_summary["total_orders"] > 1
     ].sort_values(by="total_orders", ascending=False)
 
-    # ---------- MOST VALUABLE CUSTOMERS ----------
+    # Most valuable customers
     mvc = customer_summary.sort_values(by="total_value", ascending=False)
 
-    # Ranking
     mvc["rank"] = mvc["total_value"].rank(method="dense", ascending=False)
 
     return repeat_buyers, mvc
 
 
 # =========================================================
-# MAIN EXECUTION
+# MAIN
 # =========================================================
 crm_raw = load_all_franchise_data()
 
@@ -177,22 +224,17 @@ repeat_buyers_df, mvc_df = analyze_customers(crm_raw)
 
 
 # =========================================================
-# STREAMLIT UI
+# UI
 # =========================================================
 st.title("👥 Customer Intelligence Dashboard")
 
-# ---------- REPEAT BUYERS ----------
 st.subheader("🔁 Repeat Buyers")
-
 if not repeat_buyers_df.empty:
     st.dataframe(repeat_buyers_df, use_container_width=True)
 else:
     st.info("No repeat buyers found")
 
-
-# ---------- MOST VALUABLE CUSTOMERS ----------
 st.subheader("💎 Most Valuable Customers")
-
 if not mvc_df.empty:
     st.dataframe(mvc_df.head(20), use_container_width=True)
 else:
