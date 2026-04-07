@@ -23,7 +23,7 @@ if query_params.get("track") == "1":
 
     redirect_url = query_params.get("redirect")
 
-    if redirect_url:
+if redirect_url:
     decoded_url = urllib.parse.unquote(redirect_url)
 
     # ✅ Instant redirect using JavaScript (works properly in Streamlit)
