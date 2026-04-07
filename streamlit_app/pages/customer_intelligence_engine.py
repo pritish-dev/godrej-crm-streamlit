@@ -1,8 +1,10 @@
 import sys
 import os
 import urllib.parse
+import json
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -23,22 +25,23 @@ if query_params.get("track") == "1":
 
     redirect_url = query_params.get("redirect")
 
-if redirect_url:
-    decoded_url = urllib.parse.unquote(redirect_url)
+    if redirect_url:
+        decoded_url = urllib.parse.unquote(redirect_url)
+        safe_url = json.dumps(decoded_url)  # ✅ prevents JS/string breaking
 
-    # ✅ Instant redirect using JavaScript (works properly in Streamlit)
-    st.components.v1.html(
-        f"""
-        <script>
-            window.location.replace("{decoded_url}");
-        </script>
-        """,
-        height=0
-    )
+        # ✅ Proper redirect
+        components.html(
+            f"""
+            <script>
+                window.location.replace({safe_url});
+            </script>
+            """,
+            height=0
+        )
 
-    # ✅ Fallback (in case browser blocks redirect)
-    st.markdown("Redirecting to WhatsApp... If not, click below 👇")
-    st.link_button("Open WhatsApp", decoded_url)
+        # ✅ Fallback button
+        st.markdown("Redirecting to WhatsApp... If not, click below 👇")
+        st.link_button("Open WhatsApp", decoded_url)
 
 # =========================================================
 # LOAD FOLLOW-UP DATA (FROM GOOGLE SHEETS)
@@ -229,12 +232,10 @@ def analyze_customers(df):
     customer_summary["days_since_last_order"] = (today - customer_summary["last_purchase_date"]).dt.days
     customer_summary["last_purchase_date_str"] = customer_summary["last_purchase_date"].dt.strftime("%d-%B-%Y")
 
-    # ✅ FOLLOW-UP FROM GOOGLE SHEETS
     customer_summary["last_followup_date"] = customer_summary[NAME_COL].map(
         lambda name: followup_map.get(name, "—")
     )
 
-    # WhatsApp links
     def get_wa_link(row, index):
         try:
             plist = row["phone_list"]
@@ -269,14 +270,8 @@ def render_customer_table(df):
     st.dataframe(
         df,
         column_config={
-            "WhatsApp": st.column_config.LinkColumn(
-                "Primary Contact",
-                display_text="💬 Message 1"
-            ),
-            "Alt WhatsApp": st.column_config.LinkColumn(
-                "Secondary Contact",
-                display_text="📲 Message 2"
-            ),
+            "WhatsApp": st.column_config.LinkColumn("Primary Contact", display_text="💬 Message 1"),
+            "Alt WhatsApp": st.column_config.LinkColumn("Secondary Contact", display_text="📲 Message 2"),
             "total_value": st.column_config.NumberColumn("Total Value", format="₹%d"),
             "last_followup_date": st.column_config.TextColumn("Last Follow-up"),
             "phone_list": None
