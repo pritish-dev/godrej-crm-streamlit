@@ -12,7 +12,7 @@ from services.sheets import get_df, update_followup
 from utils.helpers import standardize_columns, fix_duplicate_columns
 
 # =========================================================
-# CAPTURE TRACK CLICK (SAVE TO GOOGLE SHEETS)
+# TRACK CLICK + REDIRECT (FIXED)
 # =========================================================
 query_params = st.query_params
 
@@ -27,24 +27,21 @@ if query_params.get("track") == "1":
 
     if redirect_url:
         decoded_url = urllib.parse.unquote(redirect_url)
-        safe_url = json.dumps(decoded_url)  # ✅ prevents JS/string breaking
 
-        # ✅ Proper redirect
         components.html(
             f"""
             <script>
-                window.location.replace({safe_url});
+                window.location.replace("{decoded_url}");
             </script>
             """,
             height=0
         )
 
-        # ✅ Fallback button
         st.markdown("Redirecting to WhatsApp... If not, click below 👇")
         st.link_button("Open WhatsApp", decoded_url)
 
 # =========================================================
-# LOAD FOLLOW-UP DATA (FROM GOOGLE SHEETS)
+# FOLLOW-UP DATA
 # =========================================================
 @st.cache_data(ttl=60)
 def load_followup_data():
@@ -98,7 +95,7 @@ def load_all_franchise_data():
     return pd.concat(all_dfs, ignore_index=True, sort=False)
 
 # =========================================================
-# LOAD EMPLOYEE DATA
+# EMPLOYEE DATA
 # =========================================================
 @st.cache_data(ttl=300)
 def load_employee_data():
@@ -112,7 +109,7 @@ def load_employee_data():
     return emp_names, emp_phones
 
 # =========================================================
-# NORMALIZE PHONES
+# HELPERS
 # =========================================================
 def normalize_phones(phone):
     phones = str(phone).replace("/", ",").replace(";", ",").split(",")
@@ -133,7 +130,7 @@ def clean_products(x):
     return text
 
 # =========================================================
-# MERGE DUPLICATE ORDERS
+# MERGE ORDERS
 # =========================================================
 def merge_duplicate_orders(df):
     df = df.copy()
@@ -155,28 +152,8 @@ def merge_duplicate_orders(df):
     return merged
 
 # =========================================================
-# WHATSAPP HELPERS
+# WHATSAPP (FINAL FIXED)
 # =========================================================
-def generate_whatsapp_link(phone, message):
-    if not phone:
-        return None
-
-    # ✅ Force correct WhatsApp formatting
-    message = message.replace("\n", "%0A")
-
-    return f"https://wa.me/91{phone}?text={message}"
-
-def generate_tracked_whatsapp_link(phone, message, customer_name):
-    if not phone:
-        return None
-
-    wa_link = generate_whatsapp_link(phone, message)
-
-    # ✅ Proper encoding (safe for URLs but preserves formatting)
-    encoded_wa = urllib.parse.quote(wa_link, safe=":/?=&%")
-
-    return f"?track=1&cust={urllib.parse.quote(customer_name)}&ph={phone}&redirect={encoded_wa}"
-
 def create_followup_message(name, days, products):
     return (
         f"Hi {name},\n\n"
@@ -189,6 +166,21 @@ def create_followup_message(name, days, products):
         f"📍 Bhubaneswar\n"
         f"📞 9937423954"
     )
+
+def generate_whatsapp_link(phone, message):
+    if not phone:
+        return None
+
+    encoded_msg = urllib.parse.quote(message, safe='')
+    return f"https://wa.me/91{phone}?text={encoded_msg}"
+
+def generate_tracked_whatsapp_link(phone, message, customer_name):
+    if not phone:
+        return None
+
+    wa_link = generate_whatsapp_link(phone, message)
+
+    return f"?track=1&cust={urllib.parse.quote(customer_name)}&ph={phone}&redirect={urllib.parse.quote(wa_link, safe='')}"
 
 # =========================================================
 # PAGINATION
@@ -204,7 +196,7 @@ def paginate_df(df, page_size=10, key="pagination"):
     return df.iloc[start : start + page_size]
 
 # =========================================================
-# CUSTOMER ANALYSIS
+# ANALYSIS
 # =========================================================
 def analyze_customers(df):
     if df.empty:
@@ -227,16 +219,10 @@ def analyze_customers(df):
         last_purchase_date=(DATE_COL, lambda x: pd.to_datetime(x, errors='coerce').max())
     ).reset_index()
 
-    customer_summary = customer_summary.dropna(subset=["last_purchase_date"])
-
     today = pd.Timestamp.today().normalize()
     customer_summary["last_purchase_date"] = pd.to_datetime(customer_summary["last_purchase_date"])
     customer_summary["days_since_last_order"] = (today - customer_summary["last_purchase_date"]).dt.days
-    customer_summary["last_purchase_date_str"] = customer_summary["last_purchase_date"].dt.strftime("%d-%B-%Y")
-
-    customer_summary["last_followup_date"] = customer_summary[NAME_COL].map(
-        lambda name: followup_map.get(name, "—")
-    )
+    customer_summary["last_followup_date"] = customer_summary[NAME_COL].map(lambda name: followup_map.get(name, "—"))
 
     def get_wa_link(row, index):
         try:
@@ -252,21 +238,18 @@ def analyze_customers(df):
                     row[NAME_COL]
                 )
         except:
-            pass
-        return None
+            return None
 
     customer_summary["WhatsApp"] = customer_summary.apply(lambda r: get_wa_link(r, 0), axis=1)
     customer_summary["Alt WhatsApp"] = customer_summary.apply(lambda r: get_wa_link(r, 1), axis=1)
 
-    customer_summary["Contact Numbers"] = customer_summary["phone_list"].apply(lambda x: ", ".join(x))
-
-    repeat_buyers = customer_summary[customer_summary["total_orders"] > 1].copy()
-    mvc = customer_summary[customer_summary["total_value"] > 500000].copy()
+    repeat_buyers = customer_summary[customer_summary["total_orders"] > 1]
+    mvc = customer_summary[customer_summary["total_value"] > 500000]
 
     return repeat_buyers, mvc
 
 # =========================================================
-# UI TABLE
+# TABLE UI (UNCHANGED)
 # =========================================================
 def render_customer_table(df):
     st.dataframe(
@@ -292,16 +275,12 @@ st.title("👥 Customer Intelligence Dashboard")
 
 st.subheader("🔁 Repeat Buyers")
 if not repeat_buyers_df.empty:
-    sorted_repeat = repeat_buyers_df.sort_values(by="total_orders", ascending=False)
-    paged_repeat = paginate_df(sorted_repeat, 10, "repeat")
-    render_customer_table(paged_repeat)
+    render_customer_table(paginate_df(repeat_buyers_df.sort_values(by="total_orders", ascending=False), 10, "repeat"))
 else:
     st.info("No repeat buyers found")
 
 st.subheader("💎 Most Valuable Customers (> ₹5L)")
 if not mvc_df.empty:
-    sorted_mvc = mvc_df.sort_values(by="total_value", ascending=False)
-    paged_mvc = paginate_df(sorted_mvc, 10, "mvc")
-    render_customer_table(paged_mvc)
+    render_customer_table(paginate_df(mvc_df.sort_values(by="total_value", ascending=False), 10, "mvc"))
 else:
     st.info("No high value customers found")
