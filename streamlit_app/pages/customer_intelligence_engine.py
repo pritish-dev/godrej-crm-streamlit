@@ -3,7 +3,6 @@ import os
 import urllib.parse
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -11,32 +10,13 @@ from services.sheets import get_df, update_followup
 from utils.helpers import standardize_columns, fix_duplicate_columns
 
 # =========================================================
-# TRACK CLICK + REDIRECT (FINAL FIX)
+# CONFIG
 # =========================================================
-query_params = st.query_params
-
-if query_params.get("track") == "1":
-    customer = query_params.get("cust")
-
-    if customer:
-        today = pd.Timestamp.today().strftime("%d-%B-%Y")
-        update_followup(customer, today)
-
-    redirect_url = query_params.get("redirect")
-
-    if redirect_url:
-        # ✅ NO decoding, NO re-encoding
-        components.html(
-            f"""
-            <script>
-                window.location.replace("{redirect_url}");
-            </script>
-            """,
-            height=0
-        )
-
-        st.markdown("Redirecting to WhatsApp... If not, click below 👇")
-        st.link_button("Open WhatsApp", redirect_url)
+PHONE_COL = "CONTACT NUMBER"
+NAME_COL = "CUSTOMER NAME"
+AMOUNT_COL = "ORDER AMOUNT"
+ITEM_COL = "PRODUCT NAME"
+DATE_COL = "DATE"
 
 # =========================================================
 # FOLLOW-UP DATA
@@ -49,15 +29,6 @@ def load_followup_data():
 
     df = standardize_columns(df)
     return dict(zip(df["CUSTOMER NAME"], df["LAST_FOLLOWUP_DATE"]))
-
-# =========================================================
-# CONFIG
-# =========================================================
-PHONE_COL = "CONTACT NUMBER"
-NAME_COL = "CUSTOMER NAME"
-AMOUNT_COL = "ORDER AMOUNT"
-ITEM_COL = "PRODUCT NAME"
-DATE_COL = "DATE"
 
 # =========================================================
 # LOAD DATA
@@ -150,7 +121,7 @@ def merge_duplicate_orders(df):
     return merged
 
 # =========================================================
-# WHATSAPP (FINAL FIXED)
+# WHATSAPP
 # =========================================================
 def create_followup_message(name, days, products):
     return (
@@ -168,18 +139,8 @@ def create_followup_message(name, days, products):
 def generate_whatsapp_link(phone, message):
     if not phone:
         return None
-
     encoded_msg = urllib.parse.quote(message, safe='')
     return f"https://wa.me/91{phone}?text={encoded_msg}"
-
-def generate_tracked_whatsapp_link(phone, message, customer_name):
-    if not phone:
-        return None
-
-    wa_link = generate_whatsapp_link(phone, message)
-
-    # ✅ NO double encoding
-    return f"?track=1&cust={urllib.parse.quote(customer_name)}&ph={phone}&redirect={wa_link}"
 
 # =========================================================
 # PAGINATION
@@ -227,14 +188,13 @@ def analyze_customers(df):
         try:
             plist = row["phone_list"]
             if len(plist) > index and row["days_since_last_order"] > 90:
-                return generate_tracked_whatsapp_link(
+                return generate_whatsapp_link(
                     plist[index],
                     create_followup_message(
                         row[NAME_COL],
                         row["days_since_last_order"],
                         row["products_purchased"]
-                    ),
-                    row[NAME_COL]
+                    )
                 )
         except:
             return None
@@ -242,44 +202,47 @@ def analyze_customers(df):
     customer_summary["WhatsApp"] = customer_summary.apply(lambda r: get_wa_link(r, 0), axis=1)
     customer_summary["Alt WhatsApp"] = customer_summary.apply(lambda r: get_wa_link(r, 1), axis=1)
 
-    repeat_buyers = customer_summary[customer_summary["total_orders"] > 1]
-    mvc = customer_summary[customer_summary["total_value"] > 500000]
-
-    return repeat_buyers, mvc
+    return customer_summary
 
 # =========================================================
-# TABLE UI
+# UI TABLE + FOLLOWUP BUTTON
 # =========================================================
 def render_customer_table(df):
-    st.dataframe(
-        df,
-        column_config={
-            "WhatsApp": st.column_config.LinkColumn("Primary Contact", display_text="💬 Message 1"),
-            "Alt WhatsApp": st.column_config.LinkColumn("Secondary Contact", display_text="📲 Message 2"),
-            "total_value": st.column_config.NumberColumn("Total Value", format="₹%d"),
-            "last_followup_date": st.column_config.TextColumn("Last Follow-up"),
-            "phone_list": None
-        },
-        hide_index=True,
-        use_container_width=True
-    )
+    for i, row in df.iterrows():
+        col1, col2, col3 = st.columns([5, 2, 1])
+
+        with col1:
+            st.markdown(f"**{row[NAME_COL]}**")
+            st.caption(f"Last Purchase: {int(row['days_since_last_order'])} days ago")
+            st.caption(f"Products: {row['products_purchased']}")
+
+        with col2:
+            if row["WhatsApp"]:
+                st.link_button("💬 Message 1", row["WhatsApp"])
+            if row["Alt WhatsApp"]:
+                st.link_button("📲 Message 2", row["Alt WhatsApp"])
+
+        with col3:
+            if st.button("✔ Done", key=f"done_{i}"):
+                today = pd.Timestamp.today().strftime("%d-%B-%Y")
+                update_followup(row[NAME_COL], today)
+                st.success(f"Updated {row[NAME_COL]}")
+
+        st.divider()
 
 # =========================================================
 # MAIN
 # =========================================================
 crm_raw = load_all_franchise_data()
-repeat_buyers_df, mvc_df = analyze_customers(crm_raw)
+customer_df = analyze_customers(crm_raw)
 
 st.title("👥 Customer Intelligence Dashboard")
 
-st.subheader("🔁 Repeat Buyers")
-if not repeat_buyers_df.empty:
-    render_customer_table(paginate_df(repeat_buyers_df.sort_values(by="total_orders", ascending=False), 10, "repeat"))
-else:
-    st.info("No repeat buyers found")
+st.subheader("📞 Follow-up Customers")
 
-st.subheader("💎 Most Valuable Customers (> ₹5L)")
-if not mvc_df.empty:
-    render_customer_table(paginate_df(mvc_df.sort_values(by="total_value", ascending=False), 10, "mvc"))
+if not customer_df.empty:
+    sorted_df = customer_df.sort_values(by="days_since_last_order", ascending=False)
+    paged_df = paginate_df(sorted_df, 10, "cust")
+    render_customer_table(paged_df)
 else:
-    st.info("No high value customers found")
+    st.info("No customers found")
