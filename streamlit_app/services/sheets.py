@@ -262,3 +262,28 @@ def upsert_target_record(sheet_name: str, unique_fields: dict, new_data: dict):
 
         ws.append_row(row_values)
         return "Inserted Target"
+    
+def update_followup(customer_name, date):
+    df = get_df("FOLLOWUP_LOG")
+
+    if df is None or df.empty:
+        new_df = pd.DataFrame({
+            "CUSTOMER NAME": [customer_name],
+            "LAST_FOLLOWUP_DATE": [date]
+        })
+    else:
+        df = standardize_columns(df)
+
+        if customer_name in df["CUSTOMER NAME"].values:
+            df.loc[df["CUSTOMER NAME"] == customer_name, "LAST_FOLLOWUP_DATE"] = date
+            new_df = df
+        else:
+            new_row = pd.DataFrame({
+                "CUSTOMER NAME": [customer_name],
+                "LAST_FOLLOWUP_DATE": [date]
+            })
+            new_df = pd.concat([df, new_row], ignore_index=True)
+
+    # 👇 IMPORTANT: use your existing write function
+    from services.sheets import write_df  
+    write_df("FOLLOWUP_LOG", new_df)

@@ -6,17 +6,11 @@ import streamlit as st
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from services.sheets import get_df
+from services.sheets import get_df, update_followup
 from utils.helpers import standardize_columns, fix_duplicate_columns
 
 # =========================================================
-# FOLLOW-UP TRACKING (SESSION)
-# =========================================================
-if "followup_tracker" not in st.session_state:
-    st.session_state["followup_tracker"] = {}
-
-# =========================================================
-# CAPTURE TRACK CLICK (IMPORTANT)
+# CAPTURE TRACK CLICK (SAVE TO GOOGLE SHEETS)
 # =========================================================
 query_params = st.query_params
 
@@ -24,7 +18,8 @@ if query_params.get("track") == "1":
     customer = query_params.get("cust")
 
     if customer:
-        st.session_state["followup_tracker"][customer] = pd.Timestamp.today().strftime("%d-%B-%Y")
+        today = pd.Timestamp.today().strftime("%d-%B-%Y")
+        update_followup(customer, today)
 
     redirect_url = query_params.get("redirect")
 
@@ -33,6 +28,18 @@ if query_params.get("track") == "1":
             f'<meta http-equiv="refresh" content="0;url={urllib.parse.unquote(redirect_url)}">',
             unsafe_allow_html=True
         )
+
+# =========================================================
+# LOAD FOLLOW-UP DATA (FROM GOOGLE SHEETS)
+# =========================================================
+@st.cache_data(ttl=60)
+def load_followup_data():
+    df = get_df("FOLLOWUP_LOG")
+    if df is None or df.empty:
+        return {}
+
+    df = standardize_columns(df)
+    return dict(zip(df["CUSTOMER NAME"], df["LAST_FOLLOWUP_DATE"]))
 
 # =========================================================
 # CONFIG
@@ -187,6 +194,8 @@ def analyze_customers(df):
     if df.empty:
         return pd.DataFrame(), pd.DataFrame()
 
+    followup_map = load_followup_data()
+
     df = merge_duplicate_orders(df)
     df = df.explode("PHONE_LIST")
     df["PHONE_LIST"] = df["PHONE_LIST"].astype(str).replace('nan', None)
@@ -209,12 +218,12 @@ def analyze_customers(df):
     customer_summary["days_since_last_order"] = (today - customer_summary["last_purchase_date"]).dt.days
     customer_summary["last_purchase_date_str"] = customer_summary["last_purchase_date"].dt.strftime("%d-%B-%Y")
 
-    # FOLLOW-UP COLUMN
+    # ✅ FOLLOW-UP FROM GOOGLE SHEETS
     customer_summary["last_followup_date"] = customer_summary[NAME_COL].map(
-        lambda name: st.session_state["followup_tracker"].get(name, "—")
+        lambda name: followup_map.get(name, "—")
     )
 
-    # WhatsApp links (tracked)
+    # WhatsApp links
     def get_wa_link(row, index):
         try:
             plist = row["phone_list"]
@@ -273,7 +282,6 @@ repeat_buyers_df, mvc_df = analyze_customers(crm_raw)
 
 st.title("👥 Customer Intelligence Dashboard")
 
-# 🔁 Repeat Buyers
 st.subheader("🔁 Repeat Buyers")
 if not repeat_buyers_df.empty:
     sorted_repeat = repeat_buyers_df.sort_values(by="total_orders", ascending=False)
@@ -282,7 +290,6 @@ if not repeat_buyers_df.empty:
 else:
     st.info("No repeat buyers found")
 
-# 💎 MVC
 st.subheader("💎 Most Valuable Customers (> ₹5L)")
 if not mvc_df.empty:
     sorted_mvc = mvc_df.sort_values(by="total_value", ascending=False)
