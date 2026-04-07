@@ -22,12 +22,14 @@ def load_tasks():
     if df is None or df.empty:
         return pd.DataFrame()
 
-    # ✅ Clean column names properly
     df.columns = [str(c).strip().upper() for c in df.columns]
 
-    # ✅ REQUIRED COLUMNS (auto-fix if missing)
+    # ✅ Map your column to expected
+    if "TASK DATE" in df.columns:
+        df["START DATE"] = df["TASK DATE"]
+
+    # Ensure required columns exist
     required_cols = [
-        "TASK ID",
         "TASK TITLE",
         "TASK TYPE",
         "ASSIGNED TO",
@@ -42,9 +44,9 @@ def load_tasks():
         if col not in df.columns:
             df[col] = ""
 
-    # ✅ SAFE DATE CONVERSION
-    df["START DATE"] = pd.to_datetime(df["START DATE"], dayfirst=True, errors="coerce")
-    df["LAST COMPLETED DATE"] = pd.to_datetime(df["LAST COMPLETED DATE"], dayfirst=True, errors="coerce")
+    # Convert dates
+    df["START DATE"] = pd.to_datetime(df["START DATE"], errors="coerce")
+    df["LAST COMPLETED DATE"] = pd.to_datetime(df["LAST COMPLETED DATE"], errors="coerce")
 
     return df
 
