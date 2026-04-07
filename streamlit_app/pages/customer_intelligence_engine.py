@@ -24,10 +24,21 @@ if query_params.get("track") == "1":
     redirect_url = query_params.get("redirect")
 
     if redirect_url:
-        st.markdown(
-            f'<meta http-equiv="refresh" content="0;url={urllib.parse.unquote(redirect_url)}">',
-            unsafe_allow_html=True
-        )
+    decoded_url = urllib.parse.unquote(redirect_url)
+
+    # ✅ Instant redirect using JavaScript (works properly in Streamlit)
+    st.components.v1.html(
+        f"""
+        <script>
+            window.location.replace("{decoded_url}");
+        </script>
+        """,
+        height=0
+    )
+
+    # ✅ Fallback (in case browser blocks redirect)
+    st.markdown("Redirecting to WhatsApp... If not, click below 👇")
+    st.link_button("Open WhatsApp", decoded_url)
 
 # =========================================================
 # LOAD FOLLOW-UP DATA (FROM GOOGLE SHEETS)
