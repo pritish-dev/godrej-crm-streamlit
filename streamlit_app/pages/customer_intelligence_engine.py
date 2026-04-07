@@ -10,15 +10,6 @@ from services.sheets import get_df, update_followup
 from utils.helpers import standardize_columns, fix_duplicate_columns
 
 # =========================================================
-# CONFIG
-# =========================================================
-PHONE_COL = "CONTACT NUMBER"
-NAME_COL = "CUSTOMER NAME"
-AMOUNT_COL = "ORDER AMOUNT"
-ITEM_COL = "PRODUCT NAME"
-DATE_COL = "DATE"
-
-# =========================================================
 # FOLLOW-UP DATA
 # =========================================================
 @st.cache_data(ttl=60)
@@ -29,6 +20,15 @@ def load_followup_data():
 
     df = standardize_columns(df)
     return dict(zip(df["CUSTOMER NAME"], df["LAST_FOLLOWUP_DATE"]))
+
+# =========================================================
+# CONFIG
+# =========================================================
+PHONE_COL = "CONTACT NUMBER"
+NAME_COL = "CUSTOMER NAME"
+AMOUNT_COL = "ORDER AMOUNT"
+ITEM_COL = "PRODUCT NAME"
+DATE_COL = "DATE"
 
 # =========================================================
 # LOAD DATA
@@ -121,7 +121,7 @@ def merge_duplicate_orders(df):
     return merged
 
 # =========================================================
-# WHATSAPP
+# WHATSAPP (FIXED)
 # =========================================================
 def create_followup_message(name, days, products):
     return (
@@ -202,47 +202,64 @@ def analyze_customers(df):
     customer_summary["WhatsApp"] = customer_summary.apply(lambda r: get_wa_link(r, 0), axis=1)
     customer_summary["Alt WhatsApp"] = customer_summary.apply(lambda r: get_wa_link(r, 1), axis=1)
 
-    return customer_summary
+    repeat_buyers = customer_summary[customer_summary["total_orders"] > 1]
+    mvc = customer_summary[customer_summary["total_value"] > 500000]
+
+    return repeat_buyers, mvc
 
 # =========================================================
-# UI TABLE + FOLLOWUP BUTTON
+# TABLE UI (UNCHANGED)
 # =========================================================
 def render_customer_table(df):
-    for i, row in df.iterrows():
-        col1, col2, col3 = st.columns([5, 2, 1])
-
-        with col1:
-            st.markdown(f"**{row[NAME_COL]}**")
-            st.caption(f"Last Purchase: {int(row['days_since_last_order'])} days ago")
-            st.caption(f"Products: {row['products_purchased']}")
-
-        with col2:
-            if row["WhatsApp"]:
-                st.link_button("💬 Message 1", row["WhatsApp"])
-            if row["Alt WhatsApp"]:
-                st.link_button("📲 Message 2", row["Alt WhatsApp"])
-
-        with col3:
-            if st.button("✔ Done", key=f"done_{i}"):
-                today = pd.Timestamp.today().strftime("%d-%B-%Y")
-                update_followup(row[NAME_COL], today)
-                st.success(f"Updated {row[NAME_COL]}")
-
-        st.divider()
+    st.dataframe(
+        df,
+        column_config={
+            "WhatsApp": st.column_config.LinkColumn("Primary Contact", display_text="💬 Message 1"),
+            "Alt WhatsApp": st.column_config.LinkColumn("Secondary Contact", display_text="📲 Message 2"),
+            "total_value": st.column_config.NumberColumn("Total Value", format="₹%d"),
+            "last_followup_date": st.column_config.TextColumn("Last Follow-up"),
+            "phone_list": None
+        },
+        hide_index=True,
+        use_container_width=True
+    )
 
 # =========================================================
 # MAIN
 # =========================================================
 crm_raw = load_all_franchise_data()
-customer_df = analyze_customers(crm_raw)
+repeat_buyers_df, mvc_df = analyze_customers(crm_raw)
 
 st.title("👥 Customer Intelligence Dashboard")
 
-st.subheader("📞 Follow-up Customers")
+# REPEAT BUYERS
+st.subheader("🔁 Repeat Buyers")
+if not repeat_buyers_df.empty:
+    paged_repeat = paginate_df(repeat_buyers_df.sort_values(by="total_orders", ascending=False), 10, "repeat")
+    render_customer_table(paged_repeat)
 
-if not customer_df.empty:
-    sorted_df = customer_df.sort_values(by="days_since_last_order", ascending=False)
-    paged_df = paginate_df(sorted_df, 10, "cust")
-    render_customer_table(paged_df)
+    st.markdown("### ✅ Mark Follow-up Done")
+    selected_customer = st.selectbox("Select Customer", paged_repeat[NAME_COL].unique(), key="repeat_followup")
+
+    if st.button("✔ Mark as Followed Up", key="repeat_btn"):
+        today = pd.Timestamp.today().strftime("%d-%B-%Y")
+        update_followup(selected_customer, today)
+        st.success(f"Follow-up updated for {selected_customer}")
 else:
-    st.info("No customers found")
+    st.info("No repeat buyers found")
+
+# MVC
+st.subheader("💎 Most Valuable Customers (> ₹5L)")
+if not mvc_df.empty:
+    paged_mvc = paginate_df(mvc_df.sort_values(by="total_value", ascending=False), 10, "mvc")
+    render_customer_table(paged_mvc)
+
+    st.markdown("### ✅ Mark Follow-up Done")
+    selected_customer_mvc = st.selectbox("Select Customer", paged_mvc[NAME_COL].unique(), key="mvc_followup")
+
+    if st.button("✔ Mark as Followed Up", key="mvc_btn"):
+        today = pd.Timestamp.today().strftime("%d-%B-%Y")
+        update_followup(selected_customer_mvc, today)
+        st.success(f"Follow-up updated for {selected_customer_mvc}")
+else:
+    st.info("No high value customers found")
