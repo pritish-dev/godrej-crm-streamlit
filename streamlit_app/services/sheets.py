@@ -284,6 +284,5 @@ def update_followup(customer_name, date):
             })
             new_df = pd.concat([df, new_row], ignore_index=True)
 
-    # 👇 IMPORTANT: use your existing write function
-    from services.sheets import write_df  
+    # 👇 IMPORTANT: use your existing write function 
     write_df("FOLLOWUP_LOG", new_df)
