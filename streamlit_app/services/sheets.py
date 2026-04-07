@@ -262,7 +262,35 @@ def upsert_target_record(sheet_name: str, unique_fields: dict, new_data: dict):
 
         ws.append_row(row_values)
         return "Inserted Target"
-    
+
+
+def write_df(sheet_name, df):
+    scope = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=scope
+    )
+
+    client = gspread.authorize(creds)
+
+    # 👉 Open your Google Sheet (same as get_df uses)
+    sheet = client.open_by_key(st.secrets["gsheet_key"])
+
+    try:
+        worksheet = sheet.worksheet(sheet_name)
+        worksheet.clear()
+    except:
+        worksheet = sheet.add_worksheet(title=sheet_name, rows="1000", cols="20")
+
+    # Convert dataframe to list
+    data = [df.columns.values.tolist()] + df.values.tolist()
+
+    worksheet.update(data)
+
 def update_followup(customer_name, date):
     df = get_df("FOLLOWUP_LOG")
 
@@ -284,5 +312,4 @@ def update_followup(customer_name, date):
             })
             new_df = pd.concat([df, new_row], ignore_index=True)
 
-    # 👇 IMPORTANT: use your existing write function 
     write_df("FOLLOWUP_LOG", new_df)
