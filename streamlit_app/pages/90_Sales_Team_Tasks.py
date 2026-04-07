@@ -2,7 +2,7 @@ import sys
 import os
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
@@ -37,16 +37,9 @@ def load_tasks():
 
 
 # =========================================================
-# DATE FORMAT
+# GENERATE TASKS
 # =========================================================
-def format_date(series):
-    return pd.to_datetime(series).dt.strftime("%d-%B-%Y")
-
-
-# =========================================================
-# GENERATE MONTH TASKS
-# =========================================================
-def generate_month_tasks(df, year, month):
+def generate_tasks(df, year, month):
     rows = []
 
     for _, row in df.iterrows():
@@ -56,23 +49,19 @@ def generate_month_tasks(df, year, month):
         if pd.isna(start):
             continue
 
-        # loop days in month
         for day in range(1, 32):
             try:
                 current = datetime(year, month, day)
             except:
                 continue
 
-            # DAILY
             if freq == "daily":
                 pass
 
-            # WEEKLY
             elif freq == "weekly":
                 if current.weekday() != start.weekday():
                     continue
 
-            # MONTHLY
             elif freq == "monthly":
                 if current.day != start.day:
                     continue
@@ -88,9 +77,26 @@ def generate_month_tasks(df, year, month):
 
 
 # =========================================================
-# MARK DONE / UNDO
+# STATUS LOGIC
 # =========================================================
-def update_task_status(df, task_id, mark_done=True):
+def get_status(row):
+    today = datetime.now().date()
+
+    if pd.notnull(row["LAST COMPLETED DATE"]):
+        if row["LAST COMPLETED DATE"].date() > row["DUE DATE"].date():
+            return "🔴 Missed"
+        return "🟢 Done"
+
+    if row["DUE DATE"].date() < today:
+        return "🔴 Overdue"
+
+    return "🟣 Pending"
+
+
+# =========================================================
+# UPDATE TASK
+# =========================================================
+def update_task(task_id, df, mark_done=True):
     if mark_done:
         df.loc[df["TASK ID"] == task_id, "LAST COMPLETED DATE"] = datetime.now().strftime("%d-%B-%Y")
     else:
@@ -98,21 +104,6 @@ def update_task_status(df, task_id, mark_done=True):
 
     write_df("SALES_TEAM_TASK", df)
     st.cache_data.clear()
-
-
-# =========================================================
-# COLOR LOGIC
-# =========================================================
-def get_status(row):
-    today = datetime.now().date()
-
-    if pd.notnull(row["LAST COMPLETED DATE"]):
-        return "🟢 Completed"
-
-    if row["DUE DATE"].date() < today:
-        return "🔴 Overdue"
-
-    return "🟣 Pending"
 
 
 # =========================================================
@@ -126,93 +117,125 @@ if df_master.empty:
     st.warning("No tasks found")
     st.stop()
 
-# =========================================================
-# MONTH SELECTOR
-# =========================================================
 today = datetime.now()
+
+col1, col2 = st.columns(2)
+year = col1.selectbox("Year", [2024, 2025, 2026, 2027], index=2)
+month = col2.selectbox("Month", list(range(1, 13)), index=today.month - 1)
+
+tasks = generate_tasks(df_master, year, month)
+
+if tasks.empty:
+    st.info("No tasks")
+    st.stop()
+
+tasks["STATUS"] = tasks.apply(get_status, axis=1)
+tasks["DUE DATE"] = pd.to_datetime(tasks["DUE DATE"])
+
+# =========================================================
+# FILTERS
+# =========================================================
+start_week = today - timedelta(days=today.weekday())
+end_week = start_week + timedelta(days=6)
+
+daily_df = tasks[
+    (tasks["FREQUENCY"].str.lower() == "daily") &
+    (tasks["DUE DATE"].dt.date <= today.date())
+]
+
+weekly_df = tasks[
+    (tasks["FREQUENCY"].str.lower() == "weekly") &
+    (tasks["DUE DATE"].dt.date >= start_week.date()) &
+    (tasks["DUE DATE"].dt.date <= end_week.date())
+]
+
+monthly_df = tasks[
+    (tasks["FREQUENCY"].str.lower() == "monthly") &
+    (tasks["DUE DATE"].dt.month == month)
+]
+
+# =========================================================
+# TABLE RENDER FUNCTION
+# =========================================================
+def render_table(df, title):
+    st.subheader(title)
+
+    df = df.copy()
+    df["DUE DATE"] = df["DUE DATE"].dt.strftime("%d-%B-%Y")
+    df["DONE"] = False
+
+    edited = st.data_editor(df, use_container_width=True)
+
+    done_rows = edited[edited["DONE"] == True]
+
+    if not done_rows.empty:
+        for task_id in done_rows["TASK ID"]:
+            update_task(task_id, df_master, True)
+
+        st.rerun()
+
+
+# =========================================================
+# TABLES
+# =========================================================
+render_table(daily_df, "🟣 Daily Tasks")
+render_table(weekly_df, "📅 Weekly Tasks")
+render_table(monthly_df, "🗓️ Monthly Tasks")
+
+# =========================================================
+# WHATSAPP
+# =========================================================
+st.divider()
 
 col1, col2 = st.columns(2)
 
 with col1:
-    year = st.selectbox("Select Year", [2024, 2025, 2026, 2027], index=2)
+    if st.button("📲 Send Daily Tasks"):
+        msg = "*📋 Daily Tasks*\n\n"
+        for _, r in daily_df.iterrows():
+            msg += f"{r['TASK TITLE']} - {r['STATUS']}\n"
+
+        st.link_button("Send Daily", generate_whatsapp_group_link(msg))
 
 with col2:
-    month = st.selectbox("Select Month", list(range(1, 13)), index=today.month - 1)
+    if st.button("📲 Send Monthly Tasks"):
+        msg = "*📋 Monthly Tasks*\n\n"
+        for _, r in monthly_df.iterrows():
+            msg += f"{r['TASK TITLE']} - {r['STATUS']}\n"
 
-# Generate tasks
-tasks = generate_month_tasks(df_master, year, month)
+        st.link_button("Send Monthly", generate_whatsapp_group_link(msg))
 
-if tasks.empty:
-    st.info("No tasks for selected month")
-    st.stop()
-
-tasks["STATUS"] = tasks.apply(get_status, axis=1)
-
-tasks["DUE DATE"] = format_date(tasks["DUE DATE"])
 
 # =========================================================
-# SPLIT TASKS
-# =========================================================
-todo_df = tasks[tasks["STATUS"] != "🟢 Completed"].copy()
-done_df = tasks[tasks["STATUS"] == "🟢 Completed"].copy()
-
-# =========================================================
-# TO DO SECTION
-# =========================================================
-st.subheader("🟣 To Do Tasks")
-
-todo_df["DONE"] = False
-
-edited_todo = st.data_editor(
-    todo_df,
-    use_container_width=True
-)
-
-# =========================================================
-# COMPLETED SECTION
-# =========================================================
-st.subheader("🟢 Completed Tasks")
-
-done_df["UNDO"] = False
-
-edited_done = st.data_editor(
-    done_df,
-    use_container_width=True
-)
-
-# =========================================================
-# HANDLE ACTIONS
-# =========================================================
-if "DONE" in edited_todo.columns:
-    done_rows = edited_todo[edited_todo["DONE"] == True]
-
-    if not done_rows.empty:
-        for task_id in done_rows["TASK ID"]:
-            update_task_status(df_master, task_id, True)
-
-        st.success("Marked as Done")
-        st.rerun()
-
-if "UNDO" in edited_done.columns:
-    undo_rows = edited_done[edited_done["UNDO"] == True]
-
-    if not undo_rows.empty:
-        for task_id in undo_rows["TASK ID"]:
-            update_task_status(df_master, task_id, False)
-
-        st.warning("Marked as Pending")
-        st.rerun()
-
-# =========================================================
-# WHATSAPP ALERT
+# EMPLOYEE PERFORMANCE
 # =========================================================
 st.divider()
-st.subheader("📲 Send Monthly Task Summary")
+st.subheader("📊 Employee Task Performance")
 
-if st.button("🚀 Send Tasks to WhatsApp"):
-    msg = "*📋 Monthly Task Summary*\n\n"
+perf = []
 
-    for _, row in tasks.iterrows():
-        msg += f"{row['DUE DATE']} - {row['TASK TITLE']} ({row['STATUS']})\n"
+for _, row in tasks.iterrows():
+    employees = str(row["ASSIGNED TO"]).split(",")
 
-    st.link_button("Send to Group", generate_whatsapp_group_link(msg))
+    for emp in employees:
+        emp = emp.strip()
+
+        perf.append({
+            "EMPLOYEE": emp,
+            "STATUS": row["STATUS"]
+        })
+
+perf_df = pd.DataFrame(perf)
+
+summary = perf_df.groupby("EMPLOYEE")["STATUS"].value_counts().unstack().fillna(0)
+
+summary = summary.rename(columns={
+    "🟢 Done": "Done",
+    "🔴 Missed": "Missed",
+    "🟣 Pending": "Not Done",
+    "🔴 Overdue": "Not Done"
+})
+
+summary = summary.reset_index()
+
+st.dataframe(summary, use_container_width=True)
