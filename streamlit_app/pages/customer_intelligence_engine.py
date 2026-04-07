@@ -160,39 +160,35 @@ def merge_duplicate_orders(df):
 def generate_whatsapp_link(phone, message):
     if not phone:
         return None
-    encoded_msg = urllib.parse.quote(message, safe='')
-    return f"https://wa.me/91{phone}?text={encoded_msg}"
+
+    # ✅ Force correct WhatsApp formatting
+    message = message.replace("\n", "%0A")
+
+    return f"https://wa.me/91{phone}?text={message}"
 
 def generate_tracked_whatsapp_link(phone, message, customer_name):
     if not phone:
         return None
 
     wa_link = generate_whatsapp_link(phone, message)
-    encoded_wa = urllib.parse.quote(wa_link)
+
+    # ✅ Proper encoding (safe for URLs but preserves formatting)
+    encoded_wa = urllib.parse.quote(wa_link, safe=":/?=&%")
 
     return f"?track=1&cust={urllib.parse.quote(customer_name)}&ph={phone}&redirect={encoded_wa}"
 
 def create_followup_message(name, days, products):
-    message = f"""
-Hi {name},
-
-We noticed it’s been {days} days since your last purchase with us 😊
-
-We truly value your association with *Interio by Godrej Patia*.
-
-Based on your past interest in:
-{products}
-
-We would love to assist you with new arrivals and exclusive offers.
-
-Best Wishes,
-Team Interio by Godrej Patia
-📍 Bhubaneswar
-📞 9937423954
-"""
-
-    # ✅ Clean formatting for WhatsApp
-    return message.strip().replace("\n", "\n")
+    return (
+        f"Hi {name},\n\n"
+        f"We noticed it’s been {days} days since your last purchase with us 😊\n\n"
+        f"We truly value your association with *Interio by Godrej Patia*.\n\n"
+        f"Based on your past interest in:\n{products}\n\n"
+        f"We would love to assist you with new arrivals and exclusive offers.\n\n"
+        f"Best Wishes,\n"
+        f"Team Interio by Godrej Patia\n"
+        f"📍 Bhubaneswar\n"
+        f"📞 9937423954"
+    )
 
 # =========================================================
 # PAGINATION
