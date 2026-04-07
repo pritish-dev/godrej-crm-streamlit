@@ -9,6 +9,11 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from services.sheets import get_df
 from utils.helpers import standardize_columns, fix_duplicate_columns
 
+# =========================================================
+# SESSION STATE (FOLLOW-UP TRACKING)
+# =========================================================
+if "followup_tracker" not in st.session_state:
+    st.session_state["followup_tracker"] = {}
 
 # =========================================================
 # CONFIG
@@ -18,7 +23,6 @@ NAME_COL = "CUSTOMER NAME"
 AMOUNT_COL = "ORDER AMOUNT"
 ITEM_COL = "PRODUCT NAME"
 DATE_COL = "DATE"
-
 
 # =========================================================
 # LOAD DATA
@@ -53,7 +57,6 @@ def load_all_franchise_data():
 
     return pd.concat(all_dfs, ignore_index=True, sort=False)
 
-
 # =========================================================
 # LOAD EMPLOYEE DATA
 # =========================================================
@@ -68,7 +71,6 @@ def load_employee_data():
     emp_phones = set(df["CONTACT NUMBER"].astype(str).str[-10:])
     return emp_names, emp_phones
 
-
 # =========================================================
 # NORMALIZE PHONES
 # =========================================================
@@ -81,7 +83,6 @@ def normalize_phones(phone):
             clean.append(p)
     return sorted(set(clean))
 
-
 def clean_products(x):
     unique_items = list(dict.fromkeys(x.astype(str)))
     top_items = unique_items[:5]
@@ -90,7 +91,6 @@ def clean_products(x):
     if extra > 0:
         text += f" (+{extra} more)"
     return text
-
 
 # =========================================================
 # MERGE DUPLICATE ORDERS
@@ -114,7 +114,6 @@ def merge_duplicate_orders(df):
 
     return merged
 
-
 # =========================================================
 # WHATSAPP HELPERS
 # =========================================================
@@ -122,7 +121,6 @@ def generate_whatsapp_link(phone, message):
     if not phone: return None
     encoded_msg = urllib.parse.quote(message)
     return f"https://wa.me/91{phone}?text={encoded_msg}"
-
 
 def create_followup_message(name, days, products):
     return f"""Hi {name},
@@ -140,6 +138,21 @@ Team Interio by Godrej Patia,
 Bhubaneswar
 Mob: 9937423954"""
 
+# =========================================================
+# WHATSAPP BUTTON
+# =========================================================
+def whatsapp_button(phone, message, customer_name):
+    if not phone:
+        return
+
+    if st.button(f"💬 {phone[-4:]}", key=f"{customer_name}_{phone}"):
+        url = generate_whatsapp_link(phone, message)
+
+        # Update follow-up date
+        st.session_state["followup_tracker"][customer_name] = pd.Timestamp.today().strftime("%d-%B-%Y")
+
+        # Redirect
+        st.markdown(f'<meta http-equiv="refresh" content="0;url={url}">', unsafe_allow_html=True)
 
 # =========================================================
 # PAGINATION
@@ -153,26 +166,20 @@ def paginate_df(df, page_size=10, key="pagination"):
     start = (page - 1) * page_size
     return df.iloc[start : start + page_size]
 
-
 # =========================================================
-# CUSTOMER ANALYSIS (FIXED VERSION)
+# CUSTOMER ANALYSIS
 # =========================================================
 def analyze_customers(df):
     if df.empty:
         return pd.DataFrame(), pd.DataFrame()
 
     df = merge_duplicate_orders(df)
-    
-    # Explode to filter out employees
     df = df.explode("PHONE_LIST")
-    
-    # Ensure PHONE_LIST is string to prevent sorting errors later
     df["PHONE_LIST"] = df["PHONE_LIST"].astype(str).replace('nan', None)
-    
+
     emp_names, emp_phones = load_employee_data()
     df = df[~df[NAME_COL].isin(emp_names) & ~df["PHONE_LIST"].isin(emp_phones)]
 
-    # Fixed the lambda here to drop nulls/nans before sorting
     customer_summary = df.groupby(NAME_COL).agg(
         phone_list=("PHONE_LIST", lambda x: sorted(set(str(v) for v in x if pd.notna(v)))),
         total_orders=(NAME_COL, "count"),
@@ -182,32 +189,18 @@ def analyze_customers(df):
     ).reset_index()
 
     customer_summary = customer_summary.dropna(subset=["last_purchase_date"])
+
     today = pd.Timestamp.today().normalize()
-    
-    # Safety: Ensure last_purchase_date is datetime
     customer_summary["last_purchase_date"] = pd.to_datetime(customer_summary["last_purchase_date"])
     customer_summary["days_since_last_order"] = (today - customer_summary["last_purchase_date"]).dt.days
-    
-    # Format for display AFTER calculating days
     customer_summary["last_purchase_date_str"] = customer_summary["last_purchase_date"].dt.strftime("%d-%B-%Y")
 
-    # Generate links for 1st and 2nd numbers
-    def get_wa_link(row, index):
-        try:
-            plist = row["phone_list"]
-            if len(plist) > index and row["days_since_last_order"] > 90:
-                return generate_whatsapp_link(
-                    plist[index],
-                    create_followup_message(row[NAME_COL], row["days_since_last_order"], row["products_purchased"])
-                )
-        except:
-            pass
-        return None
+    # FOLLOW-UP DATE COLUMN
+    customer_summary["last_followup_date"] = customer_summary[NAME_COL].map(
+        lambda name: st.session_state["followup_tracker"].get(name, "—")
+    )
 
-    customer_summary["WhatsApp"] = customer_summary.apply(lambda r: get_wa_link(r, 0), axis=1)
-    customer_summary["Alt WhatsApp"] = customer_summary.apply(lambda r: get_wa_link(r, 1), axis=1)
-
-    # Convert list to string for display
+    # Display phones
     customer_summary["Contact Numbers"] = customer_summary["phone_list"].apply(lambda x: ", ".join(x))
 
     repeat_buyers = customer_summary[customer_summary["total_orders"] > 1].copy()
@@ -215,32 +208,40 @@ def analyze_customers(df):
 
     return repeat_buyers, mvc
 
-
 # =========================================================
-# UI RENDERER
+# TABLE RENDERER
 # =========================================================
 def render_customer_table(df):
-    st.dataframe(
-        df,
-        column_config={
-            "WhatsApp": st.column_config.LinkColumn(
-                "Primary Contact",
-                display_text="💬 Message 1"
-            ),
-            "Alt WhatsApp": st.column_config.LinkColumn(
-                "Secondary Contact",
-                display_text="📲 Message 2"
-            ),
-            "total_value": st.column_config.NumberColumn("Total Value", format="₹%d"),
-            "phone_list": None  # Hide the raw list
-        },
-        hide_index=True,
-        use_container_width=True
-    )
+    st.markdown("""
+    | Name | Contact | Orders | Value | Last Purchase | Last Follow-up | Action |
+    |------|--------|--------|-------|---------------|----------------|--------|
+    """)
 
+    for i, row in df.iterrows():
+        cols = st.columns([2,2,1,1,2,2,2])
+
+        cols[0].write(row[NAME_COL])
+        cols[1].write(row["Contact Numbers"])
+        cols[2].write(row["total_orders"])
+        cols[3].write(f"₹{int(row['total_value'])}")
+        cols[4].write(row["last_purchase_date_str"])
+        cols[5].write(row["last_followup_date"])
+
+        phones = row["phone_list"]
+        msg = create_followup_message(
+            row[NAME_COL],
+            row["days_since_last_order"],
+            row["products_purchased"]
+        )
+
+        with cols[6]:
+            if len(phones) > 0:
+                whatsapp_button(phones[0], msg, row[NAME_COL])
+            if len(phones) > 1:
+                whatsapp_button(phones[1], msg, row[NAME_COL])
 
 # =========================================================
-# MAIN EXECUTION
+# MAIN
 # =========================================================
 crm_raw = load_all_franchise_data()
 repeat_buyers_df, mvc_df = analyze_customers(crm_raw)
