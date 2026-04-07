@@ -195,10 +195,22 @@ def format_task_whatsapp(df, title):
     for _, row in df.iterrows():
         date = row["DUE DATE"].strftime("%d-%b")
         task = str(row["TASK TITLE"])[:18]
-        assigned = str(row["ASSIGNED TO"])[:10]
+        assigned_list = [x.strip() for x in str(row["ASSIGNED TO"]).split(",")]
+
+        # Limit to 2 names + show count
+        if len(assigned_list) > 2:
+            assigned = f"{assigned_list[0]}, {assigned_list[1]} +{len(assigned_list)-2}"
+        else:
+            assigned = ", ".join(assigned_list)
         status = row["STATUS"]
 
         msg += f"{date} | {task} | {assigned} | {status}\n"
+        msg += (
+            f"DATE📅: {date}\n"
+            f"TASK📝: {task}\n"
+            f"Assigned To👥: {assigned}\n"
+            f"STATUS📌: {status}\n\n"
+)
 
     msg += "--------------------------------------"
 
