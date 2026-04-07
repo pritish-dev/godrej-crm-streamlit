@@ -204,7 +204,6 @@ def format_task_whatsapp(df, title):
             assigned = ", ".join(assigned_list)
         status = row["STATUS"]
 
-        msg += f"{date} | {task} | {assigned} | {status}\n"
         msg += (
             f"DATE📅: {date}\n"
             f"TASK📝: {task}\n"
