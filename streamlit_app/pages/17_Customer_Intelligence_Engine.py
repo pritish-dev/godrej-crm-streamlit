@@ -236,7 +236,7 @@ repeat_buyers_df, mvc_df = analyze_customers(crm_raw)
 st.title("👥 Customer Intelligence Dashboard")
 
 # 🔁 Repeat Buyers
-st.subheader("🔁 Repeat Buyers")
+st.subheader("🔁 Loyal Customers")
 if not repeat_buyers_df.empty:
     paged_repeat = paginate_df(
         repeat_buyers_df.sort_values(by="total_orders", ascending=False), 10, "repeat"
@@ -254,7 +254,7 @@ else:
     st.info("No repeat buyers found")
 
 # 💎 MVC
-st.subheader("💎 Most Valuable Customers (> ₹5L)")
+st.subheader("💎 High-Value Customers (> ₹5L)")
 if not mvc_df.empty:
     paged_mvc = paginate_df(
         mvc_df.sort_values(by="total_value", ascending=False), 10, "mvc"
