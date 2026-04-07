@@ -207,7 +207,7 @@ with col2:
 
 
 # =========================================================
-# EMPLOYEE PERFORMANCE
+# EMPLOYEE PERFORMANCE (FIXED)
 # =========================================================
 st.divider()
 st.subheader("📊 Employee Task Performance")
@@ -220,22 +220,36 @@ for _, row in tasks.iterrows():
     for emp in employees:
         emp = emp.strip()
 
+        # Normalize status into 3 buckets
+        if row["STATUS"] == "🟢 Done":
+            status = "Done"
+        elif row["STATUS"] == "🔴 Missed":
+            status = "Missed"
+        else:
+            status = "Not Done"
+
         perf.append({
             "EMPLOYEE": emp,
-            "STATUS": row["STATUS"]
+            "STATUS": status
         })
 
 perf_df = pd.DataFrame(perf)
 
-summary = perf_df.groupby("EMPLOYEE")["STATUS"].value_counts().unstack().fillna(0)
+# Aggregate safely
+summary = (
+    perf_df
+    .groupby(["EMPLOYEE", "STATUS"])
+    .size()
+    .unstack(fill_value=0)
+    .reset_index()
+)
 
-summary = summary.rename(columns={
-    "🟢 Done": "Done",
-    "🔴 Missed": "Missed",
-    "🟣 Pending": "Not Done",
-    "🔴 Overdue": "Not Done"
-})
+# Ensure all columns exist
+for col in ["Done", "Missed", "Not Done"]:
+    if col not in summary.columns:
+        summary[col] = 0
 
-summary = summary.reset_index()
+# Reorder columns cleanly
+summary = summary[["EMPLOYEE", "Done", "Missed", "Not Done"]]
 
 st.dataframe(summary, use_container_width=True)
