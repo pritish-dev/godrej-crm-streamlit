@@ -173,24 +173,26 @@ def generate_tracked_whatsapp_link(phone, message, customer_name):
     return f"?track=1&cust={urllib.parse.quote(customer_name)}&ph={phone}&redirect={encoded_wa}"
 
 def create_followup_message(name, days, products):
-    return f"""Hi {name},
+    message = f"""
+Hi {name},
 
-We noticed it’s been *{days} days* since your last purchase with us 😊
+We noticed it’s been {days} days since your last purchase with us 😊
 
 We truly value your association with *Interio by Godrej Patia*.
 
-🛍 *Your past interest:*
+Based on your past interest in:
 {products}
 
-✨ We would love to assist you with:
-• New arrivals  
-• Exclusive offers  
+We would love to assist you with new arrivals and exclusive offers.
 
-Best Wishes,  
-*Team Interio by Godrej Patia*  
-📍 Bhubaneswar  
+Best Wishes,
+Team Interio by Godrej Patia
+📍 Bhubaneswar
 📞 9937423954
 """
+
+    # ✅ Clean formatting for WhatsApp
+    return message.strip().replace("\n", "\n")
 
 # =========================================================
 # PAGINATION
