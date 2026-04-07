@@ -9,6 +9,30 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from services.sheets import get_df
 from utils.helpers import standardize_columns, fix_duplicate_columns
 
+# =========================================================
+# FOLLOW-UP TRACKING (SESSION)
+# =========================================================
+if "followup_tracker" not in st.session_state:
+    st.session_state["followup_tracker"] = {}
+
+# =========================================================
+# CAPTURE TRACK CLICK (IMPORTANT)
+# =========================================================
+query_params = st.query_params
+
+if query_params.get("track") == "1":
+    customer = query_params.get("cust")
+
+    if customer:
+        st.session_state["followup_tracker"][customer] = pd.Timestamp.today().strftime("%d-%B-%Y")
+
+    redirect_url = query_params.get("redirect")
+
+    if redirect_url:
+        st.markdown(
+            f'<meta http-equiv="refresh" content="0;url={urllib.parse.unquote(redirect_url)}">',
+            unsafe_allow_html=True
+        )
 
 # =========================================================
 # CONFIG
@@ -18,7 +42,6 @@ NAME_COL = "CUSTOMER NAME"
 AMOUNT_COL = "ORDER AMOUNT"
 ITEM_COL = "PRODUCT NAME"
 DATE_COL = "DATE"
-
 
 # =========================================================
 # LOAD DATA
@@ -53,7 +76,6 @@ def load_all_franchise_data():
 
     return pd.concat(all_dfs, ignore_index=True, sort=False)
 
-
 # =========================================================
 # LOAD EMPLOYEE DATA
 # =========================================================
@@ -68,7 +90,6 @@ def load_employee_data():
     emp_phones = set(df["CONTACT NUMBER"].astype(str).str[-10:])
     return emp_names, emp_phones
 
-
 # =========================================================
 # NORMALIZE PHONES
 # =========================================================
@@ -81,7 +102,6 @@ def normalize_phones(phone):
             clean.append(p)
     return sorted(set(clean))
 
-
 def clean_products(x):
     unique_items = list(dict.fromkeys(x.astype(str)))
     top_items = unique_items[:5]
@@ -90,7 +110,6 @@ def clean_products(x):
     if extra > 0:
         text += f" (+{extra} more)"
     return text
-
 
 # =========================================================
 # MERGE DUPLICATE ORDERS
@@ -114,15 +133,23 @@ def merge_duplicate_orders(df):
 
     return merged
 
-
 # =========================================================
 # WHATSAPP HELPERS
 # =========================================================
 def generate_whatsapp_link(phone, message):
-    if not phone: return None
+    if not phone:
+        return None
     encoded_msg = urllib.parse.quote(message)
     return f"https://wa.me/91{phone}?text={encoded_msg}"
 
+def generate_tracked_whatsapp_link(phone, message, customer_name):
+    if not phone:
+        return None
+
+    wa_link = generate_whatsapp_link(phone, message)
+    encoded_wa = urllib.parse.quote(wa_link)
+
+    return f"?track=1&cust={urllib.parse.quote(customer_name)}&ph={phone}&redirect={encoded_wa}"
 
 def create_followup_message(name, days, products):
     return f"""Hi {name},
@@ -140,39 +167,33 @@ Team Interio by Godrej Patia,
 Bhubaneswar
 Mob: 9937423954"""
 
-
 # =========================================================
 # PAGINATION
 # =========================================================
 def paginate_df(df, page_size=10, key="pagination"):
     total_rows = len(df)
     total_pages = (total_rows // page_size) + (1 if total_rows % page_size else 0)
-    if total_pages == 0: return df
+    if total_pages == 0:
+        return df
 
     page = st.number_input(f"Page ({key})", 1, total_pages, 1, key=f"input_{key}")
     start = (page - 1) * page_size
     return df.iloc[start : start + page_size]
 
-
 # =========================================================
-# CUSTOMER ANALYSIS (FIXED VERSION)
+# CUSTOMER ANALYSIS
 # =========================================================
 def analyze_customers(df):
     if df.empty:
         return pd.DataFrame(), pd.DataFrame()
 
     df = merge_duplicate_orders(df)
-    
-    # Explode to filter out employees
     df = df.explode("PHONE_LIST")
-    
-    # Ensure PHONE_LIST is string to prevent sorting errors later
     df["PHONE_LIST"] = df["PHONE_LIST"].astype(str).replace('nan', None)
-    
+
     emp_names, emp_phones = load_employee_data()
     df = df[~df[NAME_COL].isin(emp_names) & ~df["PHONE_LIST"].isin(emp_phones)]
 
-    # Fixed the lambda here to drop nulls/nans before sorting
     customer_summary = df.groupby(NAME_COL).agg(
         phone_list=("PHONE_LIST", lambda x: sorted(set(str(v) for v in x if pd.notna(v)))),
         total_orders=(NAME_COL, "count"),
@@ -182,23 +203,30 @@ def analyze_customers(df):
     ).reset_index()
 
     customer_summary = customer_summary.dropna(subset=["last_purchase_date"])
+
     today = pd.Timestamp.today().normalize()
-    
-    # Safety: Ensure last_purchase_date is datetime
     customer_summary["last_purchase_date"] = pd.to_datetime(customer_summary["last_purchase_date"])
     customer_summary["days_since_last_order"] = (today - customer_summary["last_purchase_date"]).dt.days
-    
-    # Format for display AFTER calculating days
     customer_summary["last_purchase_date_str"] = customer_summary["last_purchase_date"].dt.strftime("%d-%B-%Y")
 
-    # Generate links for 1st and 2nd numbers
+    # FOLLOW-UP COLUMN
+    customer_summary["last_followup_date"] = customer_summary[NAME_COL].map(
+        lambda name: st.session_state["followup_tracker"].get(name, "—")
+    )
+
+    # WhatsApp links (tracked)
     def get_wa_link(row, index):
         try:
             plist = row["phone_list"]
             if len(plist) > index and row["days_since_last_order"] > 90:
-                return generate_whatsapp_link(
+                return generate_tracked_whatsapp_link(
                     plist[index],
-                    create_followup_message(row[NAME_COL], row["days_since_last_order"], row["products_purchased"])
+                    create_followup_message(
+                        row[NAME_COL],
+                        row["days_since_last_order"],
+                        row["products_purchased"]
+                    ),
+                    row[NAME_COL]
                 )
         except:
             pass
@@ -207,7 +235,6 @@ def analyze_customers(df):
     customer_summary["WhatsApp"] = customer_summary.apply(lambda r: get_wa_link(r, 0), axis=1)
     customer_summary["Alt WhatsApp"] = customer_summary.apply(lambda r: get_wa_link(r, 1), axis=1)
 
-    # Convert list to string for display
     customer_summary["Contact Numbers"] = customer_summary["phone_list"].apply(lambda x: ", ".join(x))
 
     repeat_buyers = customer_summary[customer_summary["total_orders"] > 1].copy()
@@ -215,9 +242,8 @@ def analyze_customers(df):
 
     return repeat_buyers, mvc
 
-
 # =========================================================
-# UI RENDERER
+# UI TABLE
 # =========================================================
 def render_customer_table(df):
     st.dataframe(
@@ -232,15 +258,15 @@ def render_customer_table(df):
                 display_text="📲 Message 2"
             ),
             "total_value": st.column_config.NumberColumn("Total Value", format="₹%d"),
-            "phone_list": None  # Hide the raw list
+            "last_followup_date": st.column_config.TextColumn("Last Follow-up"),
+            "phone_list": None
         },
         hide_index=True,
         use_container_width=True
     )
 
-
 # =========================================================
-# MAIN EXECUTION
+# MAIN
 # =========================================================
 crm_raw = load_all_franchise_data()
 repeat_buyers_df, mvc_df = analyze_customers(crm_raw)
