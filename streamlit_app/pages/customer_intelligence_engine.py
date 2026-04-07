@@ -1,7 +1,6 @@
 import sys
 import os
 import urllib.parse
-import json
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
@@ -12,7 +11,7 @@ from services.sheets import get_df, update_followup
 from utils.helpers import standardize_columns, fix_duplicate_columns
 
 # =========================================================
-# TRACK CLICK + REDIRECT (FIXED)
+# TRACK CLICK + REDIRECT (FINAL FIX)
 # =========================================================
 query_params = st.query_params
 
@@ -26,19 +25,18 @@ if query_params.get("track") == "1":
     redirect_url = query_params.get("redirect")
 
     if redirect_url:
-        decoded_url = urllib.parse.unquote(redirect_url)
-
+        # ✅ NO decoding, NO re-encoding
         components.html(
             f"""
             <script>
-                window.location.replace("{decoded_url}");
+                window.location.replace("{redirect_url}");
             </script>
             """,
             height=0
         )
 
         st.markdown("Redirecting to WhatsApp... If not, click below 👇")
-        st.link_button("Open WhatsApp", decoded_url)
+        st.link_button("Open WhatsApp", redirect_url)
 
 # =========================================================
 # FOLLOW-UP DATA
@@ -157,7 +155,7 @@ def merge_duplicate_orders(df):
 def create_followup_message(name, days, products):
     return (
         f"Hi {name},\n\n"
-        f"We noticed it’s been {days} days since your last purchase with us 😊\n\n"
+        f"We noticed it’s been {int(days)} days since your last purchase with us 😊\n\n"
         f"We truly value your association with *Interio by Godrej Patia*.\n\n"
         f"Based on your past interest in:\n{products}\n\n"
         f"We would love to assist you with new arrivals and exclusive offers.\n\n"
@@ -180,7 +178,8 @@ def generate_tracked_whatsapp_link(phone, message, customer_name):
 
     wa_link = generate_whatsapp_link(phone, message)
 
-    return f"?track=1&cust={urllib.parse.quote(customer_name)}&ph={phone}&redirect={urllib.parse.quote(wa_link, safe='')}"
+    # ✅ NO double encoding
+    return f"?track=1&cust={urllib.parse.quote(customer_name)}&ph={phone}&redirect={wa_link}"
 
 # =========================================================
 # PAGINATION
@@ -249,7 +248,7 @@ def analyze_customers(df):
     return repeat_buyers, mvc
 
 # =========================================================
-# TABLE UI (UNCHANGED)
+# TABLE UI
 # =========================================================
 def render_customer_table(df):
     st.dataframe(
