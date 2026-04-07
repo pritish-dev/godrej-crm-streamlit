@@ -3,6 +3,9 @@ import re
 from datetime import datetime, date
 import pandas as pd
 
+from google.oauth2.service_account import Credentials
+import gspread
+
 try:
     import streamlit as st
 except Exception:
@@ -265,20 +268,17 @@ def upsert_target_record(sheet_name: str, unique_fields: dict, new_data: dict):
 
 
 def write_df(sheet_name, df):
-    scope = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
+    SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-    creds = Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"],
-        scopes=scope
-    )
+    try:
+        CREDS = Credentials.from_service_account_info(st.secrets["google"], scopes=SCOPES)
+    except Exception:
+        CREDS = Credentials.from_service_account_file("config/credentials.json", scopes=SCOPES)
 
-    client = gspread.authorize(creds)
+    gc = gspread.authorize(CREDS)
 
-    # 👉 Open your Google Sheet (same as get_df uses)
-    sheet = client.open_by_key(st.secrets["gsheet_key"])
+    SPREADSHEET_ID = "1wFpK-WokcZB6k1vzG7B6JO5TdGHrUwdgvVm_-UQse54"
+    sheet = gc.open_by_key(SPREADSHEET_ID)
 
     try:
         worksheet = sheet.worksheet(sheet_name)
