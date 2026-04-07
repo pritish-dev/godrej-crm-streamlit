@@ -13,7 +13,7 @@ from services.automation import generate_whatsapp_group_link
 st.set_page_config(layout="wide", page_title="Sales Team Tasks")
 
 # =========================================================
-# LOAD DATA
+# LOAD DATA (FIXED)
 # =========================================================
 @st.cache_data(ttl=60)
 def load_tasks():
@@ -24,31 +24,37 @@ def load_tasks():
 
     df.columns = [str(c).strip().upper() for c in df.columns]
 
-    # ✅ Map your column to expected
+    # Map your existing column
     if "TASK DATE" in df.columns:
         df["START DATE"] = df["TASK DATE"]
 
-    # Ensure required columns exist
+    # Ensure required columns
     required_cols = [
-        "TASK TITLE",
-        "TASK TYPE",
-        "ASSIGNED TO",
-        "START DATE",
-        "STATUS",
-        "FREQUENCY",
-        "LAST COMPLETED DATE",
-        "REMARKS"
+        "TASK TITLE", "TASK TYPE", "ASSIGNED TO",
+        "START DATE", "STATUS", "FREQUENCY",
+        "LAST COMPLETED DATE", "REMARKS"
     ]
 
     for col in required_cols:
         if col not in df.columns:
             df[col] = ""
 
-    # Convert dates
-    df["START DATE"] = pd.to_datetime(df["START DATE"], errors="coerce")
-    df["LAST COMPLETED DATE"] = pd.to_datetime(df["LAST COMPLETED DATE"], errors="coerce")
+    # ✅ FIX: Create TASK ID if missing
+    if "TASK ID" not in df.columns:
+        df["TASK ID"] = df.index.astype(str)
+
+    # Date parsing
+    df["START DATE"] = pd.to_datetime(df["START DATE"], dayfirst=True, errors="coerce")
+    df["LAST COMPLETED DATE"] = pd.to_datetime(df["LAST COMPLETED DATE"], dayfirst=True, errors="coerce")
 
     return df
+
+
+# =========================================================
+# DATE FORMATTER
+# =========================================================
+def format_date(series):
+    return pd.to_datetime(series, errors="coerce").dt.strftime("%d-%B-%Y")
 
 
 # =========================================================
@@ -56,7 +62,7 @@ def load_tasks():
 # =========================================================
 def generate_today_tasks(df):
     today = datetime.now().date()
-    task_rows = []
+    rows = []
 
     for _, row in df.iterrows():
         freq = str(row.get("FREQUENCY", "")).lower()
@@ -92,20 +98,20 @@ def generate_today_tasks(df):
             continue
 
         new_row = row.copy()
-        new_row["DUE DATE"] = due
-        new_row["STATUS"] = "Pending"
-        task_rows.append(new_row)
+        new_row["DUE DATE"] = pd.to_datetime(due)
+        rows.append(new_row)
 
-    return pd.DataFrame(task_rows)
+    return pd.DataFrame(rows)
 
 
 # =========================================================
-# UPDATE TASK STATUS
+# MARK TASK DONE
 # =========================================================
 def mark_task_done(df, task_id):
-    today = datetime.now().strftime("%d-%m-%Y")
+    today = datetime.now().strftime("%d-%B-%Y")
 
     df.loc[df["TASK ID"] == task_id, "LAST COMPLETED DATE"] = today
+
     write_df("SALES_TEAM_TASK", df)
     st.cache_data.clear()
 
@@ -119,24 +125,28 @@ def generate_task_message(df):
     for _, row in df.iterrows():
         msg += f"📌 {row['TASK TITLE']} | {row['ASSIGNED TO']}\n"
 
-    msg += "\nPlease update status."
+    msg += "\nPlease update once done."
     return msg
 
 
 # =========================================================
-# COLOR LOGIC
+# ROW COLOR LOGIC
 # =========================================================
-def get_status(row):
+def highlight_row(row):
     today = datetime.now().date()
 
-    if pd.notnull(row["LAST COMPLETED DATE"]):
-        if row["LAST COMPLETED DATE"].date() == today:
-            return "🟢 Done"
+    due_date = row["DUE DATE"]
+    last_done = row["LAST COMPLETED DATE"]
 
-    if row["DUE DATE"] < today:
-        return "🔴 Overdue"
+    if pd.notnull(last_done):
+        if pd.to_datetime(last_done).date() == today:
+            return ["background-color: #d4edda"] * len(row)  # GREEN
 
-    return "🟣 Pending"
+    if pd.notnull(due_date):
+        if pd.to_datetime(due_date).date() < today:
+            return ["background-color: #f8d7da"] * len(row)  # RED
+
+    return ["background-color: #e6d6ff"] * len(row)  # PURPLE
 
 
 # =========================================================
@@ -157,13 +167,9 @@ if tasks_today.empty:
     st.info("No tasks for today")
     st.stop()
 
-# STATUS COLUMN
-tasks_today["STATUS VIEW"] = tasks_today.apply(get_status, axis=1)
-
-# DISPLAY
+# Format display
 display_df = tasks_today.copy()
-
-display_df["DUE DATE"] = pd.to_datetime(display_df["DUE DATE"]).dt.strftime("%d-%B-%Y")
+display_df["DUE DATE"] = format_date(display_df["DUE DATE"])
 
 # =========================================================
 # WHATSAPP ALERT
@@ -185,24 +191,33 @@ display_df["DONE"] = False
 edited_df = st.data_editor(
     display_df,
     use_container_width=True,
-    disabled=["TASK ID", "TASK TITLE", "ASSIGNED TO", "STATUS VIEW"],
+    disabled=["TASK ID", "TASK TITLE", "ASSIGNED TO"]
 )
 
 # =========================================================
-# AUTO UPDATE ON CHECK
+# HANDLE DONE ACTION
 # =========================================================
-done_tasks = edited_df[edited_df["DONE"] == True]
+if "TASK ID" in edited_df.columns:
+    done_tasks = edited_df[edited_df["DONE"] == True]
 
-if not done_tasks.empty:
-    for task_id in done_tasks["TASK ID"]:
-        mark_task_done(df_master, task_id)
+    if not done_tasks.empty:
+        for task_id in done_tasks["TASK ID"]:
+            mark_task_done(df_master, task_id)
 
-    st.success("Tasks updated successfully!")
-    st.rerun()
+        st.success("Tasks updated successfully!")
+        st.rerun()
 
 
 # =========================================================
-# ASSIGN TASK UI
+# APPLY FULL ROW COLOR
+# =========================================================
+styled_df = tasks_today.style.apply(highlight_row, axis=1)
+
+st.dataframe(styled_df, use_container_width=True)
+
+
+# =========================================================
+# CREATE TASK UI
 # =========================================================
 st.divider()
 st.subheader("➕ Create New Task")
@@ -210,11 +225,8 @@ st.subheader("➕ Create New Task")
 with st.form("task_form"):
 
     task_title = st.text_input("Task Title")
-
     task_type = st.selectbox("Task Type", ["Daily", "Weekly", "Monthly"])
-
     assigned_to = st.text_input("Assign To (comma separated)")
-
     start_date = st.date_input("Start Date")
 
     submitted = st.form_submit_button("Create Task")
@@ -225,7 +237,7 @@ with st.form("task_form"):
             "TASK TITLE": [task_title],
             "TASK TYPE": [task_type],
             "ASSIGNED TO": [assigned_to],
-            "START DATE": [start_date.strftime("%d-%m-%Y")],
+            "TASK DATE": [start_date.strftime("%d-%B-%Y")],
             "STATUS": ["Pending"],
             "FREQUENCY": [task_type],
             "LAST COMPLETED DATE": [""],
