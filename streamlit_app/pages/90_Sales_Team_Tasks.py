@@ -182,26 +182,58 @@ render_table(daily_df, "🟣 Daily Tasks")
 render_table(weekly_df, "📅 Weekly Tasks")
 render_table(monthly_df, "🗓️ Monthly Tasks")
 
-# =========================================================
-# WHATSAPP
-# =========================================================
+
+def format_task_whatsapp(df, title):
+    if df.empty:
+        return f"*{title}*\n\nNo tasks 🎉"
+
+    msg = f"*{title}*\n\n"
+
+    msg += "📅 Date | Task | Assigned | Status\n"
+    msg += "--------------------------------------\n"
+
+    for _, row in df.iterrows():
+        date = row["DUE DATE"].strftime("%d-%b")
+        task = str(row["TASK TITLE"])[:18]
+        assigned = str(row["ASSIGNED TO"])[:10]
+        status = row["STATUS"]
+
+        msg += f"{date} | {task} | {assigned} | {status}\n"
+
+    msg += "--------------------------------------"
+
+    return msg
 st.divider()
 
-col1, col2 = st.columns(2)
+today = datetime.now().date()
+
+# ✅ DAILY = ONLY TODAY
+today_tasks = daily_df[
+    daily_df["DUE DATE"].dt.date == today
+]
+
+# =========================================================
+# BUTTONS
+# =========================================================
+col1, col2, col3 = st.columns(3)
 
 with col1:
     if st.button("📲 Send Daily Tasks"):
-        msg = "*📋 Daily Tasks*\n\n"
-        for _, r in daily_df.iterrows():
-            msg += f"{r['TASK TITLE']} - {r['STATUS']}\n"
+        msg = format_task_whatsapp(today_tasks, "📋 Today's Tasks")
 
         st.link_button("Send Daily", generate_whatsapp_group_link(msg))
 
+
 with col2:
+    if st.button("📲 Send Weekly Tasks"):
+        msg = format_task_whatsapp(weekly_df, "📅 Weekly Tasks")
+
+        st.link_button("Send Weekly", generate_whatsapp_group_link(msg))
+
+
+with col3:
     if st.button("📲 Send Monthly Tasks"):
-        msg = "*📋 Monthly Tasks*\n\n"
-        for _, r in monthly_df.iterrows():
-            msg += f"{r['TASK TITLE']} - {r['STATUS']}\n"
+        msg = format_task_whatsapp(monthly_df, "🗓️ Monthly Tasks")
 
         st.link_button("Send Monthly", generate_whatsapp_group_link(msg))
 
