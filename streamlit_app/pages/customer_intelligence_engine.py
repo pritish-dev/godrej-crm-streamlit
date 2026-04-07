@@ -160,7 +160,7 @@ def merge_duplicate_orders(df):
 def generate_whatsapp_link(phone, message):
     if not phone:
         return None
-    encoded_msg = urllib.parse.quote(message)
+    encoded_msg = urllib.parse.quote(message, safe='')
     return f"https://wa.me/91{phone}?text={encoded_msg}"
 
 def generate_tracked_whatsapp_link(phone, message, customer_name):
@@ -175,18 +175,22 @@ def generate_tracked_whatsapp_link(phone, message, customer_name):
 def create_followup_message(name, days, products):
     return f"""Hi {name},
 
-We noticed it’s been {days} days since your last purchase with us 😊
+We noticed it’s been *{days} days* since your last purchase with us 😊
 
 We truly value your association with *Interio by Godrej Patia*.
 
-Based on your past interest in: {products}
+🛍 *Your past interest:*
+{products}
 
-We would love to assist you with new arrivals and exclusive offers.
+✨ We would love to assist you with:
+• New arrivals  
+• Exclusive offers  
 
-Best Wishes,
-Team Interio by Godrej Patia,
-Bhubaneswar
-Mob: 9937423954"""
+Best Wishes,  
+*Team Interio by Godrej Patia*  
+📍 Bhubaneswar  
+📞 9937423954
+"""
 
 # =========================================================
 # PAGINATION
