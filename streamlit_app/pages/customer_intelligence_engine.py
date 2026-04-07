@@ -121,7 +121,7 @@ def merge_duplicate_orders(df):
     return merged
 
 # =========================================================
-# WHATSAPP (FIXED)
+# WHATSAPP (FIXED - DIRECT)
 # =========================================================
 def create_followup_message(name, days, products):
     return (
@@ -232,34 +232,38 @@ repeat_buyers_df, mvc_df = analyze_customers(crm_raw)
 
 st.title("👥 Customer Intelligence Dashboard")
 
-# REPEAT BUYERS
+# 🔁 Repeat Buyers
 st.subheader("🔁 Repeat Buyers")
 if not repeat_buyers_df.empty:
-    paged_repeat = paginate_df(repeat_buyers_df.sort_values(by="total_orders", ascending=False), 10, "repeat")
+    paged_repeat = paginate_df(
+        repeat_buyers_df.sort_values(by="total_orders", ascending=False), 10, "repeat"
+    )
     render_customer_table(paged_repeat)
 
+    # ✅ Manual follow-up
     st.markdown("### ✅ Mark Follow-up Done")
-    selected_customer = st.selectbox("Select Customer", paged_repeat[NAME_COL].unique(), key="repeat_followup")
+    selected_customer = st.selectbox("Select Customer", paged_repeat[NAME_COL], key="r")
+    if st.button("✔ Mark as Followed Up", key="rb"):
+        update_followup(selected_customer, pd.Timestamp.today().strftime("%d-%B-%Y"))
+        st.success(f"Updated {selected_customer}")
 
-    if st.button("✔ Mark as Followed Up", key="repeat_btn"):
-        today = pd.Timestamp.today().strftime("%d-%B-%Y")
-        update_followup(selected_customer, today)
-        st.success(f"Follow-up updated for {selected_customer}")
 else:
     st.info("No repeat buyers found")
 
-# MVC
+# 💎 MVC
 st.subheader("💎 Most Valuable Customers (> ₹5L)")
 if not mvc_df.empty:
-    paged_mvc = paginate_df(mvc_df.sort_values(by="total_value", ascending=False), 10, "mvc")
+    paged_mvc = paginate_df(
+        mvc_df.sort_values(by="total_value", ascending=False), 10, "mvc"
+    )
     render_customer_table(paged_mvc)
 
+    # ✅ Manual follow-up
     st.markdown("### ✅ Mark Follow-up Done")
-    selected_customer_mvc = st.selectbox("Select Customer", paged_mvc[NAME_COL].unique(), key="mvc_followup")
+    selected_customer_mvc = st.selectbox("Select Customer", paged_mvc[NAME_COL], key="m")
+    if st.button("✔ Mark as Followed Up", key="mb"):
+        update_followup(selected_customer_mvc, pd.Timestamp.today().strftime("%d-%B-%Y"))
+        st.success(f"Updated {selected_customer_mvc}")
 
-    if st.button("✔ Mark as Followed Up", key="mvc_btn"):
-        today = pd.Timestamp.today().strftime("%d-%B-%Y")
-        update_followup(selected_customer_mvc, today)
-        st.success(f"Follow-up updated for {selected_customer_mvc}")
 else:
     st.info("No high value customers found")
