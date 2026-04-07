@@ -4,6 +4,8 @@ import urllib.parse
 import pandas as pd
 import streamlit as st
 
+st.set_page_config(layout="wide") 
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from services.sheets import get_df, update_followup
@@ -221,7 +223,8 @@ def render_customer_table(df):
             "phone_list": None
         },
         hide_index=True,
-        use_container_width=True
+        use_container_width=True,
+        height=500
     )
 
 # =========================================================
