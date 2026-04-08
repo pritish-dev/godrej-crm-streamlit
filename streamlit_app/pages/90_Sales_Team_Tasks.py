@@ -27,31 +27,91 @@ def parse_date(x):
 
 
 # =========================================================
-# LOAD DATA
+# LOAD TASKS
 # =========================================================
 @st.cache_data(ttl=60)
 def load_tasks():
     df = get_df("SALES_TEAM_TASK")
+
     if df is None or df.empty:
         return pd.DataFrame()
 
-    df.columns = [c.strip().upper() for c in df.columns]
+    df.columns = [str(c).strip().upper() for c in df.columns]
+
     df["START DATE"] = df["TASK DATE"].apply(parse_date)
     df["LAST COMPLETED DATE"] = df["LAST COMPLETED DATE"].apply(parse_date)
 
     return df
 
 
+# =========================================================
+# LOAD SALES TEAM
+# =========================================================
 @st.cache_data(ttl=60)
 def load_sales_team():
     df = get_df("Sales Team")
+
     if df is None or df.empty:
         return pd.DataFrame()
 
-    df.columns = [c.strip().upper() for c in df.columns]
+    df.columns = [str(c).strip().upper() for c in df.columns]
     df.rename(columns={"NAME": "EMPLOYEE"}, inplace=True)
 
     return df[df["ROLE"].str.upper() == "SALES"]
+
+
+# =========================================================
+# AUTO LOG SYSTEM (FINAL)
+# =========================================================
+def auto_log_tasks(tasks):
+    log_df = get_df("TASK_LOGS")
+
+    if log_df is None or log_df.empty:
+        log_df = pd.DataFrame(columns=["TASK ID", "EMPLOYEE", "DATE", "STATUS"])
+    else:
+        log_df.columns = [str(c).strip().upper() for c in log_df.columns]
+
+    today_str = datetime.now().strftime("%d-%m-%Y")
+
+    new_logs = []
+
+    for _, row in tasks.iterrows():
+
+        # Skip future tasks
+        if row["DUE DATE"].date() > datetime.now().date():
+            continue
+
+        for emp in str(row["ASSIGNED TO"]).split(","):
+            emp = emp.strip()
+
+            # Avoid duplicate logs
+            exists = (
+                (log_df["TASK ID"] == row["TASK ID"]) &
+                (log_df["EMPLOYEE"] == emp) &
+                (log_df["DATE"] == today_str)
+            )
+
+            if exists.any():
+                continue
+
+            # Map status
+            if row["STATUS"] == "🟢 Done":
+                status = "Done"
+            elif row["STATUS"] in ["🔴 Overdue", "🔴 Missed"]:
+                status = "Overdue"
+            else:
+                status = "Pending"
+
+            new_logs.append({
+                "TASK ID": row["TASK ID"],
+                "EMPLOYEE": emp,
+                "DATE": today_str,
+                "STATUS": status
+            })
+
+    if new_logs:
+        log_df = pd.concat([log_df, pd.DataFrame(new_logs)], ignore_index=True)
+        write_df("TASK_LOGS", log_df)
 
 
 # =========================================================
@@ -68,7 +128,9 @@ def generate_tasks(df, year, month):
             continue
 
         if freq == "adhoc":
-            rows.append({**row, "DUE DATE": start})
+            new_row = row.copy()
+            new_row["DUE DATE"] = start
+            rows.append(new_row)
             continue
 
         for day in range(1, 32):
@@ -85,8 +147,12 @@ def generate_tasks(df, year, month):
             elif freq == "monthly":
                 if current.day != start.day:
                     continue
+            else:
+                continue
 
-            rows.append({**row, "DUE DATE": current})
+            new_row = row.copy()
+            new_row["DUE DATE"] = current
+            rows.append(new_row)
 
     return pd.DataFrame(rows)
 
@@ -109,122 +175,81 @@ def get_status(row):
 
 
 # =========================================================
-# AUTO LOG SYSTEM (NEW)
-# =========================================================
-def auto_log_tasks(tasks):
-    log_df = get_df("TASK_LOGS")
-
-    if log_df is None or log_df.empty:
-        log_df = pd.DataFrame(columns=["TASK ID", "EMPLOYEE", "DATE", "STATUS"])
-    else:
-        log_df.columns = [c.strip().upper() for c in log_df.columns]
-
-    today_str = datetime.now().strftime("%d-%m-%Y")
-
-    new_logs = []
-
-    for _, row in tasks.iterrows():
-        if row["DUE DATE"].date() > datetime.now().date():
-            continue
-
-        for emp in str(row["ASSIGNED TO"]).split(","):
-            emp = emp.strip()
-
-            exists = (
-                (log_df["TASK ID"] == row["TASK ID"]) &
-                (log_df["EMPLOYEE"] == emp) &
-                (log_df["DATE"] == today_str)
-            )
-
-            if exists.any():
-                continue
-
-            if row["STATUS"] == "🟢 Done":
-                status = "Done"
-            elif row["STATUS"] in ["🔴 Overdue", "🔴 Missed"]:
-                status = "Overdue"
-            else:
-                status = "Pending"
-
-            new_logs.append({
-                "TASK ID": row["TASK ID"],
-                "EMPLOYEE": emp,
-                "DATE": today_str,
-                "STATUS": status
-            })
-
-    if new_logs:
-        log_df = pd.concat([log_df, pd.DataFrame(new_logs)], ignore_index=True)
-        write_df("TASK_LOGS", log_df)
-
-
-# =========================================================
 # UPDATE TASK
 # =========================================================
 def update_task(task_id, assigned_to):
     today_str = datetime.now().strftime("%d-%m-%Y")
 
     df = get_df("SALES_TEAM_TASK")
-    df.columns = [c.strip().upper() for c in df.columns]
+    df.columns = [str(c).strip().upper() for c in df.columns]
 
     df.loc[df["TASK ID"] == task_id, "LAST COMPLETED DATE"] = today_str
     write_df("SALES_TEAM_TASK", df)
 
+    st.cache_data.clear()
+
 
 # =========================================================
-# UI START
+# UI
 # =========================================================
 st.title("📋 Sales Team Task Dashboard")
 
 df_master = load_tasks()
-team_df = load_sales_team()
 
-today = datetime.now()
-
-# =========================================================
 # CREATE TASK
-# =========================================================
-with st.expander("➕ Create Task"):
-    with st.form("task"):
-        t1, t2 = st.columns(2)
-        title = t1.text_input("Task Title")
-        assigned = t2.text_input("Assigned To")
+with st.expander("➕ Create New Task"):
+    with st.form("new_task"):
+        c1, c2 = st.columns(2)
+        title = c1.text_input("Task Title")
+        assigned = c2.text_input("Assigned To")
 
-        t3, t4 = st.columns(2)
-        freq = t3.selectbox("Frequency", ["Daily", "Weekly", "Monthly", "ADHOC"])
-        date = t4.date_input("Date", today)
+        c3, c4 = st.columns(2)
+        freq = c3.selectbox("Frequency", ["Daily", "Weekly", "Monthly", "ADHOC"])
+        date = c4.date_input("Task Date", datetime.now())
 
-        if st.form_submit_button("Add"):
-            df = get_df("SALES_TEAM_TASK")
-            next_id = len(df) + 1 if df is not None else 1
+        if st.form_submit_button("Add Task"):
+            if title and assigned:
+                df_latest = get_df("SALES_TEAM_TASK")
 
-            new = {
-                "TASK ID": str(next_id),
-                "TASK TITLE": title,
-                "FREQUENCY": freq,
-                "ASSIGNED TO": assigned,
-                "TASK DATE": date.strftime("%d-%m-%Y"),
-                "LAST COMPLETED DATE": ""
-            }
+                if df_latest is None or df_latest.empty:
+                    df_latest = pd.DataFrame()
+                    next_id = 1
+                else:
+                    df_latest.columns = [str(c).strip().upper() for c in df_latest.columns]
+                    next_id = len(df_latest) + 1
 
-            df = pd.concat([df, pd.DataFrame([new])], ignore_index=True)
-            write_df("SALES_TEAM_TASK", df)
-            st.success("Added")
-            st.cache_data.clear()
-            st.rerun()
+                new_row = {
+                    "TASK ID": str(next_id),
+                    "TASK TITLE": title,
+                    "FREQUENCY": freq,
+                    "ASSIGNED TO": assigned,
+                    "TASK DATE": date.strftime("%d-%m-%Y"),
+                    "LAST COMPLETED DATE": ""
+                }
+
+                df_latest = pd.concat([df_latest, pd.DataFrame([new_row])], ignore_index=True)
+                write_df("SALES_TEAM_TASK", df_latest)
+
+                st.success("Task added successfully")
+                st.cache_data.clear()
+                st.rerun()
 
 
 # =========================================================
 # FILTER
 # =========================================================
-year = st.selectbox("Year", [2024, 2025, 2026, 2027], index=2)
-month = st.selectbox("Month", list(range(1, 13)), index=today.month - 1)
+today = datetime.now()
+
+c1, c2 = st.columns(2)
+year = c1.selectbox("Year", [2024, 2025, 2026, 2027], index=2)
+month = c2.selectbox("Month", list(range(1, 13)), index=today.month - 1)
 
 tasks = generate_tasks(df_master, year, month)
+
 tasks["STATUS"] = tasks.apply(get_status, axis=1)
 tasks["DUE DATE"] = pd.to_datetime(tasks["DUE DATE"])
 
-# 🔥 AUTO LOG
+# 🔥 AUTO LOGGING (MAIN FIX)
 auto_log_tasks(tasks)
 
 
@@ -264,7 +289,10 @@ def render_table(df, title):
     df_display["DONE"] = False
     df_display["DUE DATE"] = df_display["DUE DATE"].dt.strftime("%d-%b")
 
-    edited = st.data_editor(df_display[["DONE","TASK TITLE","ASSIGNED TO","DUE DATE","STATUS","TASK ID"]])
+    edited = st.data_editor(
+        df_display[["DONE", "TASK TITLE", "ASSIGNED TO", "DUE DATE", "STATUS", "TASK ID"]],
+        use_container_width=True
+    )
 
     done_rows = edited[edited["DONE"] == True]
 
@@ -277,45 +305,83 @@ def render_table(df, title):
     return df
 
 
-d1 = render_table(daily_df, "🟣 Daily")
-d2 = render_table(weekly_df, "📅 Weekly")
-d3 = render_table(monthly_df, "🗓️ Monthly")
+d1 = render_table(daily_df, "🟣 Daily & Adhoc Tasks")
+d2 = render_table(weekly_df, "📅 Weekly Tasks")
+d3 = render_table(monthly_df, "🗓️ Monthly Tasks")
 
 
 # =========================================================
-# MANAGER ALERTS
+# WHATSAPP
+# =========================================================
+def format_task_whatsapp(df, title):
+    if df.empty:
+        return f"*{title}*\n\nNo tasks 🎉"
+
+    msg = f"*{title}*\n\n"
+    msg += "📅 Date | Task | Assigned | Status\n"
+    msg += "--------------------------------------\n"
+
+    for _, row in df.iterrows():
+        msg += (
+            f"DATE📅: {row['DUE DATE'].strftime('%d-%b')}\n"
+            f"TASK📝: {row['TASK TITLE']}\n"
+            f"Assigned To👥: {row['ASSIGNED TO']}\n"
+            f"STATUS📌: {row['STATUS']}\n\n"
+        )
+
+    return msg
+
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    if st.button("📲 Daily Report"):
+        st.link_button("Send", generate_whatsapp_group_link(format_task_whatsapp(d1, "📋 Today's Tasks")))
+
+with col2:
+    if st.button("📲 Weekly Report"):
+        st.link_button("Send", generate_whatsapp_group_link(format_task_whatsapp(d2, "📅 Weekly Tasks")))
+
+with col3:
+    if st.button("📲 Monthly Report"):
+        st.link_button("Send", generate_whatsapp_group_link(format_task_whatsapp(d3, "🗓️ Monthly Tasks")))
+
+
+# =========================================================
+# SALES PERFORMANCE
 # =========================================================
 st.divider()
-st.subheader("🚨 Manager Alerts")
+st.subheader("📊 Sales Team Performance")
 
-overdue = tasks[tasks["STATUS"].isin(["🔴 Overdue","🔴 Missed"])]
-
-if overdue.empty:
-    st.success("No overdue tasks 🎉")
-else:
-    st.error(f"{len(overdue)} overdue tasks!")
-
-    alert_df = overdue.groupby("ASSIGNED TO").size().reset_index(name="Overdue Count")
-    st.dataframe(alert_df)
-
-
-# =========================================================
-# LEADERBOARD
-# =========================================================
-st.divider()
-st.subheader("🏆 Leaderboard")
-
+team_df = load_sales_team()
 log_df = get_df("TASK_LOGS")
 
-if log_df is not None and not log_df.empty:
-    log_df.columns = [c.strip().upper() for c in log_df.columns]
-
-    score = log_df.groupby(["EMPLOYEE","STATUS"]).size().unstack(fill_value=0).reset_index()
-
-    score["SCORE"] = score.get("Done",0) - score.get("Overdue",0)*2
-
-    score = score.sort_values("SCORE", ascending=False)
-
-    st.dataframe(score)
+if log_df is None or log_df.empty:
+    st.info("No Tasks Assigned")
 else:
-    st.info("No data yet")
+    log_df.columns = [str(c).strip().upper() for c in log_df.columns]
+    log_df["DATE"] = pd.to_datetime(log_df["DATE"], dayfirst=True)
+
+    d1, d2 = st.columns(2)
+    start_date = d1.date_input("From", datetime(today.year, today.month, 1))
+    end_date = d2.date_input("To", today)
+
+    logs_filtered = log_df[
+        (log_df["DATE"].dt.date >= start_date) &
+        (log_df["DATE"].dt.date <= end_date)
+    ]
+
+    if logs_filtered.empty:
+        st.info("No Tasks Assigned")
+    else:
+        summary = logs_filtered.groupby(["EMPLOYEE", "STATUS"]).size().unstack(fill_value=0).reset_index()
+
+        for col in ["Done", "Pending", "Overdue"]:
+            if col not in summary.columns:
+                summary[col] = 0
+
+        final = team_df.merge(summary, on="EMPLOYEE", how="left").fillna(0)
+
+        st.dataframe(final, use_container_width=True)
+        
+    
