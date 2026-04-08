@@ -14,7 +14,7 @@ st.set_page_config(layout="wide", page_title="Sales Team Tasks")
 
 
 # =========================================================
-# LOAD DATA
+# LOAD TASK DATA
 # =========================================================
 @st.cache_data(ttl=60)
 def load_tasks():
@@ -38,25 +38,17 @@ def load_tasks():
 
 
 # =========================================================
-# SAFE WRITE FUNCTION (IMPORTANT FIX)
+# LOAD SALES TEAM
 # =========================================================
-def safe_write(df):
-    """
-    Always reload latest sheet before writing to prevent overwrite issues
-    """
-    latest_df = get_df("SALES_TEAM_TASK")
+@st.cache_data(ttl=60)
+def load_sales_team():
+    df = get_df("SALES_TEAM")
 
-    if latest_df is None or latest_df.empty:
-        write_df("SALES_TEAM_TASK", df)
-        return
+    if df is None or df.empty:
+        return pd.DataFrame()
 
-    latest_df.columns = [str(c).strip().upper() for c in latest_df.columns]
     df.columns = [str(c).strip().upper() for c in df.columns]
-
-    # Merge on TASK ID (prevents deletion)
-    merged = pd.concat([latest_df, df]).drop_duplicates(subset=["TASK ID"], keep="last")
-
-    write_df("SALES_TEAM_TASK", merged)
+    return df
 
 
 # =========================================================
@@ -121,10 +113,14 @@ def get_status(row):
 
 
 # =========================================================
-# UPDATE TASK (FIXED)
+# UPDATE TASK (SAFE)
 # =========================================================
 def update_task(task_id, mark_done=True):
     df_latest = get_df("SALES_TEAM_TASK")
+
+    if df_latest is None or df_latest.empty:
+        return
+
     df_latest.columns = [str(c).strip().upper() for c in df_latest.columns]
 
     if mark_done:
@@ -137,26 +133,26 @@ def update_task(task_id, mark_done=True):
 
 
 # =========================================================
-# MAIN UI
+# UI START
 # =========================================================
 st.title("📋 Sales Team Task Dashboard")
 
 df_master = load_tasks()
 
 # =========================================================
-# CREATE TASK (FIXED)
+# CREATE TASK
 # =========================================================
 with st.expander("➕ Create New Task"):
     with st.form("new_task_form"):
-        col_a, col_b = st.columns(2)
-        new_title = col_a.text_input("Task Title")
-        new_assigned = col_b.text_input("Assigned To")
+        col1, col2 = st.columns(2)
+        new_title = col1.text_input("Task Title")
+        new_assigned = col2.text_input("Assigned To (comma separated)")
 
-        col_c, col_d = st.columns(2)
-        new_freq = col_c.selectbox("Frequency", ["Daily", "Weekly", "Monthly", "ADHOC"])
-        new_date = col_d.date_input("Start / Task Date", value=datetime.now())
+        col3, col4 = st.columns(2)
+        new_freq = col3.selectbox("Frequency", ["Daily", "Weekly", "Monthly", "ADHOC"])
+        new_date = col4.date_input("Task Date", value=datetime.now())
 
-        if st.form_submit_button("Add Task to Sheet"):
+        if st.form_submit_button("Add Task"):
             if new_title and new_assigned:
 
                 df_latest = get_df("SALES_TEAM_TASK")
@@ -178,21 +174,26 @@ with st.expander("➕ Create New Task"):
                 }
 
                 updated_df = pd.concat([df_latest, pd.DataFrame([new_row])], ignore_index=True)
-
                 write_df("SALES_TEAM_TASK", updated_df)
 
-                st.success(f"Task '{new_title}' added!")
+                st.success("Task added successfully!")
                 st.cache_data.clear()
                 st.rerun()
             else:
-                st.error("Title & Assigned To required")
+                st.error("Please fill all fields")
 
 
-# =========================================================
-# REST SAME (NO CHANGE)
-# =========================================================
+st.divider()
+
+if df_master.empty:
+    st.warning("No tasks found.")
+    st.stop()
+
 today = datetime.now()
 
+# =========================================================
+# DATE FILTER
+# =========================================================
 col1, col2 = st.columns(2)
 year = col1.selectbox("Year", [2024, 2025, 2026, 2027], index=2)
 month = col2.selectbox("Month", list(range(1, 13)), index=today.month - 1)
@@ -208,14 +209,17 @@ tasks["DUE DATE"] = pd.to_datetime(tasks["DUE DATE"])
 
 
 # =========================================================
-# FILTERS
+# FILTERS (FIXED ADHOC)
 # =========================================================
 start_week = today - timedelta(days=today.weekday())
 end_week = start_week + timedelta(days=6)
 
 daily_df = tasks[
     (tasks["FREQUENCY"].str.lower().isin(["daily", "adhoc"])) &
-    (tasks["DUE DATE"].dt.date <= today.date())
+    (
+        (tasks["DUE DATE"].dt.date == today.date()) |
+        (tasks["FREQUENCY"].str.lower() == "daily")
+    )
 ]
 
 weekly_df = tasks[
@@ -231,7 +235,7 @@ monthly_df = tasks[
 
 
 # =========================================================
-# TABLE
+# TABLE FUNCTION
 # =========================================================
 def render_table(df, title):
     st.subheader(title)
@@ -241,7 +245,7 @@ def render_table(df, title):
         return
 
     df_display = df.copy()
-    df_display["DUE DATE"] = df_display["DUE DATE"].dt.strftime("%d-%B-%Y")
+    df_display["DUE DATE"] = df_display["DUE DATE"].dt.strftime("%d-%m-%Y")
     df_display["DONE"] = False
 
     cols = ["DONE", "TASK TITLE", "ASSIGNED TO", "DUE DATE", "STATUS", "TASK ID"]
@@ -258,3 +262,57 @@ def render_table(df, title):
 render_table(daily_df, "🟣 Daily & Adhoc Tasks")
 render_table(weekly_df, "📅 Weekly Tasks")
 render_table(monthly_df, "🗓️ Monthly Tasks")
+
+
+# =========================================================
+# SALES TEAM PERFORMANCE
+# =========================================================
+st.divider()
+st.subheader("📊 Sales Team Performance")
+
+team_df = load_sales_team()
+
+if team_df.empty:
+    st.warning("No SALES_TEAM data found.")
+else:
+    perf = []
+
+    for _, row in tasks.iterrows():
+        employees = str(row["ASSIGNED TO"]).split(",")
+
+        for emp in employees:
+            emp = emp.strip()
+
+            if row["STATUS"] == "🟢 Done":
+                status = "Done"
+            elif row["STATUS"] in ["🔴 Overdue", "🔴 Missed"]:
+                status = "Overdue"
+            else:
+                status = "Pending"
+
+            perf.append({"EMPLOYEE": emp, "STATUS": status})
+
+    perf_df = pd.DataFrame(perf)
+
+    if not perf_df.empty:
+        summary = (
+            perf_df.groupby(["EMPLOYEE", "STATUS"])
+            .size()
+            .unstack(fill_value=0)
+            .reset_index()
+        )
+
+        for col in ["Done", "Pending", "Overdue"]:
+            if col not in summary.columns:
+                summary[col] = 0
+
+        summary = summary[["EMPLOYEE", "Done", "Pending", "Overdue"]]
+
+        if "EMPLOYEE" in team_df.columns:
+            final = team_df.merge(summary, on="EMPLOYEE", how="left").fillna(0)
+        else:
+            final = summary
+
+        st.dataframe(final, use_container_width=True)
+    else:
+        st.info("No performance data available.")
