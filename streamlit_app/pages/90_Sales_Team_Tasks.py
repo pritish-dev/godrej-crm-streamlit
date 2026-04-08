@@ -8,6 +8,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
 from services.sheets import get_df, write_df
+from services.automation import generate_whatsapp_group_link
 
 st.set_page_config(layout="wide", page_title="Sales Team Tasks")
 
@@ -37,28 +38,23 @@ def load_tasks():
 
 
 # =========================================================
-# LOAD SALES TEAM (FIXED)
+# LOAD SALES TEAM
 # =========================================================
 @st.cache_data(ttl=60)
 def load_sales_team():
-    df = get_df("Sales Team")  # ✅ exact name
+    df = get_df("Sales Team")
 
     if df is None or df.empty:
         return pd.DataFrame()
 
     df.columns = [str(c).strip().upper() for c in df.columns]
-
-    # Rename for consistency
     df.rename(columns={"NAME": "EMPLOYEE"}, inplace=True)
 
-    # ✅ Filter only SALES role
-    df = df[df["ROLE"].str.upper() == "SALES"]
-
-    return df
+    return df[df["ROLE"].str.upper() == "SALES"]
 
 
 # =========================================================
-# GENERATE TASKS
+# GENERATE TASKS (FIXED ADHOC)
 # =========================================================
 def generate_tasks(df, year, month):
     rows = []
@@ -70,27 +66,28 @@ def generate_tasks(df, year, month):
         if pd.isna(start):
             continue
 
+        # 🔥 ADHOC FIX
+        if freq == "adhoc":
+            if start.month == month and start.year == year:
+                new_row = row.copy()
+                new_row["DUE DATE"] = start
+                rows.append(new_row)
+            continue
+
         for day in range(1, 32):
             try:
                 current = datetime(year, month, day)
             except:
                 continue
 
-            if freq == "adhoc":
-                if current.date() != start.date():
-                    continue
-
-            elif freq == "daily":
+            if freq == "daily":
                 pass
-
             elif freq == "weekly":
                 if current.weekday() != start.weekday():
                     continue
-
             elif freq == "monthly":
                 if current.day != start.day:
                     continue
-
             else:
                 continue
 
@@ -122,16 +119,12 @@ def get_status(row):
 # UPDATE TASK
 # =========================================================
 def update_task(task_id):
-    df_latest = get_df("SALES_TEAM_TASK")
+    df = get_df("SALES_TEAM_TASK")
+    df.columns = [str(c).strip().upper() for c in df.columns]
 
-    if df_latest is None or df_latest.empty:
-        return
+    df.loc[df["TASK ID"] == task_id, "LAST COMPLETED DATE"] = datetime.now().strftime("%d-%m-%Y")
 
-    df_latest.columns = [str(c).strip().upper() for c in df_latest.columns]
-
-    df_latest.loc[df_latest["TASK ID"] == task_id, "LAST COMPLETED DATE"] = datetime.now().strftime("%d-%m-%Y")
-
-    write_df("SALES_TEAM_TASK", df_latest)
+    write_df("SALES_TEAM_TASK", df)
     st.cache_data.clear()
 
 
@@ -142,10 +135,6 @@ st.title("📋 Sales Team Task Dashboard")
 
 df_master = load_tasks()
 
-if df_master.empty:
-    st.warning("No tasks found.")
-    st.stop()
-
 today = datetime.now()
 
 col1, col2 = st.columns(2)
@@ -154,29 +143,24 @@ month = col2.selectbox("Month", list(range(1, 13)), index=today.month - 1)
 
 tasks = generate_tasks(df_master, year, month)
 
-if tasks.empty:
-    st.info("No tasks generated.")
-    st.stop()
-
 tasks["STATUS"] = tasks.apply(get_status, axis=1)
 tasks["DUE DATE"] = pd.to_datetime(tasks["DUE DATE"])
 
 
 # =========================================================
-# FILTERS (FIXED NO FUTURE)
+# FILTERS (FINAL FIX)
 # =========================================================
 start_week = today - timedelta(days=today.weekday())
-end_week = start_week + timedelta(days=6)
 
 daily_df = tasks[
     (tasks["FREQUENCY"].str.lower().isin(["daily", "adhoc"])) &
-    (tasks["DUE DATE"].dt.date == today.date())
+    (tasks["DUE DATE"].dt.date <= today.date())
 ]
 
 weekly_df = tasks[
     (tasks["FREQUENCY"].str.lower() == "weekly") &
     (tasks["DUE DATE"].dt.date >= start_week.date()) &
-    (tasks["DUE DATE"].dt.date <= today.date())  # ✅ no future
+    (tasks["DUE DATE"].dt.date <= today.date())
 ]
 
 monthly_df = tasks[
@@ -193,14 +177,16 @@ def render_table(df, title):
 
     if df.empty:
         st.write("No tasks.")
-        return
+        return df
 
     df_display = df.copy()
     df_display["DUE DATE"] = df_display["DUE DATE"].dt.strftime("%d-%m-%Y")
     df_display["DONE"] = False
 
-    cols = ["DONE", "TASK TITLE", "ASSIGNED TO", "DUE DATE", "STATUS", "TASK ID"]
-    edited = st.data_editor(df_display[cols], use_container_width=True, key=title)
+    edited = st.data_editor(
+        df_display[["DONE", "TASK TITLE", "ASSIGNED TO", "DUE DATE", "STATUS", "TASK ID"]],
+        use_container_width=True
+    )
 
     done_rows = edited[edited["DONE"] == True]
 
@@ -209,29 +195,68 @@ def render_table(df, title):
             update_task(task_id)
         st.rerun()
 
+    return df
 
-render_table(daily_df, "🟣 Daily & Adhoc Tasks")
-render_table(weekly_df, "📅 Weekly Tasks")
-render_table(monthly_df, "🗓️ Monthly Tasks")
+
+d1 = render_table(daily_df, "🟣 Daily & Adhoc Tasks")
+d2 = render_table(weekly_df, "📅 Weekly Tasks")
+d3 = render_table(monthly_df, "🗓️ Monthly Tasks")
 
 
 # =========================================================
-# SALES TEAM PERFORMANCE (FIXED)
+# WHATSAPP
+# =========================================================
+def format_task_whatsapp(df, title):
+    if df.empty:
+        return f"*{title}*\n\nNo tasks 🎉"
+
+    msg = f"*{title}*\n\n"
+
+    for _, row in df.iterrows():
+        msg += f"{row['DUE DATE'].strftime('%d-%b')} | {row['TASK TITLE']} | {row['STATUS']}\n"
+
+    return msg
+
+
+col_w1, col_w2, col_w3 = st.columns(3)
+
+with col_w1:
+    if st.button("📲 Send Daily"):
+        st.link_button("Send", generate_whatsapp_group_link(format_task_whatsapp(d1, "Daily Tasks")))
+
+with col_w2:
+    if st.button("📲 Send Weekly"):
+        st.link_button("Send", generate_whatsapp_group_link(format_task_whatsapp(d2, "Weekly Tasks")))
+
+with col_w3:
+    if st.button("📲 Send Monthly"):
+        st.link_button("Send", generate_whatsapp_group_link(format_task_whatsapp(d3, "Monthly Tasks")))
+
+
+# =========================================================
+# SALES PERFORMANCE (WITH DATE FILTER)
 # =========================================================
 st.divider()
 st.subheader("📊 Sales Team Performance")
 
 team_df = load_sales_team()
 
-if team_df.empty:
-    st.warning("No SALES team found.")
+date_col1, date_col2 = st.columns(2)
+start_date = date_col1.date_input("From", datetime(today.year, today.month, 1))
+end_date = date_col2.date_input("To", today)
+
+filtered_tasks = tasks[
+    (tasks["DUE DATE"].dt.date >= start_date) &
+    (tasks["DUE DATE"].dt.date <= end_date)
+]
+
+if filtered_tasks.empty:
+    st.info("No Tasks Assigned")
 else:
     perf = []
 
-    for _, row in tasks.iterrows():
-        employees = str(row["ASSIGNED TO"]).split(",")
-
-        for emp in employees:
+    for _, row in filtered_tasks.iterrows():
+        for emp in str(row["ASSIGNED TO"]).split(","):
             emp = emp.strip()
 
             if row["STATUS"] == "🟢 Done":
@@ -245,18 +270,11 @@ else:
 
     perf_df = pd.DataFrame(perf)
 
-    summary = (
-        perf_df.groupby(["EMPLOYEE", "STATUS"])
-        .size()
-        .unstack(fill_value=0)
-        .reset_index()
-    )
+    summary = perf_df.groupby(["EMPLOYEE", "STATUS"]).size().unstack(fill_value=0).reset_index()
 
     for col in ["Done", "Pending", "Overdue"]:
         if col not in summary.columns:
             summary[col] = 0
-
-    summary = summary[["EMPLOYEE", "Done", "Pending", "Overdue"]]
 
     final = team_df.merge(summary, on="EMPLOYEE", how="left").fillna(0)
 
