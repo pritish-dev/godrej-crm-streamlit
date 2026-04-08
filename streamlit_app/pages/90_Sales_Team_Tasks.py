@@ -57,11 +57,14 @@ def load_sales_team():
     df.columns = [str(c).strip().upper() for c in df.columns]
     df.rename(columns={"NAME": "EMPLOYEE"}, inplace=True)
 
+    # ✅ FIX: Normalize names
+    df["EMPLOYEE"] = df["EMPLOYEE"].str.strip().str.upper()
+
     return df[df["ROLE"].str.upper() == "SALES"]
 
 
 # =========================================================
-# AUTO LOG SYSTEM (FINAL)
+# AUTO LOG SYSTEM
 # =========================================================
 def auto_log_tasks(tasks):
     log_df = get_df("TASK_LOGS")
@@ -77,16 +80,14 @@ def auto_log_tasks(tasks):
 
     for _, row in tasks.iterrows():
 
-        # Skip future tasks
         if row["DUE DATE"].date() > datetime.now().date():
             continue
 
         for emp in str(row["ASSIGNED TO"]).split(","):
-            emp = emp.strip()
+            emp = emp.strip().upper()  # ✅ FIX
 
-            # Avoid duplicate logs
             exists = (
-                (log_df["TASK ID"] == row["TASK ID"]) &
+                (log_df["TASK ID"].astype(str).str.strip() == str(row.get("TASK ID", "")).strip()) &
                 (log_df["EMPLOYEE"] == emp) &
                 (log_df["DATE"] == today_str)
             )
@@ -94,7 +95,6 @@ def auto_log_tasks(tasks):
             if exists.any():
                 continue
 
-            # Map status
             if row["STATUS"] == "🟢 Done":
                 status = "Done"
             elif row["STATUS"] in ["🔴 Overdue", "🔴 Missed"]:
@@ -103,7 +103,7 @@ def auto_log_tasks(tasks):
                 status = "Pending"
 
             new_logs.append({
-                "TASK ID": row["TASK ID"],
+                "TASK ID": str(row.get("TASK ID", "")).strip(),  # ✅ FIX
                 "EMPLOYEE": emp,
                 "DATE": today_str,
                 "STATUS": status
@@ -183,7 +183,7 @@ def update_task(task_id, assigned_to):
     df = get_df("SALES_TEAM_TASK")
     df.columns = [str(c).strip().upper() for c in df.columns]
 
-    df.loc[df["TASK ID"] == task_id, "LAST COMPLETED DATE"] = today_str
+    df.loc[df["TASK ID"].astype(str) == str(task_id), "LAST COMPLETED DATE"] = today_str
     write_df("SALES_TEAM_TASK", df)
 
     st.cache_data.clear()
@@ -249,7 +249,7 @@ tasks = generate_tasks(df_master, year, month)
 tasks["STATUS"] = tasks.apply(get_status, axis=1)
 tasks["DUE DATE"] = pd.to_datetime(tasks["DUE DATE"])
 
-# 🔥 AUTO LOGGING (MAIN FIX)
+# ✅ AUTO LOGGING
 auto_log_tasks(tasks)
 
 
@@ -360,6 +360,9 @@ if log_df is None or log_df.empty:
     st.info("No Tasks Assigned")
 else:
     log_df.columns = [str(c).strip().upper() for c in log_df.columns]
+
+    # ✅ Normalize
+    log_df["EMPLOYEE"] = log_df["EMPLOYEE"].str.strip().str.upper()
     log_df["DATE"] = pd.to_datetime(log_df["DATE"], dayfirst=True)
 
     d1, d2 = st.columns(2)
@@ -376,6 +379,8 @@ else:
     else:
         summary = logs_filtered.groupby(["EMPLOYEE", "STATUS"]).size().unstack(fill_value=0).reset_index()
 
+        summary["EMPLOYEE"] = summary["EMPLOYEE"].str.strip().str.upper()
+
         for col in ["Done", "Pending", "Overdue"]:
             if col not in summary.columns:
                 summary[col] = 0
@@ -383,5 +388,3 @@ else:
         final = team_df.merge(summary, on="EMPLOYEE", how="left").fillna(0)
 
         st.dataframe(final, use_container_width=True)
-        
-    
