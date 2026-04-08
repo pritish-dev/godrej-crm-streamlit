@@ -8,13 +8,12 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
 from services.sheets import get_df, write_df
-from services.automation import generate_whatsapp_group_link
 
 st.set_page_config(layout="wide", page_title="Sales Team Tasks")
 
 
 # =========================================================
-# LOAD TASK DATA
+# LOAD TASKS
 # =========================================================
 @st.cache_data(ttl=60)
 def load_tasks():
@@ -38,16 +37,23 @@ def load_tasks():
 
 
 # =========================================================
-# LOAD SALES TEAM
+# LOAD SALES TEAM (FIXED)
 # =========================================================
 @st.cache_data(ttl=60)
 def load_sales_team():
-    df = get_df("SALES_TEAM")
+    df = get_df("Sales Team")  # ✅ exact name
 
     if df is None or df.empty:
         return pd.DataFrame()
 
     df.columns = [str(c).strip().upper() for c in df.columns]
+
+    # Rename for consistency
+    df.rename(columns={"NAME": "EMPLOYEE"}, inplace=True)
+
+    # ✅ Filter only SALES role
+    df = df[df["ROLE"].str.upper() == "SALES"]
+
     return df
 
 
@@ -96,7 +102,7 @@ def generate_tasks(df, year, month):
 
 
 # =========================================================
-# STATUS LOGIC
+# STATUS
 # =========================================================
 def get_status(row):
     today = datetime.now().date()
@@ -113,9 +119,9 @@ def get_status(row):
 
 
 # =========================================================
-# UPDATE TASK (SAFE)
+# UPDATE TASK
 # =========================================================
-def update_task(task_id, mark_done=True):
+def update_task(task_id):
     df_latest = get_df("SALES_TEAM_TASK")
 
     if df_latest is None or df_latest.empty:
@@ -123,67 +129,18 @@ def update_task(task_id, mark_done=True):
 
     df_latest.columns = [str(c).strip().upper() for c in df_latest.columns]
 
-    if mark_done:
-        df_latest.loc[df_latest["TASK ID"] == task_id, "LAST COMPLETED DATE"] = datetime.now().strftime("%d-%m-%Y")
-    else:
-        df_latest.loc[df_latest["TASK ID"] == task_id, "LAST COMPLETED DATE"] = ""
+    df_latest.loc[df_latest["TASK ID"] == task_id, "LAST COMPLETED DATE"] = datetime.now().strftime("%d-%m-%Y")
 
     write_df("SALES_TEAM_TASK", df_latest)
     st.cache_data.clear()
 
 
 # =========================================================
-# UI START
+# UI
 # =========================================================
 st.title("📋 Sales Team Task Dashboard")
 
 df_master = load_tasks()
-
-# =========================================================
-# CREATE TASK
-# =========================================================
-with st.expander("➕ Create New Task"):
-    with st.form("new_task_form"):
-        col1, col2 = st.columns(2)
-        new_title = col1.text_input("Task Title")
-        new_assigned = col2.text_input("Assigned To (comma separated)")
-
-        col3, col4 = st.columns(2)
-        new_freq = col3.selectbox("Frequency", ["Daily", "Weekly", "Monthly", "ADHOC"])
-        new_date = col4.date_input("Task Date", value=datetime.now())
-
-        if st.form_submit_button("Add Task"):
-            if new_title and new_assigned:
-
-                df_latest = get_df("SALES_TEAM_TASK")
-
-                if df_latest is None or df_latest.empty:
-                    next_id = 1
-                    df_latest = pd.DataFrame()
-                else:
-                    df_latest.columns = [str(c).strip().upper() for c in df_latest.columns]
-                    next_id = df_latest.shape[0] + 1
-
-                new_row = {
-                    "TASK ID": str(next_id),
-                    "TASK TITLE": new_title,
-                    "FREQUENCY": new_freq,
-                    "ASSIGNED TO": new_assigned,
-                    "TASK DATE": new_date.strftime("%d-%m-%Y"),
-                    "LAST COMPLETED DATE": ""
-                }
-
-                updated_df = pd.concat([df_latest, pd.DataFrame([new_row])], ignore_index=True)
-                write_df("SALES_TEAM_TASK", updated_df)
-
-                st.success("Task added successfully!")
-                st.cache_data.clear()
-                st.rerun()
-            else:
-                st.error("Please fill all fields")
-
-
-st.divider()
 
 if df_master.empty:
     st.warning("No tasks found.")
@@ -191,9 +148,6 @@ if df_master.empty:
 
 today = datetime.now()
 
-# =========================================================
-# DATE FILTER
-# =========================================================
 col1, col2 = st.columns(2)
 year = col1.selectbox("Year", [2024, 2025, 2026, 2027], index=2)
 month = col2.selectbox("Month", list(range(1, 13)), index=today.month - 1)
@@ -209,23 +163,20 @@ tasks["DUE DATE"] = pd.to_datetime(tasks["DUE DATE"])
 
 
 # =========================================================
-# FILTERS (FIXED ADHOC)
+# FILTERS (FIXED NO FUTURE)
 # =========================================================
 start_week = today - timedelta(days=today.weekday())
 end_week = start_week + timedelta(days=6)
 
 daily_df = tasks[
     (tasks["FREQUENCY"].str.lower().isin(["daily", "adhoc"])) &
-    (
-        (tasks["DUE DATE"].dt.date == today.date()) |
-        (tasks["FREQUENCY"].str.lower() == "daily")
-    )
+    (tasks["DUE DATE"].dt.date == today.date())
 ]
 
 weekly_df = tasks[
     (tasks["FREQUENCY"].str.lower() == "weekly") &
     (tasks["DUE DATE"].dt.date >= start_week.date()) &
-    (tasks["DUE DATE"].dt.date <= end_week.date())
+    (tasks["DUE DATE"].dt.date <= today.date())  # ✅ no future
 ]
 
 monthly_df = tasks[
@@ -235,7 +186,7 @@ monthly_df = tasks[
 
 
 # =========================================================
-# TABLE FUNCTION
+# TABLE
 # =========================================================
 def render_table(df, title):
     st.subheader(title)
@@ -255,7 +206,7 @@ def render_table(df, title):
 
     if not done_rows.empty:
         for task_id in done_rows["TASK ID"]:
-            update_task(task_id, True)
+            update_task(task_id)
         st.rerun()
 
 
@@ -265,7 +216,7 @@ render_table(monthly_df, "🗓️ Monthly Tasks")
 
 
 # =========================================================
-# SALES TEAM PERFORMANCE
+# SALES TEAM PERFORMANCE (FIXED)
 # =========================================================
 st.divider()
 st.subheader("📊 Sales Team Performance")
@@ -273,7 +224,7 @@ st.subheader("📊 Sales Team Performance")
 team_df = load_sales_team()
 
 if team_df.empty:
-    st.warning("No SALES_TEAM data found.")
+    st.warning("No SALES team found.")
 else:
     perf = []
 
@@ -294,25 +245,19 @@ else:
 
     perf_df = pd.DataFrame(perf)
 
-    if not perf_df.empty:
-        summary = (
-            perf_df.groupby(["EMPLOYEE", "STATUS"])
-            .size()
-            .unstack(fill_value=0)
-            .reset_index()
-        )
+    summary = (
+        perf_df.groupby(["EMPLOYEE", "STATUS"])
+        .size()
+        .unstack(fill_value=0)
+        .reset_index()
+    )
 
-        for col in ["Done", "Pending", "Overdue"]:
-            if col not in summary.columns:
-                summary[col] = 0
+    for col in ["Done", "Pending", "Overdue"]:
+        if col not in summary.columns:
+            summary[col] = 0
 
-        summary = summary[["EMPLOYEE", "Done", "Pending", "Overdue"]]
+    summary = summary[["EMPLOYEE", "Done", "Pending", "Overdue"]]
 
-        if "EMPLOYEE" in team_df.columns:
-            final = team_df.merge(summary, on="EMPLOYEE", how="left").fillna(0)
-        else:
-            final = summary
+    final = team_df.merge(summary, on="EMPLOYEE", how="left").fillna(0)
 
-        st.dataframe(final, use_container_width=True)
-    else:
-        st.info("No performance data available.")
+    st.dataframe(final, use_container_width=True)
