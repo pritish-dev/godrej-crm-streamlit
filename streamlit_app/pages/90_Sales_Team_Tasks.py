@@ -388,3 +388,98 @@ else:
         final = team_df.merge(summary, on="EMPLOYEE", how="left").fillna(0)
 
         st.dataframe(final, use_container_width=True)
+        
+# =========================================================
+# WHATSAPP AUTOMATION (FREE)
+# =========================================================
+
+st.divider()
+st.subheader("📲 WhatsApp Automation")
+
+
+# =========================================================
+# FORMATTERS
+# =========================================================
+def format_employee_tasks(df, employee):
+    df_emp = df[df["ASSIGNED TO"].str.contains(employee, case=False, na=False)]
+
+    if df_emp.empty:
+        return f"*Hi {employee}*\n\nNo tasks today 🎉"
+
+    msg = f"*Hi {employee} 👋*\n\n📋 Your Tasks Today:\n\n"
+
+    for _, row in df_emp.iterrows():
+        msg += (
+            f"📅 {row['DUE DATE'].strftime('%d-%b')}\n"
+            f"📝 {row['TASK TITLE']}\n"
+            f"📌 {row['STATUS']}\n\n"
+        )
+
+    return msg
+
+
+def format_overdue_tasks(df):
+    overdue = df[df["STATUS"].isin(["🔴 Overdue", "🔴 Missed"])]
+
+    if overdue.empty:
+        return "✅ No overdue tasks!"
+
+    msg = "*🚨 Overdue Tasks Alert*\n\n"
+
+    for _, row in overdue.iterrows():
+        msg += (
+            f"👤 {row['ASSIGNED TO']}\n"
+            f"📝 {row['TASK TITLE']}\n"
+            f"📅 {row['DUE DATE'].strftime('%d-%b')}\n\n"
+        )
+
+    return msg
+
+
+def format_manager_summary(tasks):
+    total = len(tasks)
+    done = len(tasks[tasks["STATUS"] == "🟢 Done"])
+    overdue = len(tasks[tasks["STATUS"].isin(["🔴 Overdue", "🔴 Missed"])])
+    pending = len(tasks[tasks["STATUS"] == "🟣 Pending"])
+
+    msg = "*📊 Daily Summary*\n\n"
+    msg += f"Total Tasks: {total}\n"
+    msg += f"✅ Done: {done}\n"
+    msg += f"🟣 Pending: {pending}\n"
+    msg += f"🔴 Overdue: {overdue}\n"
+
+    return msg
+
+
+# =========================================================
+# BUTTONS
+# =========================================================
+c1, c2, c3, c4 = st.columns(4)
+
+# 1️⃣ DAILY GROUP MESSAGE
+with c1:
+    if st.button("📤 Send Daily Tasks"):
+        msg = format_task_whatsapp(d1, "📋 Today's Tasks")
+        st.link_button("Send to WhatsApp", generate_whatsapp_group_link(msg))
+
+
+# 2️⃣ EMPLOYEE-WISE MESSAGES
+with c2:
+    if st.button("👥 Send to Employees"):
+        for emp in team_df["EMPLOYEE"]:
+            msg = format_employee_tasks(d1, emp)
+            st.link_button(f"Send to {emp}", generate_whatsapp_group_link(msg))
+
+
+# 3️⃣ OVERDUE ALERT
+with c3:
+    if st.button("🚨 Send Overdue Alert"):
+        msg = format_overdue_tasks(tasks)
+        st.link_button("Send Alert", generate_whatsapp_group_link(msg))
+
+
+# 4️⃣ MANAGER SUMMARY
+with c4:
+    if st.button("📊 Send Summary"):
+        msg = format_manager_summary(tasks)
+        st.link_button("Send Summary", generate_whatsapp_group_link(msg))
