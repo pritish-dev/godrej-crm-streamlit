@@ -14,6 +14,19 @@ st.set_page_config(layout="wide", page_title="Sales Team Tasks")
 
 
 # =========================================================
+# DATE PARSER (FIX)
+# =========================================================
+def parse_date(x):
+    try:
+        return pd.to_datetime(x, dayfirst=True)
+    except:
+        try:
+            return pd.to_datetime(x)
+        except:
+            return pd.NaT
+
+
+# =========================================================
 # LOAD TASKS
 # =========================================================
 @st.cache_data(ttl=60)
@@ -25,8 +38,8 @@ def load_tasks():
 
     df.columns = [str(c).strip().upper() for c in df.columns]
 
-    df["START DATE"] = pd.to_datetime(df["TASK DATE"], dayfirst=True, errors="coerce")
-    df["LAST COMPLETED DATE"] = pd.to_datetime(df["LAST COMPLETED DATE"], dayfirst=True, errors="coerce")
+    df["START DATE"] = df["TASK DATE"].apply(parse_date)
+    df["LAST COMPLETED DATE"] = df["LAST COMPLETED DATE"].apply(parse_date)
 
     return df
 
@@ -48,7 +61,7 @@ def load_sales_team():
 
 
 # =========================================================
-# CREATE TASK UI (RESTORED)
+# CREATE TASK UI
 # =========================================================
 st.title("📋 Sales Team Task Dashboard")
 
@@ -56,21 +69,21 @@ df_master = load_tasks()
 
 with st.expander("➕ Create New Task"):
     with st.form("new_task"):
-        t1, t2 = st.columns(2)
-        title = t1.text_input("Task Title")
-        assigned = t2.text_input("Assigned To (comma separated)")
+        c1, c2 = st.columns(2)
+        title = c1.text_input("Task Title")
+        assigned = c2.text_input("Assigned To (comma separated)")
 
-        t3, t4 = st.columns(2)
-        freq = t3.selectbox("Frequency", ["Daily", "Weekly", "Monthly", "ADHOC"])
-        date = t4.date_input("Task Date", datetime.now())
+        c3, c4 = st.columns(2)
+        freq = c3.selectbox("Frequency", ["Daily", "Weekly", "Monthly", "ADHOC"])
+        date = c4.date_input("Task Date", datetime.now())
 
         if st.form_submit_button("Add Task"):
             if title and assigned:
                 df_latest = get_df("SALES_TEAM_TASK")
 
                 if df_latest is None or df_latest.empty:
-                    next_id = 1
                     df_latest = pd.DataFrame()
+                    next_id = 1
                 else:
                     df_latest.columns = [str(c).strip().upper() for c in df_latest.columns]
                     next_id = len(df_latest) + 1
@@ -153,20 +166,40 @@ def get_status(row):
 
 
 # =========================================================
-# UPDATE TASK
+# UPDATE TASK + LOGGING
 # =========================================================
-def update_task(task_id):
+def update_task(task_id, assigned_to):
+    today_str = datetime.now().strftime("%d-%m-%Y")
+
     df = get_df("SALES_TEAM_TASK")
     df.columns = [str(c).strip().upper() for c in df.columns]
 
-    df.loc[df["TASK ID"] == task_id, "LAST COMPLETED DATE"] = datetime.now().strftime("%d-%m-%Y")
-
+    df.loc[df["TASK ID"] == task_id, "LAST COMPLETED DATE"] = today_str
     write_df("SALES_TEAM_TASK", df)
+
+    # LOG
+    log_df = get_df("TASK_LOGS")
+
+    if log_df is None or log_df.empty:
+        log_df = pd.DataFrame(columns=["TASK ID", "EMPLOYEE", "DATE", "STATUS"])
+
+    logs = []
+    for emp in str(assigned_to).split(","):
+        logs.append({
+            "TASK ID": task_id,
+            "EMPLOYEE": emp.strip(),
+            "DATE": today_str,
+            "STATUS": "Done"
+        })
+
+    log_df = pd.concat([log_df, pd.DataFrame(logs)], ignore_index=True)
+    write_df("TASK_LOGS", log_df)
+
     st.cache_data.clear()
 
 
 # =========================================================
-# FILTER DATE
+# DATE FILTER
 # =========================================================
 today = datetime.now()
 
@@ -181,7 +214,7 @@ tasks["DUE DATE"] = pd.to_datetime(tasks["DUE DATE"])
 
 
 # =========================================================
-# FILTERS (FINAL FIX)
+# FILTERS
 # =========================================================
 start_week = today - timedelta(days=today.weekday())
 
@@ -225,7 +258,8 @@ def render_table(df, title):
 
     if not done_rows.empty:
         for tid in done_rows["TASK ID"]:
-            update_task(tid)
+            assigned = df[df["TASK ID"] == tid]["ASSIGNED TO"].values[0]
+            update_task(tid, assigned)
         st.rerun()
 
     return df
@@ -237,7 +271,7 @@ d3 = render_table(monthly_df, "🗓️ Monthly Tasks")
 
 
 # =========================================================
-# WHATSAPP FORMAT (RESTORED EXACT)
+# WHATSAPP FORMAT (YOUR ORIGINAL)
 # =========================================================
 def format_task_whatsapp(df, title):
     if df.empty:
@@ -256,80 +290,65 @@ def format_task_whatsapp(df, title):
         if len(assigned_list) > 2:
             assigned += f" +{len(assigned_list)-2}"
 
-        status = row["STATUS"]
-
         msg += (
             f"DATE📅: {date}\n"
             f"TASK📝: {task}\n"
             f"Assigned To👥: {assigned}\n"
-            f"STATUS📌: {status}\n\n"
+            f"STATUS📌: {row['STATUS']}\n\n"
         )
 
     msg += "--------------------------------------"
     return msg
 
 
-# =========================================================
-# WHATSAPP BUTTONS
-# =========================================================
-col_w1, col_w2, col_w3 = st.columns(3)
+col1, col2, col3 = st.columns(3)
 
-with col_w1:
+with col1:
     if st.button("📲 Daily Report"):
         st.link_button("Send", generate_whatsapp_group_link(format_task_whatsapp(d1, "📋 Today's Tasks")))
 
-with col_w2:
+with col2:
     if st.button("📲 Weekly Report"):
         st.link_button("Send", generate_whatsapp_group_link(format_task_whatsapp(d2, "📅 Weekly Tasks")))
 
-with col_w3:
+with col3:
     if st.button("📲 Monthly Report"):
         st.link_button("Send", generate_whatsapp_group_link(format_task_whatsapp(d3, "🗓️ Monthly Tasks")))
 
 
 # =========================================================
-# SALES PERFORMANCE (FIXED LOGIC)
+# SALES PERFORMANCE (LOG BASED)
 # =========================================================
 st.divider()
 st.subheader("📊 Sales Team Performance")
 
 team_df = load_sales_team()
+log_df = get_df("TASK_LOGS")
 
-d1, d2 = st.columns(2)
-start_date = d1.date_input("From", datetime(today.year, today.month, 1))
-end_date = d2.date_input("To", today)
-
-filtered_tasks = tasks[
-    (tasks["DUE DATE"].dt.date >= start_date) &
-    (tasks["DUE DATE"].dt.date <= end_date)
-]
-
-if filtered_tasks.empty:
+if log_df is None or log_df.empty:
     st.info("No Tasks Assigned")
 else:
-    perf = []
+    log_df.columns = [str(c).strip().upper() for c in log_df.columns]
+    log_df["DATE"] = pd.to_datetime(log_df["DATE"], dayfirst=True)
 
-    for _, row in filtered_tasks.iterrows():
-        for emp in str(row["ASSIGNED TO"]).split(","):
-            emp = emp.strip()
+    d1, d2 = st.columns(2)
+    start_date = d1.date_input("From", datetime(today.year, today.month, 1))
+    end_date = d2.date_input("To", today)
 
-            if row["STATUS"] == "🟢 Done":
-                status = "Done"
-            elif row["STATUS"] in ["🔴 Overdue", "🔴 Missed"]:
-                status = "Overdue"
-            else:
-                status = "Pending"
+    logs_filtered = log_df[
+        (log_df["DATE"].dt.date >= start_date) &
+        (log_df["DATE"].dt.date <= end_date)
+    ]
 
-            perf.append({"EMPLOYEE": emp, "STATUS": status})
+    if logs_filtered.empty:
+        st.info("No Tasks Assigned")
+    else:
+        summary = logs_filtered.groupby(["EMPLOYEE", "STATUS"]).size().unstack(fill_value=0).reset_index()
 
-    perf_df = pd.DataFrame(perf)
+        for col in ["Done", "Pending", "Overdue"]:
+            if col not in summary.columns:
+                summary[col] = 0
 
-    summary = perf_df.groupby(["EMPLOYEE", "STATUS"]).size().unstack(fill_value=0).reset_index()
+        final = team_df.merge(summary, on="EMPLOYEE", how="left").fillna(0)
 
-    for col in ["Done", "Pending", "Overdue"]:
-        if col not in summary.columns:
-            summary[col] = 0
-
-    final = team_df.merge(summary, on="EMPLOYEE", how="left").fillna(0)
-
-    st.dataframe(final, use_container_width=True)
+        st.dataframe(final, use_container_width=True)
