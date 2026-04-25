@@ -22,4 +22,4 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run script
-        run: python scripts/run_delivery_alert.py
+        run: PYTHONPATH=. python streamlit_app/scripts/run_delivery_alert.py
