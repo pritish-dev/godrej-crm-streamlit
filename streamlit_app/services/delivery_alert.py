@@ -1,7 +1,7 @@
 import pandas as pd
 from datetime import datetime, timedelta
-from services.sheets import get_all_records  # adjust based on your repo
-from services.email_service import send_email  # we will create this
+from streamlit_app.services.sheets import get_all_records  # adjust based on your repo
+from streamlit_app.services.email_service import send_email  # we will create this
 
 def get_tomorrow_deliveries():
     df = get_all_records("CRM")  # your sheet name
