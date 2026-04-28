@@ -84,15 +84,6 @@ def load_data():
     )
 
     return crm, team
-
-menu = st.sidebar.radio(
-    "Navigation",
-    ["CRM Dashboard", "Attendance (Admin)"]
-)
-
-if menu == "Attendance (Admin)":
-    show_attendance_page()
-    st.stop()
     
 crm, team_df = load_data()
 
