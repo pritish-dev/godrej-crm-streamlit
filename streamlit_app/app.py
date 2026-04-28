@@ -15,6 +15,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from services.sheets import get_df
 from services.automation import get_alerts, generate_whatsapp_group_link
+from pages.99_attendance import show_attendance_page
 
 
 # ---------------- HELPERS ----------------
@@ -84,7 +85,15 @@ def load_data():
 
     return crm, team
 
+menu = st.sidebar.radio(
+    "Navigation",
+    ["CRM Dashboard", "Attendance (Admin)"]
+)
 
+if menu == "Attendance (Admin)":
+    show_attendance_page()
+    st.stop()
+    
 crm, team_df = load_data()
 
 if crm.empty:
