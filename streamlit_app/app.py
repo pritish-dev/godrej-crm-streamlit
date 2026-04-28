@@ -1,5 +1,4 @@
 import streamlit as st
-
 st.set_page_config(
     layout="wide",
     page_title="Interio by Godrej Patia CRM",
@@ -12,6 +11,10 @@ import pandas as pd
 from datetime import datetime, timedelta
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from services.email_sender import (
+    send_pending_delivery_email,
+    send_update_delivery_status_email,
+)
 
 from services.sheets import get_df
 from services.automation import get_alerts, generate_whatsapp_group_link
@@ -83,8 +86,7 @@ def load_data():
     )
 
     return crm, team
-
-
+    
 crm, team_df = load_data()
 
 if crm.empty:
@@ -182,13 +184,13 @@ def sort_urgent_first(df, date_col):
 
 st.divider()
 st.subheader("🚚 Pending Deliveries")
-
+ 
 mask_p = crm["DELIVERY REMARKS"].astype(str).str.upper().str.strip() == "PENDING"
 pending = crm[mask_p].copy()
-
+ 
 if not pending.empty:
-
-    # GROUPING (NO DUPLICATES)
+ 
+    # GROUPING (NO DUPLICATES) — unchanged from your original
     pending_grouped = pending.groupby(
         ["CUSTOMER NAME", "CUSTOMER DELIVERY DATE (TO BE)"]
     ).agg({
@@ -198,24 +200,27 @@ if not pending.empty:
         "DATE": "min",
         "DELIVERY REMARKS": "first"
     }).reset_index()
-
+ 
     pending_grouped.rename(columns={
         "DATE": "ORDER DATE",
         "CUSTOMER DELIVERY DATE (TO BE)": "DELIVERY DATE"
     }, inplace=True)
-
-    # SORT USING OLD LOGIC
+ 
     pending_grouped = sort_urgent_first(pending_grouped, "DELIVERY DATE")
-
+ 
     pending_cols = [
-        "DELIVERY DATE","ORDER DATE","CUSTOMER NAME",
-        "CONTACT NUMBER","PRODUCT NAME","SALES PERSON","DELIVERY REMARKS"
+        "DELIVERY DATE", "ORDER DATE", "CUSTOMER NAME",
+        "CONTACT NUMBER", "PRODUCT NAME", "SALES PERSON", "DELIVERY REMARKS"
     ]
-
-    d1, d2 = st.columns([3, 1])
-
-    with d2:
-        if st.button("🚀 Push Delivery Alerts to App", key="btn_delivery", use_container_width=True):
+ 
+    # ── Action buttons row ────────────────────────────────────────────────────
+    btn_col1, btn_col2, btn_col3, btn_col4 = st.columns([2, 1, 1, 1])
+ 
+    with btn_col1:
+        st.info("Green = Tomorrow's Deliveries | Red = Overdue/Missed")
+ 
+    with btn_col2:
+        if st.button("🚀 Push Delivery Alerts", key="btn_delivery", use_container_width=True):
             alerts = get_alerts(crm, team_df, "delivery")
             if alerts:
                 for sp_name, msg in alerts:
@@ -225,10 +230,24 @@ if not pending.empty:
                     )
             else:
                 st.info("No deliveries scheduled for tomorrow.")
-
-    with d1:
-        st.info("Green = Tomorrow's Deliveries | Red = Overdue/Missed")
-
+ 
+    with btn_col3:
+        if st.button("📧 Send Delivery Email", key="btn_email1", use_container_width=True):
+            try:
+                send_pending_delivery_email(pending_grouped)
+                st.success("✅ Pending Delivery email sent!")
+            except Exception as e:
+                st.error(f"❌ Failed: {e}")
+ 
+    with btn_col4:
+        if st.button("⚠️ Send Update Reminder", key="btn_email2", use_container_width=True):
+            try:
+                send_update_delivery_status_email(pending_grouped)
+                st.success("✅ Update Reminder email sent!")
+            except Exception as e:
+                st.error(f"❌ Failed: {e}")
+ 
+    # ── Dataframe display — unchanged ─────────────────────────────────────────
     st.dataframe(
         pending_grouped[pending_cols]
         .style
@@ -239,21 +258,19 @@ if not pending.empty:
         }),
         use_container_width=True
     )
-
-    # METRICS
+ 
+    # ── Metrics — unchanged ───────────────────────────────────────────────────
     today = datetime.now().date()
-    tmrw = today + timedelta(days=1)
-
-    tot_del = len(pending_grouped)
-    tmrw_del = len(pending_grouped[pending_grouped["DELIVERY DATE"].dt.date == tmrw])
+    tmrw  = today + timedelta(days=1)
+ 
+    tot_del    = len(pending_grouped)
+    tmrw_del   = len(pending_grouped[pending_grouped["DELIVERY DATE"].dt.date == tmrw])
     overdue_del = len(pending_grouped[pending_grouped["DELIVERY DATE"].dt.date < today])
-
+ 
     c1, c2, c3 = st.columns(3)
     c1.metric("📦 Total Pending Deliveries", tot_del)
-    c2.metric("🟢 Pending For Tomorrow", tmrw_del)
-    c3.metric("🔴 Overdue or Missed", overdue_del)
-
-
+    c2.metric("🟢 Pending For Tomorrow",     tmrw_del)
+    c3.metric("🔴 Overdue or Missed",         overdue_del)
 # ---------------- PAYMENT DUE ----------------
 
 st.divider()
