@@ -1,0 +1,42 @@
+name: Lead Email Import (IMAP)
+
+on:
+  schedule:
+    # All times in UTC. IST = UTC + 5:30
+    # Run every 30 minutes only from 10 AM - 10 PM IST
+    # IST 10:00 AM = UTC 4:30 AM, IST 10:00 PM = UTC 4:30 PM
+    - cron: '0 5,6,7,8,9,10,11,12,13,14,15,16 * * *'   # :00 of hours 5-16 UTC (10:30 AM - 9:30 PM IST)
+    - cron: '30 4,5,6,7,8,9,10,11,12,13,14,15,16 * * *' # :30 of hours 4-16 UTC (10:00 AM - 10:00 PM IST)
+
+  # Allow manual trigger from GitHub Actions UI for testing
+  workflow_dispatch:
+
+jobs:
+  # ── LEAD EMAIL IMPORT (IMAP) ───────────────────────────────────────────────
+  lead-email-import:
+    runs-on: ubuntu-latest
+
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Import leads from Gmail (IMAP) - Every 30 minutes (10 AM - 10 PM IST)
+        env:
+          EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: |
+          cd streamlit_app
+          python lead_email_import_job.py

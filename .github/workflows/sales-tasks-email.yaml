@@ -1,0 +1,65 @@
+name: Sales Team Task Emails
+
+on:
+  schedule:
+    # All times in UTC. IST = UTC + 5:30
+    - cron: '30 4 * * *'    # 10:00 AM IST → Sales Tasks Email (Morning)
+    - cron: '30 14 * * *'   # 8:00 PM IST → Sales Task Status Email (Evening)
+
+  # Allow manual trigger from GitHub Actions UI for testing
+  workflow_dispatch:
+    inputs:
+      job:
+        description: 'Which sales task job to run'
+        required: true
+        default: 'sales_tasks_email'
+        type: choice
+        options:
+          - sales_tasks_email
+          - sales_tasks_status_email
+
+jobs:
+  # ── SALES TEAM TASK EMAILS ────────────────────────────────────────────────
+  sales-tasks-email:
+    runs-on: ubuntu-latest
+
+    if: |
+      github.event_name == 'workflow_dispatch' && (
+        github.event.inputs.job == 'sales_tasks_email' ||
+        github.event.inputs.job == 'sales_tasks_status_email'
+      ) ||
+      github.event_name == 'schedule'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Sales Team Tasks Email Job
+        env:
+          EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECIPIENTS:   ${{ secrets.EMAIL_RECIPIENTS }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          MANUAL_JOB:         ${{ github.event.inputs.job }}
+        run: |
+          cd streamlit_app
+          python sales_tasks_email_job.py
+
+      - name: Run Sales Team Task Status Email Job
+        env:
+          EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECIPIENTS:   ${{ secrets.EMAIL_RECIPIENTS }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          MANUAL_JOB:         ${{ github.event.inputs.job }}
+        run: |
+          cd streamlit_app
+          python sales_tasks_status_email_job.py

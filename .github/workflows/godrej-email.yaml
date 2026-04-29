@@ -1,0 +1,57 @@
+name: Godrej CRM Emails
+
+on:
+  schedule:
+    # All times in UTC. IST = UTC + 5:30
+    - cron: '30 4 * * *'    # 10:00 AM IST → Godrej Email 1 (Morning)
+    - cron: '30 5 * * *'    # 11:00 AM IST → Godrej Email 2 (Update Reminder)
+    - cron: '30 11 * * *'   # 5:00 PM IST → Godrej Email 3 (Evening)
+
+  # Allow manual trigger from GitHub Actions UI for testing
+  workflow_dispatch:
+    inputs:
+      job:
+        description: 'Which Godrej job to run'
+        required: true
+        default: 'godrej_email1'
+        type: choice
+        options:
+          - godrej_email1
+          - godrej_email2
+          - godrej_email3
+
+jobs:
+  # ── GODREJ CRM EMAILS ──────────────────────────────────────────────────────
+  godrej-crm-email:
+    runs-on: ubuntu-latest
+
+    if: |
+      github.event_name == 'workflow_dispatch' && (
+        github.event.inputs.job == 'godrej_email1' ||
+        github.event.inputs.job == 'godrej_email2' ||
+        github.event.inputs.job == 'godrej_email3'
+      ) ||
+      github.event_name == 'schedule'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Godrej email job
+        env:
+          EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECIPIENTS:   ${{ secrets.EMAIL_RECIPIENTS }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          MANUAL_JOB:         ${{ github.event.inputs.job }}
+        run: |
+          cd streamlit_app
+          python email_job.py

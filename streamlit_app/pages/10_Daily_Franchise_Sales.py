@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from services.sheets import get_df
-from services.email_trigger import send_combined_pending_delivery_email
 
 st.set_page_config(page_title="Franchise B2C Sales", layout="wide")
 st.title("📅 Daily Franchise B2C Sales by Executive")

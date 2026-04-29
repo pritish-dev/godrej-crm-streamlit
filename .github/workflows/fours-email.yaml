@@ -1,0 +1,57 @@
+name: 4S Interiors CRM Emails
+
+on:
+  schedule:
+    # All times in UTC. IST = UTC + 5:30
+    - cron: '32 4 * * *'    # 10:02 AM IST → 4S Email 1 (Morning)  [2min offset]
+    - cron: '32 5 * * *'    # 11:02 AM IST → 4S Email 2 (Update Reminder)
+    - cron: '32 11 * * *'   # 5:02 PM IST → 4S Email 3 (Evening)
+
+  # Allow manual trigger from GitHub Actions UI for testing
+  workflow_dispatch:
+    inputs:
+      job:
+        description: 'Which 4S job to run'
+        required: true
+        default: 'fours_email1'
+        type: choice
+        options:
+          - fours_email1
+          - fours_email2
+          - fours_email3
+
+jobs:
+  # ── 4S INTERIORS CRM EMAILS ────────────────────────────────────────────────
+  fours-crm-email:
+    runs-on: ubuntu-latest
+
+    if: |
+      github.event_name == 'workflow_dispatch' && (
+        github.event.inputs.job == 'fours_email1' ||
+        github.event.inputs.job == 'fours_email2' ||
+        github.event.inputs.job == 'fours_email3'
+      ) ||
+      github.event_name == 'schedule'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run 4S Interiors email job
+        env:
+          EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECIPIENTS:   ${{ secrets.EMAIL_RECIPIENTS }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          MANUAL_JOB:         ${{ github.event.inputs.job }}
+        run: |
+          cd streamlit_app
+          python email_job_4s.py

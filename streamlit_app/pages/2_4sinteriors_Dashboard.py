@@ -12,7 +12,6 @@ from services.email_sender_4s import (
     send_pending_delivery_email_4s,
     send_update_delivery_status_email_4s,
 )
-from services.email_trigger import send_combined_pending_delivery_email
 
 st.set_page_config(layout="wide", page_title="4SINTERIORS CRM Dashboard")
 
@@ -189,22 +188,6 @@ with col2:
 # ═══════════════════════════════════════════════════════════════════════════
 
 st.divider()
-
-# ═════════════════════════════════════════════════════════════════════════════
-# SEND PENDING DELIVERY EMAIL BUTTON
-# ═════════════════════════════════════════════════════════════════════════════
-col_btn1, col_btn2, col_btn3 = st.columns([1, 1.5, 1.5])
-
-with col_btn2:
-    if st.button("📧 Send Pending Delivery Email", key="send_pending_email", use_container_width=True):
-        with st.spinner("📤 Sending email..."):
-            result = send_combined_pending_delivery_email()
-
-            if result['success']:
-                st.success(result['message'])
-            else:
-                st.error(result['message'])
-
 st.subheader("🚚 Pending Deliveries")
 
 pending_del = crm[
