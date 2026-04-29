@@ -24,8 +24,8 @@ on:
         options:
           - godrej_email1
           - godrej_email2
-          - 4s_email1
-          - 4s_email2
+          - fours_email1
+          - fours_email2
 
 jobs:
 
@@ -74,8 +74,8 @@ jobs:
 
     if: |
       github.event_name == 'workflow_dispatch' && (
-        github.event.inputs.job == '4s_email1' ||
-        github.event.inputs.job == '4s_email2'
+        github.event.inputs.job == 'fours_email1' ||
+        github.event.inputs.job == 'fours_email2'
       ) ||
       github.event_name == 'schedule'
 
