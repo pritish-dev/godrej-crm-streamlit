@@ -217,22 +217,28 @@ def import_lead_to_sheet(lead_data: dict):
             df.columns = [str(c).strip().upper() for c in df.columns]
             next_id = len(df) + 1
 
+        # NOTE: ASSIGNED TO is intentionally left empty.
+        # Sales team will manually assign leads after viewing Salesforce details.
+        # The assigned_to info from email is stored in notes for reference.
+        assigned_to_from_email = lead_data.get("assigned_to", "")
+
         new_lead = {
             "LEAD ID": str(next_id),
             "LEAD NAME": lead_data.get("lead_name", ""),
             "COMPANY": lead_data.get("company", ""),
             "EMAIL": lead_data.get("email", ""),
             "PHONE": lead_data.get("phone", ""),
+            "ADDRESS": lead_data.get("address", ""),
             "STATUS": "🟢 New",
             "PRIORITY": "Medium",
             "SOURCE": "Email (OneCRM)",
             "SOURCE_DETAILS": "Salesforce Lead Assignment",
-            "ASSIGNED TO": lead_data.get("assigned_to", "").upper(),
+            "ASSIGNED TO": "",  # ← Intentionally empty - manual assignment by sales team
             "SALESFORCE URL": lead_data.get("salesforce_url", ""),
             "CREATED DATE": datetime.now().strftime("%d-%m-%Y %H:%M"),
             "LAST CONTACT": "",
             "FOLLOW UP DATE": (datetime.now() + pd.Timedelta(days=1)).strftime("%d-%m-%Y"),
-            "NOTES": f"Imported from email. Salesforce ID: {lead_data.get('salesforce_url', 'N/A')}",
+            "NOTES": f"Salesforce Lead Assignment: {assigned_to_from_email}\nSalesforce URL: {lead_data.get('salesforce_url', 'N/A')}\nImported from email - Sales team to assign manually.",
             "CONVERSION DATE": "",
             "DEAL VALUE": "0"
         }
@@ -240,7 +246,7 @@ def import_lead_to_sheet(lead_data: dict):
         df = pd.concat([df, pd.DataFrame([new_lead])], ignore_index=True)
         write_df("LEADS", df)
 
-        print(f"✅ Lead '{lead_data.get('lead_name')}' imported successfully")
+        print(f"✅ Lead '{lead_data.get('lead_name')}' imported successfully (Unassigned - Manual assignment pending)")
         return True
 
     except Exception as e:

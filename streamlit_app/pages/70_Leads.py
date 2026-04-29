@@ -615,7 +615,7 @@ if not df_leads.empty:
     else:
         # Display leads as expandable sections
         for idx, (i, row) in enumerate(filtered_df.iterrows()):
-            lead_id = row.get("LEAD ID", str(idx))
+            lead_id = str(row.get("LEAD ID", str(idx))).strip()
             lead_name = row.get("LEAD NAME", "Unknown")
             status = row.get("STATUS", "Unknown")
             priority = row.get("PRIORITY", "")
