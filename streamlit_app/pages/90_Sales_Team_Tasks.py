@@ -412,6 +412,7 @@ if not tasks.empty:
 else:
     # Create empty DataFrame with required columns
     tasks = pd.DataFrame(columns=["TASK ID", "TASK TITLE", "FREQUENCY", "ASSIGNED TO", "DUE DATE", "STATUS", "LAST COMPLETED DATE"])
+    tasks["DUE DATE"] = pd.to_datetime(tasks["DUE DATE"])
 
 # ✅ AUTO LOGGING
 auto_log_tasks(tasks)
@@ -422,21 +423,28 @@ auto_log_tasks(tasks)
 # =========================================================
 start_week = today - timedelta(days=today.weekday())
 
-daily_df = tasks[
-    (tasks["FREQUENCY"].str.lower().isin(["daily", "adhoc"])) &
-    (tasks["DUE DATE"].dt.date <= today.date())
-]
+# Only filter if tasks exist
+if not tasks.empty:
+    daily_df = tasks[
+        (tasks["FREQUENCY"].str.lower().isin(["daily", "adhoc"])) &
+        (tasks["DUE DATE"].dt.date <= today.date())
+    ]
 
-weekly_df = tasks[
-    (tasks["FREQUENCY"].str.lower() == "weekly") &
-    (tasks["DUE DATE"].dt.date >= start_week.date()) &
-    (tasks["DUE DATE"].dt.date <= today.date())
-]
+    weekly_df = tasks[
+        (tasks["FREQUENCY"].str.lower() == "weekly") &
+        (tasks["DUE DATE"].dt.date >= start_week.date()) &
+        (tasks["DUE DATE"].dt.date <= today.date())
+    ]
 
-monthly_df = tasks[
-    (tasks["FREQUENCY"].str.lower() == "monthly") &
-    (tasks["DUE DATE"].dt.month == month)
-]
+    monthly_df = tasks[
+        (tasks["FREQUENCY"].str.lower() == "monthly") &
+        (tasks["DUE DATE"].dt.month == month)
+    ]
+else:
+    # Create empty DataFrames with same structure
+    daily_df = pd.DataFrame(columns=tasks.columns)
+    weekly_df = pd.DataFrame(columns=tasks.columns)
+    monthly_df = pd.DataFrame(columns=tasks.columns)
 
 
 # =========================================================
