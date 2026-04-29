@@ -1,0 +1,44 @@
+name: Lead Email Import (Every 30 Minutes)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SEPARATE WORKFLOW FOR LEAD EMAIL IMPORT
+#
+# Why separate?
+# - Runs every 30 minutes (48 times/day)
+# - Should NOT trigger other scheduled email jobs
+# - Isolated in its own workflow to prevent cross-triggering issues
+# ═══════════════════════════════════════════════════════════════════════════════
+
+on:
+  schedule:
+    # Check for new lead emails from 4sinteriorsbbsr@gmail.com every 30 minutes
+    # Silently skips if leads already imported (based on Salesforce URL)
+    - cron: '*/30 * * * *'  # Every 30 minutes UTC → Every 30 minutes IST
+
+  # Allow manual trigger from GitHub Actions UI for testing
+  workflow_dispatch:
+
+jobs:
+  lead-email-import:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Import leads from Gmail (IMAP) - Every 30 minutes
+        env:
+          EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: |
+          cd streamlit_app
+          python lead_email_import_job.py

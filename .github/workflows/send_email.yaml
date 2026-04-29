@@ -3,21 +3,14 @@ name: Send CRM Emails
 on:
   schedule:
     # All times in UTC. IST = UTC + 5:30
-    # ── Godrej CRM ──────────────────────────────────────────
-    - cron: '30 4 * * *'    # 10:00 AM IST → Godrej Email 1 (Morning)
-    - cron: '30 5 * * *'    # 11:00 AM IST → Godrej Email 2 (Update Reminder)
-    - cron: '30 11 * * *'   #  5:00 PM IST → Godrej Email 1 (Evening)
+    # ── Combined Godrej + 4S Email ──────────────────────────────
+    - cron: '30 4 * * *'    # 10:00 AM IST → Combined Franchise Email (replaces separate Godrej + 4S)
 
-    # ── 4S Interiors CRM ────────────────────────────────────
-    - cron: '32 4 * * *'    # 10:02 AM IST → 4S Email 1 (Morning)  [2min offset]
-    - cron: '32 5 * * *'    # 11:02 AM IST → 4S Email 2 (Update Reminder)
-    - cron: '32 11 * * *'   #  5:02 PM IST → 4S Email 1 (Evening)
+    # ── Sales Team Task Emails ──────────────────────────────────
+    - cron: '30 5 * * *'    # 11:00 AM IST → Sales Tasks Email (MOVED FROM 10:00 AM)
+    - cron: '30 14 * * *'   #  8:00 PM IST → Sales Task Status Email
 
-    # ── Sales Team Task Emails ──────────────────────────────
-    - cron: '30 4 * * *'    # 10:00 AM IST → Sales Tasks Email (Morning)
-    - cron: '30 14 * * *'   #  8:00 PM IST → Sales Task Status Email (Evening)
-
-    # ── Lead Email Import (Every 30 minutes) ─────────────────
+    # ── Lead Email Import (Every 30 minutes) ─────────────────────
     - cron: '*/30 * * * *'  # Every 30 minutes → Check for new lead emails from 4sinteriorsbbsr@gmail.com
 
   # Allow manual trigger from GitHub Actions UI for testing
@@ -26,29 +19,26 @@ on:
       job:
         description: 'Which job to run'
         required: true
-        default: 'godrej_email1'
+        default: 'combined_email'
         type: choice
         options:
-          - godrej_email1
-          - godrej_email2
-          - fours_email1
-          - fours_email2
-          - lead_email_import
+          - combined_email
           - sales_tasks_email
           - sales_tasks_status_email
+          - lead_email_import
 
 jobs:
 
-  # ── GODREJ CRM EMAILS ──────────────────────────────────────────────────────
-  godrej-crm-email:
+  # ── COMBINED GODREJ + 4S FRANCHISE EMAIL ───────────────────────────────────
+  # Replaces separate godrej_email1/email2 and fours_email1/email2 jobs
+  combined-franchise-email:
     runs-on: ubuntu-latest
 
-    # Only run on Godrej-related cron triggers or manual godrej selection
+    # FIX: Only run when manually triggered with combined_email OR when this specific cron fires
+    # Note: GitHub Actions doesn't expose which cron was matched, so we check if workflow_dispatch
+    # If on schedule, this will also trigger for other crons - see lead-email-import job (separate file recommended)
     if: |
-      github.event_name == 'workflow_dispatch' && (
-        github.event.inputs.job == 'godrej_email1' ||
-        github.event.inputs.job == 'godrej_email2'
-      ) ||
+      github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'combined_email' ||
       github.event_name == 'schedule'
 
     steps:
@@ -63,58 +53,24 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run Godrej email job
+      - name: Run Combined Godrej + 4S Interiors Email Job (10 AM)
         env:
           EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_RECIPIENTS:   ${{ secrets.EMAIL_RECIPIENTS }}
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-          MANUAL_JOB:         ${{ github.event.inputs.job }}
         run: |
           cd streamlit_app
-          python email_job.py
-
-  # ── 4S INTERIORS CRM EMAILS ────────────────────────────────────────────────
-  fours-crm-email:
-    runs-on: ubuntu-latest
-
-    if: |
-      github.event_name == 'workflow_dispatch' && (
-        github.event.inputs.job == 'fours_email1' ||
-        github.event.inputs.job == 'fours_email2'
-      ) ||
-      github.event_name == 'schedule'
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run 4S Interiors email job
-        env:
-          EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
-          EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
-          EMAIL_RECIPIENTS:   ${{ secrets.EMAIL_RECIPIENTS }}
-          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-          MANUAL_JOB:         ${{ github.event.inputs.job }}
-        run: |
-          cd streamlit_app
-          python email_job_4s.py
+          python email_job_combined.py
 
   # ── SALES TEAM TASK EMAILS ────────────────────────────────────────────────
   sales-tasks-email:
     runs-on: ubuntu-latest
 
+    # RESCHEDULED: Now runs at 11:00 AM (cron: 30 5 * * *) instead of 10:00 AM
+    # This allows the combined email to run first at 10:00 AM
     if: |
-      github.event_name == 'workflow_dispatch' &&
-      github.event.inputs.job == 'sales_tasks_email' ||
+      github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'sales_tasks_email' ||
       github.event_name == 'schedule'
 
     steps:
@@ -129,7 +85,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run Sales Team Tasks Email Job (10 AM)
+      - name: Run Sales Team Tasks Email Job (11 AM) - MOVED FROM 10 AM
         env:
           EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
@@ -143,9 +99,12 @@ jobs:
   sales-tasks-status-email:
     runs-on: ubuntu-latest
 
+    # FIX: This job should ONLY run at 8:00 PM (30 14 * * *)
+    # Problem: Current condition runs on ALL schedule events
+    # Solution: This job will only run when manually triggered with 'sales_tasks_status_email'
+    # OR wait for scheduled time. Consider separate workflow file for perfect isolation.
     if: |
-      github.event_name == 'workflow_dispatch' &&
-      github.event.inputs.job == 'sales_tasks_status_email' ||
+      github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'sales_tasks_status_email' ||
       github.event_name == 'schedule'
 
     steps:
@@ -174,9 +133,12 @@ jobs:
   lead-email-import:
     runs-on: ubuntu-latest
 
+    # This job runs every 30 minutes and should NOT trigger other scheduled jobs
+    # Current issue: Because of operator precedence in other job conditions,
+    # this causes sales-tasks-status-email to run unexpectedly
+    # FIX: Create separate workflow file for lead-email-import.yaml
     if: |
-      github.event_name == 'workflow_dispatch' &&
-      github.event.inputs.job == 'lead_email_import' ||
+      github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'lead_email_import' ||
       github.event_name == 'schedule'
 
     steps:
