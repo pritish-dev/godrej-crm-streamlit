@@ -29,6 +29,9 @@ current_hour = now_ist.hour
 
 print(f"[4S Job] Running at IST: {now_ist.strftime('%Y-%m-%d %H:%M')}")
 
+# Allow manual override from GitHub Actions workflow_dispatch
+MANUAL_JOB = os.getenv("MANUAL_JOB", "").strip()
+
 
 # ── Helpers (mirrors dashboard load logic exactly) ────────────────────────────
 
@@ -121,7 +124,17 @@ if pending_del.empty:
     print("No pending deliveries found. Skipping email.")
     sys.exit(0)
 
-if current_hour == 10:
+# Manual trigger via GitHub Actions UI
+if MANUAL_JOB == "fours_email1":
+    print("Manual trigger → Sending Email 1 (Pending Delivery Report)...")
+    send_pending_delivery_email_4s(pending_del)
+
+elif MANUAL_JOB == "fours_email2":
+    print("Manual trigger → Sending Email 2 (Update Delivery Status Reminder)...")
+    send_update_delivery_status_email_4s(pending_del)
+
+# Scheduled trigger based on IST hour
+elif current_hour == 10:
     print("Sending Email 1 — Morning Pending Delivery Report...")
     send_pending_delivery_email_4s(pending_del)
 
