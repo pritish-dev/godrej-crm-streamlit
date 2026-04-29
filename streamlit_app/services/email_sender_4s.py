@@ -273,10 +273,7 @@ def send_pending_delivery_email_4s(pending_del: pd.DataFrame):
         )
     )
 
-    subject = (
-        f"[4S CRM] {slot} Delivery Report — "
-        f"{total} Pending · {today.strftime('%d %b %Y')}"
-    )
+    subject = f"[4s CRM] 4S Pending Delivery Report - {today.strftime('%d %b %Y')} - {total} Pending"
     _send_email(subject, body)
     print(f"  → 4S Email 1 sent: {total} records ({overdue_cnt} overdue, {tmrw_count} tomorrow)")
 
@@ -333,9 +330,6 @@ def send_update_delivery_status_email_4s(pending_del: pd.DataFrame):
         )
     )
 
-    subject = (
-        f"[4S CRM] ⚠️ Update Required — {total} Overdue Deliveries · "
-        f"{today.strftime('%d %b %Y')}"
-    )
+    subject = f"[4s CRM] 4S Overdue Delivery Update - {today.strftime('%d %b %Y')} - {total} Overdue"
     _send_email(subject, body)
     print(f"  → 4S Email 2 sent: {total} overdue records requiring CRM update")

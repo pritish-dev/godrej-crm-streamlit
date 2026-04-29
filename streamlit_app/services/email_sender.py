@@ -264,10 +264,7 @@ def send_pending_delivery_email(pending_grouped: pd.DataFrame):
         footer_note     = footer
     )
 
-    subject = (
-        f"[Godrej CRM] {slot} Delivery Report — "
-        f"{total} Pending · {today.strftime('%d %b %Y')}"
-    )
+    subject = f"[4s CRM] Franchise Pending Delivery Report - {today.strftime('%d %b %Y')} - {total} Pending"
 
     _send_email(subject, body)
     print(f"  → Email 1 sent: {total} records ({overdue_cnt} overdue, {tmrw_count} tomorrow)")
@@ -344,10 +341,7 @@ def send_update_delivery_status_email(pending_grouped: pd.DataFrame):
         footer_note     = footer
     )
 
-    subject = (
-        f"[Godrej CRM] ⚠️ Update Required — {total} Overdue Deliveries · "
-        f"{today.strftime('%d %b %Y')}"
-    )
+    subject = f"[4s CRM] Franchise Overdue Delivery Update - {today.strftime('%d %b %Y')} - {total} Overdue"
 
     _send_email(subject, body)
     print(f"  → Email 2 sent: {total} overdue records requiring CRM update")

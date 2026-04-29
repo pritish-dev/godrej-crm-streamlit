@@ -8,7 +8,6 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
 from services.sheets import get_df, write_df
-from services.automation import generate_whatsapp_group_link
 
 st.set_page_config(layout="wide", page_title="Sales Team Tasks")
 
@@ -171,7 +170,20 @@ def get_status(row):
     if row["DUE DATE"].date() < today:
         return "🔴 Overdue"
 
-    return "🟣 Pending"
+    return "🟡 Pending"
+
+
+# =========================================================
+# GET STATUS COLOR
+# =========================================================
+def get_status_color(status):
+    if "Done" in status:
+        return "#90EE90"  # Light Green
+    elif "Overdue" in status or "Missed" in status:
+        return "#FF6B6B"  # Red
+    elif "Pending" in status:
+        return "#FFE5B4"  # Peach/Light Orange
+    return "#FFFFFF"  # White
 
 
 # =========================================================
@@ -187,6 +199,86 @@ def update_task(task_id, assigned_to):
     write_df("SALES_TEAM_TASK", df)
 
     st.cache_data.clear()
+
+
+# =========================================================
+# RENDER COLOR-CODED TABLE WITH FILTERS
+# =========================================================
+def render_table_with_filters(df, title, freq_type):
+    st.subheader(title)
+
+    if df.empty:
+        st.write("No tasks.")
+        return df
+
+    # Get unique values for filters
+    employees = ["All"] + sorted(df["ASSIGNED TO"].str.upper().unique().tolist())
+    statuses = ["All"] + sorted(df["STATUS"].unique().tolist())
+
+    # Filters in columns
+    c1, c2 = st.columns(2)
+    selected_employee = c1.selectbox(f"Filter by Sales Person ({freq_type})", employees, key=f"emp_{freq_type}")
+    selected_status = c2.selectbox(f"Filter by Status ({freq_type})", statuses, key=f"status_{freq_type}")
+
+    # Apply filters
+    filtered_df = df.copy()
+
+    if selected_employee != "All":
+        filtered_df = filtered_df[filtered_df["ASSIGNED TO"].str.upper().str.contains(selected_employee, na=False)]
+
+    if selected_status != "All":
+        filtered_df = filtered_df[filtered_df["STATUS"] == selected_status]
+
+    if filtered_df.empty:
+        st.write("No tasks matching filters.")
+        return df
+
+    # Prepare display dataframe
+    df_display = filtered_df.copy()
+    df_display["DONE"] = False
+    df_display["DUE DATE"] = df_display["DUE DATE"].dt.strftime("%d-%b")
+
+    # Create HTML table with colors
+    html_table = "<table style='width:100%; border-collapse: collapse;'>"
+    html_table += "<tr style='background-color: #1f77b4; color: white;'>"
+    html_table += "<th style='padding: 10px; border: 1px solid #ddd;'>Done</th>"
+    html_table += "<th style='padding: 10px; border: 1px solid #ddd;'>Task Title</th>"
+    html_table += "<th style='padding: 10px; border: 1px solid #ddd;'>Assigned To</th>"
+    html_table += "<th style='padding: 10px; border: 1px solid #ddd;'>Due Date</th>"
+    html_table += "<th style='padding: 10px; border: 1px solid #ddd;'>Status</th>"
+    html_table += "</tr>"
+
+    for idx, row in df_display.iterrows():
+        color = get_status_color(row["STATUS"])
+        html_table += f"<tr style='background-color: {color};'>"
+        html_table += f"<td style='padding: 10px; border: 1px solid #ddd;'>☐</td>"
+        html_table += f"<td style='padding: 10px; border: 1px solid #ddd;'>{row['TASK TITLE']}</td>"
+        html_table += f"<td style='padding: 10px; border: 1px solid #ddd;'>{row['ASSIGNED TO']}</td>"
+        html_table += f"<td style='padding: 10px; border: 1px solid #ddd;'>{row['DUE DATE']}</td>"
+        html_table += f"<td style='padding: 10px; border: 1px solid #ddd;'>{row['STATUS']}</td>"
+        html_table += "</tr>"
+
+    html_table += "</table>"
+    st.markdown(html_table, unsafe_allow_html=True)
+
+    # Checkbox for marking done
+    st.write("**Mark tasks as done:**")
+    cols = st.columns(len(df_display))
+    done_indices = []
+
+    for idx, (i, row) in enumerate(df_display.iterrows()):
+        with cols[idx % len(cols)]:
+            if st.checkbox(f"✓ {row['TASK TITLE'][:20]}", key=f"done_{freq_type}_{i}"):
+                done_indices.append(i)
+
+    if done_indices:
+        for idx in done_indices:
+            task_id = filtered_df.iloc[idx]["TASK ID"]
+            assigned = filtered_df.iloc[idx]["ASSIGNED TO"]
+            update_task(task_id, assigned)
+        st.rerun()
+
+    return df
 
 
 # =========================================================
@@ -276,81 +368,21 @@ monthly_df = tasks[
 
 
 # =========================================================
-# TABLE
+# RENDER FILTERED TABLES WITH COLORS
 # =========================================================
-def render_table(df, title):
-    st.subheader(title)
-
-    if df.empty:
-        st.write("No tasks.")
-        return df
-
-    df_display = df.copy()
-    df_display["DONE"] = False
-    df_display["DUE DATE"] = df_display["DUE DATE"].dt.strftime("%d-%b")
-
-    edited = st.data_editor(
-        df_display[["DONE", "TASK TITLE", "ASSIGNED TO", "DUE DATE", "STATUS", "TASK ID"]],
-        use_container_width=True
-    )
-
-    done_rows = edited[edited["DONE"] == True]
-
-    if not done_rows.empty:
-        for tid in done_rows["TASK ID"]:
-            assigned = df[df["TASK ID"] == tid]["ASSIGNED TO"].values[0]
-            update_task(tid, assigned)
-        st.rerun()
-
-    return df
-
-
-d1 = render_table(daily_df, "🟣 Daily & Adhoc Tasks")
-d2 = render_table(weekly_df, "📅 Weekly Tasks")
-d3 = render_table(monthly_df, "🗓️ Monthly Tasks")
-
-
-# =========================================================
-# WHATSAPP
-# =========================================================
-def format_task_whatsapp(df, title):
-    if df.empty:
-        return f"*{title}*\n\nNo tasks 🎉"
-
-    msg = f"*{title}*\n\n"
-    msg += "📅 Date | Task | Assigned | Status\n"
-    msg += "--------------------------------------\n"
-
-    for _, row in df.iterrows():
-        msg += (
-            f"DATE📅: {row['DUE DATE'].strftime('%d-%b')}\n"
-            f"TASK📝: {row['TASK TITLE']}\n"
-            f"Assigned To👥: {row['ASSIGNED TO']}\n"
-            f"STATUS📌: {row['STATUS']}\n\n"
-        )
-
-    return msg
-
-
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    if st.button("📲 Daily Report"):
-        st.link_button("Send", generate_whatsapp_group_link(format_task_whatsapp(d1, "📋 Today's Tasks")))
-
-with col2:
-    if st.button("📲 Weekly Report"):
-        st.link_button("Send", generate_whatsapp_group_link(format_task_whatsapp(d2, "📅 Weekly Tasks")))
-
-with col3:
-    if st.button("📲 Monthly Report"):
-        st.link_button("Send", generate_whatsapp_group_link(format_task_whatsapp(d3, "🗓️ Monthly Tasks")))
-
-
-# =========================================================
-# SALES PERFORMANCE
-# =========================================================
+d1 = render_table_with_filters(daily_df, "🟣 Daily & Adhoc Tasks", "Daily")
 st.divider()
+
+d2 = render_table_with_filters(weekly_df, "📅 Weekly Tasks", "Weekly")
+st.divider()
+
+d3 = render_table_with_filters(monthly_df, "🗓️ Monthly Tasks", "Monthly")
+st.divider()
+
+
+# =========================================================
+# SALES TEAM PERFORMANCE WITH CLICKABLE COUNTS
+# =========================================================
 st.subheader("📊 Sales Team Performance")
 
 team_df = load_sales_team()
@@ -387,99 +419,71 @@ else:
 
         final = team_df.merge(summary, on="EMPLOYEE", how="left").fillna(0)
 
+        # Display summary table
         st.dataframe(final, use_container_width=True)
-        
-# =========================================================
-# WHATSAPP AUTOMATION (FREE)
-# =========================================================
+
+        # ✅ CLICKABLE COUNTS
+        st.write("**Click on counts to view detailed tasks:**")
+
+        for idx, row in final.iterrows():
+            employee = row["EMPLOYEE"]
+            overdue_count = int(row.get("Overdue", 0))
+            pending_count = int(row.get("Pending", 0))
+            done_count = int(row.get("Done", 0))
+
+            cols = st.columns([1, 1, 1, 2])
+
+            # Overdue
+            with cols[0]:
+                if st.button(f"🔴 Overdue: {overdue_count}", key=f"overdue_{employee}"):
+                    st.session_state.show_detail = f"overdue_{employee}"
+
+            # Pending
+            with cols[1]:
+                if st.button(f"🟡 Pending: {pending_count}", key=f"pending_{employee}"):
+                    st.session_state.show_detail = f"pending_{employee}"
+
+            # Done
+            with cols[2]:
+                if st.button(f"🟢 Done: {done_count}", key=f"done_{employee}"):
+                    st.session_state.show_detail = f"done_{employee}"
+
+            # Show details if clicked
+            if "show_detail" in st.session_state:
+                detail_key = st.session_state.show_detail
+
+                if detail_key == f"overdue_{employee}":
+                    st.write(f"**Overdue Tasks for {employee}:**")
+                    tasks_detail = logs_filtered[
+                        (logs_filtered["EMPLOYEE"] == employee) &
+                        (logs_filtered["STATUS"] == "Overdue")
+                    ]
+                    if not tasks_detail.empty:
+                        st.dataframe(tasks_detail[["TASK ID", "EMPLOYEE", "DATE", "STATUS"]], use_container_width=True)
+                    else:
+                        st.write("No overdue tasks")
+
+                elif detail_key == f"pending_{employee}":
+                    st.write(f"**Pending Tasks for {employee}:**")
+                    tasks_detail = logs_filtered[
+                        (logs_filtered["EMPLOYEE"] == employee) &
+                        (logs_filtered["STATUS"] == "Pending")
+                    ]
+                    if not tasks_detail.empty:
+                        st.dataframe(tasks_detail[["TASK ID", "EMPLOYEE", "DATE", "STATUS"]], use_container_width=True)
+                    else:
+                        st.write("No pending tasks")
+
+                elif detail_key == f"done_{employee}":
+                    st.write(f"**Done Tasks for {employee}:**")
+                    tasks_detail = logs_filtered[
+                        (logs_filtered["EMPLOYEE"] == employee) &
+                        (logs_filtered["STATUS"] == "Done")
+                    ]
+                    if not tasks_detail.empty:
+                        st.dataframe(tasks_detail[["TASK ID", "EMPLOYEE", "DATE", "STATUS"]], use_container_width=True)
+                    else:
+                        st.write("No done tasks")
 
 st.divider()
-st.subheader("📲 WhatsApp Automation")
-
-
-# =========================================================
-# FORMATTERS
-# =========================================================
-def format_employee_tasks(df, employee):
-    df_emp = df[df["ASSIGNED TO"].str.contains(employee, case=False, na=False)]
-
-    if df_emp.empty:
-        return f"*Hi {employee}*\n\nNo tasks today 🎉"
-
-    msg = f"*Hi {employee} 👋*\n\n📋 Your Tasks Today:\n\n"
-
-    for _, row in df_emp.iterrows():
-        msg += (
-            f"📅 {row['DUE DATE'].strftime('%d-%b')}\n"
-            f"📝 {row['TASK TITLE']}\n"
-            f"📌 {row['STATUS']}\n\n"
-        )
-
-    return msg
-
-
-def format_overdue_tasks(df):
-    overdue = df[df["STATUS"].isin(["🔴 Overdue", "🔴 Missed"])]
-
-    if overdue.empty:
-        return "✅ No overdue tasks!"
-
-    msg = "*🚨 Overdue Tasks Alert*\n\n"
-
-    for _, row in overdue.iterrows():
-        msg += (
-            f"👤 {row['ASSIGNED TO']}\n"
-            f"📝 {row['TASK TITLE']}\n"
-            f"📅 {row['DUE DATE'].strftime('%d-%b')}\n\n"
-        )
-
-    return msg
-
-
-def format_manager_summary(tasks):
-    total = len(tasks)
-    done = len(tasks[tasks["STATUS"] == "🟢 Done"])
-    overdue = len(tasks[tasks["STATUS"].isin(["🔴 Overdue", "🔴 Missed"])])
-    pending = len(tasks[tasks["STATUS"] == "🟣 Pending"])
-
-    msg = "*📊 Daily Summary*\n\n"
-    msg += f"Total Tasks: {total}\n"
-    msg += f"✅ Done: {done}\n"
-    msg += f"🟣 Pending: {pending}\n"
-    msg += f"🔴 Overdue: {overdue}\n"
-
-    return msg
-
-
-# =========================================================
-# BUTTONS
-# =========================================================
-c1, c2, c3, c4 = st.columns(4)
-
-# 1️⃣ DAILY GROUP MESSAGE
-with c1:
-    if st.button("📤 Send Daily Tasks"):
-        msg = format_task_whatsapp(d1, "📋 Today's Tasks")
-        st.link_button("Send to WhatsApp", generate_whatsapp_group_link(msg))
-
-
-# 2️⃣ EMPLOYEE-WISE MESSAGES
-with c2:
-    if st.button("👥 Send to Employees"):
-        for emp in team_df["EMPLOYEE"]:
-            msg = format_employee_tasks(d1, emp)
-            st.link_button(f"Send to {emp}", generate_whatsapp_group_link(msg))
-
-
-# 3️⃣ OVERDUE ALERT
-with c3:
-    if st.button("🚨 Send Overdue Alert"):
-        msg = format_overdue_tasks(tasks)
-        st.link_button("Send Alert", generate_whatsapp_group_link(msg))
-
-
-# 4️⃣ MANAGER SUMMARY
-with c4:
-    if st.button("📊 Send Summary"):
-        msg = format_manager_summary(tasks)
-        st.link_button("Send Summary", generate_whatsapp_group_link(msg))
+st.info("✅ Daily automated emails are sent at 10 AM and 8 PM with task updates and status reports.")

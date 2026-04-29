@@ -13,6 +13,10 @@ on:
     - cron: '32 5 * * *'    # 11:02 AM IST → 4S Email 2 (Update Reminder)
     - cron: '32 11 * * *'   #  5:02 PM IST → 4S Email 1 (Evening)
 
+    # ── Sales Team Task Emails ──────────────────────────────
+    - cron: '30 4 * * *'    # 10:00 AM IST → Sales Tasks Email (Morning)
+    - cron: '30 14 * * *'   #  8:00 PM IST → Sales Task Status Email (Evening)
+
   # Allow manual trigger from GitHub Actions UI for testing
   workflow_dispatch:
     inputs:
@@ -97,3 +101,59 @@ jobs:
         run: |
           cd streamlit_app
           python email_job_4s.py
+
+  # ── SALES TEAM TASK EMAILS ────────────────────────────────────────────────
+  sales-tasks-email:
+    runs-on: ubuntu-latest
+
+    if: github.event_name == 'schedule'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Sales Team Tasks Email Job (10 AM)
+        env:
+          EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECIPIENTS:   ${{ secrets.EMAIL_RECIPIENTS }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: |
+          cd streamlit_app
+          python sales_tasks_email_job.py
+
+  # ── SALES TEAM TASK STATUS EMAIL ───────────────────────────────────────────
+  sales-tasks-status-email:
+    runs-on: ubuntu-latest
+
+    if: github.event_name == 'schedule'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Sales Team Task Status Email Job (8 PM)
+        env:
+          EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECIPIENTS:   ${{ secrets.EMAIL_RECIPIENTS }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: |
+          cd streamlit_app
+          python sales_tasks_status_email_job.py
