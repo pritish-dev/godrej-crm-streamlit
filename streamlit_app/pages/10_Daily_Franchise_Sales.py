@@ -2,9 +2,35 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from services.sheets import get_df
+from services.email_trigger import send_combined_pending_delivery_email
 
 st.set_page_config(page_title="Franchise B2C Sales", layout="wide")
 st.title("📅 Daily Franchise B2C Sales by Executive")
+
+# ═════════════════════════════════════════════════════════════════════════════
+# EMAIL TRIGGER SECTION
+# ═════════════════════════════════════════════════════════════════════════════
+col1, col2, col3 = st.columns([2, 1.5, 1.5])
+
+with col1:
+    pass  # Placeholder for layout
+
+with col2:
+    if st.button("📧 Send Pending Delivery Email", key="send_franchise_email", use_container_width=True):
+        with st.spinner("📤 Sending email..."):
+            result = send_combined_pending_delivery_email()
+
+            if result['success']:
+                st.success(result['message'])
+            else:
+                st.error(result['message'])
+
+with col3:
+    st.write("")  # Spacing
+
+st.divider()
+
+# ═════════════════════════════════════════════════════════════════════════════
 
 def fix_duplicate_columns(df):
     cols = []
