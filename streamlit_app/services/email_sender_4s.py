@@ -16,15 +16,15 @@ from email.mime.multipart import MIMEMultipart
 # ── Credentials — works on both Streamlit Cloud and local ────────────────────
 try:
     import streamlit as st
-    SENDER_EMAIL    = st.secrets["EMAIL_SENDER_4S"]
-    SENDER_PASSWORD = st.secrets["EMAIL_PASSWORD_4S"]
-    RECIPIENTS      = [r.strip() for r in st.secrets["EMAIL_RECIPIENTS_4S"].split(",") if r.strip()]
+    SENDER_EMAIL    = st.secrets["EMAIL_SENDER"]
+    SENDER_PASSWORD = st.secrets["EMAIL_PASSWORD"]
+    RECIPIENTS      = [r.strip() for r in st.secrets["EMAIL_RECIPIENTS"].split(",") if r.strip()]
 except Exception:
     from dotenv import load_dotenv
     load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
-    SENDER_EMAIL    = os.getenv("EMAIL_SENDER_4S")
-    SENDER_PASSWORD = os.getenv("EMAIL_PASSWORD_4S")
-    RECIPIENTS      = [r.strip() for r in os.getenv("EMAIL_RECIPIENTS_4S", "").split(",") if r.strip()]
+    SENDER_EMAIL    = os.getenv("EMAIL_SENDER")
+    SENDER_PASSWORD = os.getenv("EMAIL_PASSWORD")
+    RECIPIENTS      = [r.strip() for r in os.getenv("EMAIL_RECIPIENTS", "").split(",") if r.strip()]
 
 # ── Date constants ────────────────────────────────────────────────────────────
 DATA_START_DATE = date(2026, 4, 1)   # Email 1: only fetch from this date onward
@@ -48,9 +48,9 @@ COL_PENDING_AMOUNT  = "PENDING AMOUNT"
 
 def _validate_credentials():
     if not SENDER_EMAIL or not SENDER_PASSWORD:
-        raise ValueError("EMAIL_SENDER_4S / EMAIL_PASSWORD_4S not set in secrets or .env")
+        raise ValueError("EMAIL_SENDER / EMAIL_PASSWORD not set in secrets or .env")
     if not RECIPIENTS:
-        raise ValueError("EMAIL_RECIPIENTS_4S not set in secrets or .env")
+        raise ValueError("EMAIL_RECIPIENTS not set in secrets or .env")
 
 
 def _send_email(subject: str, html_body: str):

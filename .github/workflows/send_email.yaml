@@ -69,7 +69,7 @@ jobs:
           python email_job.py
 
   # ── 4S INTERIORS CRM EMAILS ────────────────────────────────────────────────
-  4s-crm-email:
+  fours-crm-email:
     runs-on: ubuntu-latest
 
     if: |
