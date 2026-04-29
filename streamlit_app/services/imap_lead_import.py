@@ -215,7 +215,15 @@ def import_lead_to_sheet(lead_data: dict):
             next_id = 1
         else:
             df.columns = [str(c).strip().upper() for c in df.columns]
-            next_id = len(df) + 1
+            # Get maximum existing ID and increment (handles deleted records)
+            if "LEAD ID" in df.columns:
+                try:
+                    max_id = df["LEAD ID"].astype(str).str.strip().astype(int).max()
+                    next_id = max_id + 1
+                except:
+                    next_id = len(df) + 1
+            else:
+                next_id = len(df) + 1
 
         # NOTE: ASSIGNED TO is intentionally left empty.
         # Sales team will manually assign leads after viewing Salesforce details.

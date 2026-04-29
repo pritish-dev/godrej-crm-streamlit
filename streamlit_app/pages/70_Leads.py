@@ -124,7 +124,15 @@ def create_new_lead(lead_data: dict):
         next_id = 1
     else:
         df.columns = [str(c).strip().upper() for c in df.columns]
-        next_id = len(df) + 1
+        # Get maximum existing ID and increment (handles deleted records)
+        if "LEAD ID" in df.columns:
+            try:
+                max_id = df["LEAD ID"].astype(str).str.strip().astype(int).max()
+                next_id = max_id + 1
+            except:
+                next_id = len(df) + 1
+        else:
+            next_id = len(df) + 1
 
     new_lead = {
         "LEAD ID": str(next_id),
@@ -658,16 +666,16 @@ if not df_leads.empty:
                         "Update Status",
                         ["🟢 New", "🔵 Contacted", "🟡 Qualified", "🟣 Proposal Sent", "🟢 Converted", "🔴 Lost"],
                         value=status,
-                        key=f"status_{lead_id}"
+                        key=f"status_{lead_id}_{idx}"
                     )
 
                     new_follow_up = st.date_input(
                         "Follow Up Date",
                         value=pd.to_datetime(row.get("FOLLOW UP DATE", datetime.now())),
-                        key=f"followup_{lead_id}"
+                        key=f"followup_{lead_id}_{idx}"
                     )
 
-                    if st.button("💾 Save Changes", key=f"save_{lead_id}"):
+                    if st.button("💾 Save Changes", key=f"save_{lead_id}_{idx}"):
                         updates = {
                             "STATUS": new_status,
                             "FOLLOW UP DATE": new_follow_up.strftime("%d-%m-%Y"),
