@@ -17,7 +17,7 @@ import sys
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
-from sheets import get_df, write_df
+from services.sheets import get_df, write_df
 
 
 # ═════════════════════════════════════════════════════════════════════════════
