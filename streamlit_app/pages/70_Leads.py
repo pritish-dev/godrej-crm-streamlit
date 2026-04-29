@@ -132,6 +132,7 @@ def create_new_lead(lead_data: dict):
         "COMPANY": lead_data.get("company", ""),
         "EMAIL": lead_data.get("email", ""),
         "PHONE": lead_data.get("phone", ""),
+        "ADDRESS": lead_data.get("address", ""),
         "STATUS": lead_data.get("status", "🟢 New"),
         "PRIORITY": lead_data.get("priority", "Medium"),
         "SOURCE": lead_data.get("source", "Manual"),
@@ -189,16 +190,20 @@ with st.sidebar:
         key="quick_source"
     )
 
-    quick_name = st.text_input("Lead Name", key="quick_name")
+    quick_name = st.text_input("Lead Name *", key="quick_name")
+    quick_email = st.text_input("Email", key="quick_email")
     quick_phone = st.text_input("Phone", key="quick_phone")
+    quick_address = st.text_input("Address", key="quick_address")
     quick_product = st.text_input("Interested In", key="quick_product")
 
     if st.button("➕ Add Lead", key="quick_add"):
         if quick_name.strip():
             lead_data = {
                 "lead_name": quick_name,
-                "source": LEAD_SOURCES[quick_source],
+                "email": quick_email,
                 "phone": quick_phone,
+                "address": quick_address,
+                "source": LEAD_SOURCES[quick_source],
                 "notes": f"Product Interest: {quick_product}" if quick_product else "",
                 "status": "🟢 New",
                 "priority": "Medium",
@@ -217,8 +222,7 @@ with st.sidebar:
 with st.expander("➕ Add New Lead - Detailed Entry", expanded=False):
     st.subheader("Add Leads from Different Sources")
 
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-        "📧 Email",
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "🏪 Showroom",
         "📱 Social Media",
         "🌐 Website",
@@ -226,32 +230,14 @@ with st.expander("➕ Add New Lead - Detailed Entry", expanded=False):
         "✏️ Manual"
     ])
 
-    # TAB 1: EMAIL
+    # TAB 1: SHOWROOM WALK-IN
     with tab1:
-        st.write("**Paste email content below to extract lead details:**")
-        email_content = st.text_area(
-            "Email Content",
-            height=150,
-            placeholder="Paste the email body here...",
-            key="email_content"
-        )
-
-        if st.button("🔍 Parse Email", key="parse_email"):
-            if email_content.strip():
-                parsed = parse_email_content(email_content)
-                st.success("✅ Email parsed successfully!")
-                st.json(parsed)
-                st.session_state.parsed_lead = parsed
-            else:
-                st.warning("Please paste email content first.")
-
-    # TAB 2: SHOWROOM WALK-IN
-    with tab2:
         st.write("📝 **Showroom Visitor Information**")
 
         col1, col2 = st.columns(2)
         with col1:
             showroom_name = st.text_input("Visitor Name *", key="showroom_name")
+            showroom_email = st.text_input("Email", key="showroom_email")
             showroom_phone = st.text_input("Phone Number", key="showroom_phone")
             showroom_location = st.selectbox(
                 "Showroom Location",
@@ -260,6 +246,7 @@ with st.expander("➕ Add New Lead - Detailed Entry", expanded=False):
             )
 
         with col2:
+            showroom_address = st.text_input("Address", key="showroom_address")
             showroom_product = st.text_input("Product Interest", key="showroom_product")
             showroom_date = st.date_input("Visit Date", value=datetime.now(), key="showroom_date")
             showroom_budget = st.text_input("Budget Range (Optional)", key="showroom_budget")
@@ -270,7 +257,9 @@ with st.expander("➕ Add New Lead - Detailed Entry", expanded=False):
             if showroom_name.strip():
                 lead_data = {
                     "lead_name": showroom_name,
+                    "email": showroom_email,
                     "phone": showroom_phone,
+                    "address": showroom_address,
                     "status": "🟢 New",
                     "priority": "🟡 Medium",
                     "source": "🏪 Showroom Walk-in",
@@ -284,8 +273,8 @@ with st.expander("➕ Add New Lead - Detailed Entry", expanded=False):
             else:
                 st.error("Visitor name is required!")
 
-    # TAB 3: SOCIAL MEDIA
-    with tab3:
+    # TAB 2: SOCIAL MEDIA
+    with tab2:
         st.write("📱 **Social Media Lead Information**")
 
         col1, col2 = st.columns(2)
@@ -297,6 +286,7 @@ with st.expander("➕ Add New Lead - Detailed Entry", expanded=False):
                 key="sm_platform"
             )
             sm_username = st.text_input("Username/Profile", key="sm_username")
+            sm_address = st.text_input("Address", key="sm_address")
 
         with col2:
             sm_email = st.text_input("Email (if available)", key="sm_email")
@@ -316,6 +306,7 @@ with st.expander("➕ Add New Lead - Detailed Entry", expanded=False):
                     "lead_name": sm_name,
                     "email": sm_email,
                     "phone": sm_phone,
+                    "address": sm_address,
                     "status": "🟢 New",
                     "priority": "Medium",
                     "source": f"📱 {sm_platform}",
@@ -329,14 +320,15 @@ with st.expander("➕ Add New Lead - Detailed Entry", expanded=False):
             else:
                 st.error("Lead name is required!")
 
-    # TAB 4: WEBSITE
-    with tab4:
+    # TAB 3: WEBSITE
+    with tab3:
         st.write("🌐 **Website Lead Information**")
 
         col1, col2 = st.columns(2)
         with col1:
             web_name = st.text_input("Lead Name *", key="web_name")
             web_email = st.text_input("Email Address", key="web_email")
+            web_phone = st.text_input("Phone Number", key="web_phone")
             web_source = st.selectbox(
                 "Traffic Source",
                 ["Google Search", "Facebook Ads", "Instagram Ads", "Direct", "Referral", "Other"],
@@ -344,9 +336,9 @@ with st.expander("➕ Add New Lead - Detailed Entry", expanded=False):
             )
 
         with col2:
-            web_phone = st.text_input("Phone Number", key="web_phone")
-            web_page = st.text_input("Form Page", key="web_page")
+            web_address = st.text_input("Address", key="web_address")
             web_company = st.text_input("Company (if mentioned)", key="web_company")
+            web_page = st.text_input("Form Page", key="web_page")
 
         web_inquiry = st.text_area("Inquiry/Message", height=80, key="web_inquiry")
 
@@ -356,6 +348,7 @@ with st.expander("➕ Add New Lead - Detailed Entry", expanded=False):
                     "lead_name": web_name,
                     "email": web_email,
                     "phone": web_phone,
+                    "address": web_address,
                     "company": web_company,
                     "status": "🟢 New",
                     "priority": "Medium",
@@ -370,17 +363,19 @@ with st.expander("➕ Add New Lead - Detailed Entry", expanded=False):
             else:
                 st.error("Lead name is required!")
 
-    # TAB 5: PHONE CALL
-    with tab5:
+    # TAB 4: PHONE CALL
+    with tab4:
         st.write("☎️ **Inbound Call Lead Information**")
 
         col1, col2 = st.columns(2)
         with col1:
             call_name = st.text_input("Caller Name *", key="call_name")
             call_phone = st.text_input("Phone Number", key="call_phone")
+            call_email = st.text_input("Email (if provided)", key="call_email")
             call_company = st.text_input("Company (if mentioned)", key="call_company")
 
         with col2:
+            call_address = st.text_input("Address (if mentioned)", key="call_address")
             call_time = st.time_input("Call Time", value=datetime.now().time(), key="call_time")
             call_duration = st.text_input("Call Duration (minutes)", key="call_duration")
             call_outcome = st.selectbox(
@@ -395,7 +390,9 @@ with st.expander("➕ Add New Lead - Detailed Entry", expanded=False):
             if call_name.strip():
                 lead_data = {
                     "lead_name": call_name,
+                    "email": call_email,
                     "phone": call_phone,
+                    "address": call_address,
                     "company": call_company,
                     "status": "🔵 Contacted",
                     "priority": "Medium",
@@ -410,8 +407,8 @@ with st.expander("➕ Add New Lead - Detailed Entry", expanded=False):
             else:
                 st.error("Caller name is required!")
 
-    # TAB 6: MANUAL ENTRY
-    with tab6:
+    # TAB 5: MANUAL ENTRY
+    with tab5:
         st.write("**Generic Lead Entry**")
         # Pre-fill from parsed email if available
         parsed = st.session_state.get("parsed_lead", {})
@@ -494,7 +491,37 @@ with st.expander("➕ Add New Lead - Detailed Entry", expanded=False):
 
 
 # =========================================================
-# SECTION 2: LEADS SUMMARY METRICS
+# SECTION 2: MANUAL EMAIL FETCH
+# =========================================================
+st.write("---")
+
+col1, col2 = st.columns([3, 1])
+
+with col1:
+    st.write("#### 📧 Automated Lead Email Import")
+    st.write("Scheduled every 30 minutes. Click below to fetch on-demand.")
+
+with col2:
+    if st.button("🔄 Fetch Leads from Email", key="fetch_email"):
+        st.info("⏳ Fetching leads from email... Please wait.")
+        try:
+            # Import the IMAP module
+            from services.imap_lead_import import process_lead_emails
+
+            imported_count = process_lead_emails()
+
+            if imported_count > 0:
+                st.success(f"✅ Successfully imported {imported_count} leads from email!")
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.info("✅ No new leads found in email.")
+        except Exception as e:
+            st.error(f"❌ Error fetching leads: {str(e)}")
+
+
+# =========================================================
+# SECTION 3: LEADS SUMMARY METRICS
 # =========================================================
 st.write("---")
 st.subheader("📊 Leads Overview")
@@ -526,7 +553,7 @@ else:
 
 
 # =========================================================
-# SECTION 3: LEADS FILTERS & TABLE
+# SECTION 4: LEADS FILTERS & TABLE
 # =========================================================
 st.write("---")
 st.subheader("📋 All Leads")
@@ -652,7 +679,7 @@ if not df_leads.empty:
 
 
 # =========================================================
-# SECTION 4: SALES PIPELINE
+# SECTION 5: SALES PIPELINE
 # =========================================================
 st.write("---")
 st.subheader("📈 Sales Pipeline")
@@ -687,7 +714,7 @@ if not df_leads.empty and "STATUS" in df_leads.columns:
 
 
 # =========================================================
-# SECTION 5: UPCOMING FOLLOW-UPS
+# SECTION 6: UPCOMING FOLLOW-UPS
 # =========================================================
 st.write("---")
 st.subheader("📅 Upcoming Follow-ups")
@@ -735,7 +762,7 @@ if not df_leads.empty and "FOLLOW UP DATE" in df_leads.columns:
 
 
 # =========================================================
-# SECTION 6: PERFORMANCE BY SALES PERSON
+# SECTION 7: PERFORMANCE BY SALES PERSON
 # =========================================================
 st.write("---")
 st.subheader("👥 Performance by Sales Person")
@@ -772,7 +799,7 @@ if not df_leads.empty and "ASSIGNED TO" in df_leads.columns:
 st.write("---")
 
 # =========================================================
-# SECTION 7: LEAD SOURCE ANALYTICS
+# SECTION 8: LEAD SOURCE ANALYTICS
 # =========================================================
 st.subheader("📊 Lead Source Analytics")
 
