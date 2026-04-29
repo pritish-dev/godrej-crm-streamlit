@@ -1,16 +1,16 @@
-name: Sales Team Tasks Email (Morning 10 AM)
+name: Sales Team Task Status Email (Evening 8 PM)
 
 on:
   schedule:
     # All times in UTC. IST = UTC + 5:30
-    - cron: '30 4 * * *'    # 10:00 AM IST → Sales Tasks Email
+    - cron: '30 14 * * *'   # 8:00 PM IST → Sales Task Status Email
 
   # Allow manual trigger from GitHub Actions UI for testing
   workflow_dispatch:
 
 jobs:
-  # ── SALES TEAM TASK EMAILS ────────────────────────────────────────────────
-  sales-tasks-email:
+  # ── SALES TEAM TASK STATUS EMAIL ───────────────────────────────────────────
+  sales-task-status-email:
     runs-on: ubuntu-latest
 
     steps:
@@ -25,7 +25,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run Sales Team Tasks Email Job
+      - name: Run Sales Team Task Status Email Job
         env:
           EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
@@ -33,4 +33,4 @@ jobs:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
         run: |
           cd streamlit_app
-          python sales_tasks_email_job.py
+          python sales_tasks_status_email_job.py
