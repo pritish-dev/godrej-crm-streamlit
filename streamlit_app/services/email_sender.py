@@ -4,29 +4,60 @@ import pandas as pd
 from datetime import datetime, timedelta, date
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-import streamlit as st
 
 
-SENDER_EMAIL    = st.secrets["admin"]["EMAIL_SENDER"]
-SENDER_PASSWORD = st.secrets["admin"]["EMAIL_PASSWORD"]
-RECIPIENTS      = [r.strip() for r in st.secrets["admin"]["EMAIL_RECIPIENTS"].split(",") if r.strip()]
-'''
+# ── Load credentials from multiple sources (environment-agnostic) ────────────────
+# Priority: Environment Variables > Streamlit Secrets > .env file
+
+SENDER_EMAIL = None
+SENDER_PASSWORD = None
+RECIPIENTS = None
+
+# 1. Try environment variables (GitHub Actions)
 try:
-    # Streamlit Cloud — reads from app Settings → Secrets
-    SENDER_EMAIL    = st.secrets["email"]["EMAIL_SENDER"]
-    SENDER_PASSWORD = st.secrets["email"]["EMAIL_PASSWORD"]
-    RECIPIENTS      = [r.strip() for r in st.secret["email"]["EMAIL_RECIPIENTS"].split(",") if r.strip()]
-except Exception:
-    # Local development — reads from .env file
-    from dotenv import load_dotenv
-    load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
-    SENDER_EMAIL    = os.getenv("EMAIL_SENDER")
-    SENDER_PASSWORD = os.getenv("EMAIL_PASSWORD")
-    RECIPIENTS      = [r.strip() for r in os.getenv("EMAIL_RECIPIENTS", "").split(",") if r.strip()]'''
+    env_email = os.getenv("EMAIL_SENDER", "").strip()
+    env_password = os.getenv("EMAIL_PASSWORD", "").strip()
+    env_recipients = os.getenv("EMAIL_RECIPIENTS", "").strip()
 
-#SENDER_EMAIL    = "mymail.emailbox@gmail.com"
-#SENDER_PASSWORD = "uyxv jipk ohko bgwq"
-#RECIPIENTS = "pritish.sec@gmail.com"
+    if env_email and env_password and env_recipients:
+        SENDER_EMAIL = env_email
+        SENDER_PASSWORD = env_password
+        RECIPIENTS = [r.strip() for r in env_recipients.split(",") if r.strip()]
+except Exception:
+    pass
+
+# 2. Try Streamlit secrets (local development with Streamlit or Streamlit Cloud)
+if SENDER_EMAIL is None:
+    try:
+        import streamlit as st
+        # Try nested structure first (admin key)
+        SENDER_EMAIL = st.secrets["admin"]["EMAIL_SENDER"]
+        SENDER_PASSWORD = st.secrets["admin"]["EMAIL_PASSWORD"]
+        RECIPIENTS = [r.strip() for r in st.secrets["admin"]["EMAIL_RECIPIENTS"].split(",") if r.strip()]
+    except Exception:
+        try:
+            # Try flat structure
+            SENDER_EMAIL = st.secrets["EMAIL_SENDER"]
+            SENDER_PASSWORD = st.secrets["EMAIL_PASSWORD"]
+            RECIPIENTS = [r.strip() for r in st.secrets["EMAIL_RECIPIENTS"].split(",") if r.strip()]
+        except Exception:
+            pass
+
+# 3. Try .env file (local development)
+if SENDER_EMAIL is None:
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
+        env_email = os.getenv("EMAIL_SENDER", "").strip()
+        env_password = os.getenv("EMAIL_PASSWORD", "").strip()
+        env_recipients = os.getenv("EMAIL_RECIPIENTS", "").strip()
+
+        if env_email and env_password and env_recipients:
+            SENDER_EMAIL = env_email
+            SENDER_PASSWORD = env_password
+            RECIPIENTS = [r.strip() for r in env_recipients.split(",") if r.strip()]
+    except Exception:
+        pass
 
 # ── Date constants ────────────────────────────────────────────────────────────
 DATA_START_DATE = date(2026, 4, 1)   # Email 1: fetch from this date onward

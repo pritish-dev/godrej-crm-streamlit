@@ -13,18 +13,51 @@ from datetime import datetime, timedelta, date
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-# ── Credentials — works on both Streamlit Cloud and local ────────────────────
+# ── Load credentials from multiple sources (environment-agnostic) ────────────────
+# Priority: Environment Variables > Streamlit Secrets > .env file
+
+SENDER_EMAIL = None
+SENDER_PASSWORD = None
+RECIPIENTS = None
+
+# 1. Try environment variables (GitHub Actions)
 try:
-    import streamlit as st
-    SENDER_EMAIL    = st.secrets["EMAIL_SENDER"]
-    SENDER_PASSWORD = st.secrets["EMAIL_PASSWORD"]
-    RECIPIENTS      = [r.strip() for r in st.secrets["EMAIL_RECIPIENTS"].split(",") if r.strip()]
+    env_email = os.getenv("EMAIL_SENDER", "").strip()
+    env_password = os.getenv("EMAIL_PASSWORD", "").strip()
+    env_recipients = os.getenv("EMAIL_RECIPIENTS", "").strip()
+
+    if env_email and env_password and env_recipients:
+        SENDER_EMAIL = env_email
+        SENDER_PASSWORD = env_password
+        RECIPIENTS = [r.strip() for r in env_recipients.split(",") if r.strip()]
 except Exception:
-    from dotenv import load_dotenv
-    load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
-    SENDER_EMAIL    = os.getenv("EMAIL_SENDER")
-    SENDER_PASSWORD = os.getenv("EMAIL_PASSWORD")
-    RECIPIENTS      = [r.strip() for r in os.getenv("EMAIL_RECIPIENTS", "").split(",") if r.strip()]
+    pass
+
+# 2. Try Streamlit secrets (local development with Streamlit or Streamlit Cloud)
+if SENDER_EMAIL is None:
+    try:
+        import streamlit as st
+        SENDER_EMAIL = st.secrets["EMAIL_SENDER"]
+        SENDER_PASSWORD = st.secrets["EMAIL_PASSWORD"]
+        RECIPIENTS = [r.strip() for r in st.secrets["EMAIL_RECIPIENTS"].split(",") if r.strip()]
+    except Exception:
+        pass
+
+# 3. Try .env file (local development)
+if SENDER_EMAIL is None:
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
+        env_email = os.getenv("EMAIL_SENDER", "").strip()
+        env_password = os.getenv("EMAIL_PASSWORD", "").strip()
+        env_recipients = os.getenv("EMAIL_RECIPIENTS", "").strip()
+
+        if env_email and env_password and env_recipients:
+            SENDER_EMAIL = env_email
+            SENDER_PASSWORD = env_password
+            RECIPIENTS = [r.strip() for r in env_recipients.split(",") if r.strip()]
+    except Exception:
+        pass
 
 # ── Date constants ────────────────────────────────────────────────────────────
 DATA_START_DATE = date(2026, 4, 1)   # Email 1: only fetch from this date onward
