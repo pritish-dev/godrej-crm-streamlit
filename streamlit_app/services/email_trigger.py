@@ -108,31 +108,71 @@ def send_combined_pending_delivery_email():
         godrej_data = pd.DataFrame()
         fours_data = pd.DataFrame()
 
-        # Load Godrej data
+        # Get sheet configuration from SHEET_DETAILS
         try:
-            godrej_df = get_df("GODREJ")
-            if godrej_df is not None and not godrej_df.empty:
-                godrej_df.columns = [str(c).strip().upper() for c in godrej_df.columns]
-                # Filter for pending delivery
-                if "STATUS" in godrej_df.columns:
-                    godrej_data = godrej_df[godrej_df["STATUS"].astype(str).str.contains("Pending", case=False, na=False)].copy()
-                godrej_data["FRANCHISE"] = "Godrej"
-                result['godrej_count'] = len(godrej_data)
-        except Exception as e:
-            result['message'] += f"⚠️ Error loading Godrej data: {str(e)}\n"
+            config_df = get_df("SHEET_DETAILS")
+            if config_df is None or config_df.empty:
+                result['message'] = "⚠️ SHEET_DETAILS sheet not found\n"
+            else:
+                # Load Godrej/Franchise sheets
+                try:
+                    godrej_sheets = config_df["Franchise_sheets"].dropna().astype(str).str.strip().unique().tolist()
+                    for sheet_name in godrej_sheets:
+                        try:
+                            godrej_df = get_df(sheet_name)
+                            if godrej_df is not None and not godrej_df.empty:
+                                godrej_df.columns = [str(c).strip().upper() for c in godrej_df.columns]
 
-        # Load 4S data
-        try:
-            fours_df = get_df("4S")
-            if fours_df is not None and not fours_df.empty:
-                fours_df.columns = [str(c).strip().upper() for c in fours_df.columns]
-                # Filter for pending delivery
-                if "STATUS" in fours_df.columns:
-                    fours_data = fours_df[fours_df["STATUS"].astype(str).str.contains("Pending", case=False, na=False)].copy()
-                fours_data["FRANCHISE"] = "4S Interiors"
-                result['fours_count'] = len(fours_data)
+                                # Try multiple column names for status/delivery status
+                                status_col = None
+                                for col in ["STATUS", "DELIVERY STATUS", "DELIVERY_STATUS"]:
+                                    if col in godrej_df.columns:
+                                        status_col = col
+                                        break
+
+                                if status_col:
+                                    # Filter for pending delivery (case-insensitive)
+                                    pending = godrej_df[godrej_df[status_col].astype(str).str.contains("Pending", case=False, na=False)].copy()
+                                    if not pending.empty:
+                                        pending["FRANCHISE"] = "Godrej"
+                                        godrej_data = pd.concat([godrej_data, pending], ignore_index=True)
+                        except Exception as e:
+                            continue
+
+                    result['godrej_count'] = len(godrej_data)
+                except Exception as e:
+                    result['message'] += f"⚠️ Error loading Godrej sheets: {str(e)}\n"
+
+                # Load 4S sheets
+                try:
+                    fours_sheets = config_df["four_s_sheets"].dropna().astype(str).str.strip().unique().tolist()
+                    for sheet_name in fours_sheets:
+                        try:
+                            fours_df = get_df(sheet_name)
+                            if fours_df is not None and not fours_df.empty:
+                                fours_df.columns = [str(c).strip().upper() for c in fours_df.columns]
+
+                                # Try multiple column names for status/delivery status
+                                status_col = None
+                                for col in ["STATUS", "DELIVERY STATUS", "DELIVERY_STATUS"]:
+                                    if col in fours_df.columns:
+                                        status_col = col
+                                        break
+
+                                if status_col:
+                                    # Filter for pending delivery (case-insensitive)
+                                    pending = fours_df[fours_df[status_col].astype(str).str.contains("Pending", case=False, na=False)].copy()
+                                    if not pending.empty:
+                                        pending["FRANCHISE"] = "4S Interiors"
+                                        fours_data = pd.concat([fours_data, pending], ignore_index=True)
+                        except Exception as e:
+                            continue
+
+                    result['fours_count'] = len(fours_data)
+                except Exception as e:
+                    result['message'] += f"⚠️ Error loading 4S sheets: {str(e)}\n"
         except Exception as e:
-            result['message'] += f"⚠️ Error loading 4S data: {str(e)}\n"
+            result['message'] += f"⚠️ Error loading SHEET_DETAILS: {str(e)}\n"
 
         # Generate HTML email
         html_content = generate_combined_email_html(godrej_data, fours_data)
