@@ -653,61 +653,92 @@ if not df_leads.empty:
         selected_lead_display = st.selectbox("Select Lead to Edit", lead_options, key="lead_selector")
 
         if selected_lead_display:
-            # Extract lead_id from the selection
-            selected_lead_id = selected_lead_display.split(" - ")[0]
+            try:
+                # Extract lead_id from the selection
+                selected_lead_id = selected_lead_display.split(" - ")[0].strip()
 
-            # Get the full row data
-            selected_row = filtered_df[filtered_df["LEAD ID"].astype(str) == selected_lead_id.strip()].iloc[0]
+                # Get the full row data
+                matching_rows = filtered_df[filtered_df["LEAD ID"].astype(str).str.strip() == selected_lead_id]
 
-            col1, col2 = st.columns([2, 1])
+                if matching_rows.empty:
+                    st.error(f"❌ Lead {selected_lead_id} not found")
+                else:
+                    selected_row = matching_rows.iloc[0]
 
-            with col1:
-                st.write("#### Lead Details")
-                detail_col1, detail_col2 = st.columns(2)
+                    col1, col2 = st.columns([2, 1])
 
-                with detail_col1:
-                    st.write(f"**Email:** {selected_row.get('EMAIL', 'N/A')}")
-                    st.write(f"**Phone:** {selected_row.get('PHONE', 'N/A')}")
-                    st.write(f"**Company:** {selected_row.get('COMPANY', 'N/A')}")
-                    st.write(f"**Source:** {selected_row.get('SOURCE', 'N/A')}")
+                    with col1:
+                        st.write("#### Lead Details")
+                        detail_col1, detail_col2 = st.columns(2)
 
-                with detail_col2:
-                    st.write(f"**Assigned To:** {selected_row.get('ASSIGNED TO', 'Unassigned') or 'Unassigned'}")
-                    st.write(f"**Status:** {selected_row.get('STATUS', 'Unknown')}")
-                    st.write(f"**Priority:** {selected_row.get('PRIORITY', '')}")
-                    st.write(f"**Created:** {selected_row.get('CREATED DATE', 'N/A')}")
+                        with detail_col1:
+                            st.write(f"**Email:** {selected_row.get('EMAIL', 'N/A')}")
+                            st.write(f"**Phone:** {selected_row.get('PHONE', 'N/A')}")
+                            st.write(f"**Company:** {selected_row.get('COMPANY', 'N/A')}")
+                            st.write(f"**Source:** {selected_row.get('SOURCE', 'N/A')}")
 
-                st.write("**Notes:**")
-                st.write(selected_row.get("NOTES", "No notes"))
+                        with detail_col2:
+                            st.write(f"**Assigned To:** {selected_row.get('ASSIGNED TO', 'Unassigned') or 'Unassigned'}")
+                            st.write(f"**Status:** {selected_row.get('STATUS', 'Unknown')}")
+                            st.write(f"**Priority:** {selected_row.get('PRIORITY', '')}")
+                            st.write(f"**Created:** {selected_row.get('CREATED DATE', 'N/A')}")
 
-                if selected_row.get("SALESFORCE URL"):
-                    st.markdown(f"**[🔗 View in Salesforce]({selected_row.get('SALESFORCE URL')})**")
+                        st.write("**Notes:**")
+                        st.write(selected_row.get("NOTES", "No notes"))
 
-            with col2:
-                st.write("#### Update Info")
+                        if selected_row.get("SALESFORCE URL"):
+                            st.markdown(f"**[🔗 View in Salesforce]({selected_row.get('SALESFORCE URL')})**")
 
-                new_status = st.selectbox(
-                    "Update Status",
-                    ["🟢 New", "🔵 Contacted", "🟡 Qualified", "🟣 Proposal Sent", "🟢 Converted", "🔴 Lost"],
-                    value=selected_row.get("STATUS", "🟢 New"),
-                    key="status_update"
-                )
+                    with col2:
+                        st.write("#### Update Info")
 
-                new_follow_up = st.date_input(
-                    "Follow Up Date",
-                    value=pd.to_datetime(selected_row.get("FOLLOW UP DATE", datetime.now())),
-                    key="followup_update"
-                )
+                        # ═══════════════════════════════════════════════════════════
+                        # SAFE STATUS HANDLING - Validate and clean the value
+                        # ═══════════════════════════════════════════════════════════
+                        status_options = ["🟢 New", "🔵 Contacted", "🟡 Qualified", "🟣 Proposal Sent", "🟢 Converted", "🔴 Lost"]
+                        current_status = str(selected_row.get("STATUS", "🟢 New")).strip()
 
-                if st.button("💾 Save Changes", key="save_changes"):
-                    updates = {
-                        "STATUS": new_status,
-                        "FOLLOW UP DATE": new_follow_up.strftime("%d-%m-%Y"),
-                        "LAST CONTACT": datetime.now().strftime("%d-%m-%Y %H:%M")
-                    }
-                    update_lead(selected_lead_id.strip(), updates)
-                    st.success("✅ Lead updated!")
-                    st.rerun()
+                        # Ensure the current status is in the options, otherwise default to first option
+                        if current_status not in status_options:
+                            current_status = status_options[0]
+
+                        new_status = st.selectbox(
+                            "Update Status",
+                            status_options,
+                            index=status_options.index(current_status),
+                            key="status_update"
+                        )
+
+                        # ═══════════════════════════════════════════════════════════
+                        # SAFE DATE HANDLING - Validate the date value
+                        # ═══════════════════════════════════════════════════════════
+                        try:
+                            follow_up_str = str(selected_row.get("FOLLOW UP DATE", "")).strip()
+                            if follow_up_str and follow_up_str != "N/A":
+                                follow_up_date = pd.to_datetime(follow_up_str)
+                            else:
+                                follow_up_date = datetime.now() + timedelta(days=1)
+                        except:
+                            follow_up_date = datetime.now() + timedelta(days=1)
+
+                        new_follow_up = st.date_input(
+                            "Follow Up Date",
+                            value=follow_up_date,
+                            key="followup_update"
+                        )
+
+                        if st.button("💾 Save Changes", key="save_changes"):
+                            updates = {
+                                "STATUS": new_status,
+                                "FOLLOW UP DATE": new_follow_up.strftime("%d-%m-%Y"),
+                                "LAST CONTACT": datetime.now().strftime("%d-%m-%Y %H:%M")
+                            }
+                            update_lead(selected_lead_id, updates)
+                            st.success("✅ Lead updated!")
+                            st.rerun()
+
+            except Exception as e:
+                st.error(f"❌ Error loading lead details: {str(e)}")
 
 
 # =========================================================
