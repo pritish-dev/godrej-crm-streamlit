@@ -83,7 +83,7 @@ def auto_log_tasks(tasks):
             continue
 
         for emp in str(row["ASSIGNED TO"]).split(","):
-            emp = emp.strip().upper()  # ✅ FIX
+            emp = emp.strip().upper()
 
             exists = (
                 (log_df["TASK ID"].astype(str).str.strip() == str(row.get("TASK ID", "")).strip()) &
@@ -102,7 +102,7 @@ def auto_log_tasks(tasks):
                 status = "Pending"
 
             new_logs.append({
-                "TASK ID": str(row.get("TASK ID", "")).strip(),  # ✅ FIX
+                "TASK ID": str(row.get("TASK ID", "")).strip(),
                 "EMPLOYEE": emp,
                 "DATE": today_str,
                 "STATUS": status
@@ -174,9 +174,9 @@ def get_status(row):
 
 
 # =========================================================
-# GET STATUS COLOR
+# GET STATUS COLOR (For display)
 # =========================================================
-def get_status_color(status):
+def get_status_color_hex(status):
     if "Done" in status:
         return "#90EE90"  # Light Green
     elif "Overdue" in status or "Missed" in status:
@@ -189,7 +189,7 @@ def get_status_color(status):
 # =========================================================
 # UPDATE TASK
 # =========================================================
-def update_task(task_id, assigned_to):
+def update_task(task_id):
     today_str = datetime.now().strftime("%d-%m-%Y")
 
     df = get_df("SALES_TEAM_TASK")
@@ -202,23 +202,39 @@ def update_task(task_id, assigned_to):
 
 
 # =========================================================
-# RENDER COLOR-CODED TABLE WITH FILTERS
+# RENDER INTERACTIVE TABLE WITH FILTERS
 # =========================================================
-def render_table_with_filters(df, title, freq_type):
+def render_interactive_table(df, title, freq_type):
+    """Render tasks in an interactive format with filters and marking capability"""
+
     st.subheader(title)
 
     if df.empty:
-        st.write("No tasks.")
-        return df
+        st.info("No tasks.")
+        return
 
     # Get unique values for filters
     employees = ["All"] + sorted(df["ASSIGNED TO"].str.upper().unique().tolist())
     statuses = ["All"] + sorted(df["STATUS"].unique().tolist())
 
     # Filters in columns
-    c1, c2 = st.columns(2)
-    selected_employee = c1.selectbox(f"Filter by Sales Person ({freq_type})", employees, key=f"emp_{freq_type}")
-    selected_status = c2.selectbox(f"Filter by Status ({freq_type})", statuses, key=f"status_{freq_type}")
+    col1, col2, col3 = st.columns([2, 2, 2])
+
+    with col1:
+        selected_employee = st.selectbox(
+            "Filter by Sales Person",
+            employees,
+            key=f"emp_filter_{freq_type}",
+            label_visibility="collapsed"
+        )
+
+    with col2:
+        selected_status = st.selectbox(
+            "Filter by Status",
+            statuses,
+            key=f"status_filter_{freq_type}",
+            label_visibility="collapsed"
+        )
 
     # Apply filters
     filtered_df = df.copy()
@@ -230,55 +246,81 @@ def render_table_with_filters(df, title, freq_type):
         filtered_df = filtered_df[filtered_df["STATUS"] == selected_status]
 
     if filtered_df.empty:
-        st.write("No tasks matching filters.")
-        return df
+        st.warning("No tasks matching filters.")
+        return
 
     # Prepare display dataframe
     df_display = filtered_df.copy()
-    df_display["DONE"] = False
-    df_display["DUE DATE"] = df_display["DUE DATE"].dt.strftime("%d-%b")
+    df_display["DUE_DATE_STR"] = df_display["DUE DATE"].dt.strftime("%d-%b")
+    df_display["Mark Done"] = False
 
-    # Create HTML table with colors
-    html_table = "<table style='width:100%; border-collapse: collapse;'>"
-    html_table += "<tr style='background-color: #1f77b4; color: white;'>"
-    html_table += "<th style='padding: 10px; border: 1px solid #ddd;'>Done</th>"
-    html_table += "<th style='padding: 10px; border: 1px solid #ddd;'>Task Title</th>"
-    html_table += "<th style='padding: 10px; border: 1px solid #ddd;'>Assigned To</th>"
-    html_table += "<th style='padding: 10px; border: 1px solid #ddd;'>Due Date</th>"
-    html_table += "<th style='padding: 10px; border: 1px solid #ddd;'>Status</th>"
-    html_table += "</tr>"
+    # Create interactive table
+    st.write("**Task List:**")
 
-    for idx, row in df_display.iterrows():
-        color = get_status_color(row["STATUS"])
-        html_table += f"<tr style='background-color: {color};'>"
-        html_table += f"<td style='padding: 10px; border: 1px solid #ddd;'>☐</td>"
-        html_table += f"<td style='padding: 10px; border: 1px solid #ddd;'>{row['TASK TITLE']}</td>"
-        html_table += f"<td style='padding: 10px; border: 1px solid #ddd;'>{row['ASSIGNED TO']}</td>"
-        html_table += f"<td style='padding: 10px; border: 1px solid #ddd;'>{row['DUE DATE']}</td>"
-        html_table += f"<td style='padding: 10px; border: 1px solid #ddd;'>{row['STATUS']}</td>"
-        html_table += "</tr>"
+    # Show summary stats
+    col1, col2, col3 = st.columns(3)
 
-    html_table += "</table>"
-    st.markdown(html_table, unsafe_allow_html=True)
+    with col1:
+        pending_count = len(df_display[df_display["STATUS"].str.contains("Pending")])
+        st.metric("📋 Pending", pending_count)
 
-    # Checkbox for marking done
-    st.write("**Mark tasks as done:**")
-    cols = st.columns(len(df_display))
-    done_indices = []
+    with col2:
+        done_count = len(df_display[df_display["STATUS"].str.contains("Done")])
+        st.metric("✅ Done", done_count)
+
+    with col3:
+        overdue_count = len(df_display[df_display["STATUS"].str.contains("Overdue|Missed", regex=True)])
+        st.metric("🔴 Overdue", overdue_count)
+
+    # Create table with color-coded rows
+    st.write("")
 
     for idx, (i, row) in enumerate(df_display.iterrows()):
-        with cols[idx % len(cols)]:
-            if st.checkbox(f"✓ {row['TASK TITLE'][:20]}", key=f"done_{freq_type}_{i}"):
-                done_indices.append(i)
+        # Create container for each task
+        status = row["STATUS"]
+        status_color = get_status_color_hex(status)
 
-    if done_indices:
-        for idx in done_indices:
-            task_id = filtered_df.iloc[idx]["TASK ID"]
-            assigned = filtered_df.iloc[idx]["ASSIGNED TO"]
-            update_task(task_id, assigned)
-        st.rerun()
+        # Task card
+        with st.container():
+            cols = st.columns([0.5, 2, 1.5, 1, 1.5, 0.5])
 
-    return df
+            # Mark Done Checkbox
+            with cols[0]:
+                marked_done = st.checkbox(
+                    "✓",
+                    key=f"done_marker_{freq_type}_{row['TASK ID']}_{idx}",
+                    label_visibility="collapsed",
+                    help="Mark task as done"
+                )
+
+                if marked_done:
+                    update_task(row["TASK ID"])
+                    st.rerun()
+
+            # Task Title
+            with cols[1]:
+                st.markdown(f"**{row['TASK TITLE']}**")
+
+            # Assigned To
+            with cols[2]:
+                st.text(row["ASSIGNED TO"])
+
+            # Due Date
+            with cols[3]:
+                st.text(row["DUE_DATE_STR"])
+
+            # Status with color background
+            with cols[4]:
+                # Create colored badge
+                st.markdown(
+                    f'<div style="background-color: {status_color}; padding: 8px; border-radius: 4px; text-align: center;"><b>{status}</b></div>',
+                    unsafe_allow_html=True
+                )
+
+            with cols[5]:
+                st.text(row["FREQUENCY"])
+
+        st.divider()
 
 
 # =========================================================
@@ -289,17 +331,17 @@ st.title("📋 Sales Team Task Dashboard")
 df_master = load_tasks()
 
 # CREATE TASK
-with st.expander("➕ Create New Task"):
+with st.expander("➕ Create New Task", expanded=False):
     with st.form("new_task"):
         c1, c2 = st.columns(2)
         title = c1.text_input("Task Title")
-        assigned = c2.text_input("Assigned To")
+        assigned = c2.text_input("Assigned To (comma-separated)")
 
         c3, c4 = st.columns(2)
         freq = c3.selectbox("Frequency", ["Daily", "Weekly", "Monthly", "ADHOC"])
         date = c4.date_input("Task Date", datetime.now())
 
-        if st.form_submit_button("Add Task"):
+        if st.form_submit_button("➕ Add Task"):
             if title and assigned:
                 df_latest = get_df("SALES_TEAM_TASK")
 
@@ -314,7 +356,7 @@ with st.expander("➕ Create New Task"):
                     "TASK ID": str(next_id),
                     "TASK TITLE": title,
                     "FREQUENCY": freq,
-                    "ASSIGNED TO": assigned,
+                    "ASSIGNED TO": assigned.upper(),
                     "TASK DATE": date.strftime("%d-%m-%Y"),
                     "LAST COMPLETED DATE": ""
                 }
@@ -322,7 +364,7 @@ with st.expander("➕ Create New Task"):
                 df_latest = pd.concat([df_latest, pd.DataFrame([new_row])], ignore_index=True)
                 write_df("SALES_TEAM_TASK", df_latest)
 
-                st.success("Task added successfully")
+                st.success("✅ Task added successfully!")
                 st.cache_data.clear()
                 st.rerun()
 
@@ -331,6 +373,9 @@ with st.expander("➕ Create New Task"):
 # FILTER
 # =========================================================
 today = datetime.now()
+
+st.write("---")
+st.subheader("📅 Select Time Period")
 
 c1, c2 = st.columns(2)
 year = c1.selectbox("Year", [2024, 2025, 2026, 2027], index=2)
@@ -368,17 +413,19 @@ monthly_df = tasks[
 
 
 # =========================================================
-# RENDER FILTERED TABLES WITH COLORS
+# RENDER TABLES
 # =========================================================
-d1 = render_table_with_filters(daily_df, "🟣 Daily & Adhoc Tasks", "Daily")
-st.divider()
+st.write("---")
 
-d2 = render_table_with_filters(weekly_df, "📅 Weekly Tasks", "Weekly")
-st.divider()
+render_interactive_table(daily_df, "🟣 Daily & Adhoc Tasks", "daily")
+st.write("")
 
-d3 = render_table_with_filters(monthly_df, "🗓️ Monthly Tasks", "Monthly")
-st.divider()
+render_interactive_table(weekly_df, "📅 Weekly Tasks", "weekly")
+st.write("")
 
+render_interactive_table(monthly_df, "🗓️ Monthly Tasks", "monthly")
+
+st.write("---")
 
 # =========================================================
 # SALES TEAM PERFORMANCE WITH CLICKABLE COUNTS
@@ -389,7 +436,7 @@ team_df = load_sales_team()
 log_df = get_df("TASK_LOGS")
 
 if log_df is None or log_df.empty:
-    st.info("No Tasks Assigned")
+    st.info("No tasks logged yet")
 else:
     log_df.columns = [str(c).strip().upper() for c in log_df.columns]
 
@@ -397,9 +444,9 @@ else:
     log_df["EMPLOYEE"] = log_df["EMPLOYEE"].str.strip().str.upper()
     log_df["DATE"] = pd.to_datetime(log_df["DATE"], dayfirst=True)
 
-    d1, d2 = st.columns(2)
-    start_date = d1.date_input("From", datetime(today.year, today.month, 1))
-    end_date = d2.date_input("To", today)
+    c1, c2 = st.columns(2)
+    start_date = c1.date_input("From", datetime(today.year, today.month, 1), key="perf_start")
+    end_date = c2.date_input("To", today, key="perf_end")
 
     logs_filtered = log_df[
         (log_df["DATE"].dt.date >= start_date) &
@@ -407,7 +454,7 @@ else:
     ]
 
     if logs_filtered.empty:
-        st.info("No Tasks Assigned")
+        st.info("No task data in selected date range")
     else:
         summary = logs_filtered.groupby(["EMPLOYEE", "STATUS"]).size().unstack(fill_value=0).reset_index()
 
@@ -420,10 +467,12 @@ else:
         final = team_df.merge(summary, on="EMPLOYEE", how="left").fillna(0)
 
         # Display summary table
-        st.dataframe(final, use_container_width=True)
+        st.write("**Summary Table:**")
+        st.dataframe(final, use_container_width=True, hide_index=True)
 
         # ✅ CLICKABLE COUNTS
-        st.write("**Click on counts to view detailed tasks:**")
+        st.write("---")
+        st.write("**Click on counts below to view detailed tasks:**")
 
         for idx, row in final.iterrows():
             employee = row["EMPLOYEE"]
@@ -431,59 +480,39 @@ else:
             pending_count = int(row.get("Pending", 0))
             done_count = int(row.get("Done", 0))
 
-            cols = st.columns([1, 1, 1, 2])
+            # Create expandable section for each employee
+            with st.expander(f"👤 {employee} - Overdue: {overdue_count} | Pending: {pending_count} | Done: {done_count}"):
+                tab1, tab2, tab3 = st.tabs(["🔴 Overdue", "🟡 Pending", "🟢 Done"])
 
-            # Overdue
-            with cols[0]:
-                if st.button(f"🔴 Overdue: {overdue_count}", key=f"overdue_{employee}"):
-                    st.session_state.show_detail = f"overdue_{employee}"
-
-            # Pending
-            with cols[1]:
-                if st.button(f"🟡 Pending: {pending_count}", key=f"pending_{employee}"):
-                    st.session_state.show_detail = f"pending_{employee}"
-
-            # Done
-            with cols[2]:
-                if st.button(f"🟢 Done: {done_count}", key=f"done_{employee}"):
-                    st.session_state.show_detail = f"done_{employee}"
-
-            # Show details if clicked
-            if "show_detail" in st.session_state:
-                detail_key = st.session_state.show_detail
-
-                if detail_key == f"overdue_{employee}":
-                    st.write(f"**Overdue Tasks for {employee}:**")
-                    tasks_detail = logs_filtered[
-                        (logs_filtered["EMPLOYEE"] == employee) &
-                        (logs_filtered["STATUS"] == "Overdue")
-                    ]
-                    if not tasks_detail.empty:
-                        st.dataframe(tasks_detail[["TASK ID", "EMPLOYEE", "DATE", "STATUS"]], use_container_width=True)
+                with tab1:
+                    if overdue_count > 0:
+                        tasks_overdue = logs_filtered[
+                            (logs_filtered["EMPLOYEE"] == employee) &
+                            (logs_filtered["STATUS"] == "Overdue")
+                        ]
+                        st.dataframe(tasks_overdue[["TASK ID", "EMPLOYEE", "DATE", "STATUS"]], use_container_width=True, hide_index=True)
                     else:
-                        st.write("No overdue tasks")
+                        st.success("✅ No overdue tasks")
 
-                elif detail_key == f"pending_{employee}":
-                    st.write(f"**Pending Tasks for {employee}:**")
-                    tasks_detail = logs_filtered[
-                        (logs_filtered["EMPLOYEE"] == employee) &
-                        (logs_filtered["STATUS"] == "Pending")
-                    ]
-                    if not tasks_detail.empty:
-                        st.dataframe(tasks_detail[["TASK ID", "EMPLOYEE", "DATE", "STATUS"]], use_container_width=True)
+                with tab2:
+                    if pending_count > 0:
+                        tasks_pending = logs_filtered[
+                            (logs_filtered["EMPLOYEE"] == employee) &
+                            (logs_filtered["STATUS"] == "Pending")
+                        ]
+                        st.dataframe(tasks_pending[["TASK ID", "EMPLOYEE", "DATE", "STATUS"]], use_container_width=True, hide_index=True)
                     else:
-                        st.write("No pending tasks")
+                        st.success("✅ No pending tasks")
 
-                elif detail_key == f"done_{employee}":
-                    st.write(f"**Done Tasks for {employee}:**")
-                    tasks_detail = logs_filtered[
-                        (logs_filtered["EMPLOYEE"] == employee) &
-                        (logs_filtered["STATUS"] == "Done")
-                    ]
-                    if not tasks_detail.empty:
-                        st.dataframe(tasks_detail[["TASK ID", "EMPLOYEE", "DATE", "STATUS"]], use_container_width=True)
+                with tab3:
+                    if done_count > 0:
+                        tasks_done = logs_filtered[
+                            (logs_filtered["EMPLOYEE"] == employee) &
+                            (logs_filtered["STATUS"] == "Done")
+                        ]
+                        st.dataframe(tasks_done[["TASK ID", "EMPLOYEE", "DATE", "STATUS"]], use_container_width=True, hide_index=True)
                     else:
-                        st.write("No done tasks")
+                        st.success("✅ No completed tasks")
 
-st.divider()
+st.write("---")
 st.info("✅ Daily automated emails are sent at 10 AM and 8 PM with task updates and status reports.")
