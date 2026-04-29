@@ -17,6 +17,9 @@ on:
     - cron: '30 4 * * *'    # 10:00 AM IST → Sales Tasks Email (Morning)
     - cron: '30 14 * * *'   #  8:00 PM IST → Sales Task Status Email (Evening)
 
+    # ── Lead Email Import (Every 30 minutes) ─────────────────
+    - cron: '*/30 * * * *'  # Every 30 minutes → Check for new lead emails from 4sinteriorsbbsr@gmail.com
+
   # Allow manual trigger from GitHub Actions UI for testing
   workflow_dispatch:
     inputs:
@@ -30,6 +33,9 @@ on:
           - godrej_email2
           - fours_email1
           - fours_email2
+          - lead_email_import
+          - sales_tasks_email
+          - sales_tasks_status_email
 
 jobs:
 
@@ -106,7 +112,10 @@ jobs:
   sales-tasks-email:
     runs-on: ubuntu-latest
 
-    if: github.event_name == 'schedule'
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.job == 'sales_tasks_email' ||
+      github.event_name == 'schedule'
 
     steps:
       - name: Checkout code
@@ -134,7 +143,10 @@ jobs:
   sales-tasks-status-email:
     runs-on: ubuntu-latest
 
-    if: github.event_name == 'schedule'
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.job == 'sales_tasks_status_email' ||
+      github.event_name == 'schedule'
 
     steps:
       - name: Checkout code
@@ -157,3 +169,33 @@ jobs:
         run: |
           cd streamlit_app
           python sales_tasks_status_email_job.py
+
+  # ── LEAD EMAIL IMPORT (IMAP) ───────────────────────────────────────────────
+  lead-email-import:
+    runs-on: ubuntu-latest
+
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.job == 'lead_email_import' ||
+      github.event_name == 'schedule'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Import leads from Gmail (IMAP) - Every 30 minutes
+        env:
+          EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: |
+          cd streamlit_app
+          python lead_email_import_job.py
