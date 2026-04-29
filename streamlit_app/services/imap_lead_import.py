@@ -11,7 +11,7 @@ import os
 import re
 import pandas as pd
 from email.header import decode_header
-from datetime import datetime
+from datetime import datetime, timedelta
 import sys
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -144,24 +144,27 @@ def connect_to_gmail(email_user: str, app_password: str):
 
 
 def fetch_lead_emails(mail):
-    """Fetch unread emails with 'Lead' in subject"""
+    """Fetch emails with 'Lead' in subject from last 7 days"""
     try:
         # Select inbox
         mail.select('INBOX')
 
-        # Search for unread emails with 'Lead' in subject
-        status, messages = mail.search(None, '(UNSEEN SUBJECT "Lead")')
+        # Search for emails from last 7 days with 'Lead' in subject
+        # Note: Removed UNSEEN filter to fetch all emails from past 7 days
+        # Duplicates are handled by checking if Salesforce URL already exists in sheet
+        search_date = (datetime.now() - timedelta(days=7)).strftime("%d-%b-%Y")
+        status, messages = mail.search(None, f'(SINCE "{search_date}" SUBJECT "Lead")')
 
         if status != 'OK':
-            print("No unread emails found")
+            print("No emails found from last 7 days")
             return []
 
         message_ids = messages[0].split()
-        print(f"Found {len(message_ids)} unread emails with 'Lead' in subject")
+        print(f"Found {len(message_ids)} emails with 'Lead' in subject from last 7 days")
 
         lead_emails = []
 
-        for msg_id in message_ids[-10:]:  # Last 10 emails
+        for msg_id in message_ids:  # Process all emails from last 7 days
             try:
                 status, msg_data = mail.fetch(msg_id, '(RFC822)')
 
@@ -206,7 +209,7 @@ def fetch_lead_emails(mail):
 
 
 def import_lead_to_sheet(lead_data: dict):
-    """Import lead to LEADS sheet"""
+    """Import lead to LEADS sheet (skip silently if already exists)"""
     try:
         df = get_df("LEADS")
 
@@ -215,6 +218,17 @@ def import_lead_to_sheet(lead_data: dict):
             next_id = 1
         else:
             df.columns = [str(c).strip().upper() for c in df.columns]
+
+            # ═══════════════════════════════════════════════════════════════════
+            # DUPLICATE CHECK: Skip if Salesforce URL already exists
+            # ═══════════════════════════════════════════════════════════════════
+            salesforce_url = lead_data.get("salesforce_url", "").strip()
+            if salesforce_url and "SALESFORCE URL" in df.columns:
+                existing = df[df["SALESFORCE URL"].astype(str).str.strip() == salesforce_url]
+                if not existing.empty:
+                    # Lead already imported - skip silently (return False to indicate skipped)
+                    return False
+
             # Get maximum existing ID and increment (handles deleted records)
             if "LEAD ID" in df.columns:
                 try:

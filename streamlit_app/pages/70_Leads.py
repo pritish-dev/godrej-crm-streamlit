@@ -666,16 +666,16 @@ if not df_leads.empty:
                         "Update Status",
                         ["🟢 New", "🔵 Contacted", "🟡 Qualified", "🟣 Proposal Sent", "🟢 Converted", "🔴 Lost"],
                         value=status,
-                        key=f"status_{lead_id}_{idx}"
+                        key=f"status_{i}"
                     )
 
                     new_follow_up = st.date_input(
                         "Follow Up Date",
                         value=pd.to_datetime(row.get("FOLLOW UP DATE", datetime.now())),
-                        key=f"followup_{lead_id}_{idx}"
+                        key=f"followup_{i}"
                     )
 
-                    if st.button("💾 Save Changes", key=f"save_{lead_id}_{idx}"):
+                    if st.button("💾 Save Changes", key=f"save_{i}"):
                         updates = {
                             "STATUS": new_status,
                             "FOLLOW UP DATE": new_follow_up.strftime("%d-%m-%Y"),
