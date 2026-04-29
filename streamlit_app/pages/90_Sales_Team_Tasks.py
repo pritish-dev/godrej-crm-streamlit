@@ -202,23 +202,23 @@ def update_task(task_id):
 
 
 # =========================================================
-# RENDER INTERACTIVE TABLE WITH FILTERS
+# RENDER INTERACTIVE TABLE WITH FILTERS (TABLE FORMAT)
 # =========================================================
 def render_interactive_table(df, title, freq_type):
-    """Render tasks in an interactive format with filters and marking capability"""
+    """Render tasks in tabular format with filters and marking capability"""
 
     st.subheader(title)
 
     if df.empty:
-        st.info("No tasks.")
+        st.info("✅ No tasks assigned for this period.")
         return
 
     # Get unique values for filters
-    employees = ["All"] + sorted(df["ASSIGNED TO"].str.upper().unique().tolist())
+    employees = ["All"] + sorted([e.strip().upper() for e in df["ASSIGNED TO"].unique().tolist()])
     statuses = ["All"] + sorted(df["STATUS"].unique().tolist())
 
     # Filters in columns
-    col1, col2, col3 = st.columns([2, 2, 2])
+    col1, col2 = st.columns([2, 2])
 
     with col1:
         selected_employee = st.selectbox(
@@ -246,81 +246,103 @@ def render_interactive_table(df, title, freq_type):
         filtered_df = filtered_df[filtered_df["STATUS"] == selected_status]
 
     if filtered_df.empty:
-        st.warning("No tasks matching filters.")
+        st.warning("No tasks matching selected filters.")
         return
-
-    # Prepare display dataframe
-    df_display = filtered_df.copy()
-    df_display["DUE_DATE_STR"] = df_display["DUE DATE"].dt.strftime("%d-%b")
-    df_display["Mark Done"] = False
-
-    # Create interactive table
-    st.write("**Task List:**")
 
     # Show summary stats
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        pending_count = len(df_display[df_display["STATUS"].str.contains("Pending")])
+        pending_count = len(filtered_df[filtered_df["STATUS"].str.contains("Pending", na=False)])
         st.metric("📋 Pending", pending_count)
 
     with col2:
-        done_count = len(df_display[df_display["STATUS"].str.contains("Done")])
+        done_count = len(filtered_df[filtered_df["STATUS"].str.contains("Done", na=False)])
         st.metric("✅ Done", done_count)
 
     with col3:
-        overdue_count = len(df_display[df_display["STATUS"].str.contains("Overdue|Missed", regex=True)])
+        overdue_count = len(filtered_df[filtered_df["STATUS"].str.contains("Overdue|Missed", na=False, regex=True)])
         st.metric("🔴 Overdue", overdue_count)
 
-    # Create table with color-coded rows
+    # Prepare display dataframe - table format
     st.write("")
+    st.write("**📊 Task Table:**")
 
-    for idx, (i, row) in enumerate(df_display.iterrows()):
-        # Create container for each task
+    # Create table data with proper formatting
+    table_data = []
+    for idx, (i, row) in enumerate(filtered_df.iterrows()):
         status = row["STATUS"]
         status_color = get_status_color_hex(status)
+        due_date = row["DUE DATE"].strftime("%d-%b-%Y") if pd.notna(row["DUE DATE"]) else "N/A"
 
-        # Task card
-        with st.container():
-            cols = st.columns([0.5, 2, 1.5, 1, 1.5, 0.5])
+        table_data.append({
+            "✓": f"done_marker_{freq_type}_{row['TASK ID']}_{idx}",  # Key for checkbox
+            "Task Title": row["TASK TITLE"],
+            "Assigned To": row["ASSIGNED TO"].upper(),
+            "Due Date": due_date,
+            "Status": status,
+            "Frequency": row["FREQUENCY"].capitalize(),
+            "Task ID": row["TASK ID"]
+        })
 
-            # Mark Done Checkbox
-            with cols[0]:
+    # Display as table with interactive checkboxes
+    if table_data:
+        # Create table headers
+        col_checkbox, col_title, col_assigned, col_due, col_status, col_freq = st.columns([0.8, 3, 2, 1.5, 1.5, 1.2])
+
+        with col_checkbox:
+            st.write("**✓**")
+        with col_title:
+            st.write("**Task Title**")
+        with col_assigned:
+            st.write("**Assigned To**")
+        with col_due:
+            st.write("**Due Date**")
+        with col_status:
+            st.write("**Status**")
+        with col_freq:
+            st.write("**Frequency**")
+
+        st.divider()
+
+        # Display each task as a row
+        for idx, task in enumerate(table_data):
+            col_checkbox, col_title, col_assigned, col_due, col_status, col_freq = st.columns([0.8, 3, 2, 1.5, 1.5, 1.2])
+
+            task_id = task["Task ID"]
+            marker_key = task["✓"]
+
+            with col_checkbox:
                 marked_done = st.checkbox(
                     "✓",
-                    key=f"done_marker_{freq_type}_{row['TASK ID']}_{idx}",
+                    key=marker_key,
                     label_visibility="collapsed",
                     help="Mark task as done"
                 )
-
                 if marked_done:
-                    update_task(row["TASK ID"])
+                    update_task(task_id)
                     st.rerun()
 
-            # Task Title
-            with cols[1]:
-                st.markdown(f"**{row['TASK TITLE']}**")
+            with col_title:
+                st.write(task["Task Title"])
 
-            # Assigned To
-            with cols[2]:
-                st.text(row["ASSIGNED TO"])
+            with col_assigned:
+                st.write(task["Assigned To"])
 
-            # Due Date
-            with cols[3]:
-                st.text(row["DUE_DATE_STR"])
+            with col_due:
+                st.write(task["Due Date"])
 
-            # Status with color background
-            with cols[4]:
-                # Create colored badge
+            with col_status:
+                status_color = get_status_color_hex(task["Status"])
                 st.markdown(
-                    f'<div style="background-color: {status_color}; padding: 8px; border-radius: 4px; text-align: center;"><b>{status}</b></div>',
+                    f'<div style="background-color: {status_color}; padding: 6px; border-radius: 3px; text-align: center; font-weight: bold; font-size: 12px;">{task["Status"]}</div>',
                     unsafe_allow_html=True
                 )
 
-            with cols[5]:
-                st.text(row["FREQUENCY"])
+            with col_freq:
+                st.write(task["Frequency"])
 
-        st.divider()
+            st.divider()
 
 
 # =========================================================
@@ -383,8 +405,13 @@ month = c2.selectbox("Month", list(range(1, 13)), index=today.month - 1)
 
 tasks = generate_tasks(df_master, year, month)
 
-tasks["STATUS"] = tasks.apply(get_status, axis=1)
-tasks["DUE DATE"] = pd.to_datetime(tasks["DUE DATE"])
+# ✅ FIX: Handle empty DataFrame
+if not tasks.empty:
+    tasks["STATUS"] = tasks.apply(get_status, axis=1)
+    tasks["DUE DATE"] = pd.to_datetime(tasks["DUE DATE"])
+else:
+    # Create empty DataFrame with required columns
+    tasks = pd.DataFrame(columns=["TASK ID", "TASK TITLE", "FREQUENCY", "ASSIGNED TO", "DUE DATE", "STATUS", "LAST COMPLETED DATE"])
 
 # ✅ AUTO LOGGING
 auto_log_tasks(tasks)
