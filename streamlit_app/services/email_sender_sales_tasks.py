@@ -17,42 +17,51 @@ from email.mime.multipart import MIMEMultipart
 
 
 # ── Load credentials from multiple sources (environment-agnostic) ────────────────
-# Priority: Environment Variables > Streamlit Secrets > .env file
+# Priority: Streamlit Secrets (for dashboard) > Environment Variables (GitHub Actions) > .env file
 
 SENDER_EMAIL = None
 SENDER_PASSWORD = None
 RECIPIENTS = None
 
-# 1. Try environment variables (GitHub Actions)
+# 1. Try Streamlit secrets FIRST (for dashboard use)
 try:
-    env_email = os.getenv("EMAIL_SENDER", "").strip()
-    env_password = os.getenv("EMAIL_PASSWORD", "").strip()
-    env_recipients = os.getenv("EMAIL_RECIPIENTS", "").strip()
-
-    if env_email and env_password and env_recipients:
-        SENDER_EMAIL = env_email
-        SENDER_PASSWORD = env_password
-        RECIPIENTS = [r.strip() for r in env_recipients.split(",") if r.strip()]
-except Exception:
-    pass
-
-# 2. Try Streamlit secrets (local development with Streamlit or Streamlit Cloud)
-if SENDER_EMAIL is None:
+    import streamlit as st
     try:
-        import streamlit as st
-        SENDER_EMAIL = st.secrets["admin"]["EMAIL_SENDER"]
-        SENDER_PASSWORD = st.secrets["admin"]["EMAIL_PASSWORD"]
-        RECIPIENTS = [r.strip() for r in st.secrets["admin"]["EMAIL_RECIPIENTS"].split(",") if r.strip()]
+        # Try flat structure
+        SENDER_EMAIL = st.secrets.get("EMAIL_SENDER", "").strip()
+        SENDER_PASSWORD = st.secrets.get("EMAIL_PASSWORD", "").strip()
+        EMAIL_RECIPIENTS_STR = st.secrets.get("EMAIL_RECIPIENTS", "").strip()
+
+        if SENDER_EMAIL and SENDER_PASSWORD and EMAIL_RECIPIENTS_STR:
+            RECIPIENTS = [r.strip() for r in EMAIL_RECIPIENTS_STR.split(",") if r.strip()]
     except Exception:
+        # Try nested structure (admin key)
         try:
-            SENDER_EMAIL = st.secrets["EMAIL_SENDER"]
-            SENDER_PASSWORD = st.secrets["EMAIL_PASSWORD"]
-            RECIPIENTS = [r.strip() for r in st.secrets["EMAIL_RECIPIENTS"].split(",") if r.strip()]
+            SENDER_EMAIL = st.secrets["admin"]["EMAIL_SENDER"]
+            SENDER_PASSWORD = st.secrets["admin"]["EMAIL_PASSWORD"]
+            EMAIL_RECIPIENTS_STR = st.secrets["admin"]["EMAIL_RECIPIENTS"]
+            RECIPIENTS = [r.strip() for r in EMAIL_RECIPIENTS_STR.split(",") if r.strip()]
         except Exception:
             pass
+except ImportError:
+    pass
 
-# 3. Try .env file (local development)
-if SENDER_EMAIL is None:
+# 2. Try environment variables (GitHub Actions)
+if not SENDER_EMAIL or not SENDER_PASSWORD:
+    try:
+        env_email = os.getenv("EMAIL_SENDER", "").strip()
+        env_password = os.getenv("EMAIL_PASSWORD", "").strip()
+        env_recipients = os.getenv("EMAIL_RECIPIENTS", "").strip()
+
+        if env_email and env_password and env_recipients:
+            SENDER_EMAIL = env_email
+            SENDER_PASSWORD = env_password
+            RECIPIENTS = [r.strip() for r in env_recipients.split(",") if r.strip()]
+    except Exception:
+        pass
+
+# 3. Try .env file (local development fallback)
+if not SENDER_EMAIL or not SENDER_PASSWORD:
     try:
         from dotenv import load_dotenv
         load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
