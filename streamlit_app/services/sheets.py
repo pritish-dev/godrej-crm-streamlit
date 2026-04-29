@@ -67,14 +67,44 @@ DATE_FIELDS = {
 @st.cache_resource
 def _get_client():
     import gspread
+    import json
+    import os
     from google.oauth2.service_account import Credentials
 
+    creds = None
+
+    # 1. Try environment variable GOOGLE_CREDENTIALS (GitHub Actions sets this)
+    try:
+        google_creds_json = os.getenv("GOOGLE_CREDENTIALS", "").strip()
+        if google_creds_json:
+            creds_dict = json.loads(google_creds_json)
+            creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+            return gspread.authorize(creds)
+    except Exception as e:
+        pass
+
+    # 2. Try GOOGLE_APPLICATION_CREDENTIALS (path to credentials file)
+    try:
+        creds_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+        if creds_path and os.path.exists(creds_path):
+            creds = Credentials.from_service_account_file(creds_path, scopes=SCOPES)
+            return gspread.authorize(creds)
+    except Exception as e:
+        pass
+
+    # 3. Try Streamlit secrets
     try:
         creds = Credentials.from_service_account_info(st.secrets["google"], scopes=SCOPES)
-    except Exception:
-        creds = Credentials.from_service_account_file("config/credentials.json", scopes=SCOPES)
+        return gspread.authorize(creds)
+    except Exception as e:
+        pass
 
-    return gspread.authorize(creds)
+    # 4. Fall back to local file
+    try:
+        creds = Credentials.from_service_account_file("config/credentials.json", scopes=SCOPES)
+        return gspread.authorize(creds)
+    except Exception as e:
+        raise Exception("Could not find valid Google credentials. Set GOOGLE_CREDENTIALS env var, GOOGLE_APPLICATION_CREDENTIALS, or use Streamlit secrets.")
 
 @st.cache_resource
 def _get_spreadsheet():
@@ -188,6 +218,8 @@ def upsert_target_record(sheet_name: str, unique_fields: dict, new_data: dict):
     import pandas as pd
     import streamlit as st
     import gspread
+    import json
+    import os
     from google.oauth2.service_account import Credentials
     from services.sheets import get_df
 
@@ -196,10 +228,39 @@ def upsert_target_record(sheet_name: str, unique_fields: dict, new_data: dict):
     # -----------------------------
     SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
+    CREDS = None
+
+    # 1. Try environment variable GOOGLE_CREDENTIALS (GitHub Actions)
     try:
-        CREDS = Credentials.from_service_account_info(st.secrets["google"], scopes=SCOPES)
+        google_creds_json = os.getenv("GOOGLE_CREDENTIALS", "").strip()
+        if google_creds_json:
+            creds_dict = json.loads(google_creds_json)
+            CREDS = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
     except Exception:
-        CREDS = Credentials.from_service_account_file("config/credentials.json", scopes=SCOPES)
+        pass
+
+    # 2. Try GOOGLE_APPLICATION_CREDENTIALS (path)
+    if CREDS is None:
+        try:
+            creds_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+            if creds_path and os.path.exists(creds_path):
+                CREDS = Credentials.from_service_account_file(creds_path, scopes=SCOPES)
+        except Exception:
+            pass
+
+    # 3. Try Streamlit secrets
+    if CREDS is None:
+        try:
+            CREDS = Credentials.from_service_account_info(st.secrets["google"], scopes=SCOPES)
+        except Exception:
+            pass
+
+    # 4. Fall back to local file
+    if CREDS is None:
+        try:
+            CREDS = Credentials.from_service_account_file("config/credentials.json", scopes=SCOPES)
+        except Exception as e:
+            raise Exception("Could not find valid Google credentials. Set GOOGLE_CREDENTIALS env var, GOOGLE_APPLICATION_CREDENTIALS, or use Streamlit secrets.")
 
     gc = gspread.authorize(CREDS)
 
@@ -268,12 +329,44 @@ def upsert_target_record(sheet_name: str, unique_fields: dict, new_data: dict):
 
 
 def write_df(sheet_name, df):
+    import json
+    import os
+
     SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
+    CREDS = None
+
+    # 1. Try environment variable GOOGLE_CREDENTIALS (GitHub Actions)
     try:
-        CREDS = Credentials.from_service_account_info(st.secrets["google"], scopes=SCOPES)
+        google_creds_json = os.getenv("GOOGLE_CREDENTIALS", "").strip()
+        if google_creds_json:
+            creds_dict = json.loads(google_creds_json)
+            CREDS = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
     except Exception:
-        CREDS = Credentials.from_service_account_file("config/credentials.json", scopes=SCOPES)
+        pass
+
+    # 2. Try GOOGLE_APPLICATION_CREDENTIALS (path)
+    if CREDS is None:
+        try:
+            creds_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+            if creds_path and os.path.exists(creds_path):
+                CREDS = Credentials.from_service_account_file(creds_path, scopes=SCOPES)
+        except Exception:
+            pass
+
+    # 3. Try Streamlit secrets
+    if CREDS is None:
+        try:
+            CREDS = Credentials.from_service_account_info(st.secrets["google"], scopes=SCOPES)
+        except Exception:
+            pass
+
+    # 4. Fall back to local file
+    if CREDS is None:
+        try:
+            CREDS = Credentials.from_service_account_file("config/credentials.json", scopes=SCOPES)
+        except Exception as e:
+            raise Exception("Could not find valid Google credentials. Set GOOGLE_CREDENTIALS env var, GOOGLE_APPLICATION_CREDENTIALS, or use Streamlit secrets.")
 
     gc = gspread.authorize(CREDS)
 

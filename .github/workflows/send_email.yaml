@@ -53,17 +53,13 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Write Google credentials to file
-        run: |
-          echo '${{ secrets.GOOGLE_CREDENTIALS }}' > /tmp/google_credentials.json
-          echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/google_credentials.json" >> $GITHUB_ENV
-
       - name: Run Godrej email job
         env:
-          EMAIL_SENDER:      ${{ secrets.EMAIL_SENDER }}
-          EMAIL_PASSWORD:    ${{ secrets.EMAIL_PASSWORD }}
-          EMAIL_RECIPIENTS:  ${{ secrets.EMAIL_RECIPIENTS }}
-          MANUAL_JOB:        ${{ github.event.inputs.job }}
+          EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECIPIENTS:   ${{ secrets.EMAIL_RECIPIENTS }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          MANUAL_JOB:         ${{ github.event.inputs.job }}
         run: |
           cd streamlit_app
           python email_job.py
@@ -91,17 +87,13 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Write Google credentials to file
-        run: |
-          echo '${{ secrets.GOOGLE_CREDENTIALS }}' > /tmp/google_credentials.json
-          echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/google_credentials.json" >> $GITHUB_ENV
-
       - name: Run 4S Interiors email job
         env:
-          EMAIL_SENDER_4S:      ${{ secrets.EMAIL_SENDER }}
-          EMAIL_PASSWORD_4S:    ${{ secrets.EMAIL_PASSWORD }}
-          EMAIL_RECIPIENTS_4S:  ${{ secrets.EMAIL_RECIPIENTS }}
-          MANUAL_JOB:           ${{ github.event.inputs.job }}
+          EMAIL_SENDER_4S:     ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD_4S:   ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECIPIENTS_4S: ${{ secrets.EMAIL_RECIPIENTS }}
+          GOOGLE_CREDENTIALS:  ${{ secrets.GOOGLE_CREDENTIALS }}
+          MANUAL_JOB:          ${{ github.event.inputs.job }}
         run: |
           cd streamlit_app
           python email_job_4s.py
