@@ -3,6 +3,7 @@ Email Trigger Service - Send emails directly from Streamlit dashboard
 
 Allows manual triggering of emails without GitHub Actions
 Used by franchise and 4S dashboards
+Uses same credential loading pattern as other email jobs
 """
 
 import sys
@@ -17,6 +18,60 @@ from datetime import datetime, timezone, timedelta
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# LOAD CREDENTIALS (Same pattern as email_sender_sales_tasks.py)
+# Priority: Environment Variables > Streamlit Secrets > .env file
+# ═════════════════════════════════════════════════════════════════════════════
+
+SENDER_EMAIL = None
+SENDER_PASSWORD = None
+RECIPIENTS = None
+
+# 1. Try environment variables (GitHub Actions)
+try:
+    env_email = os.getenv("EMAIL_SENDER", "").strip()
+    env_password = os.getenv("EMAIL_PASSWORD", "").strip()
+    env_recipients = os.getenv("EMAIL_RECIPIENTS", "").strip()
+
+    if env_email and env_password and env_recipients:
+        SENDER_EMAIL = env_email
+        SENDER_PASSWORD = env_password
+        RECIPIENTS = [r.strip() for r in env_recipients.split(",") if r.strip()]
+except Exception:
+    pass
+
+# 2. Try Streamlit secrets (local development)
+if SENDER_EMAIL is None:
+    try:
+        import streamlit as st
+        try:
+            SENDER_EMAIL = st.secrets["admin"]["EMAIL_SENDER"]
+            SENDER_PASSWORD = st.secrets["admin"]["EMAIL_PASSWORD"]
+            RECIPIENTS = [r.strip() for r in st.secrets["admin"]["EMAIL_RECIPIENTS"].split(",") if r.strip()]
+        except:
+            SENDER_EMAIL = st.secrets["EMAIL_SENDER"]
+            SENDER_PASSWORD = st.secrets["EMAIL_PASSWORD"]
+            RECIPIENTS = [r.strip() for r in st.secrets["EMAIL_RECIPIENTS"].split(",") if r.strip()]
+    except Exception:
+        pass
+
+# 3. Try .env file (fallback)
+if SENDER_EMAIL is None:
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(dotenv_path=os.path.join(BASE_DIR, ".env"))
+        env_email = os.getenv("EMAIL_SENDER", "").strip()
+        env_password = os.getenv("EMAIL_PASSWORD", "").strip()
+        env_recipients = os.getenv("EMAIL_RECIPIENTS", "").strip()
+
+        if env_email and env_password and env_recipients:
+            SENDER_EMAIL = env_email
+            SENDER_PASSWORD = env_password
+            RECIPIENTS = [r.strip() for r in env_recipients.split(",") if r.strip()]
+    except Exception:
+        pass
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -44,13 +99,9 @@ def send_combined_pending_delivery_email():
     }
 
     try:
-        # Get email credentials
-        email_sender = os.getenv("EMAIL_SENDER", "").strip()
-        email_password = os.getenv("EMAIL_PASSWORD", "").strip()
-        email_recipients = os.getenv("EMAIL_RECIPIENTS", "").strip()
-
-        if not email_sender or not email_password or not email_recipients:
-            result['message'] = "❌ Email credentials not configured in GitHub Secrets"
+        # Get email credentials from global variables (loaded at module init)
+        if not SENDER_EMAIL or not SENDER_PASSWORD or not RECIPIENTS:
+            result['message'] = "❌ Email credentials not configured (check GitHub Secrets, Streamlit Secrets, or .env file)"
             return result
 
         # Load franchise data
@@ -89,15 +140,15 @@ def send_combined_pending_delivery_email():
         # Create email message
         msg = MIMEMultipart("alternative")
         msg["Subject"] = "[4s CRM] Pending Delivery Status - Franchise and 4s Items"
-        msg["From"] = email_sender
-        msg["To"] = email_recipients
+        msg["From"] = SENDER_EMAIL
+        msg["To"] = ", ".join(RECIPIENTS)
 
         msg.attach(MIMEText(html_content, "html"))
 
         # Send email
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(email_sender, email_password)
-            server.sendmail(email_sender, email_recipients.split(","), msg.as_string())
+            server.login(SENDER_EMAIL, SENDER_PASSWORD)
+            server.sendmail(SENDER_EMAIL, RECIPIENTS, msg.as_string())
 
         result['success'] = True
         result['message'] = f"✅ Email sent successfully!\n• Godrej: {result['godrej_count']} pending items\n• 4S: {result['fours_count']} pending items"
