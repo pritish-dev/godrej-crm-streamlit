@@ -72,12 +72,30 @@ def fetch_pending_grouped():
 
     crm = pd.concat(dfs, ignore_index=True)
 
-    crm["ORDER AMOUNT"] = pd.to_numeric(crm["ORDER AMOUNT"], errors="coerce").fillna(0)
-    crm["ADV RECEIVED"] = pd.to_numeric(crm["ADV RECEIVED"], errors="coerce").fillna(0)
-    crm["DATE"] = pd.to_datetime(crm["DATE"], dayfirst=True, errors="coerce")
+    # Rename new 26-27 column names to working names expected by email_sender
+    crm = crm.rename(columns={
+        # New 26-27 column names
+        "ORDER UNIT PRICE=(AFTER DISC + TAX)":        "ORDER AMOUNT",
+        "DELIVERY REMARKS(DELIVERED/PENDING) REMARK": "DELIVERY REMARKS",
+        "ORDER DATE":                                  "DATE",          # normalise to DATE for grouping
+    })
+
+    crm["ORDER AMOUNT"] = pd.to_numeric(
+        crm.get("ORDER AMOUNT", pd.Series("0")).astype(str).str.replace(r"[₹,]", "", regex=True),
+        errors="coerce",
+    ).fillna(0)
+    crm["ADV RECEIVED"] = pd.to_numeric(
+        crm.get("ADV RECEIVED", pd.Series("0")).astype(str).str.replace(r"[₹,]", "", regex=True),
+        errors="coerce",
+    ).fillna(0)
+    crm["DATE"] = pd.to_datetime(crm.get("DATE"), dayfirst=True, errors="coerce")
     crm["CUSTOMER DELIVERY DATE (TO BE)"] = pd.to_datetime(
-        crm["CUSTOMER DELIVERY DATE (TO BE)"], dayfirst=True, errors="coerce"
+        crm.get("CUSTOMER DELIVERY DATE (TO BE)"), dayfirst=True, errors="coerce"
     )
+
+    # Support both old "DELIVERY REMARKS" and new renamed column
+    if "DELIVERY REMARKS" not in crm.columns and "REMARKS" in crm.columns:
+        crm = crm.rename(columns={"REMARKS": "DELIVERY REMARKS"})
 
     mask = crm["DELIVERY REMARKS"].astype(str).str.upper().str.strip() == "PENDING"
     pending = crm[mask].copy()

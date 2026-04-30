@@ -98,8 +98,14 @@ def fetch_pending_del():
     # Filter valid orders
     crm = crm[crm["ORDER AMOUNT"] > 0]
 
-    # Rename columns to match email_sender_4s expectations
+    # Rename new 26-27 column names to working names expected by email_sender_4s
     crm = crm.rename(columns={
+        # New 26-27 column names
+        "ORDER UNIT PRICE=(AFTER DISC + TAX)":             "ORDER AMOUNT",
+        "DELIVERY REMARKS(DELIVERED/PENDING) REMARK":      "DELIVERY STATUS",
+        "CUSTOMER DELIVERY DATE (TO BE)":                  "DELIVERY DATE",
+        "CROSS CHECK GROSS AMT (ORDER VALUE WITHOUT TAX)": "GROSS AMT EX-TAX",
+        # Old column names (kept for backward compat if old sheet is listed)
         "DATE":                   "ORDER DATE",
         "SALES REP":              "SALES PERSON",
         "CUSTOMER DELIVERY DATE": "DELIVERY DATE",

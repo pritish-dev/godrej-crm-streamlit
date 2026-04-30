@@ -52,11 +52,12 @@ def get_alerts(df, team_df, alert_type="delivery"):
 
     df = clean_headers(df)
 
-    delivery_col = get_col(df, "CUSTOMER DELIVERY DATE", "DELIVERY DATE")
-    order_col = get_col(df, "DATE", "ORDER DATE")
-    adv_col = get_col(df, "ADV RECEIVED", "ADVANCE RECEIVED")
-    remarks_col = get_col(df, "REMARKS", "DELIVERY STATUS")
-    sales_col = get_col(df, "SALES REP", "SALES PERSON")
+    delivery_col = get_col(df, "DELIVERY DATE", "CUSTOMER DELIVERY DATE", "CUSTOMER DELIVERY DATE (TO BE)")
+    order_col    = get_col(df, "ORDER DATE", "DATE")
+    adv_col      = get_col(df, "ADV RECEIVED", "ADVANCE RECEIVED")
+    # New 26-27 sheets use the verbose column name; old sheets use REMARKS / DELIVERY STATUS
+    remarks_col  = get_col(df, "DELIVERY STATUS", "DELIVERY REMARKS(DELIVERED/PENDING) REMARK", "REMARKS")
+    sales_col    = get_col(df, "SALES PERSON", "SALES REP")
 
     if not delivery_col or not order_col or not adv_col or not remarks_col or not sales_col:
         return []
@@ -70,8 +71,14 @@ def get_alerts(df, team_df, alert_type="delivery"):
     if alert_type == "delivery":
         mask = df[remarks_col].astype(str).str.upper().str.strip() == "PENDING"
     else:
-        df["ORDER AMOUNT"] = pd.to_numeric(df.get("ORDER AMOUNT"), errors='coerce').fillna(0)
-        df[adv_col] = pd.to_numeric(df[adv_col], errors='coerce').fillna(0)
+        # Support both old ("ORDER AMOUNT") and new ("ORDER VALUE") column names
+        order_amt_col = get_col(df, "ORDER AMOUNT", "ORDER VALUE",
+                                "ORDER UNIT PRICE=(AFTER DISC + TAX)")
+        if order_amt_col:
+            df["ORDER AMOUNT"] = pd.to_numeric(df[order_amt_col], errors="coerce").fillna(0)
+        else:
+            df["ORDER AMOUNT"] = 0
+        df[adv_col] = pd.to_numeric(df[adv_col], errors="coerce").fillna(0)
 
         df["PENDING AMOUNT"] = df["ORDER AMOUNT"] - df[adv_col]
         mask = (df[adv_col] > 0) & (df["PENDING AMOUNT"] > 0)
