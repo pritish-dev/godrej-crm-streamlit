@@ -452,8 +452,13 @@ if not pending_del.empty:
             else:
                 st.info("No delivery alerts for tomorrow.")
 
-    pend_cols     = [c for c in PENDING_DISPLAY_COLS if c in pending_del.columns]
-    pend_display  = pending_del[pend_cols].copy()
+    # Group by ORDER NO for display — all pending products per order clubbed together
+    pending_grouped = group_by_order_no(pending_del).sort_values(
+        "DELIVERY DATE", ascending=False
+    ).reset_index(drop=True)
+
+    pend_cols     = [c for c in PENDING_DISPLAY_COLS if c in pending_grouped.columns]
+    pend_display  = pending_grouped[pend_cols].copy()
     raw_del_dates = (
         pend_display["DELIVERY DATE"].copy()
         if "DELIVERY DATE" in pend_display.columns
@@ -474,11 +479,11 @@ if not pending_del.empty:
         use_container_width=True,
     )
     dm1, dm2, dm3 = st.columns(3)
-    dm1.metric("📦 Total Pending", len(pending_del))
+    dm1.metric("📦 Total Pending Orders", len(pending_grouped))
     dm2.metric("🟢 Tomorrow",
-               int((pd.to_datetime(pending_del["DELIVERY DATE"], errors="coerce").dt.date == tomorrow).sum()))
+               int((pd.to_datetime(pending_grouped["DELIVERY DATE"], errors="coerce").dt.date == tomorrow).sum()))
     dm3.metric("🔴 Overdue",
-               int((pd.to_datetime(pending_del["DELIVERY DATE"], errors="coerce").dt.date < today).sum()))
+               int((pd.to_datetime(pending_grouped["DELIVERY DATE"], errors="coerce").dt.date < today).sum()))
 
 else:
     st.success("✅ No pending deliveries right now!")
@@ -538,8 +543,13 @@ if not payment_due.empty:
             else:
                 st.info("No payment alerts for tomorrow.")
 
-    pay_cols      = [c for c in PENDING_DISPLAY_COLS if c in payment_due.columns]
-    pay_display   = payment_due[pay_cols].copy()
+    # Group by ORDER NO for display — all products per order clubbed together
+    payment_grouped = group_by_order_no(payment_due).sort_values(
+        "DELIVERY DATE", ascending=False
+    ).reset_index(drop=True)
+
+    pay_cols      = [c for c in PENDING_DISPLAY_COLS if c in payment_grouped.columns]
+    pay_display   = payment_grouped[pay_cols].copy()
     raw_pay_dates = (
         pay_display["DELIVERY DATE"].copy()
         if "DELIVERY DATE" in pay_display.columns
@@ -560,11 +570,11 @@ if not payment_due.empty:
         use_container_width=True,
     )
     pm1, pm2, pm3 = st.columns(3)
-    pm1.metric("🧾 Total Payment Cases", len(payment_due))
+    pm1.metric("🧾 Total Payment Orders", len(payment_grouped))
     pm2.metric("🟢 Tomorrow",
-               int((pd.to_datetime(payment_due["DELIVERY DATE"], errors="coerce").dt.date == tomorrow).sum()))
+               int((pd.to_datetime(payment_grouped["DELIVERY DATE"], errors="coerce").dt.date == tomorrow).sum()))
     pm3.metric("🔴 Overdue",
-               int((pd.to_datetime(payment_due["DELIVERY DATE"], errors="coerce").dt.date < today).sum()))
+               int((pd.to_datetime(payment_grouped["DELIVERY DATE"], errors="coerce").dt.date < today).sum()))
 
 else:
     st.success("✅ No outstanding payments!")
