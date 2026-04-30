@@ -169,7 +169,7 @@ def load_b2c_data():
     # columns — which we then collapse in the dedup step below.
     crm = crm.rename(columns={
         "ORDER UNIT PRICE=(AFTER DISC + TAX)":             "ORDER VALUE",
-        "DELIVERY REMARKS(DELIVERED/PENDING) REMARK":      "DELIVERY STATUS",
+        "DELIVERY REMARKS(DELIVERED/PENDING)":             "DELIVERY STATUS",
         "CUSTOMER DELIVERY DATE (TO BE)":                  "DELIVERY DATE",
         "CROSS CHECK GROSS AMT (ORDER VALUE WITHOUT TAX)": "GROSS AMT EX-TAX",
         # Old column compat
@@ -411,12 +411,17 @@ pending_del = crm[
 
 if not pending_del.empty:
 
+    # Group by ORDER NO first — used for BOTH emails and display
+    pending_grouped = group_by_order_no(pending_del).sort_values(
+        "DELIVERY DATE", ascending=False
+    ).reset_index(drop=True)
+
     eb1, eb2, eb3, eb4 = st.columns(4)
 
     with eb1:
         if st.button("📧 Tomorrow's Delivery Email", use_container_width=True, key="em_tomorrow_del"):
-            tomorrow_del = pending_del[
-                pd.to_datetime(pending_del["DELIVERY DATE"], errors="coerce").dt.date == tomorrow
+            tomorrow_del = pending_grouped[
+                pd.to_datetime(pending_grouped["DELIVERY DATE"], errors="coerce").dt.date == tomorrow
             ]
             if not tomorrow_del.empty:
                 try:
@@ -430,7 +435,7 @@ if not pending_del.empty:
     with eb2:
         if st.button("📧 All Pending Deliveries Email", use_container_width=True, key="em_all_del"):
             try:
-                send_pending_delivery_email_4s(pending_del)
+                send_pending_delivery_email_4s(pending_grouped)
                 st.success("✅ All Pending Deliveries email sent!")
             except Exception as e:
                 st.error(f"❌ Failed: {e}")
@@ -438,7 +443,7 @@ if not pending_del.empty:
     with eb3:
         if st.button("🔔 Update CRM Reminder Email", use_container_width=True, key="em_upd_del"):
             try:
-                send_update_delivery_status_email_4s(pending_del)
+                send_update_delivery_status_email_4s(pending_grouped)
                 st.success("✅ Update CRM Reminder sent!")
             except Exception as e:
                 st.error(f"❌ Failed: {e}")
@@ -451,11 +456,6 @@ if not pending_del.empty:
                     st.link_button(f"Send to {sp}", generate_whatsapp_group_link(msg))
             else:
                 st.info("No delivery alerts for tomorrow.")
-
-    # Group by ORDER NO for display — all pending products per order clubbed together
-    pending_grouped = group_by_order_no(pending_del).sort_values(
-        "DELIVERY DATE", ascending=False
-    ).reset_index(drop=True)
 
     pend_cols     = [c for c in PENDING_DISPLAY_COLS if c in pending_grouped.columns]
     pend_display  = pending_grouped[pend_cols].copy()
@@ -502,12 +502,17 @@ if not payment_due.empty:
     total_outstanding = payment_due["PENDING DUE"].sum()
     st.warning(f"💸 Total Outstanding Balance: ₹{total_outstanding:,.2f}")
 
+    # Group by ORDER NO first — used for BOTH emails and display
+    payment_grouped = group_by_order_no(payment_due).sort_values(
+        "DELIVERY DATE", ascending=False
+    ).reset_index(drop=True)
+
     pb1, pb2, pb3, pb4 = st.columns(4)
 
     with pb1:
         if st.button("📧 Tomorrow's Payment Due Email", use_container_width=True, key="em_tomorrow_pay"):
-            tomorrow_pay = payment_due[
-                pd.to_datetime(payment_due["DELIVERY DATE"], errors="coerce").dt.date == tomorrow
+            tomorrow_pay = payment_grouped[
+                pd.to_datetime(payment_grouped["DELIVERY DATE"], errors="coerce").dt.date == tomorrow
             ]
             if not tomorrow_pay.empty:
                 try:
@@ -521,7 +526,7 @@ if not payment_due.empty:
     with pb2:
         if st.button("📧 All Payment Due Email", use_container_width=True, key="em_all_pay"):
             try:
-                send_pending_delivery_email_4s(payment_due)
+                send_pending_delivery_email_4s(payment_grouped)
                 st.success("✅ Payment Due email sent!")
             except Exception as e:
                 st.error(f"❌ Failed: {e}")
@@ -529,7 +534,7 @@ if not payment_due.empty:
     with pb3:
         if st.button("🔔 Payment Update Reminder", use_container_width=True, key="em_upd_pay"):
             try:
-                send_update_delivery_status_email_4s(payment_due)
+                send_update_delivery_status_email_4s(payment_grouped)
                 st.success("✅ Payment Update Reminder sent!")
             except Exception as e:
                 st.error(f"❌ Failed: {e}")
@@ -542,11 +547,6 @@ if not payment_due.empty:
                     st.link_button(f"Send to {sp}", generate_whatsapp_group_link(msg))
             else:
                 st.info("No payment alerts for tomorrow.")
-
-    # Group by ORDER NO for display — all products per order clubbed together
-    payment_grouped = group_by_order_no(payment_due).sort_values(
-        "DELIVERY DATE", ascending=False
-    ).reset_index(drop=True)
 
     pay_cols      = [c for c in PENDING_DISPLAY_COLS if c in payment_grouped.columns]
     pay_display   = payment_grouped[pay_cols].copy()
