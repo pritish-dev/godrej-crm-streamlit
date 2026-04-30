@@ -8,7 +8,7 @@ import sys
 import os
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, date, timedelta
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
@@ -20,47 +20,50 @@ from services.email_sender_4s import (
     send_update_delivery_status_email_4s,
 )
 
-# ── Column display mapping: raw sheet name → friendly display name ────────────
+FY_START = date(2026, 4, 1)
+
+# ── Column display mapping: working name → friendly display name ──────────────
 COL_RENAME_DISPLAY = {
-    "ORDER DATE":                    "Order Date",
-    "ORDER NO":                      "Order No",
-    "CUSTOMER NAME":                 "Customer Name",
-    "CONTACT NUMBER":                "Contact No",
-    "EMAIL ADDRESS":                 "Email",
-    "PRODUCT NAME":                  "Product",
-    "CATEGORY":                      "Category",
-    "QTY":                           "Qty",
-    "ORDER VALUE":                   "Order Value (After Disc+Tax)",
-    "GROSS AMT EX-TAX":              "Gross Amt (Ex-Tax)",
-    "ADV RECEIVED":                  "Advance Received",
-    "PENDING DUE":                   "Pending Due",
-    "SALES PERSON":                  "Sales Person",
-    "DELIVERY DATE":                 "Delivery Date",
-    "DELIVERY STATUS":               "Delivery Status",
-    "REVIEW":                        "Review / Feedback",
-    "SOURCE":                        "Source",
+    "ORDER DATE":       "Order Date",
+    "ORDER NO":         "Order No",
+    "CUSTOMER NAME":    "Customer Name",
+    "CONTACT NUMBER":   "Contact No",
+    "EMAIL ADDRESS":    "Email",
+    "PRODUCT NAME":     "Product",
+    "CATEGORY":         "Category",
+    "QTY":              "Qty",
+    "ORDER VALUE":      "Order Value",
+    "ADV RECEIVED":     "Advance Received",
+    "PENDING DUE":      "Pending Due",
+    "SALES PERSON":     "Sales Person",
+    "DELIVERY DATE":    "Delivery Date",
+    "DELIVERY STATUS":  "Delivery Status",
+    "REVIEW":           "GMB Ratings",
+    "REMARKS":          "Remarks",
+    "SOURCE":           "Source",
 }
 
-# Columns shown in all-sales table
+# Columns shown in the All Sales table
 SALES_DISPLAY_COLS = [
     "ORDER DATE", "ORDER NO", "CUSTOMER NAME", "CONTACT NUMBER", "EMAIL ADDRESS",
     "PRODUCT NAME", "CATEGORY", "QTY",
-    "ORDER VALUE", "GROSS AMT EX-TAX", "ADV RECEIVED", "PENDING DUE",
-    "SALES PERSON", "DELIVERY DATE", "DELIVERY STATUS", "REVIEW", "SOURCE",
+    "ORDER VALUE", "ADV RECEIVED", "PENDING DUE",
+    "SALES PERSON", "DELIVERY DATE", "DELIVERY STATUS",
+    "REVIEW", "REMARKS", "SOURCE",
 ]
 
 # Columns shown in pending-delivery and payment-due tables
 PENDING_DISPLAY_COLS = [
-    "DELIVERY DATE", "ORDER DATE", "CUSTOMER NAME", "CONTACT NUMBER",
+    "DELIVERY DATE", "ORDER DATE", "ORDER NO", "CUSTOMER NAME", "CONTACT NUMBER",
     "PRODUCT NAME", "QTY", "ORDER VALUE", "ADV RECEIVED", "PENDING DUE",
-    "SALES PERSON", "DELIVERY STATUS", "SOURCE",
+    "SALES PERSON", "DELIVERY STATUS", "REMARKS", "SOURCE",
 ]
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def parse_mixed_dates(series):
-    """Parse dates in dd-mm-yyyy, dd-Mon-yyyy, or ISO formats."""
+    """Parse dates in dd-mm-yyyy, dd-Mon-yyyy, ISO, or mixed formats."""
     series = series.astype(str).str.strip()
     parsed = []
     for val in series:
@@ -81,11 +84,20 @@ def fmt_date(series):
     return pd.to_datetime(series, errors="coerce").dt.strftime("%d-%b-%Y").str.upper()
 
 
-def fmt_inr(val):
+def fmt_amount(val):
+    """Format numeric value as INR string with 2 decimal places."""
     try:
         return f"₹{float(val):,.2f}"
     except Exception:
-        return val
+        return ""
+
+
+def apply_amount_fmt(df, cols):
+    """Apply INR formatting to specified columns in a display copy."""
+    for col in cols:
+        if col in df.columns:
+            df[col] = df[col].apply(fmt_amount)
+    return df
 
 
 # ── Data loader ───────────────────────────────────────────────────────────────
@@ -96,14 +108,16 @@ def load_b2c_data():
     team      = get_df("Sales Team")
 
     if config_df is None or config_df.empty:
-        return pd.DataFrame(), team
+        return pd.DataFrame(), team, [], []
 
     franchise_sheets = (
-        config_df["Franchise_sheets"].dropna().astype(str).str.strip().unique().tolist()
+        config_df["Franchise_sheets"].dropna().astype(str).str.strip()
+        .pipe(lambda s: s[s != ""].unique().tolist())
         if "Franchise_sheets" in config_df.columns else []
     )
     fours_sheets = (
-        config_df["four_s_sheets"].dropna().astype(str).str.strip().unique().tolist()
+        config_df["four_s_sheets"].dropna().astype(str).str.strip()
+        .pipe(lambda s: s[s != ""].unique().tolist())
         if "four_s_sheets" in config_df.columns else []
     )
 
@@ -124,40 +138,107 @@ def load_b2c_data():
                 continue
 
     if not dfs:
-        return pd.DataFrame(), team
+        return pd.DataFrame(), team, franchise_sheets, fours_sheets
 
     crm = pd.concat(dfs, ignore_index=True, sort=False)
 
-    # ── Rename raw columns → working names ─────────────────────────────────
-    # The new 26-27 sheets use verbose column names; normalise to short working names.
+    # ── Rename verbose 26-27 column names → short working names ─────────────
     crm = crm.rename(columns={
         "ORDER UNIT PRICE=(AFTER DISC + TAX)":             "ORDER VALUE",
         "DELIVERY REMARKS(DELIVERED/PENDING) REMARK":      "DELIVERY STATUS",
         "CUSTOMER DELIVERY DATE (TO BE)":                  "DELIVERY DATE",
         "CROSS CHECK GROSS AMT (ORDER VALUE WITHOUT TAX)": "GROSS AMT EX-TAX",
+        # Old column compat
+        "CUSTOMER DELIVERY DATE":                          "DELIVERY DATE",
+        "SALES REP":                                       "SALES PERSON",
     })
 
-    # ── Numeric cleanup ─────────────────────────────────────────────────────
+    # ── Numeric cleanup ──────────────────────────────────────────────────────
     for col in ["ORDER VALUE", "ADV RECEIVED", "GROSS AMT EX-TAX", "QTY"]:
         crm[col] = pd.to_numeric(
-            crm.get(col, pd.Series(0, index=crm.index)).astype(str).str.replace(r"[₹,]", "", regex=True),
+            crm.get(col, pd.Series(0, index=crm.index)).astype(str)
+               .str.replace(r"[₹,]", "", regex=True),
             errors="coerce",
         ).fillna(0)
 
-    # ── Date cleanup ────────────────────────────────────────────────────────
+    # ── Date cleanup ─────────────────────────────────────────────────────────
     crm["ORDER DATE"]    = parse_mixed_dates(crm.get("ORDER DATE",    pd.Series("", index=crm.index)))
     crm["DELIVERY DATE"] = parse_mixed_dates(crm.get("DELIVERY DATE", pd.Series("", index=crm.index)))
 
-    # ── Filter out header rows / zero-value rows ────────────────────────────
+    # ── Filter out zero-value / header rows ──────────────────────────────────
     crm = crm[crm["ORDER VALUE"] > 0].copy()
 
-    # ── Calculated column ───────────────────────────────────────────────────
+    # ── Default empty DELIVERY STATUS → PENDING ──────────────────────────────
+    if "DELIVERY STATUS" not in crm.columns:
+        crm["DELIVERY STATUS"] = "PENDING"
+    else:
+        empty_mask = crm["DELIVERY STATUS"].isna() | (
+            crm["DELIVERY STATUS"].astype(str).str.strip().isin(["", "nan", "NaN", "None", "none"])
+        )
+        crm.loc[empty_mask, "DELIVERY STATUS"] = "PENDING"
+
+    # ── Calculated column ────────────────────────────────────────────────────
     crm["PENDING DUE"] = (crm["ORDER VALUE"] - crm["ADV RECEIVED"]).clip(lower=0)
 
-    return crm, team
+    return crm, team, franchise_sheets, fours_sheets
 
 
-# ── Row highlighter for delivery date ─────────────────────────────────────────
+# ── Group rows by ORDER NO for All-Sales display ─────────────────────────────
+
+def group_by_order_no(df):
+    """
+    Collapse multiple product rows sharing the same ORDER NO into a single row.
+    Products are joined with ',\\n' for multi-line display in the table.
+    """
+    if "ORDER NO" not in df.columns:
+        return df
+
+    valid_mask = (
+        df["ORDER NO"].notna() &
+        (~df["ORDER NO"].astype(str).str.strip().str.upper().isin(["", "NAN", "NONE"]))
+    )
+    has_no = df[valid_mask].copy()
+    no_no  = df[~valid_mask].copy()
+
+    if has_no.empty:
+        return df
+
+    agg = {}
+
+    # Products: join unique values with comma + newline
+    if "PRODUCT NAME" in has_no.columns:
+        agg["PRODUCT NAME"] = lambda x: ",\n".join(
+            x.dropna().astype(str).str.strip().unique()
+        )
+
+    # Numeric: sum across all line items in the order
+    for col in ["QTY", "ORDER VALUE", "GROSS AMT EX-TAX", "ADV RECEIVED", "PENDING DUE"]:
+        if col in has_no.columns:
+            agg[col] = "sum"
+
+    # String fields: take first non-null value
+    for col in ["ORDER DATE", "CUSTOMER NAME", "CONTACT NUMBER", "EMAIL ADDRESS",
+                "CATEGORY", "SALES PERSON", "DELIVERY DATE",
+                "REVIEW", "REMARKS", "SOURCE"]:
+        if col in has_no.columns:
+            agg[col] = "first"
+
+    # Delivery status: if ANY item is PENDING → show PENDING, else take first
+    if "DELIVERY STATUS" in has_no.columns:
+        agg["DELIVERY STATUS"] = lambda x: (
+            "PENDING"
+            if any(str(v).upper().strip() == "PENDING" for v in x.dropna())
+            else str(x.iloc[0])
+        )
+
+    if not agg:
+        return df
+
+    grouped = has_no.groupby("ORDER NO", sort=False, as_index=False).agg(agg)
+    return pd.concat([grouped, no_no], ignore_index=True)
+
+
+# ── Row highlighter (overdue = red, tomorrow = green) ─────────────────────────
 
 def highlight_delivery(row, raw_dates, today, tomorrow):
     try:
@@ -172,12 +253,23 @@ def highlight_delivery(row, raw_dates, today, tomorrow):
     return [""] * len(row)
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# MAIN PAGE
+# ═══════════════════════════════════════════════════════════════════════════════
 
-crm, team_df = load_b2c_data()
+crm, team_df, franchise_sheets, fours_sheets = load_b2c_data()
 
 st.title("🛋️ 4sInteriors B2C Sales Dashboard")
-st.caption("Combined Franchise + 4S Interiors · FY 2026-27 · Data from SHEET_DETAILS")
+
+# Show actual sheet names being loaded
+all_sheet_names = franchise_sheets + fours_sheets
+if all_sheet_names:
+    st.caption(
+        f"FY 2026-27  ·  Franchise sheets: **{', '.join(franchise_sheets) or '—'}**  "
+        f"·  4S Interiors sheets: **{', '.join(fours_sheets) or '—'}**"
+    )
+else:
+    st.caption("FY 2026-27 · No sheets found in SHEET_DETAILS")
 
 if crm.empty:
     st.error("No valid B2C data found. Check that SHEET_DETAILS has sheet names and they are accessible.")
@@ -186,66 +278,89 @@ if crm.empty:
 today    = datetime.now().date()
 tomorrow = today + timedelta(days=1)
 
+
 # ── KPI metrics ───────────────────────────────────────────────────────────────
 
-total_orders    = len(crm)
+total_orders    = crm["ORDER NO"].nunique() if "ORDER NO" in crm.columns else len(crm)
 total_value     = crm["ORDER VALUE"].sum()
-total_gross     = crm["GROSS AMT EX-TAX"].sum()
 total_pending   = crm["PENDING DUE"].sum()
 pending_del_cnt = int((crm["DELIVERY STATUS"].astype(str).str.upper().str.strip() == "PENDING").sum())
 
-k1, k2, k3, k4, k5 = st.columns(5)
-k1.metric("📦 Total Orders",         total_orders)
-k2.metric("💰 Total Order Value",    f"₹{total_value:,.0f}")
-k3.metric("📊 Gross Amt (Ex-Tax)",   f"₹{total_gross:,.0f}")
-k4.metric("🧾 Pending Due",          f"₹{total_pending:,.0f}")
-k5.metric("🚚 Pending Deliveries",   pending_del_cnt)
+k1, k2, k3, k4 = st.columns(4)
+k1.metric("📦 Total Orders",       total_orders)
+k2.metric("💰 Total Order Value",  f"₹{total_value:,.2f}")
+k3.metric("🧾 Pending Due",        f"₹{total_pending:,.2f}")
+k4.metric("🚚 Pending Deliveries", pending_del_cnt)
 
 st.divider()
 
+
 # ── All Sales Records ─────────────────────────────────────────────────────────
 
-st.subheader("📋 All Sales Records")
+hdr_col, d1_col, d2_col = st.columns([2, 1, 1])
+with hdr_col:
+    st.subheader("📋 All Sales Records")
+with d1_col:
+    filter_start = st.date_input(
+        "From", value=FY_START, min_value=FY_START, max_value=today, key="sales_from"
+    )
+with d2_col:
+    filter_end = st.date_input(
+        "To", value=today, min_value=FY_START, max_value=today, key="sales_to"
+    )
 
-# Column filter
-available_cols = [c for c in SALES_DISPLAY_COLS if c in crm.columns]
-selected_cols  = st.multiselect(
-    "Columns to display",
-    options=available_cols,
-    default=available_cols,
-    key="sales_cols_select",
+# Filter by date range
+sales_filtered = crm[
+    crm["ORDER DATE"].notna() &
+    (crm["ORDER DATE"].dt.date >= filter_start) &
+    (crm["ORDER DATE"].dt.date <= filter_end)
+].copy()
+
+# Group by ORDER NO so each order is one row with all products listed
+sales_grouped = group_by_order_no(sales_filtered)
+sales_grouped = sales_grouped.sort_values("ORDER DATE", ascending=False).reset_index(drop=True)
+
+st.caption(
+    f"Showing **{filter_start.strftime('%d %b %Y')}** → **{filter_end.strftime('%d %b %Y')}**"
+    f"  ·  **{len(sales_grouped)}** orders"
 )
 
-sales_df = crm[selected_cols].copy() if selected_cols else crm[available_cols].copy()
-sales_df = sales_df[pd.notnull(sales_df["ORDER DATE"])].sort_values("ORDER DATE", ascending=False).reset_index(drop=True)
+# Build display table (no column picker widget)
+avail_cols    = [c for c in SALES_DISPLAY_COLS if c in sales_grouped.columns]
+sales_display = sales_grouped[avail_cols].copy()
 
-# Friendly display
-sales_display = sales_df.copy()
-if "ORDER DATE" in sales_display.columns:
-    sales_display["ORDER DATE"]    = fmt_date(sales_display["ORDER DATE"])
-if "DELIVERY DATE" in sales_display.columns:
-    sales_display["DELIVERY DATE"] = fmt_date(sales_display["DELIVERY DATE"])
+if "ORDER DATE"    in sales_display.columns: sales_display["ORDER DATE"]    = fmt_date(sales_display["ORDER DATE"])
+if "DELIVERY DATE" in sales_display.columns: sales_display["DELIVERY DATE"] = fmt_date(sales_display["DELIVERY DATE"])
 
-sales_display = sales_display.rename(columns={k: v for k, v in COL_RENAME_DISPLAY.items() if k in sales_display.columns})
+sales_display = apply_amount_fmt(sales_display, ["ORDER VALUE", "ADV RECEIVED", "PENDING DUE"])
+sales_display = sales_display.rename(
+    columns={k: v for k, v in COL_RENAME_DISPLAY.items() if k in sales_display.columns}
+)
 
 # Pagination
 PAGE_SIZE = 25
 if "b2c_page" not in st.session_state:
     st.session_state.b2c_page = 0
+if "b2c_filter_key" not in st.session_state:
+    st.session_state.b2c_filter_key = (filter_start, filter_end)
+if st.session_state.b2c_filter_key != (filter_start, filter_end):
+    st.session_state.b2c_page     = 0
+    st.session_state.b2c_filter_key = (filter_start, filter_end)
 
 total_pages = max(1, (len(sales_display) - 1) // PAGE_SIZE + 1)
-p_col1, p_col2, p_col3 = st.columns([1, 3, 1])
-with p_col1:
+pc1, pc2, pc3 = st.columns([1, 4, 1])
+with pc1:
     if st.button("⬅️ Prev", key="b2c_prev") and st.session_state.b2c_page > 0:
         st.session_state.b2c_page -= 1
-with p_col3:
+with pc3:
     if st.button("Next ➡️", key="b2c_next") and st.session_state.b2c_page < total_pages - 1:
         st.session_state.b2c_page += 1
-with p_col2:
-    st.caption(f"Page {st.session_state.b2c_page + 1} of {total_pages}  ·  {len(sales_display)} records")
+with pc2:
+    st.caption(f"Page {st.session_state.b2c_page + 1} of {total_pages}")
 
-start = st.session_state.b2c_page * PAGE_SIZE
-st.dataframe(sales_display.iloc[start : start + PAGE_SIZE], use_container_width=True)
+s_idx = st.session_state.b2c_page * PAGE_SIZE
+st.dataframe(sales_display.iloc[s_idx : s_idx + PAGE_SIZE], use_container_width=True)
+
 
 # ── Pending Deliveries ────────────────────────────────────────────────────────
 
@@ -253,15 +368,48 @@ st.divider()
 st.subheader("🚚 Pending Deliveries")
 st.info("🟢 Green = Tomorrow's Deliveries  |  🔴 Red = Overdue / Missed")
 
+# Individual pending items (not grouped by ORDER NO) so mixed-status orders
+# correctly show only the pending products — item-level granularity.
 pending_del = crm[
     crm["DELIVERY STATUS"].astype(str).str.upper().str.strip() == "PENDING"
 ].copy().sort_values("DELIVERY DATE", ascending=False).reset_index(drop=True)
 
 if not pending_del.empty:
-    # Action buttons
-    b1, b2, b3, _ = st.columns(4)
 
-    with b1:
+    # ── Email & Alert buttons ────────────────────────────────────────────────
+    eb1, eb2, eb3, eb4 = st.columns(4)
+
+    with eb1:
+        if st.button("📧 Tomorrow's Delivery Email", use_container_width=True, key="em_tomorrow_del"):
+            tomorrow_del = pending_del[
+                pd.to_datetime(pending_del["DELIVERY DATE"], errors="coerce").dt.date == tomorrow
+            ]
+            if not tomorrow_del.empty:
+                try:
+                    send_pending_delivery_email_4s(tomorrow_del)
+                    st.success("✅ Tomorrow's Delivery email sent!")
+                except Exception as e:
+                    st.error(f"❌ Failed: {e}")
+            else:
+                st.info("No deliveries scheduled for tomorrow.")
+
+    with eb2:
+        if st.button("📧 All Pending Deliveries Email", use_container_width=True, key="em_all_del"):
+            try:
+                send_pending_delivery_email_4s(pending_del)
+                st.success("✅ All Pending Deliveries email sent!")
+            except Exception as e:
+                st.error(f"❌ Failed: {e}")
+
+    with eb3:
+        if st.button("🔔 Update CRM Reminder Email", use_container_width=True, key="em_upd_del"):
+            try:
+                send_update_delivery_status_email_4s(pending_del)
+                st.success("✅ Update CRM Reminder sent!")
+            except Exception as e:
+                st.error(f"❌ Failed: {e}")
+
+    with eb4:
         if st.button("🚀 WhatsApp Delivery Alerts", use_container_width=True, key="wa_del"):
             alerts = get_alerts(crm, team_df, "delivery")
             if alerts:
@@ -270,32 +418,18 @@ if not pending_del.empty:
             else:
                 st.info("No delivery alerts for tomorrow.")
 
-    with b2:
-        if st.button("📧 Send Delivery Email", use_container_width=True, key="em_del"):
-            try:
-                send_pending_delivery_email_4s(pending_del)
-                st.success("✅ Pending Delivery email sent!")
-            except Exception as e:
-                st.error(f"❌ Failed: {e}")
+    # ── Table ────────────────────────────────────────────────────────────────
+    pend_cols     = [c for c in PENDING_DISPLAY_COLS if c in pending_del.columns]
+    pend_display  = pending_del[pend_cols].copy()
+    raw_del_dates = pend_display["DELIVERY DATE"].copy() if "DELIVERY DATE" in pend_display.columns else pd.Series(dtype="object")
 
-    with b3:
-        if st.button("⚠️ Send Update Reminder", use_container_width=True, key="em_upd"):
-            try:
-                send_update_delivery_status_email_4s(pending_del)
-                st.success("✅ Update Reminder email sent!")
-            except Exception as e:
-                st.error(f"❌ Failed: {e}")
+    if "ORDER DATE"    in pend_display.columns: pend_display["ORDER DATE"]    = fmt_date(pend_display["ORDER DATE"])
+    if "DELIVERY DATE" in pend_display.columns: pend_display["DELIVERY DATE"] = fmt_date(pend_display["DELIVERY DATE"])
 
-    pend_cols       = [c for c in PENDING_DISPLAY_COLS if c in pending_del.columns]
-    pend_display    = pending_del[pend_cols].copy()
-    raw_del_dates   = pend_display["DELIVERY DATE"].copy() if "DELIVERY DATE" in pend_display.columns else pd.Series()
-
-    if "ORDER DATE" in pend_display.columns:
-        pend_display["ORDER DATE"]    = fmt_date(pend_display["ORDER DATE"])
-    if "DELIVERY DATE" in pend_display.columns:
-        pend_display["DELIVERY DATE"] = fmt_date(pend_display["DELIVERY DATE"])
-
-    pend_display = pend_display.rename(columns={k: v for k, v in COL_RENAME_DISPLAY.items() if k in pend_display.columns})
+    pend_display = apply_amount_fmt(pend_display, ["ORDER VALUE", "ADV RECEIVED", "PENDING DUE"])
+    pend_display = pend_display.rename(
+        columns={k: v for k, v in COL_RENAME_DISPLAY.items() if k in pend_display.columns}
+    )
 
     st.dataframe(
         pend_display.style.apply(
@@ -304,14 +438,17 @@ if not pending_del.empty:
         use_container_width=True,
     )
 
-    d1, d2, d3 = st.columns(3)
-    d1.metric("📦 Total Pending Deliveries", len(pending_del))
-    d2.metric("🟢 Tomorrow",
-              int((pd.to_datetime(pending_del["DELIVERY DATE"], errors="coerce").dt.date == tomorrow).sum()))
-    d3.metric("🔴 Overdue",
-              int((pd.to_datetime(pending_del["DELIVERY DATE"], errors="coerce").dt.date < today).sum()))
+    # Summary metrics
+    dm1, dm2, dm3 = st.columns(3)
+    dm1.metric("📦 Total Pending",  len(pending_del))
+    dm2.metric("🟢 Tomorrow",
+               int((pd.to_datetime(pending_del["DELIVERY DATE"], errors="coerce").dt.date == tomorrow).sum()))
+    dm3.metric("🔴 Overdue",
+               int((pd.to_datetime(pending_del["DELIVERY DATE"], errors="coerce").dt.date < today).sum()))
+
 else:
     st.success("✅ No pending deliveries right now!")
+
 
 # ── Payment Due ───────────────────────────────────────────────────────────────
 
@@ -322,12 +459,43 @@ payment_due = crm[crm["PENDING DUE"] > 0].copy().sort_values("DELIVERY DATE", as
 
 if not payment_due.empty:
     total_outstanding = payment_due["PENDING DUE"].sum()
+    st.warning(f"💸 Total Outstanding Balance: ₹{total_outstanding:,.2f}")
 
-    pa1, pa2 = st.columns([3, 1])
-    with pa1:
-        st.warning(f"💸 Total Outstanding Balance: ₹{total_outstanding:,.2f}")
-    with pa2:
-        if st.button("💸 WhatsApp Payment Alerts", use_container_width=True, key="wa_pay"):
+    # ── Email & Alert buttons ────────────────────────────────────────────────
+    pb1, pb2, pb3, pb4 = st.columns(4)
+
+    with pb1:
+        if st.button("📧 Tomorrow's Payment Due Email", use_container_width=True, key="em_tomorrow_pay"):
+            tomorrow_pay = payment_due[
+                pd.to_datetime(payment_due["DELIVERY DATE"], errors="coerce").dt.date == tomorrow
+            ]
+            if not tomorrow_pay.empty:
+                try:
+                    send_pending_delivery_email_4s(tomorrow_pay)
+                    st.success("✅ Tomorrow's Payment Due email sent!")
+                except Exception as e:
+                    st.error(f"❌ Failed: {e}")
+            else:
+                st.info("No payment due deliveries scheduled for tomorrow.")
+
+    with pb2:
+        if st.button("📧 All Payment Due Email", use_container_width=True, key="em_all_pay"):
+            try:
+                send_pending_delivery_email_4s(payment_due)
+                st.success("✅ Payment Due email sent!")
+            except Exception as e:
+                st.error(f"❌ Failed: {e}")
+
+    with pb3:
+        if st.button("🔔 Payment Update Reminder", use_container_width=True, key="em_upd_pay"):
+            try:
+                send_update_delivery_status_email_4s(payment_due)
+                st.success("✅ Payment Update Reminder sent!")
+            except Exception as e:
+                st.error(f"❌ Failed: {e}")
+
+    with pb4:
+        if st.button("🚀 WhatsApp Payment Alerts", use_container_width=True, key="wa_pay"):
             alerts = get_alerts(crm, team_df, "payment")
             if alerts:
                 for sp, msg in alerts:
@@ -335,16 +503,18 @@ if not payment_due.empty:
             else:
                 st.info("No payment alerts for tomorrow.")
 
-    pay_cols       = [c for c in PENDING_DISPLAY_COLS if c in payment_due.columns]
-    pay_display    = payment_due[pay_cols].copy()
-    raw_pay_dates  = pay_display["DELIVERY DATE"].copy() if "DELIVERY DATE" in pay_display.columns else pd.Series()
+    # ── Table ────────────────────────────────────────────────────────────────
+    pay_cols      = [c for c in PENDING_DISPLAY_COLS if c in payment_due.columns]
+    pay_display   = payment_due[pay_cols].copy()
+    raw_pay_dates = pay_display["DELIVERY DATE"].copy() if "DELIVERY DATE" in pay_display.columns else pd.Series(dtype="object")
 
-    if "ORDER DATE" in pay_display.columns:
-        pay_display["ORDER DATE"]    = fmt_date(pay_display["ORDER DATE"])
-    if "DELIVERY DATE" in pay_display.columns:
-        pay_display["DELIVERY DATE"] = fmt_date(pay_display["DELIVERY DATE"])
+    if "ORDER DATE"    in pay_display.columns: pay_display["ORDER DATE"]    = fmt_date(pay_display["ORDER DATE"])
+    if "DELIVERY DATE" in pay_display.columns: pay_display["DELIVERY DATE"] = fmt_date(pay_display["DELIVERY DATE"])
 
-    pay_display = pay_display.rename(columns={k: v for k, v in COL_RENAME_DISPLAY.items() if k in pay_display.columns})
+    pay_display = apply_amount_fmt(pay_display, ["ORDER VALUE", "ADV RECEIVED", "PENDING DUE"])
+    pay_display = pay_display.rename(
+        columns={k: v for k, v in COL_RENAME_DISPLAY.items() if k in pay_display.columns}
+    )
 
     st.dataframe(
         pay_display.style.apply(
@@ -353,11 +523,12 @@ if not payment_due.empty:
         use_container_width=True,
     )
 
-    p1, p2, p3 = st.columns(3)
-    p1.metric("🧾 Total Payment Cases", len(payment_due))
-    p2.metric("🟢 Tomorrow",
-              int((pd.to_datetime(payment_due["DELIVERY DATE"], errors="coerce").dt.date == tomorrow).sum()))
-    p3.metric("🔴 Overdue",
-              int((pd.to_datetime(payment_due["DELIVERY DATE"], errors="coerce").dt.date < today).sum()))
+    pm1, pm2, pm3 = st.columns(3)
+    pm1.metric("🧾 Total Payment Cases",  len(payment_due))
+    pm2.metric("🟢 Tomorrow",
+               int((pd.to_datetime(payment_due["DELIVERY DATE"], errors="coerce").dt.date == tomorrow).sum()))
+    pm3.metric("🔴 Overdue",
+               int((pd.to_datetime(payment_due["DELIVERY DATE"], errors="coerce").dt.date < today).sum()))
+
 else:
     st.success("✅ No outstanding payments!")
