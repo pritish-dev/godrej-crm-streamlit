@@ -104,22 +104,55 @@ def fetch_pending_grouped():
         print("  → No pending deliveries found.")
         return pd.DataFrame()
 
-    pending_grouped = pending.groupby(
-        ["CUSTOMER NAME", "CUSTOMER DELIVERY DATE (TO BE)"]
-    ).agg({
-        "PRODUCT NAME":  lambda x: ", ".join(x.astype(str)),
-        "CONTACT NUMBER": "first",
-        "SALES PERSON":   "first",
-        "DATE":           "min",
-        "DELIVERY REMARKS": "first"
-    }).reset_index()
+    # ── Group by ORDER NO so each order is one row in the email table ──────────
+    # Products belonging to the same ORDER NO are joined with ',\n' so they
+    # render on separate lines in the HTML email (the email_sender converts
+    # '\n' to <br>).
+    if "ORDER NO" in pending.columns:
+        valid_mask = (
+            pending["ORDER NO"].notna() &
+            (~pending["ORDER NO"].astype(str).str.strip().str.upper().isin(["", "NAN", "NONE"]))
+        )
+        has_no = pending[valid_mask].copy()
+        no_no  = pending[~valid_mask].copy()
+
+        agg = {}
+        if "PRODUCT NAME" in has_no.columns:
+            agg["PRODUCT NAME"] = lambda x: ",\n".join(
+                x.dropna().astype(str).str.strip().unique()
+            )
+        for col in ["CONTACT NUMBER", "SALES PERSON",
+                    "CUSTOMER NAME", "DELIVERY REMARKS"]:
+            if col in has_no.columns:
+                agg[col] = "first"
+        if "DATE" in has_no.columns:
+            agg["DATE"] = "min"
+        if "CUSTOMER DELIVERY DATE (TO BE)" in has_no.columns:
+            agg["CUSTOMER DELIVERY DATE (TO BE)"] = "first"
+
+        if agg and not has_no.empty:
+            grouped = has_no.groupby("ORDER NO", sort=False, as_index=False).agg(agg)
+            pending_grouped = pd.concat([grouped, no_no], ignore_index=True)
+        else:
+            pending_grouped = pending.copy()
+    else:
+        # Fallback: legacy grouping by customer + delivery date
+        pending_grouped = pending.groupby(
+            ["CUSTOMER NAME", "CUSTOMER DELIVERY DATE (TO BE)"]
+        ).agg({
+            "PRODUCT NAME":  lambda x: ",\n".join(x.dropna().astype(str).str.strip().unique()),
+            "CONTACT NUMBER": "first",
+            "SALES PERSON":   "first",
+            "DATE":           "min",
+            "DELIVERY REMARKS": "first"
+        }).reset_index()
 
     pending_grouped.rename(columns={
         "DATE":                              "ORDER DATE",
         "CUSTOMER DELIVERY DATE (TO BE)":    "DELIVERY DATE"
     }, inplace=True)
 
-    print(f"  → {len(pending_grouped)} pending records found.")
+    print(f"  → {len(pending_grouped)} pending records (grouped by ORDER NO).")
     return pending_grouped
 
 

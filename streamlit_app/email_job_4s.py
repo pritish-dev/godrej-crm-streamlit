@@ -118,8 +118,60 @@ def fetch_pending_del():
         crm["DELIVERY STATUS"].astype(str).str.upper().str.strip() == "PENDING"
     ].copy()
 
-    print(f"  → {len(pending_del)} pending delivery records found.")
+    print(f"  → {len(pending_del)} pending line-items before grouping.")
+
+    # ── Group by ORDER NO so each order is one row in the email table ──────────
+    # Products belonging to the same ORDER NO are joined with ',\n' so they
+    # render on separate lines in the HTML email (email_sender_4s.py converts
+    # '\n' to <br> for the PRODUCT NAME column).
+    pending_del = _group_by_order_no(pending_del)
+    print(f"  → {len(pending_del)} pending orders after grouping by ORDER NO.")
     return pending_del
+
+
+def _group_by_order_no(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Collapse multiple line-items sharing the same ORDER NO into a single row.
+    Products joined with ',\\n' so the HTML email renders them on new lines.
+    Mirrors the dashboard's group_by_order_no() logic.
+    """
+    if df.empty or "ORDER NO" not in df.columns:
+        return df
+
+    valid_mask = (
+        df["ORDER NO"].notna() &
+        (~df["ORDER NO"].astype(str).str.strip().str.upper().isin(["", "NAN", "NONE"]))
+    )
+    has_no = df[valid_mask].copy()
+    no_no  = df[~valid_mask].copy()
+
+    if has_no.empty:
+        return df
+
+    agg = {}
+    if "PRODUCT NAME" in has_no.columns:
+        agg["PRODUCT NAME"] = lambda x: ",\n".join(
+            x.dropna().astype(str).str.strip().unique()
+        )
+
+    # Numeric: sum across all line-items in the order
+    for col in ["QTY", "ORDER AMOUNT", "GROSS AMT EX-TAX",
+                "ADV RECEIVED", "ADVANCE RECEIVED", "PENDING AMOUNT"]:
+        if col in has_no.columns:
+            agg[col] = "sum"
+
+    # String fields: take the first non-null value
+    for col in ["ORDER DATE", "CUSTOMER NAME", "CONTACT NUMBER", "EMAIL ADDRESS",
+                "CATEGORY", "SALES PERSON", "DELIVERY DATE",
+                "REVIEW", "REMARKS", "SOURCE", "DELIVERY STATUS"]:
+        if col in has_no.columns and col not in agg:
+            agg[col] = "first"
+
+    if not agg:
+        return df
+
+    grouped = has_no.groupby("ORDER NO", sort=False, as_index=False).agg(agg)
+    return pd.concat([grouped, no_no], ignore_index=True)
 
 
 # ── Run the right job based on IST hour ──────────────────────────────────────

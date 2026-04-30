@@ -123,6 +123,37 @@ def _fmt_date_col(df: pd.DataFrame, col: str) -> pd.DataFrame:
     return df
 
 
+def _format_cell(col_name: str, value) -> str:
+    """
+    Format a single table cell.
+    - PRODUCT NAME: convert ',\\n' / '\\n' to <br>, allow wrapping, top-align,
+      cap width so column doesn't get too long when an order has many products.
+    - Other columns: keep nowrap (dates / amounts shouldn't wrap).
+    """
+    s = "" if value is None else str(value)
+    col_upper = str(col_name).strip().upper()
+
+    if col_upper in ("PRODUCT NAME", "PRODUCT", "PRODUCTS"):
+        safe = (
+            s.replace(",\r\n", "<br>")
+             .replace(",\n", "<br>")
+             .replace("\r\n", "<br>")
+             .replace("\n", "<br>")
+        )
+        return (
+            "<td style='padding:6px 10px;border:1px solid #ddd;"
+            "vertical-align:top;white-space:normal;max-width:260px;"
+            "word-wrap:break-word;line-height:1.45'>"
+            f"{safe}</td>"
+        )
+
+    return (
+        "<td style='padding:6px 10px;border:1px solid #ddd;"
+        "vertical-align:top;white-space:nowrap'>"
+        f"{s}</td>"
+    )
+
+
 def _html_table_colour_coded(df: pd.DataFrame, today: date) -> str:
     """Red = today or overdue, Green = tomorrow, White = future."""
     tomorrow = today + timedelta(days=1)
@@ -136,10 +167,7 @@ def _html_table_colour_coded(df: pd.DataFrame, today: date) -> str:
         except Exception:
             bg = "#ffffff"
 
-        cells = "".join(
-            f"<td style='padding:6px 10px;border:1px solid #ddd;white-space:nowrap'>{v}</td>"
-            for v in row.values
-        )
+        cells = "".join(_format_cell(c, row[c]) for c in df.columns)
         rows_html += f"<tr style='background:{bg}'>{cells}</tr>"
 
     headers = "".join(
@@ -158,10 +186,7 @@ def _html_table_all_red(df: pd.DataFrame) -> str:
     """All rows red — used for Email 2 (all overdue)."""
     rows_html = ""
     for _, row in df.iterrows():
-        cells = "".join(
-            f"<td style='padding:6px 10px;border:1px solid #ddd;white-space:nowrap'>{v}</td>"
-            for v in row.values
-        )
+        cells = "".join(_format_cell(c, row[c]) for c in df.columns)
         rows_html += f"<tr style='background:#ffcccc'>{cells}</tr>"
 
     headers = "".join(

@@ -91,6 +91,38 @@ def _send_email(subject: str, html_body: str):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] ✅ Email sent → {RECIPIENTS}")
 
 
+def _format_cell(col_name: str, value) -> str:
+    """
+    Format a single table cell.
+    - PRODUCT NAME: convert ',\\n' / '\\n' to <br>, allow wrapping, top-align,
+      and cap width so the column does not balloon.
+    - Other columns: keep nowrap so dates/numbers don't break.
+    """
+    s = "" if value is None else str(value)
+    col_upper = str(col_name).strip().upper()
+
+    if col_upper in ("PRODUCT NAME", "PRODUCT", "PRODUCTS"):
+        # Replace any combination of comma + newline (or bare newline) with <br>
+        safe = (
+            s.replace(",\r\n", "<br>")
+             .replace(",\n", "<br>")
+             .replace("\r\n", "<br>")
+             .replace("\n", "<br>")
+        )
+        return (
+            "<td style='padding:6px 10px;border:1px solid #ddd;"
+            "vertical-align:top;white-space:normal;max-width:260px;"
+            "word-wrap:break-word;line-height:1.45'>"
+            f"{safe}</td>"
+        )
+
+    return (
+        "<td style='padding:6px 10px;border:1px solid #ddd;"
+        "vertical-align:top;white-space:nowrap'>"
+        f"{s}</td>"
+    )
+
+
 def _html_table(df: pd.DataFrame, today: date) -> str:
     """Render DataFrame as colour-coded HTML table (red = overdue, green = tomorrow)."""
     tomorrow = today + timedelta(days=1)
@@ -110,10 +142,7 @@ def _html_table(df: pd.DataFrame, today: date) -> str:
         except Exception:
             bg = "#ffffff"
 
-        cells = "".join(
-            f"<td style='padding:6px 10px;border:1px solid #ddd;white-space:nowrap'>{v}</td>"
-            for v in row.values
-        )
+        cells = "".join(_format_cell(c, row[c]) for c in df.columns)
         rows_html += f"<tr style='background:{bg}'>{cells}</tr>"
 
     headers = "".join(
@@ -368,10 +397,7 @@ def _html_table_all_red(df: pd.DataFrame) -> str:
     """All rows rendered red — used for Email 2 where every record is overdue."""
     rows_html = ""
     for _, row in df.iterrows():
-        cells = "".join(
-            f"<td style='padding:6px 10px;border:1px solid #ddd;white-space:nowrap'>{v}</td>"
-            for v in row.values
-        )
+        cells = "".join(_format_cell(c, row[c]) for c in df.columns)
         rows_html += f"<tr style='background:#ffcccc'>{cells}</tr>"
 
     headers = "".join(
