@@ -133,6 +133,11 @@ elif MANUAL_JOB == "fours_email2":
     print("Manual trigger → Sending Email 2 (Update Delivery Status Reminder)...")
     send_update_delivery_status_email_4s(pending_del)
 
+elif MANUAL_JOB == "fours_email3":
+    # Evening pending delivery report — same content as email1, different send time
+    print("Manual trigger → Sending Email 3 (Evening Pending Delivery Report)...")
+    send_pending_delivery_email_4s(pending_del)
+
 # Scheduled trigger based on IST hour
 elif current_hour == 10:
     print("Sending Email 1 — Morning Pending Delivery Report...")
@@ -147,4 +152,9 @@ elif current_hour == 17:
     send_pending_delivery_email_4s(pending_del)
 
 else:
-    print(f"No 4S email scheduled for hour {current_hour}. Exiting.")
+    print(
+        f"[4S Job] No email mapped for IST hour {current_hour}. "
+        f"Expected 10, 11, or 17 for scheduled runs. "
+        f"Use MANUAL_JOB env var to force a specific email."
+    )
+    sys.exit(1)  # Fail visibly so GitHub marks run red — not silently green

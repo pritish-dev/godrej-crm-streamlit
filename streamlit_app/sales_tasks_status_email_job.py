@@ -48,6 +48,11 @@ def load_and_process_tasks():
 
         # Get status
         def get_status(row):
+            # Guard: unparseable DUE DATE cells come through as NaT —
+            # calling .date() on NaT raises AttributeError and crashes the job.
+            if pd.isnull(row["DUE DATE"]):
+                return "⚪ No Date"
+
             if pd.notnull(row["LAST COMPLETED DATE"]):
                 if row["LAST COMPLETED DATE"].date() > row["DUE DATE"].date():
                     return "🔴 Missed"
