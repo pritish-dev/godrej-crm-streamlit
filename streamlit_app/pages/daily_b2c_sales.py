@@ -375,68 +375,6 @@ if not df_display.empty and all_execs:
 
     st.success(f"### 💰 Grand Total B2C Sales ({selected_source}): ₹{grand_total:,.2f}")
 
-    # ── Week-over-Week Trend ───────────────────────────────────────────────────
-    _today_d   = TODAY
-    _this_mon  = _today_d - timedelta(days=_today_d.weekday())
-    _last_mon  = _this_mon - timedelta(weeks=1)
-    _last_sun  = _this_mon - timedelta(days=1)
-
-    _this_week_data = crm_raw[(crm_raw["DATE_DT"] >= _this_mon) & (crm_raw["DATE_DT"] <= _today_d)]
-    _last_week_data = crm_raw[(crm_raw["DATE_DT"] >= _last_mon) & (crm_raw["DATE_DT"] <= _last_sun)]
-    if selected_source != "All":
-        _this_week_data = _this_week_data[_this_week_data["SOURCE"] == selected_source]
-        _last_week_data = _last_week_data[_last_week_data["SOURCE"] == selected_source]
-
-    _this_week_total = _this_week_data["GROSS AMT"].sum()
-    _last_week_total = _last_week_data["GROSS AMT"].sum()
-    _wow_delta       = _this_week_total - _last_week_total
-    _wow_pct         = ((_wow_delta / _last_week_total) * 100) if _last_week_total > 0 else 0.0
-
-    st.divider()
-    st.subheader("📈 Week-over-Week Comparison")
-    _w1, _w2, _w3 = st.columns(3)
-    _w1.metric(
-        f"This Week ({_this_mon.strftime('%d %b')} – {_today_d.strftime('%d %b')})",
-        f"₹{_this_week_total:,.0f}",
-    )
-    _w2.metric(
-        f"Last Week ({_last_mon.strftime('%d %b')} – {_last_sun.strftime('%d %b')})",
-        f"₹{_last_week_total:,.0f}",
-    )
-    _w3.metric(
-        "Change",
-        f"₹{abs(_wow_delta):,.0f}",
-        delta=f"{_wow_pct:+.1f}%",
-        delta_color="normal",
-    )
-
-    _days_of_week = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-
-    def _daily_by_dow(data, ref_monday):
-        out = [0.0] * 7
-        for _, row in data.iterrows():
-            dow = (row["DATE_DT"] - ref_monday).days
-            if 0 <= dow <= 6:
-                out[dow] += row["GROSS AMT"]
-        return out
-
-    _this_vals = _daily_by_dow(_this_week_data, _this_mon)
-    _last_vals = _daily_by_dow(_last_week_data, _last_mon)
-
-    _fig = go.Figure()
-    _fig.add_trace(go.Bar(name="Last Week", x=_days_of_week, y=_last_vals,
-                          marker_color="#90caf9", opacity=0.8))
-    _fig.add_trace(go.Bar(name="This Week", x=_days_of_week, y=_this_vals,
-                          marker_color="#1a237e", opacity=0.9))
-    _fig.update_layout(
-        barmode="group", height=300, margin=dict(t=20, b=20),
-        yaxis_title="Gross Sales (₹)",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    )
-    _fig.update_yaxes(tickprefix="₹", tickformat=",.0f")
-    st.plotly_chart(_fig, use_container_width=True)
-    st.divider()
-
     # ── Scrollable styled table ───────────────────────────────────────────────
     st.markdown("""
     <style>
@@ -480,6 +418,68 @@ if not df_display.empty and all_execs:
         .to_html()
     )
     st.write(f'<div class="table-scroll-container">{styled_html}</div>', unsafe_allow_html=True)
+
+    # ── Week-over-Week Trend ───────────────────────────────────────────────────
+    st.divider()
+    st.subheader("📈 Week-over-Week Comparison")
+
+    _today_d   = TODAY
+    _this_mon  = _today_d - timedelta(days=_today_d.weekday())
+    _last_mon  = _this_mon - timedelta(weeks=1)
+    _last_sun  = _this_mon - timedelta(days=1)
+
+    _this_week_data = crm_raw[(crm_raw["DATE_DT"] >= _this_mon) & (crm_raw["DATE_DT"] <= _today_d)]
+    _last_week_data = crm_raw[(crm_raw["DATE_DT"] >= _last_mon) & (crm_raw["DATE_DT"] <= _last_sun)]
+    if selected_source != "All":
+        _this_week_data = _this_week_data[_this_week_data["SOURCE"] == selected_source]
+        _last_week_data = _last_week_data[_last_week_data["SOURCE"] == selected_source]
+
+    _this_week_total = _this_week_data["GROSS AMT"].sum()
+    _last_week_total = _last_week_data["GROSS AMT"].sum()
+    _wow_delta       = _this_week_total - _last_week_total
+    _wow_pct         = ((_wow_delta / _last_week_total) * 100) if _last_week_total > 0 else 0.0
+
+    _w1, _w2, _w3 = st.columns(3)
+    _w1.metric(
+        f"This Week ({_this_mon.strftime('%d %b')} – {_today_d.strftime('%d %b')})",
+        f"₹{_this_week_total:,.0f}",
+    )
+    _w2.metric(
+        f"Last Week ({_last_mon.strftime('%d %b')} – {_last_sun.strftime('%d %b')})",
+        f"₹{_last_week_total:,.0f}",
+    )
+    _w3.metric(
+        "Change",
+        f"₹{abs(_wow_delta):,.0f}",
+        delta=f"{_wow_pct:+.1f}%",
+        delta_color="normal",
+    )
+
+    _days_of_week = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+    def _daily_by_dow(data, ref_monday):
+        out = [0.0] * 7
+        for _, row in data.iterrows():
+            dow = (row["DATE_DT"] - ref_monday).days
+            if 0 <= dow <= 6:
+                out[dow] += row["GROSS AMT"]
+        return out
+
+    _this_vals = _daily_by_dow(_this_week_data, _this_mon)
+    _last_vals = _daily_by_dow(_last_week_data, _last_mon)
+
+    _fig = go.Figure()
+    _fig.add_trace(go.Bar(name="Last Week", x=_days_of_week, y=_last_vals,
+                          marker_color="#90caf9", opacity=0.8))
+    _fig.add_trace(go.Bar(name="This Week", x=_days_of_week, y=_this_vals,
+                          marker_color="#1a237e", opacity=0.9))
+    _fig.update_layout(
+        barmode="group", height=300, margin=dict(t=20, b=20),
+        yaxis_title="Gross Sales (₹)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    _fig.update_yaxes(tickprefix="₹", tickformat=",.0f")
+    st.plotly_chart(_fig, use_container_width=True)
 
 else:
     st.info("No sales data found for the selected filters.")
