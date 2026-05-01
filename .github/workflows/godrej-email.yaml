@@ -46,8 +46,18 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          if [ -f streamlit_app/requirements.txt ]; then
+            pip install -r streamlit_app/requirements.txt
+          else
+            pip install -r requirements.txt
+          fi
 
+      # FIX: Inject SLOT based on which cron triggered the workflow.
+      # github.event.schedule contains the exact cron string that fired.
+      # This removes reliance on wall-clock time (GitHub Actions delays can
+      # push jobs 15-60 min late, causing hour-based routing to pick the
+      # wrong email or hit the no-match fallback and exit(1)).
       - name: Run Godrej email job
         env:
           EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
@@ -57,4 +67,13 @@ jobs:
           MANUAL_JOB:         ${{ github.event.inputs.job }}
         run: |
           cd streamlit_app
+
+          # Map the triggering cron → SLOT so email_job.py routes correctly
+          SCHEDULE="${{ github.event.schedule }}"
+          if   [ "$SCHEDULE" = "30 4 * * *" ];  then export SLOT=morning
+          elif [ "$SCHEDULE" = "30 5 * * *" ];  then export SLOT=reminder
+          elif [ "$SCHEDULE" = "30 11 * * *" ]; then export SLOT=evening
+          fi
+
+          echo "SLOT=${SLOT:-unset}  SCHEDULE=${SCHEDULE:-manual}"
           python email_job.py

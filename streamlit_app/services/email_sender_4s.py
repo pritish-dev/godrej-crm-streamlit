@@ -93,7 +93,12 @@ def _validate_credentials():
         raise ValueError("EMAIL_RECIPIENTS not set in secrets or .env")
 
 
-def _send_email(subject: str, html_body: str):
+def _send_email(subject: str, html_body: str,
+                job_name: str = "", records_count: int = 0) -> dict:
+    """
+    Low-level send via Gmail SSL.
+    Returns summary dict and appends an audit row to EMAIL_LOG sheet.
+    """
     _validate_credentials()
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
@@ -101,11 +106,50 @@ def _send_email(subject: str, html_body: str):
     msg["To"]      = ", ".join(RECIPIENTS)
     msg.attach(MIMEText(html_body, "html"))
 
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-        server.login(SENDER_EMAIL, SENDER_PASSWORD)
-        server.sendmail(SENDER_EMAIL, RECIPIENTS, msg.as_string())
+    summary = {
+        "sent":       False,
+        "recipients": list(RECIPIENTS),
+        "subject":    subject,
+        "records":    records_count,
+        "error":      "",
+    }
 
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] ✅ 4S Email sent → {RECIPIENTS}")
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(SENDER_EMAIL, SENDER_PASSWORD)
+            server.sendmail(SENDER_EMAIL, RECIPIENTS, msg.as_string())
+
+        summary["sent"] = True
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] ✅ 4S Email sent → {RECIPIENTS}")
+
+        try:
+            from services.sheets import append_email_log
+            append_email_log(
+                job_name      = job_name or subject[:60],
+                records_count = records_count,
+                recipients    = list(RECIPIENTS),
+                status        = "success",
+            )
+        except Exception as log_err:
+            print(f"[EMAIL_LOG] Warning: {log_err}")
+
+    except Exception as send_err:
+        summary["error"] = str(send_err)
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] ❌ 4S Email failed: {send_err}")
+        try:
+            from services.sheets import append_email_log
+            append_email_log(
+                job_name      = job_name or subject[:60],
+                records_count = records_count,
+                recipients    = list(RECIPIENTS),
+                status        = "error",
+                error         = str(send_err),
+            )
+        except Exception:
+            pass
+        raise
+
+    return summary
 
 
 def _stat_block(value, label: str, color: str) -> str:
@@ -306,8 +350,10 @@ def send_pending_delivery_email_4s(pending_del: pd.DataFrame):
     )
 
     subject = f"[4s CRM] 4S Pending Delivery Report - {today.strftime('%d %b %Y')} - {total} Pending"
-    _send_email(subject, body)
+    summary = _send_email(subject, body,
+                          job_name=f"4S Email 1 ({slot})", records_count=total)
     print(f"  → 4S Email 1 sent: {total} records ({overdue_cnt} overdue, {tmrw_count} tomorrow)")
+    return summary
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -363,5 +409,7 @@ def send_update_delivery_status_email_4s(pending_del: pd.DataFrame):
     )
 
     subject = f"[4s CRM] 4S Overdue Delivery Update - {today.strftime('%d %b %Y')} - {total} Overdue"
-    _send_email(subject, body)
+    summary = _send_email(subject, body,
+                          job_name="4S Email 2 (Overdue Reminder)", records_count=total)
     print(f"  → 4S Email 2 sent: {total} overdue records requiring CRM update")
+    return summary

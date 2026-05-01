@@ -1,12 +1,12 @@
 name: 4S Interiors CRM Emails
- 
+
 on:
   schedule:
     # All times in UTC.  IST = UTC + 5:30
     - cron: '32 4 * * *'    # 10:02 AM IST  →  Morning Digest
     - cron: '32 5 * * *'    # 11:02 AM IST  →  Update Reminder
     - cron: '32 11 * * *'   # 05:02 PM IST  →  Evening Digest
- 
+
   # Allow manual trigger from GitHub Actions UI for testing
   workflow_dispatch:
     inputs:
@@ -19,13 +19,13 @@ on:
           - fours_email1
           - fours_email2
           - fours_email3
- 
+
 jobs:
   # ── 4S INTERIORS CRM EMAILS ────────────────────────────────────────────────
   fours-crm-email:
     runs-on: ubuntu-latest
- 
-    # FIX: explicit parentheses prevent operator-precedence issues.
+
+    # explicit parentheses prevent operator-precedence issues.
     # schedule events always pass; workflow_dispatch only passes for the
     # three valid job values.
     if: >-
@@ -38,27 +38,29 @@ jobs:
           github.event.inputs.job == 'fours_email3'
         )
       )
- 
+
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4        # FIX: v3 (Node 16) → v4 (Node 20)
- 
+        uses: actions/checkout@v4
+
       - name: Set up Python
-        uses: actions/setup-python@v5   # FIX: v4 (Node 16) → v5 (Node 20)
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
- 
+
       - name: Install dependencies
-        # FIX: install from the same directory the script lives in,
-        # so any extra deps in streamlit_app/requirements.txt are picked up.
-        # Also falls back to root requirements.txt if that file doesn't exist.
         run: |
           if [ -f streamlit_app/requirements.txt ]; then
             pip install -r streamlit_app/requirements.txt
           else
             pip install -r requirements.txt
           fi
- 
+
+      # FIX: Inject SLOT based on which cron triggered the workflow.
+      # github.event.schedule contains the exact cron string that fired.
+      # This removes reliance on wall-clock time (GitHub Actions delays can
+      # push jobs 15-60 min late, causing hour-based routing to pick the
+      # wrong email or hit the no-match fallback and exit(1)).
       - name: Run 4S Interiors email job
         env:
           EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
@@ -68,4 +70,13 @@ jobs:
           MANUAL_JOB:         ${{ github.event.inputs.job }}
         run: |
           cd streamlit_app
+
+          # Map the triggering cron → SLOT so email_job_4s.py routes correctly
+          SCHEDULE="${{ github.event.schedule }}"
+          if   [ "$SCHEDULE" = "32 4 * * *" ];  then export SLOT=morning
+          elif [ "$SCHEDULE" = "32 5 * * *" ];  then export SLOT=reminder
+          elif [ "$SCHEDULE" = "32 11 * * *" ]; then export SLOT=evening
+          fi
+
+          echo "SLOT=${SLOT:-unset}  SCHEDULE=${SCHEDULE:-manual}"
           python email_job_4s.py

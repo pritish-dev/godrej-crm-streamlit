@@ -13,6 +13,5 @@ pywhatkit
 pyautogui
 selenium
 webdriver-manager
-
-
+schedule
 PyMuPDF

@@ -197,6 +197,57 @@ if not all_execs:
     st.info("No sales data found for the selected date range.")
     st.stop()
 
+
+# In the sales aggregation section, add review count calculation:
+
+def calculate_review_counts(df: pd.DataFrame, date_col: str = "ORDER DATE") -> pd.DataFrame:
+    """Calculate review counts per salesperson per day."""
+    review_col = "REVIEW RATING"
+    
+    if review_col not in df.columns:
+        return pd.DataFrame()
+    
+    df_temp = df.copy()
+    df_temp[date_col] = pd.to_datetime(df_temp[date_col], errors='coerce')
+    
+    # Group by salesperson and date
+    review_stats = df_temp.groupby(["SALES PERSON", date_col]).agg({
+        review_col: lambda x: {
+            'positive': (x == 1).sum(),
+            'negative': (x == -1).sum(),
+            'no_review': (x.isna()).sum() | (x == 0).sum()
+        }
+    }).reset_index()
+    
+    # Expand the dict column
+    review_stats[[f'{review_col}_positive', f'{review_col}_negative', f'{review_col}_no_review']] = (
+        pd.DataFrame(review_stats[review_col].tolist(), index=review_stats.index)
+    )
+    
+    return review_stats.drop(columns=[review_col])
+
+
+# In the display section for 4S sales summary:
+st.subheader("⭐ Daily Review Count Summary (4S Interiors)")
+
+if "4S_SALES" in view_mode:
+    # Filter 4S sales data with review counts
+    df_4s = df[df['SOURCE'] == '4S INTERIORS'].copy() if 'SOURCE' in df.columns else df
+    
+    review_summary = calculate_review_counts(df_4s)
+    
+    if not review_summary.empty:
+        st.dataframe(
+            review_summary.rename(columns={
+                'REVIEW RATING_positive': '5-4 Star ⭐',
+                'REVIEW RATING_negative': '3-1 Star ⭐',
+                'REVIEW RATING_no_review': 'No Review'
+            }),
+            use_container_width=True
+        )
+    else:
+        st.info("No review data available yet.")
+        
 # ── Build date × salesperson table ───────────────────────────────────────────
 
 date_range = sorted(pd.date_range(start_date, end_date).date, reverse=True)  # newest first
@@ -227,6 +278,76 @@ if not df_display.empty and all_execs:
 
     grand_total = totals_row["Store Total"]
     st.success(f"### 💰 Grand Total B2C Sales ({selected_source}): ₹{grand_total:,.2f}")
+
+    # ── Week-over-Week Trend ───────────────────────────────────────────────────
+    from datetime import timedelta as _td
+    import plotly.graph_objects as go
+
+    _today_d   = TODAY
+    _this_mon  = _today_d - _td(days=_today_d.weekday())          # Monday of current week
+    _last_mon  = _this_mon - _td(weeks=1)                          # Monday of last week
+    _last_sun  = _this_mon - _td(days=1)                           # Sunday of last week
+
+    _this_week_data = crm_raw[
+        (crm_raw["DATE_DT"] >= _this_mon) & (crm_raw["DATE_DT"] <= _today_d)
+    ]
+    _last_week_data = crm_raw[
+        (crm_raw["DATE_DT"] >= _last_mon) & (crm_raw["DATE_DT"] <= _last_sun)
+    ]
+    if selected_source != "All":
+        _this_week_data = _this_week_data[_this_week_data["SOURCE"] == selected_source]
+        _last_week_data = _last_week_data[_last_week_data["SOURCE"] == selected_source]
+
+    _this_week_total = _this_week_data["GROSS AMT"].sum()
+    _last_week_total = _last_week_data["GROSS AMT"].sum()
+    _wow_delta       = _this_week_total - _last_week_total
+    _wow_pct         = ((_wow_delta / _last_week_total) * 100) if _last_week_total > 0 else 0.0
+
+    st.divider()
+    st.subheader("📈 Week-over-Week Comparison")
+    _w1, _w2, _w3 = st.columns(3)
+    _w1.metric(
+        f"This Week ({_this_mon.strftime('%d %b')} – {_today_d.strftime('%d %b')})",
+        f"₹{_this_week_total:,.0f}",
+    )
+    _w2.metric(
+        f"Last Week ({_last_mon.strftime('%d %b')} – {_last_sun.strftime('%d %b')})",
+        f"₹{_last_week_total:,.0f}",
+    )
+    _w3.metric(
+        "Change",
+        f"₹{abs(_wow_delta):,.0f}",
+        delta=f"{_wow_pct:+.1f}%",
+        delta_color="normal",
+    )
+
+    # Daily bar chart for both weeks
+    _days_of_week = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+    def _daily_by_dow(data, ref_monday):
+        out = [0.0] * 7
+        for _, row in data.iterrows():
+            dow = (row["DATE_DT"] - ref_monday).days
+            if 0 <= dow <= 6:
+                out[dow] += row["GROSS AMT"]
+        return out
+
+    _this_vals = _daily_by_dow(_this_week_data, _this_mon)
+    _last_vals = _daily_by_dow(_last_week_data, _last_mon)
+
+    _fig = go.Figure()
+    _fig.add_trace(go.Bar(name="Last Week", x=_days_of_week, y=_last_vals,
+                          marker_color="#90caf9", opacity=0.8))
+    _fig.add_trace(go.Bar(name="This Week", x=_days_of_week, y=_this_vals,
+                          marker_color="#1a237e", opacity=0.9))
+    _fig.update_layout(
+        barmode="group", height=300, margin=dict(t=20, b=20),
+        yaxis_title="Gross Sales (₹)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    _fig.update_yaxes(tickprefix="₹", tickformat=",.0f")
+    st.plotly_chart(_fig, use_container_width=True)
+    st.divider()
 
     st.markdown("""
     <style>

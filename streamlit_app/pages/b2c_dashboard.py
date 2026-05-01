@@ -329,27 +329,93 @@ k4.metric("🚚 Pending Deliveries", pending_del_cnt)
 
 st.divider()
 
+# ── Sales Person Leaderboard ──────────────────────────────────────────────────
+
+st.subheader("🏆 Sales Person Leaderboard — This Month")
+
+_this_month_start = today.replace(day=1)
+_crm_this_month   = crm[
+    crm["ORDER DATE"].notna() &
+    (crm["ORDER DATE"].dt.date >= _this_month_start) &
+    (crm["ORDER DATE"].dt.date <= today) &
+    (crm["SALES PERSON"].astype(str).str.strip() != "")
+].copy()
+
+if not _crm_this_month.empty and "SALES PERSON" in _crm_this_month.columns:
+    _lb = (
+        _crm_this_month.groupby("SALES PERSON", as_index=False)
+        .agg(
+            Orders      = ("ORDER NO", "nunique"),
+            Total_Value = ("ORDER VALUE", "sum"),
+            Pending_Del = ("DELIVERY STATUS",
+                           lambda x: int((x.astype(str).str.upper().str.strip() == "PENDING").sum())),
+        )
+        .sort_values("Total_Value", ascending=False)
+        .reset_index(drop=True)
+    )
+    _lb.index = _lb.index + 1   # 1-based rank
+    _lb.index.name = "Rank"
+    _lb["Total_Value"] = _lb["Total_Value"].apply(lambda v: f"₹{v:,.0f}")
+    _lb.columns = ["Sales Person", "Orders", "Total Value", "Pending Deliveries"]
+
+    # Colour top performer green
+    def _lb_style(row):
+        if row.name == 1:
+            return ["background-color:#c8e6c9;font-weight:bold"] * len(row)
+        return [""] * len(row)
+
+    st.dataframe(_lb.style.apply(_lb_style, axis=1), use_container_width=True)
+    st.caption(f"Data: {_this_month_start.strftime('%d %b')} – {today.strftime('%d %b %Y')}  ·  🥇 = top performer this month")
+else:
+    st.info("No sales data for this month yet.")
+
+st.divider()
+
 
 # ── All Sales Records ─────────────────────────────────────────────────────────
 
-hdr_col, d1_col, d2_col = st.columns([2, 1, 1])
-with hdr_col:
-    st.subheader("📋 All Sales Records")
-with d1_col:
+st.subheader("📋 All Sales Records")
+
+# Row 1: date filters
+r1c1, r1c2, r1c3 = st.columns([1, 1, 2])
+with r1c1:
     filter_start = st.date_input(
         "From", value=FY_START, min_value=FY_START, max_value=today, key="sales_from"
     )
-with d2_col:
+with r1c2:
     filter_end = st.date_input(
         "To", value=today, min_value=FY_START, max_value=today, key="sales_to"
     )
 
-# Filter by date range
+# Row 2: quick-filter dropdowns
+r2c1, r2c2, r2c3 = st.columns(3)
+_sp_options   = ["All"] + sorted(crm["SALES PERSON"].dropna().astype(str).str.strip().unique().tolist()) \
+                if "SALES PERSON" in crm.columns else ["All"]
+_cat_options  = ["All"] + sorted(crm["CATEGORY"].dropna().astype(str).str.strip().unique().tolist()) \
+                if "CATEGORY"    in crm.columns else ["All"]
+_stat_options = ["All"] + sorted(crm["DELIVERY STATUS"].dropna().astype(str).str.strip().unique().tolist()) \
+                if "DELIVERY STATUS" in crm.columns else ["All"]
+
+with r2c1:
+    filt_sp   = st.selectbox("Sales Person", _sp_options,   key="filt_sp")
+with r2c2:
+    filt_cat  = st.selectbox("Category",     _cat_options,  key="filt_cat")
+with r2c3:
+    filt_stat = st.selectbox("Delivery Status", _stat_options, key="filt_stat")
+
+# Apply all filters
 sales_filtered = crm[
     crm["ORDER DATE"].notna() &
     (crm["ORDER DATE"].dt.date >= filter_start) &
     (crm["ORDER DATE"].dt.date <= filter_end)
 ].copy()
+
+if filt_sp   != "All" and "SALES PERSON"    in sales_filtered.columns:
+    sales_filtered = sales_filtered[sales_filtered["SALES PERSON"].astype(str).str.strip() == filt_sp]
+if filt_cat  != "All" and "CATEGORY"        in sales_filtered.columns:
+    sales_filtered = sales_filtered[sales_filtered["CATEGORY"].astype(str).str.strip() == filt_cat]
+if filt_stat != "All" and "DELIVERY STATUS" in sales_filtered.columns:
+    sales_filtered = sales_filtered[sales_filtered["DELIVERY STATUS"].astype(str).str.strip() == filt_stat]
 
 # Group by ORDER NO so each order is one row with all products listed
 sales_grouped = group_by_order_no(sales_filtered)
@@ -358,9 +424,12 @@ sales_grouped = sales_grouped.sort_values("ORDER DATE", ascending=False).reset_i
 st.caption(
     f"Showing **{filter_start.strftime('%d %b %Y')}** → **{filter_end.strftime('%d %b %Y')}**"
     f"  ·  **{len(sales_grouped)}** orders"
+    + (f"  ·  SP: **{filt_sp}**" if filt_sp != "All" else "")
+    + (f"  ·  Cat: **{filt_cat}**" if filt_cat != "All" else "")
+    + (f"  ·  Status: **{filt_stat}**" if filt_stat != "All" else "")
 )
 
-# Build display table (no column picker widget)
+# Build display table
 avail_cols    = [c for c in SALES_DISPLAY_COLS if c in sales_grouped.columns]
 sales_display = sales_grouped[avail_cols].copy()
 
@@ -372,15 +441,16 @@ sales_display = sales_display.rename(
     columns={k: v for k, v in COL_RENAME_DISPLAY.items() if k in sales_display.columns}
 )
 
-# Pagination
+# Reset pagination when any filter changes
 PAGE_SIZE = 25
+_filter_key = (filter_start, filter_end, filt_sp, filt_cat, filt_stat)
 if "b2c_page" not in st.session_state:
     st.session_state.b2c_page = 0
 if "b2c_filter_key" not in st.session_state:
-    st.session_state.b2c_filter_key = (filter_start, filter_end)
-if st.session_state.b2c_filter_key != (filter_start, filter_end):
+    st.session_state.b2c_filter_key = _filter_key
+if st.session_state.b2c_filter_key != _filter_key:
     st.session_state.b2c_page      = 0
-    st.session_state.b2c_filter_key = (filter_start, filter_end)
+    st.session_state.b2c_filter_key = _filter_key
 
 total_pages = max(1, (len(sales_display) - 1) // PAGE_SIZE + 1)
 pc1, pc2, pc3 = st.columns([1, 4, 1])
@@ -425,8 +495,12 @@ if not pending_del.empty:
             ]
             if not tomorrow_del.empty:
                 try:
-                    send_pending_delivery_email_4s(tomorrow_del)
-                    st.success("✅ Tomorrow's Delivery email sent!")
+                    _smry = send_pending_delivery_email_4s(tomorrow_del)
+                    st.success(f"✅ Tomorrow's Delivery email sent to {len(_smry.get('recipients', []))} recipient(s)!")
+                    with st.expander("📋 Send details"):
+                        st.write(f"**Recipients:** {', '.join(_smry.get('recipients', []))}")
+                        st.write(f"**Records sent:** {_smry.get('records', len(tomorrow_del))}")
+                        st.write(f"**Subject:** {_smry.get('subject', '')}")
                 except Exception as e:
                     st.error(f"❌ Failed: {e}")
             else:
@@ -435,16 +509,24 @@ if not pending_del.empty:
     with eb2:
         if st.button("📧 All Pending Deliveries Email", use_container_width=True, key="em_all_del"):
             try:
-                send_pending_delivery_email_4s(pending_grouped)
-                st.success("✅ All Pending Deliveries email sent!")
+                _smry = send_pending_delivery_email_4s(pending_grouped)
+                st.success(f"✅ All Pending Deliveries email sent to {len(_smry.get('recipients', []))} recipient(s)!")
+                with st.expander("📋 Send details"):
+                    st.write(f"**Recipients:** {', '.join(_smry.get('recipients', []))}")
+                    st.write(f"**Records sent:** {_smry.get('records', len(pending_grouped))}")
+                    st.write(f"**Subject:** {_smry.get('subject', '')}")
             except Exception as e:
                 st.error(f"❌ Failed: {e}")
 
     with eb3:
         if st.button("🔔 Update CRM Reminder Email", use_container_width=True, key="em_upd_del"):
             try:
-                send_update_delivery_status_email_4s(pending_grouped)
-                st.success("✅ Update CRM Reminder sent!")
+                _smry = send_update_delivery_status_email_4s(pending_grouped)
+                st.success(f"✅ Update CRM Reminder sent to {len(_smry.get('recipients', []))} recipient(s)!")
+                with st.expander("📋 Send details"):
+                    st.write(f"**Recipients:** {', '.join(_smry.get('recipients', []))}")
+                    st.write(f"**Records sent:** {_smry.get('records', len(pending_grouped))}")
+                    st.write(f"**Subject:** {_smry.get('subject', '')}")
             except Exception as e:
                 st.error(f"❌ Failed: {e}")
 
@@ -516,8 +598,12 @@ if not payment_due.empty:
             ]
             if not tomorrow_pay.empty:
                 try:
-                    send_pending_delivery_email_4s(tomorrow_pay)
-                    st.success("✅ Tomorrow's Payment Due email sent!")
+                    _smry = send_pending_delivery_email_4s(tomorrow_pay)
+                    st.success(f"✅ Tomorrow's Payment Due email sent to {len(_smry.get('recipients', []))} recipient(s)!")
+                    with st.expander("📋 Send details"):
+                        st.write(f"**Recipients:** {', '.join(_smry.get('recipients', []))}")
+                        st.write(f"**Records sent:** {_smry.get('records', len(tomorrow_pay))}")
+                        st.write(f"**Subject:** {_smry.get('subject', '')}")
                 except Exception as e:
                     st.error(f"❌ Failed: {e}")
             else:
@@ -526,16 +612,24 @@ if not payment_due.empty:
     with pb2:
         if st.button("📧 All Payment Due Email", use_container_width=True, key="em_all_pay"):
             try:
-                send_pending_delivery_email_4s(payment_grouped)
-                st.success("✅ Payment Due email sent!")
+                _smry = send_pending_delivery_email_4s(payment_grouped)
+                st.success(f"✅ Payment Due email sent to {len(_smry.get('recipients', []))} recipient(s)!")
+                with st.expander("📋 Send details"):
+                    st.write(f"**Recipients:** {', '.join(_smry.get('recipients', []))}")
+                    st.write(f"**Records sent:** {_smry.get('records', len(payment_grouped))}")
+                    st.write(f"**Subject:** {_smry.get('subject', '')}")
             except Exception as e:
                 st.error(f"❌ Failed: {e}")
 
     with pb3:
         if st.button("🔔 Payment Update Reminder", use_container_width=True, key="em_upd_pay"):
             try:
-                send_update_delivery_status_email_4s(payment_grouped)
-                st.success("✅ Payment Update Reminder sent!")
+                _smry = send_update_delivery_status_email_4s(payment_grouped)
+                st.success(f"✅ Payment Update Reminder sent to {len(_smry.get('recipients', []))} recipient(s)!")
+                with st.expander("📋 Send details"):
+                    st.write(f"**Recipients:** {', '.join(_smry.get('recipients', []))}")
+                    st.write(f"**Records sent:** {_smry.get('records', len(payment_grouped))}")
+                    st.write(f"**Subject:** {_smry.get('subject', '')}")
             except Exception as e:
                 st.error(f"❌ Failed: {e}")
 

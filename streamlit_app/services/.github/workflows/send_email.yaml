@@ -1,33 +1,10 @@
-name: Send CRM Emails
-
-on:
-  schedule:
-    - cron: '30 4 * * *'   # 10:00 AM IST  (IST = UTC+5:30)
-    - cron: '30 5 * * *'   # 11:00 AM IST
-    - cron: '30 11 * * *'  # 5:00 PM IST
-
-jobs:
-  send-email:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run email job
-        env:
-          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
-          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-          EMAIL_RECIPIENTS: ${{ secrets.EMAIL_RECIPIENTS }}
-          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-        run: |
-          cd streamlit_app
-          python email_job.py
+# ⚠️ DEAD FILE — This workflow is in the wrong location.
+# GitHub Actions only reads workflow files from /.github/workflows/ at the
+# repository ROOT. This file (nested inside streamlit_app/services/) is
+# NEVER executed by GitHub.
+#
+# The active workflow is at: .github/workflows/godrej-email.yaml
+#
+# This file should be deleted from the repository.
+# (Kept here as a placeholder to document the dead-file issue until
+#  the repo owner deletes it via git rm.)

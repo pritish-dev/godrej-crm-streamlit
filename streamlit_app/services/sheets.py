@@ -384,6 +384,44 @@ def write_df(sheet_name, df):
 
     worksheet.update(data)
 
+# ==============================
+# EMAIL LOG
+# ==============================
+
+def append_email_log(job_name: str, records_count: int, recipients: list,
+                     status: str = "success", error: str = "") -> None:
+    """
+    Append one row to the EMAIL_LOG sheet every time an automated email is sent.
+    Columns: TIMESTAMP (IST) | JOB NAME | RECORDS COUNT | RECIPIENTS | STATUS | ERROR
+    Silently swallows errors so a log failure never breaks the email job itself.
+    """
+    from datetime import timezone, timedelta
+    IST = timezone(timedelta(hours=5, minutes=30))
+    now_ist = datetime.now(IST).strftime("%Y-%m-%d %H:%M IST")
+
+    try:
+        sh = _get_spreadsheet()
+        LOG_SHEET = "EMAIL_LOG"
+        try:
+            ws = sh.worksheet(LOG_SHEET)
+        except Exception:
+            ws = sh.add_worksheet(title=LOG_SHEET, rows=2000, cols=6)
+            ws.append_row(["TIMESTAMP (IST)", "JOB NAME", "RECORDS COUNT",
+                           "RECIPIENTS", "STATUS", "ERROR"])
+
+        ws.append_row([
+            now_ist,
+            job_name,
+            records_count,
+            ", ".join(recipients) if recipients else "",
+            status,
+            error,
+        ])
+    except Exception as exc:
+        # Never crash the email job because of a log failure
+        print(f"[EMAIL_LOG] Warning — could not write log entry: {exc}")
+
+
 def update_followup(customer_name, date):
     df = get_df("FOLLOWUP_LOG")
 

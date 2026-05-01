@@ -2,13 +2,15 @@
 streamlit_app/email_job.py
 
 Standalone script called by GitHub Actions to send Godrej CRM emails.
-Determines which email to send based on current IST hour,
-or via MANUAL_JOB env var when triggered manually from GitHub Actions UI.
+Routing priority:
+  1. MANUAL_JOB env var  (workflow_dispatch UI trigger)
+  2. SLOT env var        (set by workflow step — "morning", "reminder", "evening")
+  3. IST hour fallback   (±1 hr window — catches GitHub Actions scheduler delays)
 
 Schedule:
-  10:00 AM IST → Email 1: Pending Delivery Report (Morning)
-  11:00 AM IST → Email 2: Update Delivery Status Reminder
-   5:00 PM IST → Email 1: Pending Delivery Report (Evening)
+  10:00 AM IST → Email 1: Pending Delivery Report (Morning)   [SLOT=morning]
+  11:00 AM IST → Email 2: Update Delivery Status Reminder     [SLOT=reminder]
+   5:00 PM IST → Email 1: Pending Delivery Report (Evening)   [SLOT=evening]
 """
 
 import sys
@@ -31,8 +33,11 @@ current_hour = now_ist.hour
 
 print(f"[Godrej Job] Running at IST: {now_ist.strftime('%Y-%m-%d %H:%M')}")
 
-# Allow manual override from GitHub Actions workflow_dispatch
+# Routing env vars — SLOT is set by the workflow step; MANUAL_JOB from UI dispatch
 MANUAL_JOB = os.getenv("MANUAL_JOB", "").strip()
+SLOT       = os.getenv("SLOT", "").strip().lower()  # "morning" | "reminder" | "evening"
+
+print(f"[Godrej Job] SLOT={SLOT!r}  MANUAL_JOB={MANUAL_JOB!r}  hour={current_hour}")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -164,7 +169,7 @@ if df.empty:
     print("No pending deliveries. Skipping email.")
     sys.exit(0)
 
-# Manual trigger via GitHub Actions UI
+# ── PRIORITY 1: Manual trigger via GitHub Actions UI ─────────────────────────
 if MANUAL_JOB == "godrej_email1":
     print("Manual trigger → Sending Email 1 (Pending Delivery Report)...")
     send_pending_delivery_email(df)
@@ -174,27 +179,38 @@ elif MANUAL_JOB == "godrej_email2":
     send_update_delivery_status_email(df)
 
 elif MANUAL_JOB == "godrej_email3":
-    # Evening pending delivery report — same content as email1, different send time
     print("Manual trigger → Sending Email 3 (Evening Pending Delivery Report)...")
     send_pending_delivery_email(df)
 
-# Scheduled trigger based on IST hour
-elif current_hour == 10:
-    print("Sending Email 1 — Morning Pending Delivery Report...")
+# ── PRIORITY 2: SLOT env var (set by workflow step — immune to clock drift) ──
+elif SLOT == "morning":
+    print("SLOT=morning → Sending Email 1 (Morning Pending Delivery Report)...")
+    send_pending_delivery_email(df)
+
+elif SLOT == "reminder":
+    print("SLOT=reminder → Sending Email 2 (Update Delivery Status Reminder)...")
+    send_update_delivery_status_email(df)
+
+elif SLOT == "evening":
+    print("SLOT=evening → Sending Email 1 (Evening Pending Delivery Report)...")
+    send_pending_delivery_email(df)
+
+# ── PRIORITY 3: IST hour fallback (±1 hr window handles GitHub delay) ────────
+elif current_hour in (9, 10):
+    print(f"Hour-fallback ({current_hour}h IST) → Sending Email 1 (Morning)...")
     send_pending_delivery_email(df)
 
 elif current_hour == 11:
-    print("Sending Email 2 — Update Delivery Status Reminder...")
+    print(f"Hour-fallback (11h IST) → Sending Email 2 (Reminder)...")
     send_update_delivery_status_email(df)
 
-elif current_hour == 17:
-    print("Sending Email 1 — Evening Pending Delivery Report...")
+elif current_hour in (16, 17, 18):
+    print(f"Hour-fallback ({current_hour}h IST) → Sending Email 1 (Evening)...")
     send_pending_delivery_email(df)
 
 else:
     print(
         f"[Godrej Job] No email mapped for IST hour {current_hour}. "
-        f"Expected 10, 11, or 17 for scheduled runs. "
-        f"Use MANUAL_JOB env var to force a specific email."
+        f"Set SLOT env var to 'morning', 'reminder', or 'evening' in the workflow."
     )
     sys.exit(1)  # Fail visibly so GitHub marks run red — not silently green
