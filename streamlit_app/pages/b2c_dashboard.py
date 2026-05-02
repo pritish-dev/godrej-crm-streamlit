@@ -14,7 +14,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
 from services.sheets import get_df
-from services.automation4s import get_alerts, generate_whatsapp_group_link
+from services.automation4s import get_alerts, generate_whatsapp_group_link, generate_whatsapp_web_link
 from services.email_sender_4s import (
     send_pending_delivery_email_4s,
     send_update_delivery_status_email_4s,
@@ -540,8 +540,18 @@ if not pending_del.empty:
         if st.button("🚀 WhatsApp Delivery Alerts", use_container_width=True, key="wa_del"):
             alerts = get_alerts(crm, team_df, "delivery")
             if alerts:
+                st.caption("Choose how to open WhatsApp:")
+                _wa_del_mode = st.radio(
+                    "WhatsApp mode (delivery)",
+                    ["📱 App (WhatsApp desktop/mobile)", "🌐 Web (WhatsApp Web in browser)"],
+                    horizontal=True,
+                    key="wa_del_mode",
+                    label_visibility="collapsed",
+                )
+                _del_use_app = _wa_del_mode.startswith("📱")
                 for sp, msg in alerts:
-                    st.link_button(f"Send to {sp}", generate_whatsapp_group_link(msg))
+                    _link = generate_whatsapp_group_link(msg) if _del_use_app else generate_whatsapp_web_link(msg)
+                    st.link_button(f"{'📱' if _del_use_app else '🌐'} Send to {sp}", _link)
             else:
                 st.info("No delivery alerts for tomorrow.")
 
@@ -643,8 +653,18 @@ if not payment_due.empty:
         if st.button("🚀 WhatsApp Payment Alerts", use_container_width=True, key="wa_pay"):
             alerts = get_alerts(crm, team_df, "payment")
             if alerts:
+                st.caption("Choose how to open WhatsApp:")
+                _wa_pay_mode = st.radio(
+                    "WhatsApp mode (payment)",
+                    ["📱 App (WhatsApp desktop/mobile)", "🌐 Web (WhatsApp Web in browser)"],
+                    horizontal=True,
+                    key="wa_pay_mode",
+                    label_visibility="collapsed",
+                )
+                _pay_use_app = _wa_pay_mode.startswith("📱")
                 for sp, msg in alerts:
-                    st.link_button(f"Send to {sp}", generate_whatsapp_group_link(msg))
+                    _link = generate_whatsapp_group_link(msg) if _pay_use_app else generate_whatsapp_web_link(msg)
+                    st.link_button(f"{'📱' if _pay_use_app else '🌐'} Send to {sp}", _link)
             else:
                 st.info("No payment alerts for tomorrow.")
 

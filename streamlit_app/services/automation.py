@@ -14,6 +14,12 @@ def generate_whatsapp_group_link(message):
     encoded_msg = urllib.parse.quote(message)
     return f"whatsapp://send?text={encoded_msg}"
 
+
+def generate_whatsapp_web_link(message):
+    """Opens WhatsApp Web in the browser with a pre-filled message."""
+    encoded_msg = urllib.parse.quote(message)
+    return f"https://web.whatsapp.com/send?text={encoded_msg}"
+
 def create_whatsapp_tabular_list(df_group, alert_type="delivery"):
     """Creates a clean text-based table for WhatsApp"""
     if alert_type == "delivery":

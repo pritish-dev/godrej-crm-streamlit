@@ -15,7 +15,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
 from services.sheets import get_df
-from services.automation import get_alerts, generate_whatsapp_group_link
+from services.automation import get_alerts, generate_whatsapp_group_link, generate_whatsapp_web_link
 from services.email_sender import (
     send_pending_delivery_email,
     send_update_delivery_status_email,
@@ -211,8 +211,18 @@ if not pending.empty:
         if st.button("🚀 WhatsApp Delivery Alerts", key="old_wa_del", use_container_width=True):
             alerts = get_alerts(crm, team_df, "delivery")
             if alerts:
+                st.caption("Choose how to open WhatsApp:")
+                _wa_old_mode = st.radio(
+                    "WhatsApp mode (old delivery)",
+                    ["📱 App (WhatsApp desktop/mobile)", "🌐 Web (WhatsApp Web in browser)"],
+                    horizontal=True,
+                    key="wa_old_del_mode",
+                    label_visibility="collapsed",
+                )
+                _old_use_app = _wa_old_mode.startswith("📱")
                 for sp, msg in alerts:
-                    st.link_button(f"Send to {sp}", generate_whatsapp_group_link(msg))
+                    _link = generate_whatsapp_group_link(msg) if _old_use_app else generate_whatsapp_web_link(msg)
+                    st.link_button(f"{'📱' if _old_use_app else '🌐'} Send to {sp}", _link)
             else:
                 st.info("No delivery alerts for tomorrow.")
     with b2:

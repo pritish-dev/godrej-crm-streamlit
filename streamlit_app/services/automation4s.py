@@ -16,8 +16,15 @@ def get_col(df, *possible_names):
 
 
 def generate_whatsapp_group_link(message):
+    """Opens WhatsApp native app (desktop or mobile) with a pre-filled message."""
     encoded_msg = urllib.parse.quote(message)
     return "whatsapp://send?text={}".format(encoded_msg)
+
+
+def generate_whatsapp_web_link(message):
+    """Opens WhatsApp Web in the browser with a pre-filled message."""
+    encoded_msg = urllib.parse.quote(message)
+    return "https://web.whatsapp.com/send?text={}".format(encoded_msg)
 
 
 def create_whatsapp_tabular_list(df_group, alert_type, delivery_col, order_col, adv_col):
