@@ -42,6 +42,31 @@ print(f"[Godrej Job] SLOT={SLOT!r}  MANUAL_JOB={MANUAL_JOB!r}  hour={current_hou
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def parse_mixed_dates(series):
+    """Safely parse a Series of date strings in mixed formats (DD-MM-YYYY, DD-Mon-YYYY, etc.).
+
+    Unlike calling pd.to_datetime() directly on crm.get("DATE"), this helper always
+    receives a flat Series — so it can never crash with
+    'ValueError: cannot assemble with duplicate keys', which happens when
+    crm.get("DATE") returns a DataFrame (i.e. when duplicate "DATE" columns exist
+    after pd.concat + rename).
+    """
+    series = series.astype(str).str.strip()
+    parsed = []
+    for val in series:
+        d = pd.NaT
+        for fmt in ("%d-%m-%Y", "%d-%b-%Y", "%d/%m/%Y"):
+            try:
+                d = datetime.strptime(val, fmt)
+                break
+            except Exception:
+                pass
+        if pd.isna(d):
+            d = pd.to_datetime(val, dayfirst=True, errors="coerce")
+        parsed.append(d)
+    return pd.Series(parsed, dtype="datetime64[ns]")
+
+
 def fix_duplicate_columns(df):
     cols, count = [], {}
     for col in df.columns:
@@ -69,6 +94,12 @@ def fetch_pending_grouped():
         df = get_df(name)
         if df is not None and not df.empty:
             df = fix_duplicate_columns(df)
+            # FIX: fix_duplicate_columns renames dupes but doesn't drop them;
+            # after pd.concat + rename, a sheet with both "DATE" and "ORDER DATE"
+            # columns causes rename to produce two "DATE" columns, making
+            # crm.get("DATE") return a DataFrame → pd.to_datetime crashes.
+            # Drop any remaining per-sheet duplicates here as a second guard.
+            df = df.loc[:, ~df.columns.duplicated()]
             dfs.append(df)
 
     if not dfs:
@@ -87,6 +118,11 @@ def fetch_pending_grouped():
         "ORDER DATE":                             "DATE",               # normalise to DATE for grouping
     })
 
+    # FIX: the rename above maps "ORDER DATE" → "DATE", but some sheets already
+    # have a "DATE" column — after pd.concat this creates two "DATE" columns.
+    # Drop any post-rename duplicates before any column access.
+    crm = crm.loc[:, ~crm.columns.duplicated()]
+
     crm["ORDER AMOUNT"] = pd.to_numeric(
         crm.get("ORDER AMOUNT", pd.Series("0")).astype(str).str.replace(r"[₹,]", "", regex=True),
         errors="coerce",
@@ -95,10 +131,16 @@ def fetch_pending_grouped():
         crm.get("ADV RECEIVED", pd.Series("0")).astype(str).str.replace(r"[₹,]", "", regex=True),
         errors="coerce",
     ).fillna(0)
-    crm["DATE"] = pd.to_datetime(crm.get("DATE"), dayfirst=True, errors="coerce")
-    crm["CUSTOMER DELIVERY DATE (TO BE)"] = pd.to_datetime(
-        crm.get("CUSTOMER DELIVERY DATE (TO BE)"), dayfirst=True, errors="coerce"
-    )
+    # FIX: replaced pd.to_datetime(crm.get("DATE"), ...) with parse_mixed_dates().
+    # crm.get("DATE") returns a DataFrame when duplicate "DATE" columns exist,
+    # causing "ValueError: cannot assemble with duplicate keys" in pd.to_datetime.
+    # parse_mixed_dates() always receives a clean Series and never hits that path.
+    if "DATE" in crm.columns:
+        crm["DATE"] = parse_mixed_dates(crm["DATE"])
+    if "CUSTOMER DELIVERY DATE (TO BE)" in crm.columns:
+        crm["CUSTOMER DELIVERY DATE (TO BE)"] = parse_mixed_dates(
+            crm["CUSTOMER DELIVERY DATE (TO BE)"]
+        )
 
     # Support both old "DELIVERY REMARKS" and new renamed column
     if "DELIVERY REMARKS" not in crm.columns and "REMARKS" in crm.columns:

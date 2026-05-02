@@ -39,6 +39,7 @@ def load_and_process_tasks():
 
         # Normalize columns
         df.columns = [str(c).strip().upper() for c in df.columns]
+        df = df.loc[:, ~df.columns.duplicated()]   # guard: drop any duplicate cols from the sheet
 
         # Parse dates
         df["TASK DATE"] = pd.to_datetime(df["TASK DATE"], dayfirst=True, errors="coerce")
