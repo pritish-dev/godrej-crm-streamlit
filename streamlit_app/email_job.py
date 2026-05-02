@@ -108,14 +108,10 @@ def fetch_pending_grouped():
 
     crm = pd.concat(dfs, ignore_index=True)
 
-    # Rename new 26-27 column names to working names expected by email_sender.
-    # The actual sheet column is "DELIVERY REMARKS(DELIVERED/PENDING)" — the old
-    # code had a trailing " REMARK" suffix that never matched, causing a KeyError
-    # or silent pass-through when the filter ran on a non-existent column.
+    # ── Step 1: Rename well-known column variants to working names ───────────────
     crm = crm.rename(columns={
-        "ORDER UNIT PRICE=(AFTER DISC + TAX)":    "ORDER AMOUNT",
-        "DELIVERY REMARKS(DELIVERED/PENDING)":    "DELIVERY REMARKS",   # exact sheet col name
-        "ORDER DATE":                             "DATE",               # normalise to DATE for grouping
+        "ORDER UNIT PRICE=(AFTER DISC + TAX)": "ORDER AMOUNT",
+        "ORDER DATE":                          "DATE",   # normalise to DATE for grouping
     })
 
     # FIX: the rename above maps "ORDER DATE" → "DATE", but some sheets already
@@ -123,6 +119,35 @@ def fetch_pending_grouped():
     # Drop any post-rename duplicates before any column access.
     crm = crm.loc[:, ~crm.columns.duplicated()]
 
+    # ── Step 2: Fuzzy-resolve the delivery status column ─────────────────────────
+    # The column name varies across sheet versions and may have extra spaces,
+    # different punctuation, or a slightly different label. We search for the
+    # first column whose normalised name starts with "DELIVERY REMARKS" or
+    # equals "REMARKS" / "DELIVERY STATUS", then canonicalise it.
+    if "DELIVERY REMARKS" not in crm.columns:
+        def _strip(s):
+            return str(s).upper().strip().replace(" ", "")
+
+        found = None
+        for col in crm.columns:
+            n = _strip(col)
+            if n.startswith("DELIVERYREMARKS") or n in ("REMARKS", "DELIVERYSTATUS"):
+                found = col
+                break
+        if found:
+            crm = crm.rename(columns={found: "DELIVERY REMARKS"})
+            print(f"  → Resolved delivery-status column: '{found}' → 'DELIVERY REMARKS'")
+        else:
+            # Column missing entirely — default all rows to PENDING so nothing
+            # is silently filtered out; the email will show all orders.
+            print(
+                f"  ⚠ 'DELIVERY REMARKS' column not found in any sheet. "
+                f"Available columns: {list(crm.columns)[:20]}\n"
+                f"  Defaulting all rows to PENDING."
+            )
+            crm["DELIVERY REMARKS"] = "PENDING"
+
+    # ── Step 3: Numeric cleanup ───────────────────────────────────────────────────
     crm["ORDER AMOUNT"] = pd.to_numeric(
         crm.get("ORDER AMOUNT", pd.Series("0")).astype(str).str.replace(r"[₹,]", "", regex=True),
         errors="coerce",
@@ -131,10 +156,11 @@ def fetch_pending_grouped():
         crm.get("ADV RECEIVED", pd.Series("0")).astype(str).str.replace(r"[₹,]", "", regex=True),
         errors="coerce",
     ).fillna(0)
-    # FIX: replaced pd.to_datetime(crm.get("DATE"), ...) with parse_mixed_dates().
-    # crm.get("DATE") returns a DataFrame when duplicate "DATE" columns exist,
-    # causing "ValueError: cannot assemble with duplicate keys" in pd.to_datetime.
-    # parse_mixed_dates() always receives a clean Series and never hits that path.
+
+    # ── Step 4: Date cleanup ──────────────────────────────────────────────────────
+    # FIX: use parse_mixed_dates() instead of pd.to_datetime(crm.get("DATE"), ...)
+    # crm.get("DATE") returns a DataFrame when duplicate columns exist, causing
+    # "ValueError: cannot assemble with duplicate keys" in pd.to_datetime.
     if "DATE" in crm.columns:
         crm["DATE"] = parse_mixed_dates(crm["DATE"])
     if "CUSTOMER DELIVERY DATE (TO BE)" in crm.columns:
@@ -142,10 +168,7 @@ def fetch_pending_grouped():
             crm["CUSTOMER DELIVERY DATE (TO BE)"]
         )
 
-    # Support both old "DELIVERY REMARKS" and new renamed column
-    if "DELIVERY REMARKS" not in crm.columns and "REMARKS" in crm.columns:
-        crm = crm.rename(columns={"REMARKS": "DELIVERY REMARKS"})
-
+    # ── Step 5: Filter PENDING rows ───────────────────────────────────────────────
     mask = crm["DELIVERY REMARKS"].astype(str).str.upper().str.strip() == "PENDING"
     pending = crm[mask].copy()
 
