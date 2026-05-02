@@ -1,28 +1,27 @@
-name: Godrej CRM Emails
+name: CRM Pending Delivery Emails (Franchise + 4S Interiors)
 
 on:
   schedule:
     # All times in UTC. IST = UTC + 5:30
-    - cron: '30 4 * * *'    # 10:00 AM IST → Godrej Email 1 (Morning)
-    - cron: '30 5 * * *'    # 11:00 AM IST → Godrej Email 2 (Update Reminder)
-    - cron: '30 11 * * *'   # 5:00 PM IST → Godrej Email 3 (Evening)
+    - cron: '30 4 * * *'    # 10:00 AM IST → Morning Pending Delivery Report
+    - cron: '30 5 * * *'    # 11:00 AM IST → Update Delivery Status Reminder
+    - cron: '30 11 * * *'   # 05:00 PM IST → Evening Pending Delivery Report
 
   # Allow manual trigger from GitHub Actions UI for testing
   workflow_dispatch:
     inputs:
       job:
-        description: 'Which Godrej job to run'
+        description: 'Which email to send'
         required: true
-        default: 'godrej_email1'
+        default: 'crm_email1'
         type: choice
         options:
-          - godrej_email1
-          - godrej_email2
-          - godrej_email3
+          - crm_email1    # Morning Pending Delivery Report
+          - crm_email2    # Update Delivery Status Reminder
+          - crm_email3    # Evening Pending Delivery Report
 
 jobs:
-  # ── GODREJ CRM EMAILS ──────────────────────────────────────────────────────
-  godrej-crm-email:
+  crm-email:
     runs-on: ubuntu-latest
 
     if: >-
@@ -30,9 +29,9 @@ jobs:
       (
         github.event_name == 'workflow_dispatch' &&
         (
-          github.event.inputs.job == 'godrej_email1' ||
-          github.event.inputs.job == 'godrej_email2' ||
-          github.event.inputs.job == 'godrej_email3'
+          github.event.inputs.job == 'crm_email1' ||
+          github.event.inputs.job == 'crm_email2' ||
+          github.event.inputs.job == 'crm_email3'
         )
       )
 
@@ -53,12 +52,7 @@ jobs:
             pip install -r requirements.txt
           fi
 
-      # FIX: Inject SLOT based on which cron triggered the workflow.
-      # github.event.schedule contains the exact cron string that fired.
-      # This removes reliance on wall-clock time (GitHub Actions delays can
-      # push jobs 15-60 min late, causing hour-based routing to pick the
-      # wrong email or hit the no-match fallback and exit(1)).
-      - name: Run Godrej email job
+      - name: Run unified CRM email job (Franchise + 4S Interiors)
         env:
           EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
@@ -69,6 +63,7 @@ jobs:
           cd streamlit_app
 
           # Map the triggering cron → SLOT so email_job.py routes correctly
+          # regardless of GitHub Actions scheduler clock drift (can be 15–60 min late)
           SCHEDULE="${{ github.event.schedule }}"
           if   [ "$SCHEDULE" = "30 4 * * *" ];  then export SLOT=morning
           elif [ "$SCHEDULE" = "30 5 * * *" ];  then export SLOT=reminder

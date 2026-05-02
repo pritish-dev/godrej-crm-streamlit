@@ -1,16 +1,18 @@
 """
 streamlit_app/email_job.py
 
-Standalone script called by GitHub Actions to send Godrej CRM emails.
+Unified CRM email job — called by GitHub Actions to send pending-delivery
+emails covering BOTH Franchise and 4S Interiors records from a single run.
+
 Routing priority:
   1. MANUAL_JOB env var  (workflow_dispatch UI trigger)
-  2. SLOT env var        (set by workflow step — "morning", "reminder", "evening")
-  3. IST hour fallback   (±1 hr window — catches GitHub Actions scheduler delays)
+  2. SLOT env var        (set by workflow step — immune to clock drift)
+  3. IST hour fallback   (±1 hr window, catches GitHub Actions delays)
 
 Schedule:
-  10:00 AM IST → Email 1: Pending Delivery Report (Morning)   [SLOT=morning]
-  11:00 AM IST → Email 2: Update Delivery Status Reminder     [SLOT=reminder]
-   5:00 PM IST → Email 1: Pending Delivery Report (Evening)   [SLOT=evening]
+  10:00 AM IST → Email 1: Pending Delivery Report     [SLOT=morning]
+  11:00 AM IST → Email 2: Update Delivery Status      [SLOT=reminder]
+   5:00 PM IST → Email 1: Pending Delivery (evening)  [SLOT=evening]
 """
 
 import sys
@@ -21,9 +23,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pandas as pd
 from services.sheets import get_df
-from services.email_sender import (
-    send_pending_delivery_email,
-    send_update_delivery_status_email,
+from services.email_sender_4s import (
+    send_pending_delivery_email_4s,
+    send_update_delivery_status_email_4s,
 )
 
 # ── IST time ──────────────────────────────────────────────────────────────────
@@ -31,25 +33,22 @@ IST          = timezone(timedelta(hours=5, minutes=30))
 now_ist      = datetime.now(IST)
 current_hour = now_ist.hour
 
-print(f"[Godrej Job] Running at IST: {now_ist.strftime('%Y-%m-%d %H:%M')}")
+print(f"[CRM Job] Running at IST: {now_ist.strftime('%Y-%m-%d %H:%M')}")
 
-# Routing env vars — SLOT is set by the workflow step; MANUAL_JOB from UI dispatch
 MANUAL_JOB = os.getenv("MANUAL_JOB", "").strip()
-SLOT       = os.getenv("SLOT", "").strip().lower()  # "morning" | "reminder" | "evening"
+SLOT       = os.getenv("SLOT", "").strip().lower()   # "morning" | "reminder" | "evening"
 
-print(f"[Godrej Job] SLOT={SLOT!r}  MANUAL_JOB={MANUAL_JOB!r}  hour={current_hour}")
+print(f"[CRM Job] SLOT={SLOT!r}  MANUAL_JOB={MANUAL_JOB!r}  hour={current_hour}")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def parse_mixed_dates(series):
-    """Safely parse a Series of date strings in mixed formats (DD-MM-YYYY, DD-Mon-YYYY, etc.).
+    """Safely parse mixed-format date strings (DD-MM-YYYY, DD-Mon-YYYY, etc.).
 
-    Unlike calling pd.to_datetime() directly on crm.get("DATE"), this helper always
-    receives a flat Series — so it can never crash with
-    'ValueError: cannot assemble with duplicate keys', which happens when
-    crm.get("DATE") returns a DataFrame (i.e. when duplicate "DATE" columns exist
-    after pd.concat + rename).
+    Always operates on a flat Series so it never hits the
+    'ValueError: cannot assemble with duplicate keys' that pd.to_datetime()
+    raises when passed a DataFrame (i.e. duplicate column names).
     """
     series = series.astype(str).str.strip()
     parsed = []
@@ -67,217 +66,232 @@ def parse_mixed_dates(series):
     return pd.Series(parsed, dtype="datetime64[ns]")
 
 
-def fix_duplicate_columns(df):
-    cols, count = [], {}
-    for col in df.columns:
-        col_name = str(col).strip().upper()
-        if col_name in count:
-            count[col_name] += 1
-            cols.append(f"{col_name}_{count[col_name]}")
-        else:
-            count[col_name] = 0
-            cols.append(col_name)
-    df.columns = cols
-    return df
+def _group_by_order_no(df: pd.DataFrame) -> pd.DataFrame:
+    """Collapse multiple line-items sharing an ORDER NO into one row."""
+    if df.empty or "ORDER NO" not in df.columns:
+        return df
+
+    valid_mask = (
+        df["ORDER NO"].notna() &
+        (~df["ORDER NO"].astype(str).str.strip().str.upper().isin(["", "NAN", "NONE"]))
+    )
+    has_no = df[valid_mask].copy()
+    no_no  = df[~valid_mask].copy()
+
+    if has_no.empty:
+        return df
+
+    agg = {}
+    if "PRODUCT NAME" in has_no.columns:
+        agg["PRODUCT NAME"] = lambda x: ",\n".join(
+            x.dropna().astype(str).str.strip().unique()
+        )
+
+    for col in ["QTY", "ORDER VALUE", "GROSS AMT EX-TAX", "ADVANCE RECEIVED"]:
+        if col in has_no.columns:
+            agg[col] = "sum"
+
+    for col in ["ORDER DATE", "CUSTOMER NAME", "CONTACT NUMBER", "EMAIL ADDRESS",
+                "CATEGORY", "SALES PERSON", "DELIVERY DATE",
+                "DELIVERY STATUS", "REMARKS", "SOURCE"]:
+        if col in has_no.columns and col not in agg:
+            agg[col] = "first"
+
+    if not agg:
+        return df
+
+    grouped = has_no.groupby("ORDER NO", sort=False, as_index=False).agg(agg)
+    return pd.concat([grouped, no_no], ignore_index=True)
 
 
-def fetch_pending_grouped():
+# ── Data loader ───────────────────────────────────────────────────────────────
+
+def fetch_all_pending():
     """
-    Fetches Godrej CRM data from Google Sheets and returns
-    the pending_grouped DataFrame matching app.py logic.
+    Load pending delivery records from BOTH Franchise and 4S Interiors sheets.
+    Returns a grouped DataFrame (one row per ORDER NO) ready for emailing.
     """
-    print("  → Fetching Godrej data from Google Sheets...")
+    print("  → Fetching data from Google Sheets (Franchise + 4S Interiors)...")
 
     config_df = get_df("SHEET_DETAILS")
-    dfs = []
-    for name in config_df["Franchise_sheets"].dropna().unique():
-        df = get_df(name)
-        if df is not None and not df.empty:
-            df = fix_duplicate_columns(df)
-            # FIX: fix_duplicate_columns renames dupes but doesn't drop them;
-            # after pd.concat + rename, a sheet with both "DATE" and "ORDER DATE"
-            # columns causes rename to produce two "DATE" columns, making
-            # crm.get("DATE") return a DataFrame → pd.to_datetime crashes.
-            # Drop any remaining per-sheet duplicates here as a second guard.
-            df = df.loc[:, ~df.columns.duplicated()]
-            dfs.append(df)
-
-    if not dfs:
-        print("  → No data found.")
+    if config_df is None or config_df.empty:
+        print("  → SHEET_DETAILS not found or empty.")
         return pd.DataFrame()
 
-    crm = pd.concat(dfs, ignore_index=True)
+    franchise_sheets = (
+        config_df["Franchise_sheets"].dropna().astype(str).str.strip()
+        .pipe(lambda s: s[s != ""].unique().tolist())
+        if "Franchise_sheets" in config_df.columns else []
+    )
+    fours_sheets = (
+        config_df["four_s_sheets"].dropna().astype(str).str.strip()
+        .pipe(lambda s: s[s != ""].unique().tolist())
+        if "four_s_sheets" in config_df.columns else []
+    )
 
-    # ── Step 1: Rename well-known column variants to working names ───────────────
+    dfs = []
+    for source_label, sheet_list in [("Franchise", franchise_sheets), ("4S Interiors", fours_sheets)]:
+        for name in sheet_list:
+            try:
+                df = get_df(name)
+                if df is None or df.empty:
+                    continue
+                df.columns = [str(col).strip().upper() for col in df.columns]
+                df = df.loc[:, ~df.columns.duplicated()]
+                df = df.dropna(axis=1, how="all")
+                df["SOURCE"] = source_label
+                dfs.append(df)
+                print(f"  → Loaded '{name}' ({source_label}): {len(df)} rows")
+            except Exception as e:
+                print(f"  → Skipping sheet '{name}': {e}")
+                continue
+
+    if not dfs:
+        print("  → No data found in any sheet.")
+        return pd.DataFrame()
+
+    crm = pd.concat(dfs, ignore_index=True, sort=False)
+
+    # ── Step 1: Rename all known column variants to working names ─────────────
     crm = crm.rename(columns={
-        "ORDER UNIT PRICE=(AFTER DISC + TAX)": "ORDER AMOUNT",
-        "ORDER DATE":                          "DATE",   # normalise to DATE for grouping
+        # Amount columns
+        "ORDER UNIT PRICE=(AFTER DISC + TAX)":             "ORDER VALUE",
+        "CROSS CHECK GROSS AMT (ORDER VALUE WITHOUT TAX)": "GROSS AMT EX-TAX",
+        # Date columns
+        "DATE":                                            "ORDER DATE",
+        "CUSTOMER DELIVERY DATE (TO BE)":                  "DELIVERY DATE",
+        "CUSTOMER DELIVERY DATE":                          "DELIVERY DATE",
+        # People
+        "SALES REP":                                       "SALES PERSON",
+        "SALES EXECUTIVE":                                 "SALES PERSON",
+        # Payment
+        "ADV RECEIVED":                                    "ADVANCE RECEIVED",
     })
 
-    # FIX: the rename above maps "ORDER DATE" → "DATE", but some sheets already
-    # have a "DATE" column — after pd.concat this creates two "DATE" columns.
-    # Drop any post-rename duplicates before any column access.
+    # Drop any duplicate columns produced by the rename above
     crm = crm.loc[:, ~crm.columns.duplicated()]
 
-    # ── Step 2: Fuzzy-resolve the delivery status column ─────────────────────────
-    # The column name varies across sheet versions and may have extra spaces,
-    # different punctuation, or a slightly different label. We search for the
-    # first column whose normalised name starts with "DELIVERY REMARKS" or
-    # equals "REMARKS" / "DELIVERY STATUS", then canonicalise it.
-    if "DELIVERY REMARKS" not in crm.columns:
-        def _strip(s):
+    # ── Step 2: Fuzzy-resolve the delivery status column ──────────────────────
+    # Column name varies across sheet versions — may have extra spaces, different
+    # punctuation, or a slightly different label ("REMARKS", "DELIVERY STATUS", etc.)
+    if "DELIVERY STATUS" not in crm.columns:
+        def _norm(s):
             return str(s).upper().strip().replace(" ", "")
 
         found = None
         for col in crm.columns:
-            n = _strip(col)
+            n = _norm(col)
             if n.startswith("DELIVERYREMARKS") or n in ("REMARKS", "DELIVERYSTATUS"):
                 found = col
                 break
         if found:
-            crm = crm.rename(columns={found: "DELIVERY REMARKS"})
-            print(f"  → Resolved delivery-status column: '{found}' → 'DELIVERY REMARKS'")
+            crm = crm.rename(columns={found: "DELIVERY STATUS"})
+            print(f"  → Resolved delivery-status column: '{found}' → 'DELIVERY STATUS'")
         else:
-            # Column missing entirely — default all rows to PENDING so nothing
-            # is silently filtered out; the email will show all orders.
             print(
-                f"  ⚠ 'DELIVERY REMARKS' column not found in any sheet. "
+                f"  ⚠ Delivery status column not found. "
                 f"Available columns: {list(crm.columns)[:20]}\n"
                 f"  Defaulting all rows to PENDING."
             )
-            crm["DELIVERY REMARKS"] = "PENDING"
+            crm["DELIVERY STATUS"] = "PENDING"
 
-    # ── Step 3: Numeric cleanup ───────────────────────────────────────────────────
-    crm["ORDER AMOUNT"] = pd.to_numeric(
-        crm.get("ORDER AMOUNT", pd.Series("0")).astype(str).str.replace(r"[₹,]", "", regex=True),
-        errors="coerce",
-    ).fillna(0)
-    crm["ADV RECEIVED"] = pd.to_numeric(
-        crm.get("ADV RECEIVED", pd.Series("0")).astype(str).str.replace(r"[₹,]", "", regex=True),
-        errors="coerce",
-    ).fillna(0)
+    # ── Step 3: Numeric cleanup ────────────────────────────────────────────────
+    for col in ("ORDER VALUE", "ADVANCE RECEIVED", "GROSS AMT EX-TAX"):
+        if col in crm.columns:
+            crm[col] = pd.to_numeric(
+                crm[col].astype(str).str.replace(r"[₹,\s]", "", regex=True),
+                errors="coerce",
+            ).fillna(0)
 
-    # ── Step 4: Date cleanup ──────────────────────────────────────────────────────
-    # FIX: use parse_mixed_dates() instead of pd.to_datetime(crm.get("DATE"), ...)
-    # crm.get("DATE") returns a DataFrame when duplicate columns exist, causing
-    # "ValueError: cannot assemble with duplicate keys" in pd.to_datetime.
-    if "DATE" in crm.columns:
-        crm["DATE"] = parse_mixed_dates(crm["DATE"])
-    if "CUSTOMER DELIVERY DATE (TO BE)" in crm.columns:
-        crm["CUSTOMER DELIVERY DATE (TO BE)"] = parse_mixed_dates(
-            crm["CUSTOMER DELIVERY DATE (TO BE)"]
-        )
+    # Fall back: use GROSS AMT EX-TAX if ORDER VALUE is missing
+    if "ORDER VALUE" not in crm.columns and "GROSS AMT EX-TAX" in crm.columns:
+        crm["ORDER VALUE"] = crm["GROSS AMT EX-TAX"]
 
-    # ── Step 5: Filter PENDING rows ───────────────────────────────────────────────
-    mask = crm["DELIVERY REMARKS"].astype(str).str.upper().str.strip() == "PENDING"
-    pending = crm[mask].copy()
+    # ── Step 4: Date cleanup ───────────────────────────────────────────────────
+    for date_col in ("ORDER DATE", "DELIVERY DATE"):
+        if date_col in crm.columns:
+            crm[date_col] = parse_mixed_dates(crm[date_col])
 
-    if pending.empty:
-        print("  → No pending deliveries found.")
-        return pd.DataFrame()
+    # ── Step 5: Filter valid orders (non-zero amount) ──────────────────────────
+    if "ORDER VALUE" in crm.columns:
+        crm = crm[crm["ORDER VALUE"] > 0].copy()
 
-    # ── Group by ORDER NO so each order is one row in the email table ──────────
-    # Products belonging to the same ORDER NO are joined with ',\n' so they
-    # render on separate lines in the HTML email (the email_sender converts
-    # '\n' to <br>).
-    if "ORDER NO" in pending.columns:
-        valid_mask = (
-            pending["ORDER NO"].notna() &
-            (~pending["ORDER NO"].astype(str).str.strip().str.upper().isin(["", "NAN", "NONE"]))
-        )
-        has_no = pending[valid_mask].copy()
-        no_no  = pending[~valid_mask].copy()
+    # ── Step 6: Default empty DELIVERY STATUS → PENDING ───────────────────────
+    empty_mask = crm["DELIVERY STATUS"].astype(str).str.strip().isin(
+        ["", "nan", "NaN", "None", "none"]
+    )
+    crm.loc[empty_mask, "DELIVERY STATUS"] = "PENDING"
 
-        agg = {}
-        if "PRODUCT NAME" in has_no.columns:
-            agg["PRODUCT NAME"] = lambda x: ",\n".join(
-                x.dropna().astype(str).str.strip().unique()
-            )
-        for col in ["CONTACT NUMBER", "SALES PERSON",
-                    "CUSTOMER NAME", "DELIVERY REMARKS"]:
-            if col in has_no.columns:
-                agg[col] = "first"
-        if "DATE" in has_no.columns:
-            agg["DATE"] = "min"
-        if "CUSTOMER DELIVERY DATE (TO BE)" in has_no.columns:
-            agg["CUSTOMER DELIVERY DATE (TO BE)"] = "first"
+    # ── Step 7: Filter PENDING rows only ──────────────────────────────────────
+    pending = crm[
+        crm["DELIVERY STATUS"].astype(str).str.upper().str.strip() == "PENDING"
+    ].copy()
 
-        if agg and not has_no.empty:
-            grouped = has_no.groupby("ORDER NO", sort=False, as_index=False).agg(agg)
-            pending_grouped = pd.concat([grouped, no_no], ignore_index=True)
-        else:
-            pending_grouped = pending.copy()
-    else:
-        # Fallback: legacy grouping by customer + delivery date
-        pending_grouped = pending.groupby(
-            ["CUSTOMER NAME", "CUSTOMER DELIVERY DATE (TO BE)"]
-        ).agg({
-            "PRODUCT NAME":  lambda x: ",\n".join(x.dropna().astype(str).str.strip().unique()),
-            "CONTACT NUMBER": "first",
-            "SALES PERSON":   "first",
-            "DATE":           "min",
-            "DELIVERY REMARKS": "first"
-        }).reset_index()
+    franchise_cnt = int((pending.get("SOURCE", pd.Series()) == "Franchise").sum())
+    fours_cnt     = int((pending.get("SOURCE", pd.Series()) == "4S Interiors").sum())
+    print(f"  → {len(pending)} pending line-items "
+          f"(Franchise: {franchise_cnt}, 4S Interiors: {fours_cnt})")
 
-    pending_grouped.rename(columns={
-        "DATE":                              "ORDER DATE",
-        "CUSTOMER DELIVERY DATE (TO BE)":    "DELIVERY DATE"
-    }, inplace=True)
-
-    print(f"  → {len(pending_grouped)} pending records (grouped by ORDER NO).")
-    return pending_grouped
+    # ── Step 8: Group by ORDER NO ──────────────────────────────────────────────
+    pending = _group_by_order_no(pending)
+    print(f"  → {len(pending)} pending orders after grouping by ORDER NO.")
+    return pending
 
 
-# ── Decide which job to run ───────────────────────────────────────────────────
+# ── Fetch combined pending data ───────────────────────────────────────────────
 
-df = fetch_pending_grouped()
+pending = fetch_all_pending()
 
-if df.empty:
-    print("No pending deliveries. Skipping email.")
+if pending.empty:
+    print("[CRM Job] No pending deliveries found across all sheets. Skipping email.")
     sys.exit(0)
 
-# ── PRIORITY 1: Manual trigger via GitHub Actions UI ─────────────────────────
-if MANUAL_JOB == "godrej_email1":
-    print("Manual trigger → Sending Email 1 (Pending Delivery Report)...")
-    send_pending_delivery_email(df)
 
-elif MANUAL_JOB == "godrej_email2":
-    print("Manual trigger → Sending Email 2 (Update Delivery Status Reminder)...")
-    send_update_delivery_status_email(df)
+# ── Route to correct email ────────────────────────────────────────────────────
 
-elif MANUAL_JOB == "godrej_email3":
-    print("Manual trigger → Sending Email 3 (Evening Pending Delivery Report)...")
-    send_pending_delivery_email(df)
+# PRIORITY 1: Manual trigger via GitHub Actions workflow_dispatch UI
+# Accept old job names (godrej_*/fours_*) and new unified names (crm_*)
+if MANUAL_JOB in ("crm_email1", "godrej_email1", "fours_email1"):
+    print("Manual trigger → Sending Pending Delivery Report (all sources)...")
+    send_pending_delivery_email_4s(pending)
 
-# ── PRIORITY 2: SLOT env var (set by workflow step — immune to clock drift) ──
+elif MANUAL_JOB in ("crm_email2", "godrej_email2", "fours_email2"):
+    print("Manual trigger → Sending Update Delivery Status Reminder (all sources)...")
+    send_update_delivery_status_email_4s(pending)
+
+elif MANUAL_JOB in ("crm_email3", "godrej_email3", "fours_email3"):
+    print("Manual trigger → Sending Evening Pending Delivery Report (all sources)...")
+    send_pending_delivery_email_4s(pending)
+
+# PRIORITY 2: SLOT env var (set by workflow step — immune to clock drift)
 elif SLOT == "morning":
-    print("SLOT=morning → Sending Email 1 (Morning Pending Delivery Report)...")
-    send_pending_delivery_email(df)
+    print("SLOT=morning → Sending Morning Pending Delivery Report...")
+    send_pending_delivery_email_4s(pending)
 
 elif SLOT == "reminder":
-    print("SLOT=reminder → Sending Email 2 (Update Delivery Status Reminder)...")
-    send_update_delivery_status_email(df)
+    print("SLOT=reminder → Sending Update Delivery Status Reminder...")
+    send_update_delivery_status_email_4s(pending)
 
 elif SLOT == "evening":
-    print("SLOT=evening → Sending Email 1 (Evening Pending Delivery Report)...")
-    send_pending_delivery_email(df)
+    print("SLOT=evening → Sending Evening Pending Delivery Report...")
+    send_pending_delivery_email_4s(pending)
 
-# ── PRIORITY 3: IST hour fallback (±1 hr window handles GitHub delay) ────────
+# PRIORITY 3: IST hour fallback (±1 hr window handles GitHub Actions delays)
 elif current_hour in (9, 10):
-    print(f"Hour-fallback ({current_hour}h IST) → Sending Email 1 (Morning)...")
-    send_pending_delivery_email(df)
+    print(f"Hour-fallback ({current_hour}h IST) → Sending Morning Pending Delivery Report...")
+    send_pending_delivery_email_4s(pending)
 
 elif current_hour == 11:
-    print(f"Hour-fallback (11h IST) → Sending Email 2 (Reminder)...")
-    send_update_delivery_status_email(df)
+    print(f"Hour-fallback (11h IST) → Sending Update Delivery Status Reminder...")
+    send_update_delivery_status_email_4s(pending)
 
 elif current_hour in (16, 17, 18):
-    print(f"Hour-fallback ({current_hour}h IST) → Sending Email 1 (Evening)...")
-    send_pending_delivery_email(df)
+    print(f"Hour-fallback ({current_hour}h IST) → Sending Evening Pending Delivery Report...")
+    send_pending_delivery_email_4s(pending)
 
 else:
     print(
-        f"[Godrej Job] No email mapped for IST hour {current_hour}. "
-        f"Set SLOT env var to 'morning', 'reminder', or 'evening' in the workflow."
+        f"[CRM Job] No email mapped for IST hour {current_hour}. "
+        f"Set SLOT='morning', 'reminder', or 'evening' in the workflow step."
     )
-    sys.exit(1)  # Fail visibly so GitHub marks run red — not silently green
+    sys.exit(1)

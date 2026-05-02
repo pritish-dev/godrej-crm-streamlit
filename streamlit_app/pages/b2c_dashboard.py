@@ -376,7 +376,7 @@ st.divider()
 
 st.subheader("📋 All Sales Records")
 
-# Row 1: date filters
+# Row 1: date range filters
 r1c1, r1c2, r1c3 = st.columns([1, 1, 2])
 with r1c1:
     filter_start = st.date_input(
@@ -387,21 +387,24 @@ with r1c2:
         "To", value=today, min_value=FY_START, max_value=today, key="sales_to"
     )
 
-# Row 2: quick-filter dropdowns
-r2c1, r2c2, r2c3 = st.columns(3)
+# Row 2: quick-filter dropdowns (4 columns — added Source filter)
+r2c1, r2c2, r2c3, r2c4 = st.columns(4)
 _sp_options   = ["All"] + sorted(crm["SALES PERSON"].dropna().astype(str).str.strip().unique().tolist()) \
-                if "SALES PERSON" in crm.columns else ["All"]
+                if "SALES PERSON"    in crm.columns else ["All"]
 _cat_options  = ["All"] + sorted(crm["CATEGORY"].dropna().astype(str).str.strip().unique().tolist()) \
-                if "CATEGORY"    in crm.columns else ["All"]
+                if "CATEGORY"        in crm.columns else ["All"]
 _stat_options = ["All"] + sorted(crm["DELIVERY STATUS"].dropna().astype(str).str.strip().unique().tolist()) \
                 if "DELIVERY STATUS" in crm.columns else ["All"]
+_src_options  = ["All", "4S Interiors", "Franchise"]
 
 with r2c1:
-    filt_sp   = st.selectbox("Sales Person", _sp_options,   key="filt_sp")
+    filt_sp   = st.selectbox("Sales Person",    _sp_options,   key="filt_sp")
 with r2c2:
-    filt_cat  = st.selectbox("Category",     _cat_options,  key="filt_cat")
+    filt_cat  = st.selectbox("Category",        _cat_options,  key="filt_cat")
 with r2c3:
     filt_stat = st.selectbox("Delivery Status", _stat_options, key="filt_stat")
+with r2c4:
+    filt_src  = st.selectbox("Source",          _src_options,  key="filt_src")
 
 # Apply all filters
 sales_filtered = crm[
@@ -416,17 +419,20 @@ if filt_cat  != "All" and "CATEGORY"        in sales_filtered.columns:
     sales_filtered = sales_filtered[sales_filtered["CATEGORY"].astype(str).str.strip() == filt_cat]
 if filt_stat != "All" and "DELIVERY STATUS" in sales_filtered.columns:
     sales_filtered = sales_filtered[sales_filtered["DELIVERY STATUS"].astype(str).str.strip() == filt_stat]
+if filt_src  != "All" and "SOURCE"          in sales_filtered.columns:
+    sales_filtered = sales_filtered[sales_filtered["SOURCE"].astype(str).str.strip() == filt_src]
 
-# Group by ORDER NO so each order is one row with all products listed
+# Group by ORDER NO → one row per order, products joined; sort newest first
 sales_grouped = group_by_order_no(sales_filtered)
 sales_grouped = sales_grouped.sort_values("ORDER DATE", ascending=False).reset_index(drop=True)
 
 st.caption(
     f"Showing **{filter_start.strftime('%d %b %Y')}** → **{filter_end.strftime('%d %b %Y')}**"
     f"  ·  **{len(sales_grouped)}** orders"
-    + (f"  ·  SP: **{filt_sp}**" if filt_sp != "All" else "")
-    + (f"  ·  Cat: **{filt_cat}**" if filt_cat != "All" else "")
+    + (f"  ·  SP: **{filt_sp}**"       if filt_sp   != "All" else "")
+    + (f"  ·  Cat: **{filt_cat}**"     if filt_cat  != "All" else "")
     + (f"  ·  Status: **{filt_stat}**" if filt_stat != "All" else "")
+    + (f"  ·  Source: **{filt_src}**"  if filt_src  != "All" else "")
 )
 
 # Build display table
@@ -443,7 +449,7 @@ sales_display = sales_display.rename(
 
 # Reset pagination when any filter changes
 PAGE_SIZE = 25
-_filter_key = (filter_start, filter_end, filt_sp, filt_cat, filt_stat)
+_filter_key = (filter_start, filter_end, filt_sp, filt_cat, filt_stat, filt_src)
 if "b2c_page" not in st.session_state:
     st.session_state.b2c_page = 0
 if "b2c_filter_key" not in st.session_state:
