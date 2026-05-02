@@ -65,6 +65,10 @@ def fetch_pending_del():
     Fetches and processes 4S data from Google Sheets.
     Returns the pending deliveries DataFrame with columns
     matching what email_sender_4s.py expects.
+
+    IMPORTANT: column renames happen FIRST, before any numeric conversion or
+    filtering — otherwise ORDER AMOUNT stays 0 for all new-format sheets and
+    every row gets filtered out before the email is ever sent.
     """
     print("  → Fetching data from Google Sheets...")
 
@@ -95,43 +99,66 @@ def fetch_pending_del():
 
     crm = pd.concat(dfs, ignore_index=True, sort=False)
 
-    # Numeric cleanup
-    crm["ORDER AMOUNT"] = pd.to_numeric(crm.get("ORDER AMOUNT"), errors="coerce").fillna(0)
-    crm["ADV RECEIVED"] = pd.to_numeric(crm.get("ADV RECEIVED"), errors="coerce").fillna(0)
-
-    # Date cleanup
-    crm["DATE"]                   = parse_mixed_dates(crm.get("DATE"))
-    crm["CUSTOMER DELIVERY DATE"] = parse_mixed_dates(crm.get("CUSTOMER DELIVERY DATE"))
-
-    # Filter valid orders
-    crm = crm[crm["ORDER AMOUNT"] > 0]
-
-    # Rename new 26-27 column names to working names expected by email_sender_4s
+    # ── Step 1: Rename columns FIRST (before any numeric or filter ops) ───────
+    # The new FY 2026-27 sheets use different column names from old sheets.
+    # If we rename after numeric conversion the ORDER AMOUNT column won't exist
+    # yet, so pd.to_numeric gets None → every row becomes 0 → filtered out.
     crm = crm.rename(columns={
-        # New 26-27 column names
-        "ORDER UNIT PRICE=(AFTER DISC + TAX)":             "ORDER AMOUNT",
-        "DELIVERY REMARKS(DELIVERED/PENDING) REMARK":      "DELIVERY STATUS",
+        # New FY 2026-27 column names → working names
+        "CROSS CHECK GROSS AMT (ORDER VALUE WITHOUT TAX)": "ORDER AMOUNT",
+        "ORDER UNIT PRICE=(AFTER DISC + TAX)":             "ORDER UNIT PRICE",  # keep separate
+        "DELIVERY REMARKS(DELIVERED/PENDING)":             "DELIVERY STATUS",   # actual sheet col name
         "CUSTOMER DELIVERY DATE (TO BE)":                  "DELIVERY DATE",
-        "CROSS CHECK GROSS AMT (ORDER VALUE WITHOUT TAX)": "GROSS AMT EX-TAX",
-        # Old column names (kept for backward compat if old sheet is listed)
+        # Old column names (backward compat)
         "DATE":                   "ORDER DATE",
         "SALES REP":              "SALES PERSON",
+        "SALES EXECUTIVE":        "SALES PERSON",
         "CUSTOMER DELIVERY DATE": "DELIVERY DATE",
         "ADV RECEIVED":           "ADVANCE RECEIVED",
         "REMARKS":                "DELIVERY STATUS",
     })
 
-    # Filter: PENDING only
+    # If the sheet doesn't have CROSS CHECK GROSS AMT, fall back to ORDER UNIT PRICE
+    if "ORDER AMOUNT" not in crm.columns and "ORDER UNIT PRICE" in crm.columns:
+        crm = crm.rename(columns={"ORDER UNIT PRICE": "ORDER AMOUNT"})
+
+    # ── Step 2: Numeric cleanup ────────────────────────────────────────────────
+    crm["ORDER AMOUNT"] = pd.to_numeric(
+        crm["ORDER AMOUNT"].astype(str).str.replace(r"[₹,\s]", "", regex=True)
+        if "ORDER AMOUNT" in crm.columns else pd.Series("0", index=crm.index),
+        errors="coerce",
+    ).fillna(0)
+
+    crm["ADVANCE RECEIVED"] = pd.to_numeric(
+        crm["ADVANCE RECEIVED"].astype(str).str.replace(r"[₹,\s]", "", regex=True)
+        if "ADVANCE RECEIVED" in crm.columns else pd.Series("0", index=crm.index),
+        errors="coerce",
+    ).fillna(0)
+
+    # ── Step 3: Date cleanup ───────────────────────────────────────────────────
+    for date_col in ("ORDER DATE", "DELIVERY DATE"):
+        if date_col in crm.columns:
+            crm[date_col] = parse_mixed_dates(crm[date_col])
+
+    # ── Step 4: Filter valid orders (non-zero amount) ──────────────────────────
+    crm = crm[crm["ORDER AMOUNT"] > 0].copy()
+
+    # ── Step 5: Default empty DELIVERY STATUS to PENDING ─────────────────────
+    if "DELIVERY STATUS" not in crm.columns:
+        crm["DELIVERY STATUS"] = "PENDING"
+    else:
+        empty = crm["DELIVERY STATUS"].astype(str).str.strip().isin(
+            ["", "nan", "NaN", "None", "none"]
+        )
+        crm.loc[empty, "DELIVERY STATUS"] = "PENDING"
+
+    # ── Step 6: Filter PENDING only ───────────────────────────────────────────
     pending_del = crm[
         crm["DELIVERY STATUS"].astype(str).str.upper().str.strip() == "PENDING"
     ].copy()
 
     print(f"  → {len(pending_del)} pending line-items before grouping.")
 
-    # ── Group by ORDER NO so each order is one row in the email table ──────────
-    # Products belonging to the same ORDER NO are joined with ',\n' so they
-    # render on separate lines in the HTML email (email_sender_4s.py converts
-    # '\n' to <br> for the PRODUCT NAME column).
     pending_del = _group_by_order_no(pending_del)
     print(f"  → {len(pending_del)} pending orders after grouping by ORDER NO.")
     return pending_del

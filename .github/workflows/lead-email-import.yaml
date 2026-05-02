@@ -30,7 +30,12 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          if [ -f streamlit_app/requirements.txt ]; then
+            pip install -r streamlit_app/requirements.txt
+          else
+            pip install -r requirements.txt
+          fi
 
       - name: Import leads from Gmail (IMAP) - Every 30 minutes (10 AM - 10 PM IST)
         env:

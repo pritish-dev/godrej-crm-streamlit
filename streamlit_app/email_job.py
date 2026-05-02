@@ -77,12 +77,14 @@ def fetch_pending_grouped():
 
     crm = pd.concat(dfs, ignore_index=True)
 
-    # Rename new 26-27 column names to working names expected by email_sender
+    # Rename new 26-27 column names to working names expected by email_sender.
+    # The actual sheet column is "DELIVERY REMARKS(DELIVERED/PENDING)" — the old
+    # code had a trailing " REMARK" suffix that never matched, causing a KeyError
+    # or silent pass-through when the filter ran on a non-existent column.
     crm = crm.rename(columns={
-        # New 26-27 column names
-        "ORDER UNIT PRICE=(AFTER DISC + TAX)":        "ORDER AMOUNT",
-        "DELIVERY REMARKS(DELIVERED/PENDING) REMARK": "DELIVERY REMARKS",
-        "ORDER DATE":                                  "DATE",          # normalise to DATE for grouping
+        "ORDER UNIT PRICE=(AFTER DISC + TAX)":    "ORDER AMOUNT",
+        "DELIVERY REMARKS(DELIVERED/PENDING)":    "DELIVERY REMARKS",   # exact sheet col name
+        "ORDER DATE":                             "DATE",               # normalise to DATE for grouping
     })
 
     crm["ORDER AMOUNT"] = pd.to_numeric(

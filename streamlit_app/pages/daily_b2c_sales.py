@@ -104,10 +104,14 @@ def load_data():
                 }
                 df = df.rename(columns=sp_map)
 
-                gross_map = {
+                col_map = {
                     "CROSS CHECK GROSS AMT (ORDER VALUE WITHOUT TAX)": "GROSS AMT",
+                    # Normalise GMB review column name to "REVIEW"
+                    "REVIEW RATING": "REVIEW",
+                    "GMB RATING":    "REVIEW",
+                    "GMB RATINGS":   "REVIEW",
                 }
-                df = df.rename(columns=gross_map)
+                df = df.rename(columns=col_map)
 
                 df["SOURCE"] = source_label
                 dfs.append(df)
@@ -134,6 +138,12 @@ def load_data():
         crm.get("SALES PERSON", pd.Series("", index=crm.index))
         .astype(str).str.strip().str.upper()
     )
+
+    # Normalise REVIEW column (star rating 1–5; 0 / blank = no review)
+    if "REVIEW" in crm.columns:
+        crm["REVIEW"] = pd.to_numeric(crm["REVIEW"], errors="coerce").fillna(0).astype(int)
+    else:
+        crm["REVIEW"] = 0
 
     crm = crm[crm["DATE_DT"] >= FY_START].copy()
     return crm, team_df
@@ -362,6 +372,23 @@ for d in date_range:
 
 df_display = pd.DataFrame(table_data) if table_data else pd.DataFrame()
 
+# ── GMB review count per salesperson per day ──────────────────────────────────
+# Count rows where REVIEW > 0 (i.e. a star rating was recorded for that day)
+
+review_data = []
+for d in date_range:
+    day_data = df_filtered[df_filtered["DATE_DT"] == d]
+    row      = {"Date": d.strftime("%d-%b-%Y")}
+    day_rev  = 0
+    for sp in all_execs:
+        rev_count  = int((day_data[day_data["SALES PERSON"] == sp]["REVIEW"] > 0).sum())
+        row[sp]    = rev_count
+        day_rev   += rev_count
+    row["Store Total"] = day_rev
+    review_data.append(row)
+
+df_reviews = pd.DataFrame(review_data) if review_data else pd.DataFrame()
+
 # ── Totals row + display ──────────────────────────────────────────────────────
 
 if not df_display.empty and all_execs:
@@ -372,6 +399,14 @@ if not df_display.empty and all_execs:
 
     df_display  = pd.concat([df_display, pd.DataFrame([totals_row])], ignore_index=True)
     grand_total = totals_row["Store Total"]
+
+    # Review count totals row
+    if not df_reviews.empty:
+        rev_totals = {"Date": "TOTAL"}
+        for col in df_reviews.columns:
+            if col != "Date":
+                rev_totals[col] = int(df_reviews[col].sum())
+        df_reviews = pd.concat([df_reviews, pd.DataFrame([rev_totals])], ignore_index=True)
 
     st.success(f"### 💰 Grand Total B2C Sales ({selected_source}): ₹{grand_total:,.2f}")
 
@@ -418,6 +453,39 @@ if not df_display.empty and all_execs:
         .to_html()
     )
     st.write(f'<div class="table-scroll-container">{styled_html}</div>', unsafe_allow_html=True)
+
+    # ── GMB Review Count Table ────────────────────────────────────────────────
+    total_reviews_period = int(df_reviews[df_reviews["Date"] == "TOTAL"]["Store Total"].iloc[0]) \
+        if not df_reviews.empty else 0
+
+    st.divider()
+    st.subheader("⭐ Daily GMB Review Count by Sales Executive")
+    st.caption(
+        f"Count of orders where a Google review (star rating) was recorded · "
+        f"Total in period: **{total_reviews_period}** review(s)"
+    )
+
+    if not df_reviews.empty and total_reviews_period > 0:
+        # Style: highlight any cell with count > 0 in light green
+        def _style_reviews(val):
+            if isinstance(val, (int, float)) and val > 0:
+                return "background-color:#c8e6c9;font-weight:bold"
+            return ""
+
+        rev_styled = (
+            df_reviews.style
+            .applymap(_style_reviews, subset=[c for c in df_reviews.columns if c != "Date"])
+            .set_table_attributes('class="squeezed-table"')
+            .hide(axis="index")
+            .to_html()
+        )
+        st.write(f'<div class="table-scroll-container">{rev_styled}</div>', unsafe_allow_html=True)
+    else:
+        st.info(
+            "No GMB reviews recorded for the selected period. "
+            "Reviews are fetched nightly via the Google Reviews job and written to the "
+            "'REVIEW' column in the 4S Sales sheet."
+        )
 
     # ── Week-over-Week Trend ───────────────────────────────────────────────────
     st.divider()
