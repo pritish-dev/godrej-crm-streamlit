@@ -40,6 +40,11 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
 from services.sheets import get_df  # noqa: E402
+try:
+    from services.incentive_store import get_targets_df as _get_iq_targets
+    _IQ_OK = True
+except Exception:
+    _IQ_OK = False
 
 st.set_page_config(page_title="Sales Reports and Strategy", layout="wide")
 
@@ -178,14 +183,40 @@ st.divider()
 # SECTION 2 — Monthly Target Tracker (persistent)
 # =========================================================
 st.subheader("🎯 Monthly Target Tracker")
-if "monthly_goal_persistent" not in st.session_state:
-    st.session_state.monthly_goal_persistent = 10_000_000.0
+
+# Auto-calculate monthly target by summing all salesperson targets for this month
+def _iq_store_monthly_target(month_int: int, year_int: int) -> float:
+    """Sum all salesperson targets from Incentive_Quarterly_Targets for the given month (in ₹)."""
+    if not _IQ_OK:
+        return 10_000_000.0
+    _MN = {1:"JANUARY",2:"FEBRUARY",3:"MARCH",4:"APRIL",5:"MAY",6:"JUNE",
+           7:"JULY",8:"AUGUST",9:"SEPTEMBER",10:"OCTOBER",11:"NOVEMBER",12:"DECEMBER"}
+    try:
+        iq_df = _get_iq_targets()
+        if iq_df is None or iq_df.empty:
+            return 10_000_000.0
+        fy = f"{str(year_int)[2:]}-{str(year_int+1)[2:]}" if month_int >= 4 \
+             else f"{str(year_int-1)[2:]}-{str(year_int)[2:]}"
+        mon = _MN.get(month_int, "").upper()
+        total = iq_df[(iq_df["FY"] == fy) & (iq_df["MONTH"].str.upper() == mon)]["TARGET"].sum()
+        return float(total) * 100_000 if total > 0 else 10_000_000.0
+    except Exception:
+        return 10_000_000.0
+
+_auto_monthly_target = _iq_store_monthly_target(now.month, now.year)
+
+# Use month-keyed session state so default resets each new month automatically
+_goal_month_key = f"_goal_month_{now.year}_{now.month}"
+if _goal_month_key not in st.session_state:
+    st.session_state["monthly_goal_persistent"] = _auto_monthly_target
+    st.session_state[_goal_month_key] = True
 
 t1, t2 = st.columns([1, 2])
 with t1:
     monthly_goal = st.number_input(
         "Set Monthly Target (₹)", min_value=100_000.0, step=100_000.0,
         key="monthly_goal_persistent",
+        help=f"Auto-calculated from Incentive_Quarterly_Targets: ₹{_auto_monthly_target:,.0f}",
     )
 
 ach_pct  = (m_sales / monthly_goal * 100) if monthly_goal else 0

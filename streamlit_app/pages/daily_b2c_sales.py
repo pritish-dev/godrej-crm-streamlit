@@ -19,12 +19,50 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
 from services.sheets import get_df, _get_spreadsheet
+try:
+    from services.incentive_store import get_targets_df as _get_iq_targets_df
+    _IQ_AVAILABLE = True
+except Exception:
+    _IQ_AVAILABLE = False
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 FY_START     = date(2026, 4, 1)
 TODAY        = datetime.today().date()
 TARGET_SHEET = "SALES_TARGETS"
+
+_MONTH_NAMES = {
+    1: "JANUARY", 2: "FEBRUARY", 3: "MARCH", 4: "APRIL",
+    5: "MAY", 6: "JUNE", 7: "JULY", 8: "AUGUST",
+    9: "SEPTEMBER", 10: "OCTOBER", 11: "NOVEMBER", 12: "DECEMBER",
+}
+
+def _get_fy_str(month_int: int, year_int: int) -> str:
+    """Return FY string like '26-27' for a given month+year."""
+    if month_int >= 4:
+        return f"{str(year_int)[2:]}-{str(year_int + 1)[2:]}"
+    return f"{str(year_int - 1)[2:]}-{str(year_int)[2:]}"
+
+def _iq_target_rupees(sales_person: str, month_int: int, year_int: int) -> float:
+    """Look up target from Incentive_Quarterly_Targets and return value in ₹ (Lakh × 1,00,000)."""
+    if not _IQ_AVAILABLE:
+        return 0.0
+    try:
+        iq_df = _get_iq_targets_df()
+        if iq_df is None or iq_df.empty:
+            return 0.0
+        fy  = _get_fy_str(month_int, year_int)
+        mon = _MONTH_NAMES.get(month_int, "").upper()
+        match = iq_df[
+            (iq_df["SALES PERSON"].str.upper() == sales_person.strip().upper()) &
+            (iq_df["FY"] == fy) &
+            (iq_df["MONTH"].str.upper() == mon)
+        ]
+        if not match.empty:
+            return float(match.iloc[0]["TARGET"]) * 100_000
+    except Exception:
+        pass
+    return 0.0
 
 # ── Motivational quotes (cycle by day-of-year) ───────────────────────────────
 _QUOTES = [
@@ -622,11 +660,14 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                             existing_target = float(_match.iloc[0]["TARGET"])
                         except Exception:
                             existing_target = 0.0
+                # Auto-fill from Incentive_Quarterly_Targets if no manual override
+                if existing_target == 0.0:
+                    existing_target = _iq_target_rupees(selected_sp, selected_month, selected_year)
 
                 target_value = st.number_input(
                     "Target (₹)", min_value=0.0,
                     value=existing_target, step=50000.0, format="%.2f",
-                    help="Monthly sales target in Rupees. Defaults to 0 if not set.",
+                    help="Auto-filled from Incentive_Quarterly_Targets (in Lakh). Override by saving a new value.",
                 )
 
             submitted = st.form_submit_button("💾 Save Target", use_container_width=True, type="primary")
@@ -688,6 +729,9 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                     target = float(_t.iloc[0]["TARGET"]) if not _t.empty else 0.0
                 else:
                     target = 0.0
+                # Fallback to Incentive_Quarterly_Targets if no manual target set
+                if target == 0.0:
+                    target = _iq_target_rupees(sp, m, y)
 
                 achievement = compute_achievement(crm_tgt_df, sp, m, y)
                 rows.append({
