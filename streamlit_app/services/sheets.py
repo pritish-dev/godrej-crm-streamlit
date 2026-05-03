@@ -444,3 +444,21 @@ def update_followup(customer_name, date):
             new_df = pd.concat([df, new_row], ignore_index=True)
 
     write_df("FOLLOWUP_LOG", new_df)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Re-exports for legacy imports (auth.py + admin pages historically did
+# `from services.sheets import get_users_df, upsert_user, …`).  The actual
+# implementations live in sheets_1.py — kept here as a shim so callers don't
+# need to change.
+# ─────────────────────────────────────────────────────────────────────────────
+try:
+    from services.sheets_1 import (  # noqa: F401  (re-export)
+        get_users_df,
+        upsert_user,
+        ensure_users_header,
+        deactivate_user,
+    )
+except Exception:
+    # Fail-soft: if sheets_1 ever changes, calling code will get the original
+    # ImportError at the call site rather than at module load.
+    pass
