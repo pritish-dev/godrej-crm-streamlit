@@ -795,9 +795,12 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
             _sk4.metric("🏅 Targets Hit",       f"{_achieved_count} / {_total_sp_months}")
 
             # Styled achievement table
+            # NOTE: style is applied on NUMERIC result_df, .format() handles display strings.
+            # Avoids TypeError from comparing already-formatted strings like "100.0% ✅" >= 100.
             def _row_style(row):
-                pct = row["Achieved %"]
-                if row["Target (₹)"] == 0:
+                pct = row["Achieved %"]   # numeric
+                tgt = row["Target (₹)"]   # numeric
+                if tgt == 0:
                     return ["background-color:#f5f5f5"] * len(row)
                 if pct >= 100:
                     return ["background-color:#c8e6c9;font-weight:bold"] * len(row)
@@ -805,21 +808,24 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                     return ["background-color:#fff3e0"] * len(row)
                 return ["background-color:#ffcdd2"] * len(row)
 
-            display_df = result_df[
-                ["Month", "Sales Person", "Target (₹)", "Achievement (₹)", "Achieved %"]
-            ].copy()
-            display_df["Target (₹)"]      = display_df["Target (₹)"].apply(lambda v: f"₹{v:,.0f}")
-            display_df["Achievement (₹)"] = display_df["Achievement (₹)"].apply(lambda v: f"₹{v:,.0f}")
-            display_df["Achieved %"]      = display_df["Achieved %"].apply(
-                lambda v: f"{v:.1f}% ✅" if v >= 100 else f"{v:.1f}%"
+            styled_df = (
+                result_df[["Month", "Sales Person", "Target (₹)", "Achievement (₹)", "Achieved %"]]
+                .copy()
+                .style
+                .apply(_row_style, axis=1)
+                .format({
+                    "Target (₹)":      "₹{:,.0f}",
+                    "Achievement (₹)": "₹{:,.0f}",
+                    "Achieved %":      lambda v: f"{v:.1f}% ✅" if v >= 100 else f"{v:.1f}%",
+                })
             )
 
-            st.dataframe(
-                display_df.style.apply(_row_style, axis=1),
-                use_container_width=True,
-                hide_index=True,
+            st.dataframe(styled_df, use_container_width=True, hide_index=True)
+            st.caption(
+                "🟢 Green = Target achieved (≥100%)  ·  "
+                "🟠 Orange = Close (80–99%)  ·  "
+                "🔴 Red = Needs attention (<80%)"
             )
-            st.caption("🟢 Green = Target achieved (≥100%)  ·  🟠 Orange = Close (80–99%)  ·  🔴 Red = Needs attention (<80%)")
 
             # Bar chart — current month snapshot
             _cur_m, _cur_y = _today.month, _today.year
@@ -849,7 +855,9 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                 _fig2.update_layout(
                     barmode="group", height=350,
                     yaxis_title="Amount (₹)", margin=dict(t=20, b=40),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    legend=dict(
+                        orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1
+                    ),
                 )
                 _fig2.update_yaxes(tickprefix="₹", tickformat=",.0f")
                 st.plotly_chart(_fig2, use_container_width=True)

@@ -319,7 +319,13 @@ tomorrow = today + timedelta(days=1)
 total_orders    = crm["ORDER NO"].nunique() if "ORDER NO" in crm.columns else len(crm)
 total_value     = crm["ORDER VALUE"].sum()
 total_pending   = crm["PENDING DUE"].sum()
-pending_del_cnt = int((crm["DELIVERY STATUS"].astype(str).str.upper().str.strip() == "PENDING").sum())
+# Count unique orders where delivery is pending — matches pending-delivery table logic
+if "ORDER NO" in crm.columns:
+    pending_del_cnt = int(
+        crm[crm["DELIVERY STATUS"].astype(str).str.upper().str.strip() == "PENDING"]["ORDER NO"].nunique()
+    )
+else:
+    pending_del_cnt = int((crm["DELIVERY STATUS"].astype(str).str.upper().str.strip() == "PENDING").sum())
 
 k1, k2, k3, k4 = st.columns(4)
 k1.metric("📦 Total Orders",       total_orders)
