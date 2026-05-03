@@ -587,7 +587,17 @@ if not df_display.empty and all_execs:
         delta_color="normal",
     )
 
-    _days_of_week = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    _day_abbrs = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+    # Build X-axis labels with day name + actual date for each week
+    _this_week_labels = [
+        f"{_day_abbrs[i]}<br>{(_this_mon + timedelta(days=i)).strftime('%d %b')}"
+        for i in range(7)
+    ]
+    _last_week_labels = [
+        f"{_day_abbrs[i]}<br>{(_last_mon + timedelta(days=i)).strftime('%d %b')}"
+        for i in range(7)
+    ]
 
     def _daily_by_dow(data, ref_monday):
         out = [0.0] * 7
@@ -601,9 +611,9 @@ if not df_display.empty and all_execs:
     _last_vals = _daily_by_dow(_last_week_data, _last_mon)
 
     _fig = go.Figure()
-    _fig.add_trace(go.Bar(name="Last Week", x=_days_of_week, y=_last_vals,
+    _fig.add_trace(go.Bar(name="Last Week", x=_last_week_labels, y=_last_vals,
                           marker_color="#90caf9", opacity=0.8))
-    _fig.add_trace(go.Bar(name="This Week", x=_days_of_week, y=_this_vals,
+    _fig.add_trace(go.Bar(name="This Week", x=_this_week_labels, y=_this_vals,
                           marker_color="#1a237e", opacity=0.9))
     _fig.update_layout(
         barmode="group", height=300, margin=dict(t=20, b=20),
@@ -714,9 +724,9 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
         tfc1, tfc2 = st.columns(2)
         with tfc1:
             view_from = st.date_input(
-                "From (Month Start)", value=FY_START,
+                "From (Month Start)", value=_today.replace(day=1),
                 min_value=FY_START, max_value=_today, key="tgt_from",
-                help="Minimum date is 1 Apr 2026 (start of new CRM)",
+                help="Defaults to current month. Change to view earlier months.",
             )
             view_from = view_from.replace(day=1)
         with tfc2:
