@@ -416,14 +416,20 @@ auto_log_tasks(tasks)
 start_week = today - timedelta(days=today.weekday())   # Monday of this week
 
 if not tasks.empty:
+    # Daily — show ONLY today's tasks (must act same day; history is in the log)
     daily_df = tasks[
         (tasks["FREQUENCY"].str.lower() == "daily") &
-        (tasks["DUE DATE"].dt.date <= today.date())
+        (tasks["DUE DATE"].dt.date == today.date())
     ].copy()
 
+    # Adhoc — keep in table until done; once done hide (unless completed today)
     adhoc_df = tasks[
         (tasks["FREQUENCY"].str.lower() == "adhoc") &
-        (tasks["DUE DATE"].dt.date <= today.date())
+        (tasks["DUE DATE"].dt.date <= today.date()) &
+        (
+            (tasks["STATUS"] != "Done") |                              # still open
+            (tasks["DUE DATE"].dt.date == today.date())                # or due today (just done)
+        )
     ].copy()
 
     weekly_df = tasks[
@@ -525,9 +531,15 @@ else:
         "📅 To", today, key="perf_end"
     )
 
+    # Valid individual employee names from the Sales Team sheet
+    valid_employees = set(team_df["EMPLOYEE"].dropna().str.strip().str.upper().tolist())
+
     logs_filtered = log_df[
         (log_df["DATE"].dt.date >= start_date) &
-        (log_df["DATE"].dt.date <= end_date)
+        (log_df["DATE"].dt.date <= end_date) &
+        # Only rows where EMPLOYEE is a valid individual name (strips old combined entries
+        # like "ARCHITA & RANGANATH" that were logged by the previous code version)
+        (log_df["EMPLOYEE"].isin(valid_employees))
     ].copy()
 
     if logs_filtered.empty:
@@ -547,20 +559,21 @@ else:
             if col not in summary.columns:
                 summary[col] = 0
 
-        final = team_df.merge(summary, on="EMPLOYEE", how="left").fillna(0)
+        # Inner join — only show salespeople who actually have tasks in this period
+        final = team_df.merge(summary, on="EMPLOYEE", how="inner")
         for col in ["Done", "Pending", "Overdue", "Missed"]:
             final[col] = final[col].astype(int)
 
         # Completion rate
-        final["Total"]           = final["Done"] + final["Pending"] + final["Overdue"] + final["Missed"]
-        final["Completion Rate"] = final.apply(
+        final["Total"] = final["Done"] + final["Pending"] + final["Overdue"] + final["Missed"]
+        final["Completion %"] = final.apply(
             lambda r: f"{int(r['Done'] / r['Total'] * 100)}%" if r["Total"] > 0 else "—", axis=1
         )
 
-        display_cols = ["EMPLOYEE", "Done", "Pending", "Overdue", "Missed", "Total", "Completion Rate"]
+        display_cols = ["EMPLOYEE", "Done", "Pending", "Overdue", "Missed", "Total", "Completion %"]
         display_cols = [c for c in display_cols if c in final.columns]
 
-        st.write("**Summary Table** — counts are unique log entries per salesperson")
+        st.write("**Summary Table** — only salespersons with tasks assigned in this period are shown")
         st.dataframe(final[display_cols], use_container_width=True, hide_index=True)
 
         # ── per-employee drill-down ───────────────────────────────────────────
@@ -578,7 +591,7 @@ else:
             overdue_cnt = int(erow.get("Overdue", 0))
             missed_cnt  = int(erow.get("Missed",  0))
             total       = int(erow.get("Total",   0))
-            rate        = erow.get("Completion Rate", "—")
+            rate        = erow.get("Completion %", "—")
 
             label = (
                 f"👤 {employee}   ·   "
@@ -629,6 +642,22 @@ else:
                     _show_tab(tab_done,    "Done",
                               "No completed tasks in this range.",
                               "Tasks that were marked done within the deadline.")
+                    _show_tab(tab_pending, "Pending",
+                              "No pending tasks in this range.",
+                              "Tasks that are scheduled but not yet actioned.")
+                    _show_tab(tab_overdue, "Overdue",
+                              "No overdue tasks in this range.",
+                              "Weekly / Monthly / Adhoc tasks whose deadline has passed without completion.")
+                    _show_tab(tab_missed,  "Missed",
+                              "No missed daily tasks in this range.",
+                              "Daily tasks that were not completed on their scheduled date.")
+
+st.write("---")
+st.info(
+    "ℹ️  Daily automated summary emails are sent at **10 AM** (morning brief) and "
+    "**8 PM** (end-of-day status report) to the team."
+)
+adline.")
                     _show_tab(tab_pending, "Pending",
                               "No pending tasks in this range.",
                               "Tasks that are scheduled but not yet actioned.")
