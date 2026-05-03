@@ -818,21 +818,35 @@ for r in results:
 # ═════════════════════════════════════════════════════════════════════════════
 st.subheader("Download")
 
-def _build_excel(score_df: pd.DataFrame, results: list[dict]) -> bytes:
+def _pick_excel_engine() -> str | None:
+    """Return the first installed Excel writer engine, or None if neither is available."""
+    for eng in ("openpyxl", "xlsxwriter"):
+        try:
+            __import__(eng)
+            return eng
+        except Exception:
+            continue
+    return None
+
+
+def _build_excel(score_df: pd.DataFrame, results: list[dict]) -> bytes | None:
+    """Build a multi-sheet Excel report. Returns None if no engine is installed."""
+    engine = _pick_excel_engine()
+    if engine is None:
+        return None
     buf = BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+    with pd.ExcelWriter(buf, engine=engine) as writer:
         score_df.to_excel(writer, sheet_name="Scorecard", index=False)
-        # Per person details
         rows = []
         for r in results:
-            row = {"Sales Person": r["person"], **{f"★ {k}": v for k, v in r["stars_breakdown"].items()}}
+            row = {"Sales Person": r["person"],
+                   **{f"Star {k}": v for k, v in r["stars_breakdown"].items()}}
             row["Total Stars"] = r["total_stars"]
-            row["Star Value (₹)"] = r["star_value"]
-            row["Tangible (₹)"] = r["tangible"]
-            row["Final (₹)"]    = r["final"]
+            row["Star Value (Rs)"] = r["star_value"]
+            row["Tangible (Rs)"] = r["tangible"]
+            row["Final (Rs)"]    = r["final"]
             rows.append(row)
         pd.DataFrame(rows).to_excel(writer, sheet_name="Stars Detail", index=False)
-        # Monthly long
         mlong = []
         for r in results:
             for m in r["monthly"]:
@@ -843,7 +857,6 @@ def _build_excel(score_df: pd.DataFrame, results: list[dict]) -> bytes:
 
 cdl1, cdl2 = st.columns(2)
 csv_bytes = score_df.to_csv(index=False).encode()
-xlsx_bytes = _build_excel(score_df, results)
 
 if cdl1.download_button(
     "📄 Download CSV",
@@ -857,7 +870,20 @@ if cdl1.download_button(
         "DOWNLOAD_CSV", f"{len(person_choice)} salespeople",
     )
 
-if cdl2.download_button(
+# Excel button — only render if at least one writer engine is installed,
+# so a missing dep can never crash the page.
+try:
+    xlsx_bytes = _build_excel(score_df, results)
+except Exception as e:
+    xlsx_bytes = None
+    cdl2.warning(f"Excel export unavailable: {e}")
+
+if xlsx_bytes is None:
+    cdl2.info(
+        "📥 Excel export needs `openpyxl` or `xlsxwriter` in requirements.txt. "
+        "CSV download still works."
+    )
+elif cdl2.download_button(
     "📥 Download full Excel report",
     xlsx_bytes,
     file_name=f"incentive_{fy}_{quarter}.xlsx",
@@ -897,6 +923,30 @@ with st.expander("How is the incentive calculated?  (rule book)", expanded=False
         "| Grooming                        | manual (negative) |\n"
         "| Attendance < 98 %               | auto -1 star |\n\n"
         f"**Filters used right now:** FY {fy} / Quarter {quarter} / People: {', '.join(person_choice)}.\n"
+    )
+    st.markdown(rules_md)
+
+
+# Audit log preview
+with st.expander("Recent activity (last 20 entries from Incentive_Audit_Log)", expanded=False):
+    from services.incentive_store import get_log_df
+    log_df = get_log_df(limit=500)
+    st.caption(
+        "Every page open, filter change and download is appended to the "
+        "Incentive_Audit_Log tab in your CRM Google Sheet."
+    )
+    st.dataframe(log_df.tail(20), hide_index=True, use_container_width=True)
+
+
+# Log this page-view event (debounce within session)
+if not st.session_state.get("_inc_view_logged"):
+    append_log(
+        logged_in["username"], logged_in["full_name"], logged_in["role"],
+        fy, quarter, ", ".join(person_choice),
+        "VIEW", f"{len(person_choice)} salespeople",
+    )
+    st.session_state["_inc_view_logged"] = True
+.\n"
     )
     st.markdown(rules_md)
 
