@@ -1,32 +1,27 @@
 """
 pages/100_Sales_Incentive_Dashboard.py
-─────────────────────────────────────────────────────────────────────────────
-Sales Incentive Dashboard  —  Q1 FY 2026-27 engine
+=============================================================================
+Sales Incentive Dashboard - Q1 FY 2026-27 engine.
 
-Implements the rule book:
-  • Quarterly target → tier-based payout (0.5 / 1.0 / 1.25 % of BS)
-  • ₹10,000 consecutive-month bonus (qtly + each month + ≥ ₹25 L)
-  • B2B 0.5%  +  Locker (₹100 / ₹50 per unit)         → TANGIBLE block
-  • Star ledger (HF–HS, B2B-stars, upsell, leads, NPI,
-    repeat customers, reviews, COO admin, grooming,
-    attendance, in/outdoor activity)                  → STAR block (₹20 / ★)
-  • FINAL  =  Tangible × 70 %  +  Stars × ₹20
+  Tangible block (70%):
+    - Quarterly tier:  0.50% / 1.00% / 1.25% of BS
+    - Rs 10,000 consecutive-month bonus  (qtly hit + every month + BS >= 25 L)
+    - 0.5% B2B incentive
+    - Locker: Rs 100 / unit > Rs 15,000  +  Rs 50 / unit <= Rs 15,000
 
-ACCESS CONTROL
-  Roles permitted: ADMIN | MANAGER | OWNER | PROPRIETOR
-  Source 1 — Incentive_Users sheet (bcrypt, dedicated to this page)
-  Source 2 — fall back to the main Users sheet IF the user's role in the
-             "Sales Team" sheet is one of the allowed roles, OR Users-sheet
-             role = "Admin".
-  Anyone with role SALES is hard-blocked, even if logged in elsewhere.
+  Star block (30%, Rs 20 / star):
+    HF-HS, B2B-stars, upsell, leads x3, NPI x2, repeat customers, 5-star
+    reviews, COO admin (manual), grooming penalty (manual), attendance < 98%
+    (auto), in/outdoor activity x5 (manual).
 
-Sheets touched
-  • Incentive_Quarterly_Targets   ← targets per (person, FY, quarter, month)
-  • Incentive_Audit_Log            ← page access / filter / download events
-  • Incentive_Users                ← bcrypt credentials (managed in admin page)
+ACCESS:  ADMIN / MANAGER / OWNER / PROPRIETOR via either main CRM login or
+         the dedicated Incentive_Users sheet (bcrypt).
 
-Filters: Sales Person, FY, Quarter, optional date override.
-─────────────────────────────────────────────────────────────────────────────
+Sheet tabs auto-created in the CRM Google Sheet:
+  - Incentive_Quarterly_Targets   (seeded with Q1 26-27 targets)
+  - Incentive_Audit_Log
+  - Incentive_Users
+=============================================================================
 """
 import os
 import sys
@@ -53,36 +48,30 @@ from services.incentive_store import (
 
 st.set_page_config(layout="wide", page_title="Sales Incentive Dashboard")
 
-# ═════════════════════════════════════════════════════════════════════════════
-# ⚙️  TUNABLE INCENTIVE PARAMETERS
-# ═════════════════════════════════════════════════════════════════════════════
+# ---------------------------------------------------------------------------
+# Tunable parameters
+# ---------------------------------------------------------------------------
 ALLOWED_ROLES = {"ADMIN", "MANAGER", "OWNER", "PROPRIETOR"}
 
-# Tier rates (applied to BS in Lakh × 1,00,000 = ₹)
 TIER_105 = 0.0125
 TIER_100 = 0.0100
 TIER_90  = 0.0050
 
-# Consecutive-month bonus
-CONSECUTIVE_BONUS = 10_000   # ₹
+CONSECUTIVE_BONUS = 10000
 CONSECUTIVE_MIN_QTLY_LAKH = 25.0
 
-# B2B
 B2B_PCT = 0.005
 
-# Locker
-LOCKER_HIGH_VALUE_RS = 100   # value > ₹15,000
-LOCKER_LOW_VALUE_RS  = 50    # value ≤ ₹15,000
+LOCKER_HIGH_VALUE_RS = 100
+LOCKER_LOW_VALUE_RS  = 50
 
-# Star economics
-STAR_VALUE_RS = 20
-LEAD_STAR    = 3
-NPI_STAR     = 2
-ACTIVITY_STAR = 5
-UPSELL_STEP_RS = 50_000
-B2B_STAR_STEP_RS = 1_00_000
+STAR_VALUE_RS    = 20
+LEAD_STAR        = 3
+NPI_STAR         = 2
+ACTIVITY_STAR    = 5
+UPSELL_STEP_RS   = 50000
+B2B_STAR_STEP_RS = 100000
 
-# Final split
 TANGIBLE_WEIGHT = 0.70
 
 FY_QUARTER_MONTHS = {
@@ -92,9 +81,9 @@ FY_QUARTER_MONTHS = {
     "Q4": ["JANUARY", "FEBRUARY", "MARCH"],
 }
 
-# ═════════════════════════════════════════════════════════════════════════════
-# 🔐  TWO-PATH AUTH GATE
-# ═════════════════════════════════════════════════════════════════════════════
+# ---------------------------------------------------------------------------
+# Auth gate (two paths)
+# ---------------------------------------------------------------------------
 ensure_targets_tab()
 ensure_log_tab()
 ensure_users_tab()
@@ -102,16 +91,13 @@ ensure_users_tab()
 auth = AuthService()
 current_user_badge(auth)
 
-st.title("🏆 Sales Incentive Dashboard")
-st.caption(
-    "Q1 FY 26-27 incentive engine — quarterly tiered payout (70 %) + star ledger (30 %)."
-)
+st.title("Sales Incentive Dashboard")
+st.caption("Q1 FY 26-27 engine - quarterly tiered payout (70%) + star ledger (30%).")
 
-# Pull current main-app login (if any)
 main_user = auth.current_user()
 
 
-def _team_role(name: str) -> str:
+def _team_role(name):
     df = get_df("Sales Team")
     if df is None or df.empty:
         return ""
@@ -121,16 +107,13 @@ def _team_role(name: str) -> str:
     df["NAME"] = df["NAME"].astype(str).str.strip().str.upper()
     df["ROLE"] = df["ROLE"].astype(str).str.strip().str.upper()
     rows = df[df["NAME"] == (name or "").strip().upper()]
-    return rows.iloc[0]["ROLE"] if not rows.empty else ""
+    if rows.empty:
+        return ""
+    return rows.iloc[0]["ROLE"]
 
 
-# Two paths to "logged in for this page":
-#   PATH A  — main-app AuthService user whose Sales Team role is allowed
-#             OR whose Users-sheet role = "Admin".
-#   PATH B  — the user signs in below using the dedicated Incentive_Users sheet.
 inc_user = st.session_state.get("incentive_user")
-
-logged_in = None  # final dict: {username, full_name, role}
+logged_in = None
 
 if main_user:
     full = (main_user.get("fullname") or main_user.get("username") or "").strip().upper()
@@ -149,9 +132,9 @@ if not logged_in and inc_user:
 
 if not logged_in:
     st.info(
-        "🔒 **Restricted page.**  Sign in with an Admin / Manager / Owner / "
-        "Proprietor account.  You can use either the main CRM login (top sidebar) "
-        "or the dedicated incentive credentials below."
+        "Restricted page. Sign in with an Admin / Manager / Owner / Proprietor "
+        "account. You can use either the main CRM login (top sidebar) or the "
+        "dedicated incentive credentials below."
     )
     with st.form("inc_login"):
         u = st.text_input("Username")
@@ -161,33 +144,26 @@ if not logged_in:
         rec = verify_incentive_login(u, p)
         if rec and (rec.get("role") or "").upper() in ALLOWED_ROLES:
             st.session_state.incentive_user = rec
-            append_log(
-                rec["username"], rec["full_name"], rec["role"],
-                "", "", "", "LOGIN", "Signed in via Incentive_Users sheet",
-            )
-            st.success("Signed in. Reloading…")
+            append_log(rec["username"], rec["full_name"], rec["role"],
+                       "", "", "", "LOGIN", "Signed in via Incentive_Users sheet")
+            st.success("Signed in. Reloading...")
             st.rerun()
         else:
             st.error("Invalid credentials or your role is not permitted.")
     st.stop()
 
-# Friendly welcome
 top1, top2 = st.columns([3, 1])
-top1.success(
-    f"Welcome **{logged_in['full_name']}** — role: `{logged_in['role']}`"
-)
+top1.success("Welcome " + str(logged_in["full_name"]) + " - role: " + str(logged_in["role"]))
 if top2.button("Sign out of Incentive page"):
     st.session_state.pop("incentive_user", None)
-    append_log(
-        logged_in["username"], logged_in["full_name"], logged_in["role"],
-        "", "", "", "LOGOUT", "",
-    )
+    append_log(logged_in["username"], logged_in["full_name"], logged_in["role"],
+               "", "", "", "LOGOUT", "")
     st.rerun()
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# 📅  FILTERS — FY, Quarter, Sales Person, Date override
-# ═════════════════════════════════════════════════════════════════════════════
+# ---------------------------------------------------------------------------
+# Filters
+# ---------------------------------------------------------------------------
 targets_df = get_targets_df()
 fy_options = sorted(targets_df["FY"].dropna().unique().tolist()) or ["26-27"]
 default_fy = "26-27" if "26-27" in fy_options else fy_options[0]
@@ -197,7 +173,7 @@ fy = f1.selectbox(
     "Financial Year",
     fy_options,
     index=fy_options.index(default_fy),
-    help="Format: YY-YY (e.g. 26-27 = April 2026 → March 2027).",
+    help="Format: YY-YY  (e.g. 26-27 = April 2026 - March 2027).",
 )
 quarter = f2.selectbox(
     "Quarter",
@@ -207,7 +183,6 @@ quarter = f2.selectbox(
 )
 months = FY_QUARTER_MONTHS[quarter]
 
-# Resolve quarter → calendar dates (FY YY-YY → start year)
 fy_start_year = 2000 + int(fy.split("-")[0])
 month_to_num = {m: i for i, m in enumerate([
     "JANUARY","FEBRUARY","MARCH","APRIL","MAY","JUNE",
@@ -218,16 +193,12 @@ last_month_num  = month_to_num[months[-1]]
 year_first = fy_start_year + (1 if first_month_num < 4 else 0)
 year_last  = fy_start_year + (1 if last_month_num  < 4 else 0)
 default_start = _dt.date(year_first, first_month_num, 1)
-default_end   = _dt.date(
-    year_last, last_month_num,
-    calendar.monthrange(year_last, last_month_num)[1],
-)
+default_end   = _dt.date(year_last,  last_month_num,
+                         calendar.monthrange(year_last, last_month_num)[1])
 
-# Sales-person list for filter — pull from targets first, else Sales Team
 people_master = sorted(
     targets_df[(targets_df["FY"] == fy) & (targets_df["QUARTER"] == quarter)]["SALES PERSON"]
-    .unique()
-    .tolist()
+    .unique().tolist()
 )
 if not people_master:
     df_team = get_df("Sales Team")
@@ -243,16 +214,13 @@ person_choice = f3.multiselect(
     "Sales Person",
     options=people_master,
     default=people_master,
-    help="Leave empty to see no rows.  Defaults to the full team.",
+    help="Defaults to the full team. Empty = no rows.",
 )
 
 date_range = f4.date_input(
     "Date range (overrides quarter)",
     value=(default_start, default_end),
-    help=(
-        "Used for B2B Daily Tracker filtering.  Defaults to the calendar dates "
-        "of the selected quarter."
-    ),
+    help="Used for B2B Daily Tracker filtering. Defaults to the calendar dates of the selected quarter.",
 )
 if isinstance(date_range, tuple) and len(date_range) == 2:
     range_start, range_end = date_range
@@ -260,24 +228,22 @@ else:
     range_start, range_end = default_start, default_end
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# 🔄  DATA LOADERS
-# ═════════════════════════════════════════════════════════════════════════════
+# ---------------------------------------------------------------------------
+# Data loaders
+# ---------------------------------------------------------------------------
 def _parse_dt(s):
     return pd.to_datetime(s, dayfirst=True, errors="coerce")
 
 
 @st.cache_data(ttl=60)
-def load_combined_sales() -> pd.DataFrame:
-    """Concatenate every sales sheet listed in SHEET_DETAILS so we can compute
-    BS / HS-vs-HF / B2B / Locker / Upsell / NPI / Repeat customer numbers."""
+def load_combined_sales():
     cfg = get_df("SHEET_DETAILS")
-    sheet_names: list[str] = []
+    sheet_names = []
     if cfg is not None and not cfg.empty:
         for col in ("Franchise_sheets", "four_s_sheets"):
             if col in cfg.columns:
                 sheet_names.extend(cfg[col].dropna().astype(str).str.strip().tolist())
-    sheet_names = sorted({s for s in sheet_names if s})
+    sheet_names = sorted(set([s for s in sheet_names if s]))
 
     frames = []
     for nm in sheet_names:
@@ -299,15 +265,14 @@ def load_combined_sales() -> pd.DataFrame:
             })
             if "SALES PERSON" not in df.columns or "ORDER DATE" not in df.columns:
                 continue
-            df["SALES PERSON"] = df["SALES PERSON"].astype(str).str.strip().str.upper()
+            df["SALES PERSON"]  = df["SALES PERSON"].astype(str).str.strip().str.upper()
             df["ORDER DATE_DT"] = _parse_dt(df["ORDER DATE"])
-            for col in ("GROSS AMT", "ORDER AMOUNT", "ADV RECEIVED", "MRP",
-                        "UNIT PRICE=(AFTER DISC + TAX)"):
+            for col in ("GROSS AMT", "ORDER AMOUNT", "ADV RECEIVED",
+                        "MRP", "UNIT PRICE=(AFTER DISC + TAX)"):
                 if col in df.columns:
                     df[col] = pd.to_numeric(
-                        df[col].astype(str).str.replace(r"[₹,\s]", "", regex=True),
-                        errors="coerce",
-                    ).fillna(0.0)
+                        df[col].astype(str).str.replace(r"[Rs,\s]", "", regex=True),
+                        errors="coerce").fillna(0.0)
                 else:
                     df[col] = 0.0
             if "GROSS AMT" not in df.columns or df["GROSS AMT"].sum() == 0:
@@ -318,9 +283,7 @@ def load_combined_sales() -> pd.DataFrame:
                     df[col] = ""
                 df[col] = df[col].astype(str).str.strip()
             df["REVIEW"] = pd.to_numeric(
-                df.get("REVIEW", pd.Series(0, index=df.index)),
-                errors="coerce",
-            ).fillna(0)
+                df.get("REVIEW", pd.Series(0, index=df.index)), errors="coerce").fillna(0)
             frames.append(df[[
                 "SALES PERSON", "ORDER DATE_DT", "GROSS AMT", "ORDER AMOUNT",
                 "ADV RECEIVED", "ORDER NO", "CATEGORY", "PRODUCT NAME",
@@ -334,17 +297,15 @@ def load_combined_sales() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=60)
-def load_leads() -> pd.DataFrame:
+def load_leads():
     df = get_df("LEADS")
     if df is None or df.empty:
         df = get_df("New Leads")
     if df is None or df.empty:
         return pd.DataFrame()
     df.columns = [str(c).strip().upper() for c in df.columns]
-    rename = {}
     if "LEAD SALES EXECUTIVE" in df.columns and "ASSIGNED TO" not in df.columns:
-        rename["LEAD SALES EXECUTIVE"] = "ASSIGNED TO"
-    df = df.rename(columns=rename)
+        df = df.rename(columns={"LEAD SALES EXECUTIVE": "ASSIGNED TO"})
     if "ASSIGNED TO" not in df.columns:
         return pd.DataFrame()
     df["ASSIGNED TO"] = df["ASSIGNED TO"].astype(str).str.strip().str.upper()
@@ -354,74 +315,30 @@ def load_leads() -> pd.DataFrame:
         df["CREATED DATE_DT"] = _parse_dt(df["CREATED DATE"])
     else:
         df["CREATED DATE_DT"] = pd.NaT
-    df["LEAD STATUS"] = (
-        df.get("LEAD STATUS", df.get("STATUS", pd.Series("", index=df.index)))
-        .astype(str)
-    )
-    df["SALE VALUE"] = pd.to_numeric(
-        df.get("SALE VALUE", pd.Series(0, index=df.index))
-        .astype(str).str.replace(r"[₹,\s]", "", regex=True),
-        errors="coerce",
-    ).fillna(0.0)
+    if "LEAD STATUS" in df.columns:
+        df["LEAD STATUS"] = df["LEAD STATUS"].astype(str)
+    elif "STATUS" in df.columns:
+        df["LEAD STATUS"] = df["STATUS"].astype(str)
+    else:
+        df["LEAD STATUS"] = ""
+    if "SALE VALUE" in df.columns:
+        df["SALE VALUE"] = pd.to_numeric(
+            df["SALE VALUE"].astype(str).str.replace(r"[Rs,\s]", "", regex=True),
+            errors="coerce").fillna(0.0)
+    else:
+        df["SALE VALUE"] = 0.0
     return df
 
 
-with st.spinner("Loading sales / leads data…"):
+with st.spinner("Loading sales / leads data..."):
     sales_df  = load_combined_sales()
     leads_df  = load_leads()
     targets_df = get_targets_df()
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# 🧮  CORE METRIC FUNCTIONS
-# ═════════════════════════════════════════════════════════════════════════════
-def _slice_window(df: pd.DataFrame, dt_col: str,
-                   start: _dt.date, end: _dt.date) -> pd.DataFrame:
-    if df is None or df.empty or dt_col not in df.columns:
-        # Return an empty frame that *preserves column structure* so downstream
-        # column accesses don't raise KeyError.
-        if df is None or df.empty:
-            return pd.DataFrame(columns=getattr(df, "columns", []))
-        return df.iloc[0:0]
-    s = pd.to_datetime(df[dt_col], errors="coerce")
-    mask = (s.dt.date >= start) & (s.dt.date <= end)
-    return df[mask.fillna(False)].copy()
-
-
-def _slice_month(df: pd.DataFrame, dt_col: str, year: int, month: int) -> pd.DataFrame:
-    last = calendar.monthrange(year, month)[1]
-    return _slice_window(df, dt_col, _dt.date(year, month, 1), _dt.date(year, month, last))
-
-
-def quarterly_target(person: str) -> float:
-    rows = targets_df[
-        (targets_df["FY"] == fy)
-        & (targets_df["QUARTER"] == quarter)
-        & (targets_df["SALES PERSON"] == person)
-    ]
-    return float(rows["TARGET"].sum())
-
-
-def monthly_target(person: str, month_name: str) -> float:
-    rows = targets_df[
-        (targets_df["FY"] == fy)
-        & (targets_df["QUARTER"] == quarter)
-        & (targets_df["MONTH"] == month_name)
-        & (targets_df["SALES PERSON"] == person)
-    ]
-    return float(rows["TARGET"].sum())
-
-
-def tier_rate(achv_pct: float) -> float:
-    if achv_pct >= 1.05:
-        return TIER_105
-    if achv_pct >= 1.00:
-        return TIER_100
-    if achv_pct >= 0.90:
-        return TIER_90
-    return 0.0
-
-
+# ---------------------------------------------------------------------------
+# Helpers (defensive)
+# ---------------------------------------------------------------------------
 _SALES_REQ_COLS = [
     "SALES PERSON", "ORDER DATE_DT", "GROSS AMT", "ORDER AMOUNT",
     "ADV RECEIVED", "ORDER NO", "CATEGORY", "PRODUCT NAME",
@@ -430,8 +347,7 @@ _SALES_REQ_COLS = [
 _LEADS_REQ_COLS = ["ASSIGNED TO", "CREATED DATE_DT", "LEAD STATUS", "SALE VALUE"]
 
 
-def _ensure_cols(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
-    """Return df with all required columns present (filled with sensible blanks)."""
+def _ensure_cols(df, cols):
     if df is None:
         df = pd.DataFrame()
     df = df.copy()
@@ -446,13 +362,49 @@ def _ensure_cols(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     return df
 
 
-def compute_person_block(person: str) -> dict:
-    """Big bag of numbers for ONE person across the selected quarter."""
+def _slice_window(df, dt_col, start, end):
+    if df is None or df.empty or dt_col not in df.columns:
+        cols = list(df.columns) if df is not None else []
+        return pd.DataFrame(columns=cols)
+    s = pd.to_datetime(df[dt_col], errors="coerce")
+    mask = (s.dt.date >= start) & (s.dt.date <= end)
+    return df[mask.fillna(False)].copy()
+
+
+def quarterly_target(person):
+    rows = targets_df[
+        (targets_df["FY"] == fy)
+        & (targets_df["QUARTER"] == quarter)
+        & (targets_df["SALES PERSON"] == person)
+    ]
+    return float(rows["TARGET"].sum())
+
+
+def monthly_target(person, month_name):
+    rows = targets_df[
+        (targets_df["FY"] == fy)
+        & (targets_df["QUARTER"] == quarter)
+        & (targets_df["MONTH"] == month_name)
+        & (targets_df["SALES PERSON"] == person)
+    ]
+    return float(rows["TARGET"].sum())
+
+
+def tier_rate(achv_pct):
+    if achv_pct >= 1.05:
+        return TIER_105
+    if achv_pct >= 1.00:
+        return TIER_100
+    if achv_pct >= 0.90:
+        return TIER_90
+    return 0.0
+
+
+def compute_person_block(person):
     qtarget_lakh = quarterly_target(person)
     safe_sales = _ensure_cols(sales_df, _SALES_REQ_COLS)
     safe_leads = _ensure_cols(leads_df, _LEADS_REQ_COLS)
 
-    # Build per-month windows
     month_blocks = []
     for m_name in months:
         m_num = month_to_num[m_name]
@@ -460,57 +412,51 @@ def compute_person_block(person: str) -> dict:
         ms = _dt.date(y, m_num, 1)
         me = _dt.date(y, m_num, calendar.monthrange(y, m_num)[1])
 
-        rep = safe_sales[safe_sales["SALES PERSON"] == person]
+        rep   = safe_sales[safe_sales["SALES PERSON"] == person]
         rep_m = _slice_window(rep, "ORDER DATE_DT", ms, me)
         rep_m = _ensure_cols(rep_m, _SALES_REQ_COLS)
 
-        # Coerce numerics defensively (strings sneak through when columns are
-        # synthesised because the source sheet was missing).
         for col in ("GROSS AMT", "ORDER AMOUNT", "ADV RECEIVED", "REVIEW"):
             rep_m[col] = pd.to_numeric(rep_m[col], errors="coerce").fillna(0)
         for col in ("CATEGORY", "PRODUCT NAME", "CUSTOMER NAME",
                     "CONTACT NUMBER", "B2B/B2C", "ORDER NO"):
             rep_m[col] = rep_m[col].astype(str).fillna("")
 
-        bs_lakh = float(rep_m["GROSS AMT"].sum()) / 1_00_000.0
+        bs_lakh = float(rep_m["GROSS AMT"].sum()) / 100000.0
         m_target = monthly_target(person, m_name)
 
         b2b_mask = rep_m["B2B/B2C"].str.upper().str.startswith("B2B")
-        b2b_amt = float(rep_m[b2b_mask]["GROSS AMT"].sum())
+        b2b_amt  = float(rep_m[b2b_mask]["GROSS AMT"].sum())
 
-        # HF vs HS from CATEGORY
         cat_upper = rep_m["CATEGORY"].str.upper()
         hf_keywords = ("CURTAIN", "BEDSHEET", "PILLOW", "CUSHION", "RUG",
                        "MATTRESS PROTECTOR", "TOWEL", "QUILT", "BLANKET")
         hf_mask = cat_upper.str.contains("|".join(hf_keywords), na=False)
-        hf_amt = float(rep_m[hf_mask]["GROSS AMT"].sum()) / 1_00_000.0
+        hf_amt = float(rep_m[hf_mask]["GROSS AMT"].sum()) / 100000.0
         hs_amt = bs_lakh - hf_amt
 
-        # Locker units
         locker_mask = cat_upper.str.contains("LOCKER", na=False)
         locker_rows = rep_m[locker_mask]
         if not locker_rows.empty:
-            locker_high = int((locker_rows["GROSS AMT"] > 15_000).sum())
-            locker_low  = int(((locker_rows["GROSS AMT"] > 0)
-                               & (locker_rows["GROSS AMT"] <= 15_000)).sum())
+            locker_high = int((locker_rows["GROSS AMT"] > 15000).sum())
+            locker_low  = int(((locker_rows["GROSS AMT"] > 0) &
+                               (locker_rows["GROSS AMT"] <= 15000)).sum())
         else:
             locker_high = locker_low = 0
 
         npi_count = int(rep_m["PRODUCT NAME"].str.upper().str.contains("NPI", na=False).sum())
         reviews   = int((rep_m["REVIEW"] >= 5).sum())
 
-        # Repeat customers
+        repeat_cust = 0
         if not rep_m.empty:
             cust_keys = rep_m["CONTACT NUMBER"].where(
                 rep_m["CONTACT NUMBER"].str.len() > 4,
                 rep_m["CUSTOMER NAME"],
             )
-            repeat_cust = int(cust_keys.value_counts().loc[lambda s: s >= 2].count()) \
-                if not cust_keys.empty else 0
-        else:
-            repeat_cust = 0
+            if not cust_keys.empty:
+                vc = cust_keys.value_counts()
+                repeat_cust = int((vc >= 2).sum())
 
-        # Upsell — same ORDER NO with ≥ 2 categories
         upsell_value = 0.0
         if not rep_m.empty and rep_m["ORDER NO"].astype(bool).any():
             grp = rep_m.groupby("ORDER NO").agg(
@@ -519,307 +465,297 @@ def compute_person_block(person: str) -> dict:
             )
             upsell_value = float(grp[grp["cat_count"] >= 2]["val"].sum())
 
-        # Leads converted (>1L)
-        ld = safe_leads[safe_leads["ASSIGNED TO"] == person]
+        ld   = safe_leads[safe_leads["ASSIGNED TO"] == person]
         ld_m = _slice_window(ld, "CREATED DATE_DT", ms, me)
         ld_m = _ensure_cols(ld_m, _LEADS_REQ_COLS)
         ld_m["SALE VALUE"] = pd.to_numeric(ld_m["SALE VALUE"], errors="coerce").fillna(0)
         if not ld_m.empty:
-            converted = ld_m[
-                ld_m["LEAD STATUS"].astype(str).str.contains("converted", case=False, na=False)
-            ]
-            leads_converted = int((converted["SALE VALUE"] >= 1_00_000).sum())
+            converted = ld_m[ld_m["LEAD STATUS"].astype(str).str.contains("converted", case=False, na=False)]
+            leads_converted = int((converted["SALE VALUE"] >= 100000).sum())
         else:
             leads_converted = 0
 
         month_blocks.append({
-            "month": m_name,
-            "bs": bs_lakh,
-            "target": m_target,
-            "achieved": bs_lakh >= m_target and m_target > 0,
-            "b2b_amt": b2b_amt,
-            "hs": hs_amt,
-            "hf": hf_amt,
-            "locker_high": locker_high,
-            "locker_low": locker_low,
-            "npi": npi_count,
-            "reviews": reviews,
-            "repeat_cust": repeat_cust,
+            "month":        m_name,
+            "bs":           bs_lakh,
+            "target":       m_target,
+            "achieved":     bs_lakh >= m_target and m_target > 0,
+            "b2b_amt":      b2b_amt,
+            "hs":           hs_amt,
+            "hf":           hf_amt,
+            "locker_high":  locker_high,
+            "locker_low":   locker_low,
+            "npi":          npi_count,
+            "reviews":      reviews,
+            "repeat_cust":  repeat_cust,
             "upsell_value": upsell_value,
-            "leads_conv": leads_converted,
+            "leads_conv":   leads_converted,
         })
 
-    # Quarterly aggregates
-    q_bs = sum(b["bs"] for b in month_blocks)
-    q_b2b = sum(b["b2b_amt"] for b in month_blocks)
-    q_hs = sum(b["hs"] for b in month_blocks)
-    q_hf = sum(b["hf"] for b in month_blocks)
-    q_lockH = sum(b["locker_high"] for b in month_blocks)
-    q_lockL = sum(b["locker_low"] for b in month_blocks)
-    q_npi   = sum(b["npi"] for b in month_blocks)
-    q_rev   = sum(b["reviews"] for b in month_blocks)
+    q_bs     = sum(b["bs"] for b in month_blocks)
+    q_b2b    = sum(b["b2b_amt"] for b in month_blocks)
+    q_hs     = sum(b["hs"] for b in month_blocks)
+    q_hf     = sum(b["hf"] for b in month_blocks)
+    q_lockH  = sum(b["locker_high"] for b in month_blocks)
+    q_lockL  = sum(b["locker_low"]  for b in month_blocks)
+    q_npi    = sum(b["npi"] for b in month_blocks)
+    q_rev    = sum(b["reviews"] for b in month_blocks)
     q_repeat = sum(b["repeat_cust"] for b in month_blocks)
     q_upsell = sum(b["upsell_value"] for b in month_blocks)
     q_leadc  = sum(b["leads_conv"] for b in month_blocks)
 
-    # Tier
     achv_pct = (q_bs / qtarget_lakh) if qtarget_lakh > 0 else 0.0
     rate = tier_rate(achv_pct)
-    achievement_inc = q_bs * 1_00_000 * rate
+    achievement_inc = q_bs * 100000 * rate
 
-    # Bonus
-    all_months_hit = all(b["achieved"] for b in month_blocks) and len(month_blocks) > 0
-    bonus = (
-        CONSECUTIVE_BONUS
-        if (achv_pct >= 1.0 and all_months_hit and q_bs >= CONSECUTIVE_MIN_QTLY_LAKH)
-        else 0
-    )
+    all_months_hit = (len(month_blocks) > 0) and all(b["achieved"] for b in month_blocks)
+    if achv_pct >= 1.0 and all_months_hit and q_bs >= CONSECUTIVE_MIN_QTLY_LAKH:
+        bonus = CONSECUTIVE_BONUS
+    else:
+        bonus = 0
 
-    # B2B incentive
-    b2b_inc = q_b2b * B2B_PCT
-    # Locker incentive
+    b2b_inc    = q_b2b * B2B_PCT
     locker_inc = q_lockH * LOCKER_HIGH_VALUE_RS + q_lockL * LOCKER_LOW_VALUE_RS
-    # Tangible total
-    tangible = achievement_inc + bonus + b2b_inc + locker_inc
+    tangible   = achievement_inc + bonus + b2b_inc + locker_inc
 
-    # Stars
-    star_hf_hs = int(round(q_hf - q_hs))            # HF − HS rule
-    star_b2b   = int(q_b2b // B2B_STAR_STEP_RS)
-    star_upsell = int(q_upsell // UPSELL_STEP_RS)
-    star_leads  = q_leadc * LEAD_STAR
-    star_review = q_rev
-    star_repeat = q_repeat
-    star_npi    = q_npi * NPI_STAR
-    # Activities, COO admin, grooming, attendance — not auto-derivable; fed manually in dashboard
-    manual_key = f"manual::{person}::{fy}::{quarter}"
-    manual = st.session_state.get(manual_key, {
-        "activities": 0, "coo_admin": 0, "grooming_neg": 0, "attendance_pct": 100.0,
-    })
-    star_activity = manual["activities"] * ACTIVITY_STAR
+    star_hf_hs   = int(round(q_hf - q_hs))
+    star_b2b     = int(q_b2b // B2B_STAR_STEP_RS)
+    star_upsell  = int(q_upsell // UPSELL_STEP_RS)
+    star_leads   = q_leadc * LEAD_STAR
+    star_review  = q_rev
+    star_repeat  = q_repeat
+    star_npi     = q_npi * NPI_STAR
+
+    manual_key = "manual::" + person + "::" + fy + "::" + quarter
+    default_manual = {"activities": 0, "coo_admin": 0,
+                      "grooming_neg": 0, "attendance_pct": 100.0}
+    manual = st.session_state.get(manual_key, default_manual)
+    star_activity = int(manual["activities"]) * ACTIVITY_STAR
     star_coo      = int(manual["coo_admin"])
     star_groom    = -int(manual["grooming_neg"])
     star_attend   = -1 if float(manual["attendance_pct"]) < 98.0 else 0
 
-    total_stars = (
-        star_hf_hs + star_b2b + star_upsell + star_leads
-        + star_review + star_repeat + star_npi + star_activity
-        + star_coo + star_groom + star_attend
-    )
+    total_stars = (star_hf_hs + star_b2b + star_upsell + star_leads
+                   + star_review + star_repeat + star_npi + star_activity
+                   + star_coo + star_groom + star_attend)
     star_value = total_stars * STAR_VALUE_RS
-
     final = tangible * TANGIBLE_WEIGHT + star_value
 
     return {
-        "person": person,
-        "qtarget_lakh": qtarget_lakh,
-        "q_bs_lakh": q_bs,
-        "achv_pct": achv_pct,
-        "rate": rate,
+        "person":          person,
+        "qtarget_lakh":    qtarget_lakh,
+        "q_bs_lakh":       q_bs,
+        "achv_pct":        achv_pct,
+        "rate":            rate,
         "achievement_inc": achievement_inc,
-        "bonus": bonus,
-        "q_b2b_amt": q_b2b,
-        "b2b_inc": b2b_inc,
-        "locker_inc": locker_inc,
-        "tangible": tangible,
+        "bonus":           bonus,
+        "q_b2b_amt":       q_b2b,
+        "b2b_inc":         b2b_inc,
+        "locker_inc":      locker_inc,
+        "tangible":        tangible,
         "stars_breakdown": {
-            "HF − HS":       star_hf_hs,
-            "B2B (₹L)":      star_b2b,
+            "HF - HS":       star_hf_hs,
+            "B2B (per L)":   star_b2b,
             "Upsell (50K)":  star_upsell,
-            "Leads × 3":     star_leads,
-            "5★ reviews":    star_review,
+            "Leads x 3":     star_leads,
+            "5-star reviews":star_review,
             "Repeat cust":   star_repeat,
-            "NPI × 2":       star_npi,
-            "Activity × 5":  star_activity,
+            "NPI x 2":       star_npi,
+            "Activity x 5":  star_activity,
             "COO admin":     star_coo,
-            "Grooming (−)":  star_groom,
+            "Grooming (-)":  star_groom,
             "Attendance":    star_attend,
         },
         "total_stars": total_stars,
-        "star_value": star_value,
-        "final": final,
-        "monthly": month_blocks,
+        "star_value":  star_value,
+        "final":       final,
+        "monthly":     month_blocks,
     }
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# 📝  MANUAL STAR INPUTS (collapsible — only writable by Admin/Manager)
-# ═════════════════════════════════════════════════════════════════════════════
+# ---------------------------------------------------------------------------
+# Manual star inputs
+# ---------------------------------------------------------------------------
 with st.expander(
-    "✍️ Manual star entries (activities, COO admin rating, grooming, attendance)",
+    "Manual star entries (activities, COO admin rating, grooming, attendance)",
     expanded=False,
 ):
     st.caption(
-        "Fields that the system can't auto-derive from CRM data.  "
-        "Numbers entered here are kept in your browser session and applied to "
-        "the calculations below — they are NOT yet saved back to the sheet."
+        "Fields the system can't auto-derive. Numbers entered here are kept "
+        "in your browser session and applied to the calculations below."
     )
-    cols = st.columns(len(person_choice) if person_choice else 1)
-    for i, p in enumerate(person_choice):
-        key = f"manual::{p}::{fy}::{quarter}"
-        cur = st.session_state.get(key, {
-            "activities": 0, "coo_admin": 0, "grooming_neg": 0, "attendance_pct": 100.0,
-        })
-        with cols[i]:
-            st.markdown(f"**{p}**")
-            cur["activities"] = st.number_input(
-                f"Activities led ({p})", min_value=0, value=int(cur["activities"]),
-                key=f"act_{p}", help="Each activity = +5 stars",
-            )
-            cur["coo_admin"] = st.number_input(
-                f"COO admin stars ({p})", value=int(cur["coo_admin"]),
-                key=f"coo_{p}", help="Stars assigned by COO Mr. Biren Dash. Can be negative.",
-            )
-            cur["grooming_neg"] = st.number_input(
-                f"Grooming penalty ({p})", min_value=0, value=int(cur["grooming_neg"]),
-                key=f"grm_{p}", help="Number of times not in proper attire — each = −1 star",
-            )
-            cur["attendance_pct"] = st.number_input(
-                f"Attendance % ({p})", min_value=0.0, max_value=100.0,
-                value=float(cur["attendance_pct"]), step=0.1,
-                key=f"att_{p}", help="< 98 % attracts a −1 star",
-            )
-            st.session_state[key] = cur
+    if person_choice:
+        cols = st.columns(len(person_choice))
+        for i, p in enumerate(person_choice):
+            key = "manual::" + p + "::" + fy + "::" + quarter
+            cur = st.session_state.get(key, {
+                "activities": 0, "coo_admin": 0,
+                "grooming_neg": 0, "attendance_pct": 100.0,
+            })
+            with cols[i]:
+                st.markdown("**" + p + "**")
+                cur["activities"] = st.number_input(
+                    "Activities led (" + p + ")", min_value=0,
+                    value=int(cur["activities"]),
+                    key="act_" + p, help="Each activity = +5 stars",
+                )
+                cur["coo_admin"] = st.number_input(
+                    "COO admin stars (" + p + ")",
+                    value=int(cur["coo_admin"]),
+                    key="coo_" + p, help="Stars assigned by COO Mr. Biren Dash. Can be negative.",
+                )
+                cur["grooming_neg"] = st.number_input(
+                    "Grooming penalty (" + p + ")", min_value=0,
+                    value=int(cur["grooming_neg"]),
+                    key="grm_" + p, help="Number of times not in proper attire - each = -1 star",
+                )
+                cur["attendance_pct"] = st.number_input(
+                    "Attendance % (" + p + ")", min_value=0.0, max_value=100.0,
+                    value=float(cur["attendance_pct"]), step=0.1,
+                    key="att_" + p, help="< 98% attracts a -1 star",
+                )
+                st.session_state[key] = cur
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# 🚀  RUN — build scorecard
-# ═════════════════════════════════════════════════════════════════════════════
+# ---------------------------------------------------------------------------
+# Run + scorecard
+# ---------------------------------------------------------------------------
 if not person_choice:
     st.warning("No salesperson selected. Pick at least one in the filter above.")
     st.stop()
 
 results = [compute_person_block(p) for p in person_choice]
 
-# Top-line metrics
 st.divider()
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Sales people in view", len(results))
-m2.metric("Team Q-target (₹ Lakh)", f"{sum(r['qtarget_lakh'] for r in results):,.2f}")
-m3.metric("Team actual BS (₹ Lakh)", f"{sum(r['q_bs_lakh'] for r in results):,.2f}")
-m4.metric("Team final incentive (₹)", f"{sum(r['final'] for r in results):,.0f}")
+m2.metric("Team Q-target (Lakh)", "{:,.2f}".format(sum(r["qtarget_lakh"] for r in results)))
+m3.metric("Team actual BS (Lakh)", "{:,.2f}".format(sum(r["q_bs_lakh"] for r in results)))
+m4.metric("Team final incentive (Rs)", "{:,.0f}".format(sum(r["final"] for r in results)))
 
-# Scorecard table
 st.subheader("Scorecard")
 score_rows = []
 for r in results:
     score_rows.append({
         "Sales Person":        r["person"],
-        "Q Target (₹L)":       round(r["qtarget_lakh"], 2),
-        "Actual BS (₹L)":      round(r["q_bs_lakh"], 2),
+        "Q Target (Lakh)":     round(r["qtarget_lakh"], 2),
+        "Actual BS (Lakh)":    round(r["q_bs_lakh"], 2),
         "Achv %":              round(r["achv_pct"] * 100, 1),
         "Tier %":              round(r["rate"] * 100, 2),
-        "Achievement (₹)":     round(r["achievement_inc"], 0),
-        "Bonus (₹)":           r["bonus"],
-        "B2B sale (₹)":        round(r["q_b2b_amt"], 0),
-        "B2B inc (₹)":         round(r["b2b_inc"], 0),
-        "Locker inc (₹)":      r["locker_inc"],
-        "Tangible (₹)":        round(r["tangible"], 0),
-        "Tangible × 70 % (₹)": round(r["tangible"] * TANGIBLE_WEIGHT, 0),
+        "Achievement (Rs)":    round(r["achievement_inc"], 0),
+        "Bonus (Rs)":          r["bonus"],
+        "B2B sale (Rs)":       round(r["q_b2b_amt"], 0),
+        "B2B inc (Rs)":        round(r["b2b_inc"], 0),
+        "Locker inc (Rs)":     r["locker_inc"],
+        "Tangible (Rs)":       round(r["tangible"], 0),
+        "Tangible x 70% (Rs)": round(r["tangible"] * TANGIBLE_WEIGHT, 0),
         "Total Stars":         r["total_stars"],
-        "Star value (₹)":      r["star_value"],
-        "FINAL (₹)":           round(r["final"], 0),
+        "Star value (Rs)":     r["star_value"],
+        "FINAL (Rs)":          round(r["final"], 0),
     })
-score_df = pd.DataFrame(score_rows).sort_values("FINAL (₹)", ascending=False).reset_index(drop=True)
+score_df = pd.DataFrame(score_rows).sort_values("FINAL (Rs)", ascending=False).reset_index(drop=True)
 
 st.dataframe(
     score_df,
     use_container_width=True,
     hide_index=True,
     column_config={
-        "Q Target (₹L)":   st.column_config.NumberColumn(format="%.2f",
+        "Q Target (Lakh)":   st.column_config.NumberColumn(format="%.2f",
             help="Quarterly Billed-Sales target in Lakh"),
-        "Actual BS (₹L)":  st.column_config.NumberColumn(format="%.2f",
+        "Actual BS (Lakh)":  st.column_config.NumberColumn(format="%.2f",
             help="Actual quarterly billed sales pulled from the franchise/4S sheets"),
-        "Achv %":          st.column_config.ProgressColumn(min_value=0, max_value=130,
-            format="%.1f", help="Actual ÷ Target × 100"),
-        "Tier %":          st.column_config.NumberColumn(format="%.2f",
-            help="0.50 % @ ≥ 90 %, 1.00 % @ ≥ 100 %, 1.25 % @ ≥ 105 %"),
-        "Achievement (₹)": st.column_config.NumberColumn(format="₹%d"),
-        "Bonus (₹)":       st.column_config.NumberColumn(format="₹%d",
-            help="₹10 000 if every month met its target AND quarter ≥ 100 % AND BS ≥ ₹25 L"),
-        "B2B sale (₹)":    st.column_config.NumberColumn(format="₹%d"),
-        "B2B inc (₹)":     st.column_config.NumberColumn(format="₹%d",
-            help="0.5 % of quarterly B2B billed sale"),
-        "Locker inc (₹)":  st.column_config.NumberColumn(format="₹%d",
-            help="₹100 / unit > ₹15 K  +  ₹50 / unit ≤ ₹15 K"),
-        "Tangible (₹)":    st.column_config.NumberColumn(format="₹%d"),
-        "Tangible × 70 % (₹)": st.column_config.NumberColumn(format="₹%d"),
-        "Star value (₹)":  st.column_config.NumberColumn(format="₹%d",
-            help="Each star = ₹20"),
-        "FINAL (₹)":       st.column_config.NumberColumn(format="₹%d",
-            help="(Tangible × 70 %) + (Stars × ₹20)"),
+        "Achv %":            st.column_config.ProgressColumn(min_value=0, max_value=130,
+            format="%.1f", help="Actual / Target * 100"),
+        "Tier %":            st.column_config.NumberColumn(format="%.2f",
+            help="0.50% at >= 90%, 1.00% at >= 100%, 1.25% at >= 105%"),
+        "Achievement (Rs)":    st.column_config.NumberColumn(format="Rs %d"),
+        "Bonus (Rs)":          st.column_config.NumberColumn(format="Rs %d",
+            help="Rs 10,000 if every month met its target AND quarter >= 100% AND BS >= Rs 25 L"),
+        "B2B sale (Rs)":       st.column_config.NumberColumn(format="Rs %d"),
+        "B2B inc (Rs)":        st.column_config.NumberColumn(format="Rs %d",
+            help="0.5% of quarterly B2B billed sale"),
+        "Locker inc (Rs)":     st.column_config.NumberColumn(format="Rs %d",
+            help="Rs 100/unit > Rs 15K  +  Rs 50/unit <= Rs 15K"),
+        "Tangible (Rs)":       st.column_config.NumberColumn(format="Rs %d"),
+        "Tangible x 70% (Rs)": st.column_config.NumberColumn(format="Rs %d"),
+        "Star value (Rs)":     st.column_config.NumberColumn(format="Rs %d",
+            help="Each star = Rs 20"),
+        "FINAL (Rs)":          st.column_config.NumberColumn(format="Rs %d",
+            help="(Tangible * 70%) + (Stars * Rs 20)"),
     },
 )
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# 🔍  PER-PERSON DRILL-DOWN
-# ═════════════════════════════════════════════════════════════════════════════
+# ---------------------------------------------------------------------------
+# Per-person drill-down
+# ---------------------------------------------------------------------------
 st.subheader("Per-person breakdown")
 for r in results:
-    with st.expander(
-        f"{r['person']}  —  Achv {r['achv_pct']*100:.1f}%  •  "
-        f"Stars {r['total_stars']}  •  Final ₹{r['final']:,.0f}",
-    ):
+    header = (r["person"] + "  -  Achv " + "{:.1f}".format(r["achv_pct"] * 100) + "%"
+              + "  *  Stars " + str(r["total_stars"])
+              + "  *  Final Rs " + "{:,.0f}".format(r["final"]))
+    with st.expander(header):
         c1, c2 = st.columns(2)
         with c1:
             st.markdown("**Tangible block**")
             t_rows = pd.DataFrame({
                 "Item": [
-                    "Quarterly Target (₹ Lakh)", "Actual BS (₹ Lakh)",
+                    "Quarterly Target (Lakh)", "Actual BS (Lakh)",
                     "Achievement %", "Tier rate",
-                    "Achievement incentive (₹)", "Consecutive-month bonus (₹)",
-                    "B2B sale (₹)", "B2B incentive (₹)",
-                    "Locker incentive (₹)", "TANGIBLE TOTAL (₹)",
-                    "Tangible × 70 % (₹)",
+                    "Achievement incentive (Rs)", "Consecutive-month bonus (Rs)",
+                    "B2B sale (Rs)", "B2B incentive (Rs)",
+                    "Locker incentive (Rs)", "TANGIBLE TOTAL (Rs)",
+                    "Tangible x 70% (Rs)",
                 ],
                 "Value": [
-                    f"{r['qtarget_lakh']:.2f}", f"{r['q_bs_lakh']:.2f}",
-                    f"{r['achv_pct']*100:.1f}%", f"{r['rate']*100:.2f}%",
-                    f"{r['achievement_inc']:,.0f}", f"{r['bonus']:,}",
-                    f"{r['q_b2b_amt']:,.0f}", f"{r['b2b_inc']:,.0f}",
-                    f"{r['locker_inc']:,}", f"{r['tangible']:,.0f}",
-                    f"{r['tangible'] * TANGIBLE_WEIGHT:,.0f}",
+                    "{:.2f}".format(r["qtarget_lakh"]),
+                    "{:.2f}".format(r["q_bs_lakh"]),
+                    "{:.1f}%".format(r["achv_pct"] * 100),
+                    "{:.2f}%".format(r["rate"] * 100),
+                    "{:,.0f}".format(r["achievement_inc"]),
+                    "{:,}".format(r["bonus"]),
+                    "{:,.0f}".format(r["q_b2b_amt"]),
+                    "{:,.0f}".format(r["b2b_inc"]),
+                    "{:,}".format(r["locker_inc"]),
+                    "{:,.0f}".format(r["tangible"]),
+                    "{:,.0f}".format(r["tangible"] * TANGIBLE_WEIGHT),
                 ],
             })
             st.dataframe(t_rows, hide_index=True, use_container_width=True)
-
         with c2:
             st.markdown("**Star ledger**")
             s_rows = pd.DataFrame({
                 "Source": list(r["stars_breakdown"].keys()),
                 "Stars":  list(r["stars_breakdown"].values()),
             })
-            s_rows.loc[len(s_rows)] = ["TOTAL ★", r["total_stars"]]
-            s_rows.loc[len(s_rows)] = ["Star value @ ₹20", r["star_value"]]
+            s_rows.loc[len(s_rows)] = ["TOTAL stars", r["total_stars"]]
+            s_rows.loc[len(s_rows)] = ["Star value @ Rs 20", r["star_value"]]
             st.dataframe(s_rows, hide_index=True, use_container_width=True)
 
         st.markdown("**Monthly breakdown**")
-        mdf = pd.DataFrame(r["monthly"])
-        mdf = mdf.rename(columns={
-            "month": "Month", "bs": "BS (₹L)", "target": "Tgt (₹L)",
-            "achieved": "Hit?", "b2b_amt": "B2B (₹)", "hs": "HS (₹L)",
-            "hf": "HF (₹L)", "locker_high": "Locker >15K",
-            "locker_low": "Locker ≤15K", "npi": "NPI", "reviews": "5★ rev.",
-            "repeat_cust": "Repeat", "upsell_value": "Upsell (₹)",
-            "leads_conv": "Leads conv >1L",
+        mdf = pd.DataFrame(r["monthly"]).rename(columns={
+            "month": "Month", "bs": "BS (Lakh)", "target": "Tgt (Lakh)",
+            "achieved": "Hit?", "b2b_amt": "B2B (Rs)", "hs": "HS (Lakh)",
+            "hf": "HF (Lakh)", "locker_high": "Locker >15K",
+            "locker_low": "Locker <=15K", "npi": "NPI",
+            "reviews": "5-star rev.", "repeat_cust": "Repeat",
+            "upsell_value": "Upsell (Rs)", "leads_conv": "Leads conv >1L",
         })
         st.dataframe(mdf, hide_index=True, use_container_width=True)
 
-        st.info(
-            f"**Final =** Tangible × 70 % + Stars × ₹20  =  "
-            f"₹{r['tangible']*TANGIBLE_WEIGHT:,.0f}  +  ₹{r['star_value']:,}  "
-            f"=  **₹{r['final']:,.0f}**"
-        )
+        info_msg = ("Final = Tangible x 70% + Stars x Rs 20  =  Rs "
+                    + "{:,.0f}".format(r["tangible"] * TANGIBLE_WEIGHT)
+                    + "  +  Rs " + "{:,}".format(r["star_value"])
+                    + "  =  Rs " + "{:,.0f}".format(r["final"]))
+        st.info(info_msg)
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# 📥  DOWNLOAD REPORT
-# ═════════════════════════════════════════════════════════════════════════════
+# ---------------------------------------------------------------------------
+# Download
+# ---------------------------------------------------------------------------
 st.subheader("Download")
 
-def _pick_excel_engine() -> str | None:
-    """Return the first installed Excel writer engine, or None if neither is available."""
+def _pick_excel_engine():
     for eng in ("openpyxl", "xlsxwriter"):
         try:
             __import__(eng)
@@ -829,8 +765,7 @@ def _pick_excel_engine() -> str | None:
     return None
 
 
-def _build_excel(score_df: pd.DataFrame, results: list[dict]) -> bytes | None:
-    """Build a multi-sheet Excel report. Returns None if no engine is installed."""
+def _build_excel(score_df, results):
     engine = _pick_excel_engine()
     if engine is None:
         return None
@@ -839,18 +774,21 @@ def _build_excel(score_df: pd.DataFrame, results: list[dict]) -> bytes | None:
         score_df.to_excel(writer, sheet_name="Scorecard", index=False)
         rows = []
         for r in results:
-            row = {"Sales Person": r["person"],
-                   **{f"Star {k}": v for k, v in r["stars_breakdown"].items()}}
-            row["Total Stars"] = r["total_stars"]
-            row["Star Value (Rs)"] = r["star_value"]
-            row["Tangible (Rs)"] = r["tangible"]
-            row["Final (Rs)"]    = r["final"]
+            row = {"Sales Person": r["person"]}
+            for k, v in r["stars_breakdown"].items():
+                row["Star " + k] = v
+            row["Total Stars"]    = r["total_stars"]
+            row["Star Value (Rs)"]= r["star_value"]
+            row["Tangible (Rs)"]  = r["tangible"]
+            row["Final (Rs)"]     = r["final"]
             rows.append(row)
         pd.DataFrame(rows).to_excel(writer, sheet_name="Stars Detail", index=False)
         mlong = []
         for r in results:
             for m in r["monthly"]:
-                mlong.append({"Sales Person": r["person"], **m})
+                d = {"Sales Person": r["person"]}
+                d.update(m)
+                mlong.append(d)
         pd.DataFrame(mlong).to_excel(writer, sheet_name="Monthly", index=False)
     return buf.getvalue()
 
@@ -859,56 +797,48 @@ cdl1, cdl2 = st.columns(2)
 csv_bytes = score_df.to_csv(index=False).encode()
 
 if cdl1.download_button(
-    "📄 Download CSV",
+    "Download CSV",
     csv_bytes,
-    file_name=f"incentive_{fy}_{quarter}.csv",
+    file_name="incentive_" + fy + "_" + quarter + ".csv",
     mime="text/csv",
 ):
-    append_log(
-        logged_in["username"], logged_in["full_name"], logged_in["role"],
-        fy, quarter, ", ".join(person_choice),
-        "DOWNLOAD_CSV", f"{len(person_choice)} salespeople",
-    )
+    append_log(logged_in["username"], logged_in["full_name"], logged_in["role"],
+               fy, quarter, ", ".join(person_choice),
+               "DOWNLOAD_CSV", str(len(person_choice)) + " salespeople")
 
-# Excel button — only render if at least one writer engine is installed,
-# so a missing dep can never crash the page.
+xlsx_bytes = None
 try:
     xlsx_bytes = _build_excel(score_df, results)
 except Exception as e:
-    xlsx_bytes = None
-    cdl2.warning(f"Excel export unavailable: {e}")
+    cdl2.warning("Excel export unavailable: " + str(e))
 
 if xlsx_bytes is None:
-    cdl2.info(
-        "📥 Excel export needs `openpyxl` or `xlsxwriter` in requirements.txt. "
-        "CSV download still works."
-    )
+    cdl2.info("Excel export needs openpyxl or xlsxwriter in requirements.txt. CSV still works.")
 elif cdl2.download_button(
-    "📥 Download full Excel report",
+    "Download full Excel report",
     xlsx_bytes,
-    file_name=f"incentive_{fy}_{quarter}.xlsx",
+    file_name="incentive_" + fy + "_" + quarter + ".xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 ):
-    append_log(
-        logged_in["username"], logged_in["full_name"], logged_in["role"],
-        fy, quarter, ", ".join(person_choice),
-        "DOWNLOAD_XLSX", f"{len(person_choice)} salespeople",
-    )
+    append_log(logged_in["username"], logged_in["full_name"], logged_in["role"],
+               fy, quarter, ", ".join(person_choice),
+               "DOWNLOAD_XLSX", str(len(person_choice)) + " salespeople")
 
 
-
+# ---------------------------------------------------------------------------
 # Help / formula reference
+# ---------------------------------------------------------------------------
 with st.expander("How is the incentive calculated?  (rule book)", expanded=False):
     rules_md = (
-        "**Final Incentive  =  (Tangible x 70 %)  +  (Stars x Rs 20)**\n\n"
+        "**Final Incentive  =  (Tangible x 70%)  +  (Stars x Rs 20)**\n\n"
         "**Tangible block**\n\n"
         "| Item                    | Rule |\n"
         "|-------------------------|------|\n"
-        "| Achievement incentive   | 0.50 % of BS at >= 90 %, 1.00 % at >= 100 %, 1.25 % at >= 105 %  (quarterly) |\n"
-        "| Consecutive-month bonus | Rs 10,000 if every month hit its target AND quarter >= 100 % AND BS >= Rs 25 L |\n"
-        "| B2B sale                | 0.5 % of total B2B billed sale in the quarter |\n"
+        "| Achievement incentive   | 0.50% of BS at >= 90%, 1.00% at >= 100%, 1.25% at >= 105% (quarterly) |\n"
+        "| Consecutive-month bonus | Rs 10,000 if every month hit its target AND quarter >= 100% AND BS >= Rs 25 L |\n"
+        "| B2B sale                | 0.5% of total B2B billed sale in the quarter |\n"
         "| Home Locker             | Rs 100 per unit when value > Rs 15,000  *  Rs 50 per unit when <= Rs 15,000 |\n\n"
-        f"**Star ledger** (1 star = Rs {STAR_VALUE_RS})\n\n"
+        "**Star ledger**  (1 star = Rs " + str(STAR_VALUE_RS) + ")\n\n"
         "| Source                          | Stars |\n"
         "|---------------------------------|-------|\n"
         "| HF - HS                         | +1 star per Rs 1L of HF over HS  (negative when HS leads) |\n"
@@ -921,52 +851,27 @@ with st.expander("How is the incentive calculated?  (rule book)", expanded=False
         "| In/Out-door activity led        | +5 stars per activity |\n"
         "| COO admin rating                | manual |\n"
         "| Grooming                        | manual (negative) |\n"
-        "| Attendance < 98 %               | auto -1 star |\n\n"
-        f"**Filters used right now:** FY {fy} / Quarter {quarter} / People: {', '.join(person_choice)}.\n"
+        "| Attendance < 98%                | auto -1 star |\n\n"
+        "Filters: FY " + fy + " / Quarter " + quarter + " / People: " + ", ".join(person_choice) + "\n"
     )
     st.markdown(rules_md)
 
 
+# ---------------------------------------------------------------------------
 # Audit log preview
+# ---------------------------------------------------------------------------
 with st.expander("Recent activity (last 20 entries from Incentive_Audit_Log)", expanded=False):
     from services.incentive_store import get_log_df
     log_df = get_log_df(limit=500)
-    st.caption(
-        "Every page open, filter change and download is appended to the "
-        "Incentive_Audit_Log tab in your CRM Google Sheet."
-    )
+    st.caption("Every page open, filter change and download is appended to the Incentive_Audit_Log tab.")
     st.dataframe(log_df.tail(20), hide_index=True, use_container_width=True)
 
 
+# ---------------------------------------------------------------------------
 # Log this page-view event (debounce within session)
+# ---------------------------------------------------------------------------
 if not st.session_state.get("_inc_view_logged"):
-    append_log(
-        logged_in["username"], logged_in["full_name"], logged_in["role"],
-        fy, quarter, ", ".join(person_choice),
-        "VIEW", f"{len(person_choice)} salespeople",
-    )
-    st.session_state["_inc_view_logged"] = True
-.\n"
-    )
-    st.markdown(rules_md)
-
-
-# Audit log preview
-with st.expander("Recent activity (last 20 entries from Incentive_Audit_Log)", expanded=False):
-    from services.incentive_store import get_log_df
-    log_df = get_log_df(limit=500)
-    st.caption(
-        "Every page open, filter change and download is appended to the "
-        "Incentive_Audit_Log tab in your CRM Google Sheet."
-    )
-    st.dataframe(log_df.tail(20), hide_index=True, use_container_width=True)
-
-
-# Log this page-view event (debounce within session)
-if not st.session_state.get("_inc_view_logged"):
-    append_log(
-        logged_in["username"], logged_in["full_name"], logged_in["role"],
-        fy, quarter, ", ".join(person_choice),
-        "VIEW", f"{len(person_choice)} salespeople",
-    )
+    append_log(logged_in["username"], logged_in["full_name"], logged_in["role"],
+               fy, quarter, ", ".join(person_choice),
+               "VIEW", str(len(person_choice)) + " salespeople")
     st.session_state["_inc_view_logged"] = True
