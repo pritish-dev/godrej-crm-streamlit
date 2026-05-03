@@ -212,7 +212,11 @@ def load_targets() -> pd.DataFrame:
 
 @st.cache_data(ttl=60)
 def load_crm_for_targets() -> pd.DataFrame:
-    """Load CRM data optimised for target achievement calculation."""
+    """Load CRM data optimised for target achievement calculation.
+
+    Handles all column name variants across old and new sheet formats so no
+    sheet is silently skipped and April/future months always show real achievement.
+    """
     config_df = get_df("SHEET_DETAILS")
     if config_df is None or config_df.empty:
         return pd.DataFrame()
@@ -226,6 +230,23 @@ def load_crm_for_targets() -> pd.DataFrame:
         if "four_s_sheets" in config_df.columns else []
     )
 
+    # Priority-ordered candidates for the gross amount column
+    _AMT_CANDIDATES = [
+        "CROSS CHECK GROSS AMT (ORDER VALUE WITHOUT TAX)",
+        "GROSS AMT",
+        "ORDER VALUE",
+        "ORDER UNIT PRICE=(AFTER DISC + TAX)",
+        "ORDER AMOUNT",
+    ]
+    # All variants that mean SALES PERSON
+    _SP_MAP = {
+        "SALES REP":       "SALES PERSON",
+        "SALES EXECUTIVE": "SALES PERSON",
+        "EXECUTIVE":       "SALES PERSON",
+    }
+    # All variants that mean ORDER DATE
+    _DATE_MAP = {"DATE": "ORDER DATE"}
+
     dfs = []
     for name in franchise_sheets + fours_sheets:
         try:
@@ -233,29 +254,34 @@ def load_crm_for_targets() -> pd.DataFrame:
             if df is None or df.empty:
                 continue
             df.columns = [str(c).strip().upper() for c in df.columns]
-            df = df.rename(columns={
-                "ORDER UNIT PRICE=(AFTER DISC + TAX)": "ORDER AMOUNT",
-                "DATE": "ORDER DATE",
-                "CROSS CHECK GROSS AMT (ORDER VALUE WITHOUT TAX)": "GROSS AMT",
-                "CROSS CHECK GROSS AMT (Order Value Without Tax)":  "GROSS AMT",
-            })
+            df = df.loc[:, ~df.columns.duplicated()]
 
-            if "GROSS AMT" not in df.columns and "ORDER AMOUNT" in df.columns:
-                df["GROSS AMT"] = pd.to_numeric(
-                    df["ORDER AMOUNT"].astype(str).str.replace(r"[₹,]", "", regex=True),
-                    errors="coerce",
-                ).fillna(0)
-            elif "GROSS AMT" in df.columns:
-                df["GROSS AMT"] = pd.to_numeric(
-                    df["GROSS AMT"].astype(str).str.replace(r"[₹,]", "", regex=True),
-                    errors="coerce",
-                ).fillna(0)
-            else:
+            # Normalise sales-person column name
+            df = df.rename(columns={k: v for k, v in _SP_MAP.items()
+                                     if k in df.columns and v not in df.columns})
+            # Normalise date column name
+            df = df.rename(columns={k: v for k, v in _DATE_MAP.items()
+                                     if k in df.columns and v not in df.columns})
+
+            # Resolve GROSS AMT from whichever candidate column exists first
+            if "GROSS AMT" not in df.columns:
+                for cand in _AMT_CANDIDATES:
+                    if cand in df.columns:
+                        df["GROSS AMT"] = df[cand]
+                        break
+
+            # Skip only if the three required columns are truly absent
+            if "GROSS AMT" not in df.columns:
+                continue
+            if "ORDER DATE" not in df.columns:
+                continue
+            if "SALES PERSON" not in df.columns:
                 continue
 
-            if "ORDER DATE" not in df.columns or "SALES PERSON" not in df.columns:
-                continue
-
+            df["GROSS AMT"] = pd.to_numeric(
+                df["GROSS AMT"].astype(str).str.replace(r"[₹,]", "", regex=True),
+                errors="coerce",
+            ).fillna(0)
             df["ORDER DATE"] = pd.to_datetime(df["ORDER DATE"], dayfirst=True, errors="coerce")
             df = df[df["GROSS AMT"] > 0].copy()
             dfs.append(df[["SALES PERSON", "ORDER DATE", "GROSS AMT"]])
@@ -716,8 +742,23 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                 _ny += 1
             _cur = date(_ny, _nm, 1)
 
+        # Build the full list of salespeople: Sales Team sheet UNION IQ-targets sheet
+        # so everyone with a target entry is shown even if not in the Sales Team sheet.
+        _iq_sp_list: list[str] = []
+        if _IQ_AVAILABLE:
+            try:
+                _iq_df_sp = _get_iq_targets_df()
+                if _iq_df_sp is not None and not _iq_df_sp.empty:
+                    _iq_sp_list = (
+                        _iq_df_sp["SALES PERSON"]
+                        .dropna().astype(str).str.strip().str.upper().unique().tolist()
+                    )
+            except Exception:
+                pass
+        _all_sp = sorted(set([s.strip().upper() for s in sales_people] + _iq_sp_list))
+
         rows = []
-        for sp in sales_people:
+        for sp in _all_sp:
             sp_upper = sp.strip().upper()
             for m, y in month_list:
                 if not targets_df.empty:
@@ -748,6 +789,10 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
         result_df = result_df[
             (result_df["Target (₹)"] > 0) | (result_df["Achievement (₹)"] > 0)
         ].copy()
+        # Sort month-first so table reads: April → all people, May → all people …
+        result_df = result_df.sort_values(
+            ["_year", "_month", "Sales Person"]
+        ).reset_index(drop=True)
 
         if result_df.empty:
             st.info("No targets set or sales recorded in this date range. Use the form above to set targets.")
