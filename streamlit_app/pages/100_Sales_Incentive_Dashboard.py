@@ -377,10 +377,15 @@ with st.spinner("Loading sales / leads data…"):
 # ═════════════════════════════════════════════════════════════════════════════
 def _slice_window(df: pd.DataFrame, dt_col: str,
                    start: _dt.date, end: _dt.date) -> pd.DataFrame:
-    if df.empty or dt_col not in df.columns:
+    if df is None or df.empty or dt_col not in df.columns:
+        # Return an empty frame that *preserves column structure* so downstream
+        # column accesses don't raise KeyError.
+        if df is None or df.empty:
+            return pd.DataFrame(columns=getattr(df, "columns", []))
         return df.iloc[0:0]
-    mask = (df[dt_col].dt.date >= start) & (df[dt_col].dt.date <= end)
-    return df[mask].copy()
+    s = pd.to_datetime(df[dt_col], errors="coerce")
+    mask = (s.dt.date >= start) & (s.dt.date <= end)
+    return df[mask.fillna(False)].copy()
 
 
 def _slice_month(df: pd.DataFrame, dt_col: str, year: int, month: int) -> pd.DataFrame:
@@ -417,9 +422,35 @@ def tier_rate(achv_pct: float) -> float:
     return 0.0
 
 
+_SALES_REQ_COLS = [
+    "SALES PERSON", "ORDER DATE_DT", "GROSS AMT", "ORDER AMOUNT",
+    "ADV RECEIVED", "ORDER NO", "CATEGORY", "PRODUCT NAME",
+    "CUSTOMER NAME", "CONTACT NUMBER", "B2B/B2C", "REVIEW",
+]
+_LEADS_REQ_COLS = ["ASSIGNED TO", "CREATED DATE_DT", "LEAD STATUS", "SALE VALUE"]
+
+
+def _ensure_cols(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+    """Return df with all required columns present (filled with sensible blanks)."""
+    if df is None:
+        df = pd.DataFrame()
+    df = df.copy()
+    for c in cols:
+        if c not in df.columns:
+            if c in ("GROSS AMT", "ORDER AMOUNT", "ADV RECEIVED", "REVIEW", "SALE VALUE"):
+                df[c] = 0
+            elif c.endswith("_DT"):
+                df[c] = pd.NaT
+            else:
+                df[c] = ""
+    return df
+
+
 def compute_person_block(person: str) -> dict:
     """Big bag of numbers for ONE person across the selected quarter."""
     qtarget_lakh = quarterly_target(person)
+    safe_sales = _ensure_cols(sales_df, _SALES_REQ_COLS)
+    safe_leads = _ensure_cols(leads_df, _LEADS_REQ_COLS)
 
     # Build per-month windows
     month_blocks = []
@@ -428,44 +459,75 @@ def compute_person_block(person: str) -> dict:
         y = fy_start_year + (1 if m_num < 4 else 0)
         ms = _dt.date(y, m_num, 1)
         me = _dt.date(y, m_num, calendar.monthrange(y, m_num)[1])
-        rep = sales_df[sales_df["SALES PERSON"] == person] if not sales_df.empty else sales_df
+
+        rep = safe_sales[safe_sales["SALES PERSON"] == person]
         rep_m = _slice_window(rep, "ORDER DATE_DT", ms, me)
+        rep_m = _ensure_cols(rep_m, _SALES_REQ_COLS)
+
+        # Coerce numerics defensively (strings sneak through when columns are
+        # synthesised because the source sheet was missing).
+        for col in ("GROSS AMT", "ORDER AMOUNT", "ADV RECEIVED", "REVIEW"):
+            rep_m[col] = pd.to_numeric(rep_m[col], errors="coerce").fillna(0)
+        for col in ("CATEGORY", "PRODUCT NAME", "CUSTOMER NAME",
+                    "CONTACT NUMBER", "B2B/B2C", "ORDER NO"):
+            rep_m[col] = rep_m[col].astype(str).fillna("")
+
         bs_lakh = float(rep_m["GROSS AMT"].sum()) / 1_00_000.0
         m_target = monthly_target(person, m_name)
-        b2b_amt = float(rep_m[rep_m["B2B/B2C"].str.upper().str.startswith("B2B")]["GROSS AMT"].sum())
-        # Hard sales (HS) vs Home Furnishing (HF) — derive from CATEGORY:
+
+        b2b_mask = rep_m["B2B/B2C"].str.upper().str.startswith("B2B")
+        b2b_amt = float(rep_m[b2b_mask]["GROSS AMT"].sum())
+
+        # HF vs HS from CATEGORY
         cat_upper = rep_m["CATEGORY"].str.upper()
         hf_keywords = ("CURTAIN", "BEDSHEET", "PILLOW", "CUSHION", "RUG",
                        "MATTRESS PROTECTOR", "TOWEL", "QUILT", "BLANKET")
         hf_mask = cat_upper.str.contains("|".join(hf_keywords), na=False)
-        hf_amt = float(rep_m[hf_mask]["GROSS AMT"].sum()) / 1_00_000.0  # lakh
+        hf_amt = float(rep_m[hf_mask]["GROSS AMT"].sum()) / 1_00_000.0
         hs_amt = bs_lakh - hf_amt
-        # Locker units > 15K and ≤ 15K
+
+        # Locker units
         locker_mask = cat_upper.str.contains("LOCKER", na=False)
         locker_rows = rep_m[locker_mask]
-        locker_high = int((locker_rows["GROSS AMT"] > 15_000).sum())
-        locker_low = int(((locker_rows["GROSS AMT"] > 0) & (locker_rows["GROSS AMT"] <= 15_000)).sum())
-        # NPI (placeholder: rows with PRODUCT NAME containing 'NPI' OR a column 'NPI'='Y')
-        npi_count = int(rep_m["PRODUCT NAME"].str.upper().str.contains("NPI").sum())
-        # Reviews
-        reviews = int((rep_m["REVIEW"] >= 5).sum())
+        if not locker_rows.empty:
+            locker_high = int((locker_rows["GROSS AMT"] > 15_000).sum())
+            locker_low  = int(((locker_rows["GROSS AMT"] > 0)
+                               & (locker_rows["GROSS AMT"] <= 15_000)).sum())
+        else:
+            locker_high = locker_low = 0
+
+        npi_count = int(rep_m["PRODUCT NAME"].str.upper().str.contains("NPI", na=False).sum())
+        reviews   = int((rep_m["REVIEW"] >= 5).sum())
+
         # Repeat customers
-        cust_keys = rep_m["CONTACT NUMBER"].where(
-            rep_m["CONTACT NUMBER"].str.len() > 4,
-            rep_m["CUSTOMER NAME"],
-        )
-        repeat_cust = int(cust_keys.value_counts().loc[lambda s: s >= 2].count()) if not cust_keys.empty else 0
-        # Upsell sales (₹) — same order with multiple categories
-        upsell_value = 0.0
         if not rep_m.empty:
-            grp = rep_m.groupby("ORDER NO").agg(cat_count=("CATEGORY","nunique"), val=("GROSS AMT","sum"))
-            upsell_orders = grp[grp["cat_count"] >= 2]
-            upsell_value = float(upsell_orders["val"].sum())
+            cust_keys = rep_m["CONTACT NUMBER"].where(
+                rep_m["CONTACT NUMBER"].str.len() > 4,
+                rep_m["CUSTOMER NAME"],
+            )
+            repeat_cust = int(cust_keys.value_counts().loc[lambda s: s >= 2].count()) \
+                if not cust_keys.empty else 0
+        else:
+            repeat_cust = 0
+
+        # Upsell — same ORDER NO with ≥ 2 categories
+        upsell_value = 0.0
+        if not rep_m.empty and rep_m["ORDER NO"].astype(bool).any():
+            grp = rep_m.groupby("ORDER NO").agg(
+                cat_count=("CATEGORY", "nunique"),
+                val=("GROSS AMT", "sum"),
+            )
+            upsell_value = float(grp[grp["cat_count"] >= 2]["val"].sum())
+
         # Leads converted (>1L)
-        ld = leads_df[leads_df["ASSIGNED TO"] == person] if not leads_df.empty else pd.DataFrame()
-        ld_m = _slice_window(ld, "CREATED DATE_DT", ms, me) if not ld.empty else ld
+        ld = safe_leads[safe_leads["ASSIGNED TO"] == person]
+        ld_m = _slice_window(ld, "CREATED DATE_DT", ms, me)
+        ld_m = _ensure_cols(ld_m, _LEADS_REQ_COLS)
+        ld_m["SALE VALUE"] = pd.to_numeric(ld_m["SALE VALUE"], errors="coerce").fillna(0)
         if not ld_m.empty:
-            converted = ld_m[ld_m["LEAD STATUS"].astype(str).str.contains("converted", case=False, na=False)]
+            converted = ld_m[
+                ld_m["LEAD STATUS"].astype(str).str.contains("converted", case=False, na=False)
+            ]
             leads_converted = int((converted["SALE VALUE"] >= 1_00_000).sum())
         else:
             leads_converted = 0
@@ -808,54 +870,44 @@ if cdl2.download_button(
     )
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# 📐  Help / formula reference
-# ═════════════════════════════════════════════════════════════════════════════
-with st.expander("📐 How is the incentive calculated?  (rule book)", expanded=False):
-    st.markdown(f"""
-**Final Incentive  =  (Tangible × 70 %)  +  (Stars × ₹20)**
 
-**Tangible block**
-
-| Item                          | Rule |
-|-------------------------------|------|
-| Achievement incentive         | 0.50 % of BS at ≥ 90 % • 1.00 % at ≥ 100 % • 1.25 % at ≥ 105 %  (quarterly) |
-| Consecutive-month bonus       | ₹10 000 if every month hit its target AND quarter ≥ 100 % AND BS ≥ ₹25 L |
-| B2B sale                      | 0.5 % of total B2B billed sale in the quarter |
-| Home Locker                   | ₹100 / unit when value > ₹15 000 • ₹50 / unit when ≤ ₹15 000 |
-
-**Star ledger** (1 ★ = ₹{STAR_VALUE_RS})
-
-| Source                          | Stars |
-|---------------------------------|-------|
-| HF − HS                         | +1 star per ₹1 L of HF over HS  (negative when HS leads) |
-| B2B BS                          | +1 star per ₹1 L of B2B sale |
-| Upselling                       | +1 star per ₹50 000 of upsell BS |
-| Lead conversion (>₹1 L)         | +3 stars per converted lead |
-| 5-star review                   | +1 star per review |
-| Repeat customer                 | +1 star per repeat-customer conversion |
-| NPI sale (>₹50 K)               | +2 stars per NPI sale |
-| In/Out-door activity led        | +5 stars per activity |
-| COO admin rating                | manual |
-| Grooming                        | manual (negative) |
-| Attendance < 98 %               | auto −1 star |
-
-**Filters used right now:** FY `{fy}` / Quarter `{quarter}` / People `{', '.join(person_choice)}`.
-
-> ✏️ All thresholds are constants at the top of `pages/100_Sales_Incentive_Dashboard.py` —
-> tweak once, applies everywhere.
-""")
+# Help / formula reference
+with st.expander("How is the incentive calculated?  (rule book)", expanded=False):
+    rules_md = (
+        "**Final Incentive  =  (Tangible x 70 %)  +  (Stars x Rs 20)**\n\n"
+        "**Tangible block**\n\n"
+        "| Item                    | Rule |\n"
+        "|-------------------------|------|\n"
+        "| Achievement incentive   | 0.50 % of BS at >= 90 %, 1.00 % at >= 100 %, 1.25 % at >= 105 %  (quarterly) |\n"
+        "| Consecutive-month bonus | Rs 10,000 if every month hit its target AND quarter >= 100 % AND BS >= Rs 25 L |\n"
+        "| B2B sale                | 0.5 % of total B2B billed sale in the quarter |\n"
+        "| Home Locker             | Rs 100 per unit when value > Rs 15,000  *  Rs 50 per unit when <= Rs 15,000 |\n\n"
+        f"**Star ledger** (1 star = Rs {STAR_VALUE_RS})\n\n"
+        "| Source                          | Stars |\n"
+        "|---------------------------------|-------|\n"
+        "| HF - HS                         | +1 star per Rs 1L of HF over HS  (negative when HS leads) |\n"
+        "| B2B BS                          | +1 star per Rs 1L of B2B sale |\n"
+        "| Upselling                       | +1 star per Rs 50,000 of upsell BS |\n"
+        "| Lead conversion (>Rs 1L)        | +3 stars per converted lead |\n"
+        "| 5-star review                   | +1 star per review |\n"
+        "| Repeat customer                 | +1 star per repeat-customer conversion |\n"
+        "| NPI sale (>Rs 50K)              | +2 stars per NPI sale |\n"
+        "| In/Out-door activity led        | +5 stars per activity |\n"
+        "| COO admin rating                | manual |\n"
+        "| Grooming                        | manual (negative) |\n"
+        "| Attendance < 98 %               | auto -1 star |\n\n"
+        f"**Filters used right now:** FY {fy} / Quarter {quarter} / People: {', '.join(person_choice)}.\n"
+    )
+    st.markdown(rules_md)
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# 📋  Audit log preview (last 20 entries) — visible to logged-in admins only
-# ═════════════════════════════════════════════════════════════════════════════
-with st.expander("📋 Recent activity (last 20 entries from Incentive_Audit_Log)", expanded=False):
+# Audit log preview
+with st.expander("Recent activity (last 20 entries from Incentive_Audit_Log)", expanded=False):
     from services.incentive_store import get_log_df
     log_df = get_log_df(limit=500)
     st.caption(
         "Every page open, filter change and download is appended to the "
-        f"`{ensure_log_tab().title}` tab in your CRM Google Sheet."
+        "Incentive_Audit_Log tab in your CRM Google Sheet."
     )
     st.dataframe(log_df.tail(20), hide_index=True, use_container_width=True)
 
