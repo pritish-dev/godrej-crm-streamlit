@@ -36,7 +36,7 @@ pages = [
     st.Page("pages/40_Products_catalog.py",             title="Products Catalog",                 icon="🪑"),
     st.Page("pages/70_Leads.py",                        title="Leads",                            icon="🎯"),
     st.Page("pages/90_Sales_Team_Tasks.py",             title="Sales Team Tasks",                 icon="✅"),
-    st.Page("pages/100_Sales_Incentive_Dashboard.py",   title="Sales Incentive Dashboard",        icon="🏆"),
+    st.Page("pages/100_Sales_Manager_Dashboard.py",     title="Sales Manager Dashboard",          icon="🏆"),
 ]
 
 if st.session_state.show_old_data_dashboard:
