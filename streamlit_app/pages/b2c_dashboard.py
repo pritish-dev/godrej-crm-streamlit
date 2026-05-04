@@ -148,7 +148,9 @@ def load_b2c_data():
                 df = get_df(name)
                 if df is None or df.empty:
                     continue
-                df.columns = [str(c).strip().upper() for c in df.columns]
+                # Normalize: strip, uppercase, AND collapse any internal
+                # multiple-spaces so "DELIVERY  REMARKS" == "DELIVERY REMARKS"
+                df.columns = [" ".join(str(c).split()).upper() for c in df.columns]
                 df = df.loc[:, ~df.columns.duplicated()]
                 df = df.dropna(axis=1, how="all")
                 df["SOURCE"] = source_label
@@ -169,14 +171,25 @@ def load_b2c_data():
     # columns — which we then collapse in the dedup step below.
     crm = crm.rename(columns={
         "ORDER UNIT PRICE=(AFTER DISC + TAX)":             "ORDER VALUE",
+        # All known variants of the delivery-status column
         "DELIVERY REMARKS(DELIVERED/PENDING)":             "DELIVERY STATUS",
-        "DELIVERY REMARKS":                                "DELIVERY STATUS",   # actual CRM sheet column name
+        "DELIVERY REMARKS (DELIVERED/PENDING)":            "DELIVERY STATUS",   # space before paren
+        "DELIVERY REMARKS":                                "DELIVERY STATUS",   # internal CRM sheet
         "CUSTOMER DELIVERY DATE (TO BE)":                  "DELIVERY DATE",
         "CROSS CHECK GROSS AMT (ORDER VALUE WITHOUT TAX)": "GROSS AMT EX-TAX",
         # Old column compat
         "CUSTOMER DELIVERY DATE":                          "DELIVERY DATE",
         "SALES REP":                                       "SALES PERSON",
     })
+
+    # ── Fallback: if rename still didn't produce DELIVERY STATUS, find any
+    # column whose name STARTS WITH "DELIVERY REMARKS" (catches any variant
+    # not in the dict above) and rename it.
+    if "DELIVERY STATUS" not in crm.columns:
+        for col in crm.columns:
+            if col.startswith("DELIVERY REMARKS"):
+                crm = crm.rename(columns={col: "DELIVERY STATUS"})
+                break
 
     # ── Collapse any duplicate columns produced by the rename ───────────────
     # For each set of duplicate columns, coalesce left-to-right (first non-NaN wins).
@@ -259,13 +272,22 @@ def group_by_order_no(df):
         if col in has_no.columns:
             agg[col] = "first"
 
-    # Delivery status: if ANY item is PENDING → show PENDING, else take first
+    # Delivery status aggregation:
+    #   • If ALL non-empty items are "Delivered/DELIVERED" → "Delivered"
+    #   • If ANY item is explicitly PENDING                → "PENDING"
+    #   • Otherwise take the first non-empty value
     if "DELIVERY STATUS" in has_no.columns:
-        agg["DELIVERY STATUS"] = lambda x: (
-            "PENDING"
-            if any(str(v).upper().strip() == "PENDING" for v in x.dropna())
-            else str(x.iloc[0])
-        )
+        def _agg_delivery(x):
+            vals = [str(v).strip() for v in x if str(v).strip() not in ("", "nan", "NaN", "None")]
+            if not vals:
+                return "PENDING"
+            upper_vals = [v.upper() for v in vals]
+            if all(v == "DELIVERED" for v in upper_vals):
+                return vals[0]            # keep original casing e.g. "Delivered"
+            if any(v == "PENDING" for v in upper_vals):
+                return "PENDING"
+            return vals[0]
+        agg["DELIVERY STATUS"] = _agg_delivery
 
     if not agg:
         return df
