@@ -170,6 +170,7 @@ def load_b2c_data():
     crm = crm.rename(columns={
         "ORDER UNIT PRICE=(AFTER DISC + TAX)":             "ORDER VALUE",
         "DELIVERY REMARKS(DELIVERED/PENDING)":             "DELIVERY STATUS",
+        "DELIVERY REMARKS":                                "DELIVERY STATUS",   # actual CRM sheet column name
         "CUSTOMER DELIVERY DATE (TO BE)":                  "DELIVERY DATE",
         "CROSS CHECK GROSS AMT (ORDER VALUE WITHOUT TAX)": "GROSS AMT EX-TAX",
         # Old column compat
