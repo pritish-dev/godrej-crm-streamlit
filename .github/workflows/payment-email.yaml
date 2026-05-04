@@ -1,26 +1,24 @@
-name: CRM Pending Delivery Emails
+name: CRM Payment Due Emails
 
 on:
   schedule:
     # All times UTC. IST = UTC+5:30
-    - cron: '30 4 * * *'    # 10:00 AM IST → Morning Delivery Report (D-1 cutoff)
-    - cron: '30 5 * * *'    # 11:00 AM IST → Delivery Status Reminder (all overdue+today)
-    - cron: '30 11 * * *'   # 05:00 PM IST → Evening Delivery Report (all overdue+today)
+    - cron: '30 4 * * *'    # 10:00 AM IST → Payment Due Morning (delivery_date ≤ yesterday)
+    - cron: '30 5 * * *'    # 11:00 AM IST → Payment Due Reminder (all overdue+today)
 
   workflow_dispatch:
     inputs:
       job:
-        description: 'Which delivery email to send'
+        description: 'Which payment email to send'
         required: true
-        default: 'crm_email1'
+        default: 'payment_morning'
         type: choice
         options:
-          - crm_email1    # Morning: delivery_date ≤ yesterday (D-1)
-          - crm_email2    # Reminder: delivery_date ≤ today (all overdue)
-          - crm_email3    # Evening: delivery_date ≤ today (all overdue)
+          - payment_morning    # delivery_date ≤ yesterday, PENDING_DUE > 0
+          - payment_reminder   # delivery_date ≤ today, PENDING_DUE > 0
 
 jobs:
-  crm-delivery-email:
+  crm-payment-email:
     runs-on: ubuntu-latest
 
     steps:
@@ -41,7 +39,7 @@ jobs:
             pip install -r requirements.txt
           fi
 
-      - name: Run delivery email job
+      - name: Run payment due email job
         env:
           EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
@@ -51,12 +49,11 @@ jobs:
         run: |
           cd streamlit_app
 
-          # Map cron schedule → SLOT (immune to GitHub Actions clock drift)
+          # Map cron schedule → SLOT
           SCHEDULE="${{ github.event.schedule }}"
-          if   [ "$SCHEDULE" = "30 4 * * *" ];  then export SLOT=morning
-          elif [ "$SCHEDULE" = "30 5 * * *" ];  then export SLOT=reminder
-          elif [ "$SCHEDULE" = "30 11 * * *" ]; then export SLOT=evening
+          if   [ "$SCHEDULE" = "30 4 * * *" ]; then export SLOT=morning
+          elif [ "$SCHEDULE" = "30 5 * * *" ]; then export SLOT=reminder
           fi
 
           echo "SLOT=${SLOT:-unset}  SCHEDULE=${SCHEDULE:-manual}  MANUAL_JOB=${MANUAL_JOB:-}"
-          python email_job.py
+          python payment_email_job.py

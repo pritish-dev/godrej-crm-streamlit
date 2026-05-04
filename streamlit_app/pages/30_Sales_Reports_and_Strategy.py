@@ -78,6 +78,9 @@ st.caption(
     "Interio by Godrej Patia, Bhubaneswar."
 )
 
+# Financial Year start — all KPIs are filtered to FY 2026-27 (Apr 2026 onwards)
+FY_START = date(2026, 4, 1)
+
 # =========================================================
 # DATA LOADING (unified across legacy + new format)
 # =========================================================
@@ -139,13 +142,21 @@ def load_all_data() -> pd.DataFrame:
     return crm
 
 
-crm = load_all_data()
-if crm.empty:
+crm_all = load_all_data()
+if crm_all.empty:
     st.error("No sales data found.")
     st.stop()
 
 now      = datetime.now()
 today_dt = now.date()
+
+# ── Filter to FY 2026-27 only (1 Apr 2026 onwards) ─────────────────────────
+crm = crm_all[
+    crm_all["ORDER DATE"].notna() & (crm_all["ORDER DATE"].dt.date >= FY_START)
+].copy()
+if crm.empty:
+    st.warning("No sales data for FY 2026-27 (from 1 Apr 2026). Showing all available data.")
+    crm = crm_all.copy()
 
 # Derived columns
 crm["MONTH"]    = crm["ORDER DATE"].dt.to_period("M").astype(str)
@@ -159,23 +170,51 @@ crm["YEAR"]     = crm["ORDER DATE"].dt.year
 # =========================================================
 st.subheader("📊 Headline KPIs")
 
+_this_month_lbl = now.strftime("%b %Y")   # e.g. "May 2026"
 month_mask = (crm["ORDER DATE"].dt.month == now.month) & (crm["ORDER DATE"].dt.year == now.year)
-ytd_mask   = crm["ORDER DATE"].dt.year == now.year
+fy_mask    = crm["ORDER DATE"].dt.date >= FY_START   # already filtered, but keep for clarity
 
-m_sales   = crm.loc[month_mask, "ORDER VALUE"].sum()
-m_orders  = crm.loc[month_mask, "ORDER NO"].nunique() if "ORDER NO" in crm.columns else int(month_mask.sum())
-ytd_sales = crm.loc[ytd_mask,   "ORDER VALUE"].sum()
-ytd_orders= crm.loc[ytd_mask,   "ORDER NO"].nunique() if "ORDER NO" in crm.columns else int(ytd_mask.sum())
-life_sales= crm["ORDER VALUE"].sum()
-total_cust= crm["CUSTOMER NAME"].nunique() if "CUSTOMER NAME" in crm.columns else 0
-avg_basket= crm["ORDER VALUE"].mean() if len(crm) else 0
+m_sales    = crm.loc[month_mask, "ORDER VALUE"].sum()
+m_orders   = (crm.loc[month_mask, "ORDER NO"].nunique()
+               if "ORDER NO" in crm.columns else int(month_mask.sum()))
+fy_sales   = crm["ORDER VALUE"].sum()
+fy_orders  = (crm["ORDER NO"].nunique()
+               if "ORDER NO" in crm.columns else len(crm))
+total_cust = crm["CUSTOMER NAME"].nunique() if "CUSTOMER NAME" in crm.columns else 0
+avg_basket = crm["ORDER VALUE"].mean() if len(crm) > 0 else 0
 
 k1, k2, k3, k4, k5 = st.columns(5)
-k1.metric("📅 This Month",  f"₹{m_sales:,.0f}", f"{m_orders} orders")
-k2.metric("📈 YTD (CY)",    f"₹{ytd_sales:,.0f}", f"{ytd_orders} orders")
-k3.metric("💰 Lifetime",    f"₹{life_sales:,.0f}")
-k4.metric("👥 Customers",   f"{total_cust:,}")
-k5.metric("🧾 Avg. Order",  f"₹{avg_basket:,.0f}")
+k1.metric(
+    f"📅 {_this_month_lbl}", f"₹{m_sales:,.0f}", f"{m_orders} orders",
+    help=f"Total sales value and unique order count for {_this_month_lbl}. "
+         f"Counts only orders with ORDER DATE in {_this_month_lbl}."
+)
+k2.metric(
+    "📈 FY Apr–Today", f"₹{fy_sales:,.0f}", f"{fy_orders} orders",
+    help=f"Cumulative sales for FY 2026-27. "
+         f"Includes all orders from {FY_START.strftime('%d %b %Y')} "
+         f"to {today_dt.strftime('%d %b %Y')}."
+)
+k3.metric(
+    "💰 FY Gross Revenue", f"₹{fy_sales:,.0f}",
+    help=f"Total order value (gross) for FY 2026-27 "
+         f"({FY_START.strftime('%d %b %Y')} to {today_dt.strftime('%d %b %Y')}). "
+         "Excludes orders with ₹0 value."
+)
+k4.metric(
+    "👥 Unique Customers", f"{total_cust:,}",
+    help="Count of unique CUSTOMER NAME entries across all FY 2026-27 orders."
+)
+k5.metric(
+    "🧾 Avg. Order Value", f"₹{avg_basket:,.0f}",
+    help=f"Mean order value for FY 2026-27 "
+         f"({FY_START.strftime('%d %b %Y')} to {today_dt.strftime('%d %b %Y')}). "
+         "= FY Gross Revenue ÷ Total Orders."
+)
+st.caption(
+    f"📅 All figures above are for **FY 2026-27** · "
+    f"Data from **{FY_START.strftime('%d %b %Y')}** to **{today_dt.strftime('%d %b %Y')}**"
+)
 
 st.divider()
 
@@ -303,20 +342,32 @@ st.divider()
 st.subheader("🏆 Sales Person Leaderboard")
 
 if "SALES PERSON" in crm.columns:
+    _sp_crm = crm.copy()   # already FY-filtered
+    _has_order_no = "ORDER NO" in _sp_crm.columns
+
+    def _sp_agg(g):
+        rev = g["ORDER VALUE"].sum()
+        ord_cnt = g["ORDER NO"].nunique() if _has_order_no else len(g)
+        return pd.Series({"REVENUE": rev, "ORDERS": ord_cnt})
+
     sp_df = (
-        crm.assign(SP=lambda d: d["SALES PERSON"].astype(str).str.strip().str.title())
-           .query("SP != '' and SP != 'Nan' and SP != 'None'")
-           .groupby("SP")
-           .agg(REVENUE=("ORDER VALUE", "sum"),
-                ORDERS=("ORDER VALUE", "count"))
-           .reset_index()
-           .sort_values("REVENUE", ascending=False)
+        _sp_crm.assign(SP=lambda d: d["SALES PERSON"].astype(str).str.strip().str.title())
+               .query("SP != '' and SP != 'Nan' and SP != 'None'")
+               .groupby("SP")
+               .apply(_sp_agg)
+               .reset_index()
+               .sort_values("REVENUE", ascending=False)
     )
     if not sp_df.empty:
+        st.caption(
+            f"FY 2026-27 · {FY_START.strftime('%d %b %Y')} to {today_dt.strftime('%d %b %Y')}"
+        )
+        _display_sp = sp_df.copy()
+        _display_sp["REVENUE"] = _display_sp["REVENUE"].apply(lambda v: f"₹{v:,.0f}")
         st.dataframe(
-            sp_df.rename(columns={"SP": "Sales Person",
-                                  "REVENUE": "Revenue (₹)",
-                                  "ORDERS": "Orders"}),
+            _display_sp.rename(columns={"SP": "Sales Person",
+                                        "REVENUE": "Revenue (₹)",
+                                        "ORDERS": "Orders"}),
             use_container_width=True, hide_index=True,
         )
         chart_sp = alt.Chart(sp_df.head(10)).mark_bar().encode(
