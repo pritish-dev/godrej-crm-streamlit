@@ -3,8 +3,8 @@ name: CRM Payment Due Emails
 on:
   schedule:
     # All times UTC. IST = UTC+5:30
-    - cron: '30 4 * * *'    # 10:00 AM IST → Payment Due Morning (delivery_date ≤ yesterday)
-    - cron: '30 5 * * *'    # 11:00 AM IST → Payment Due Reminder (all overdue+today)
+    - cron: '30 2 * * *'    # 08:00 AM IST → Payment Due Morning (delivery_date ≤ yesterday)
+    - cron: '30 3 * * *'    # 09:00 AM IST → Payment Due Reminder (all overdue+today)
 
   workflow_dispatch:
     inputs:
@@ -49,10 +49,12 @@ jobs:
         run: |
           cd streamlit_app
 
-          # Map cron schedule → SLOT
+          # Map cron schedule → SLOT. SLOT is the only thing that decides which
+          # email is sent for a scheduled run — payment_email_job.py has no
+          # hour-fallback any more, so a misfire can never send an unrelated mail.
           SCHEDULE="${{ github.event.schedule }}"
-          if   [ "$SCHEDULE" = "30 4 * * *" ]; then export SLOT=morning
-          elif [ "$SCHEDULE" = "30 5 * * *" ]; then export SLOT=reminder
+          if   [ "$SCHEDULE" = "30 2 * * *" ]; then export SLOT=morning
+          elif [ "$SCHEDULE" = "30 3 * * *" ]; then export SLOT=reminder
           fi
 
           echo "SLOT=${SLOT:-unset}  SCHEDULE=${SCHEDULE:-manual}  MANUAL_JOB=${MANUAL_JOB:-}"

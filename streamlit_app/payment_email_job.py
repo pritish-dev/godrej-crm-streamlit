@@ -3,13 +3,17 @@ streamlit_app/payment_email_job.py
 
 Payment Due Email Job — called by GitHub Actions.
 
-Schedule:
-  10:00 AM IST  [SLOT=morning]  → Payment Due Morning: PENDING_DUE > 0 & delivery_date ≤ yesterday
-  11:00 AM IST  [SLOT=reminder] → Payment Due Reminder: PENDING_DUE > 0 & delivery_date ≤ today
+Schedule (cron set in .github/workflows/payment-email.yaml):
+  08:00 AM IST  [SLOT=morning]  → Payment Due Morning: PENDING_DUE > 0 & delivery_date ≤ yesterday
+  09:00 AM IST  [SLOT=reminder] → Payment Due Reminder: PENDING_DUE > 0 & delivery_date ≤ today
 
 Manual trigger via MANUAL_JOB env var:
   payment_morning  → morning slot
   payment_reminder → reminder slot
+
+ISOLATION GUARANTEE: Strict SLOT/MANUAL_JOB only — no hour-based fallback.
+A cron run with an unrecognised SLOT exits without sending any email, so a
+delayed/misfired job can never accidentally send the wrong report.
 """
 
 import sys
@@ -191,18 +195,12 @@ elif SLOT == "reminder":
     print("SLOT=reminder → Payment Due Reminder (all overdue+today)...")
     send_payment_due_reminder_email_4s(crm_data)
 
-# PRIORITY 3: Hour fallback
-elif current_hour in (9, 10):
-    print(f"Hour-fallback ({current_hour}h IST) → Payment Due Morning...")
-    send_payment_due_morning_email_4s(crm_data)
-
-elif current_hour == 11:
-    print(f"Hour-fallback (11h IST) → Payment Due Reminder...")
-    send_payment_due_reminder_email_4s(crm_data)
-
+# STRICT MODE: no hour-based fallback. If SLOT / MANUAL_JOB are both unset,
+# refuse to send anything. Prevents a misfired/delayed run from ever firing
+# off an unrelated payment email.
 else:
     print(
-        f"[Payment Email Job] No payment email mapped for IST hour {current_hour}. "
-        "Set SLOT='morning' or 'reminder' via the workflow step."
+        "[Payment Email Job] Neither MANUAL_JOB nor SLOT was set — refusing to "
+        "send any email. (Cron runs always set SLOT via the workflow file.)"
     )
     sys.exit(1)

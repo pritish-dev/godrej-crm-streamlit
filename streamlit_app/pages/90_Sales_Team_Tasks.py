@@ -692,6 +692,7 @@ else:
 
 st.write("---")
 st.info(
-    "Daily automated emails are sent at 10 AM (morning brief) "
-    "and 8 PM (end-of-day report)."
+    "Daily automated emails are scheduled for 9 AM IST (morning brief) "
+    "and 6 PM IST (end-of-day report). "
+    "Times are pulled forward from 11 AM / 8 PM to absorb GitHub Actions cron drift."
 )

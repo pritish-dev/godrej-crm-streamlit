@@ -5,6 +5,9 @@ Sends daily email at 8 PM with:
 - Task status for all tasks assigned today
 - Summary counts (total, done, pending, overdue)
 - Detailed task information in tabular form
+
+NOTE: SALES_TEAM_TASK is a master/template sheet. Real per-day occurrences
+are generated dynamically — see services/sales_task_expander.py.
 """
 
 import sys
@@ -17,6 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pandas as pd
 from services.sheets import get_df
 from services.email_sender_sales_tasks import send_sales_team_task_status_email
+from services.sales_task_expander import expand_with_status
 
 
 # ── IST time ─────────────────────────────────────────────────────────────────
@@ -30,51 +34,31 @@ print(f"[Sales Task Status Email Job] Running at IST: {now_ist.strftime('%Y-%m-%
 
 # ── Load tasks ───────────────────────────────────────────────────────────────
 def load_and_process_tasks():
-    """Load tasks from Google Sheets and process for email."""
+    """Load master tasks, expand to today's occurrences, attach STATUS."""
     try:
-        df = get_df("SALES_TEAM_TASK")
-
-        if df is None or df.empty:
+        df_master = get_df("SALES_TEAM_TASK")
+        if df_master is None or df_master.empty:
             print("  → No tasks found")
             return pd.DataFrame()
 
-        # Normalize columns
-        df.columns = [str(c).strip().upper() for c in df.columns]
-        df = df.loc[:, ~df.columns.duplicated()]   # guard: drop any duplicate cols from the sheet
+        expanded = expand_with_status(df_master, today_date)
+        if expanded.empty:
+            print("  → 0 tasks after expansion")
+            return pd.DataFrame()
 
-        # Parse dates
-        df["TASK DATE"] = pd.to_datetime(df["TASK DATE"], dayfirst=True, errors="coerce")
-        df["DUE DATE"] = pd.to_datetime(df["DUE DATE"], dayfirst=True, errors="coerce")
-        df["LAST COMPLETED DATE"] = pd.to_datetime(df["LAST COMPLETED DATE"], dayfirst=True, errors="coerce")
+        # Normalise FREQUENCY for grouping
+        if "FREQUENCY" in expanded.columns:
+            expanded["FREQUENCY"] = expanded["FREQUENCY"].astype(str).str.strip().str.lower()
 
-        # Get status
-        def get_status(row):
-            # Guard: unparseable DUE DATE cells come through as NaT —
-            # calling .date() on NaT raises AttributeError and crashes the job.
-            if pd.isnull(row["DUE DATE"]):
-                return "⚪ No Date"
-
-            if pd.notnull(row["LAST COMPLETED DATE"]):
-                if row["LAST COMPLETED DATE"].date() > row["DUE DATE"].date():
-                    return "🔴 Missed"
-                return "🟢 Done"
-
-            if row["DUE DATE"].date() < today_date:
-                return "🔴 Overdue"
-
-            return "🟡 Pending"
-
-        df["STATUS"] = df.apply(get_status, axis=1)
-
-        # Tasks for today (assigned for today)
-        today_tasks = df[df["DUE DATE"].dt.date == today_date].copy()
+        # Tasks scheduled for today
+        today_tasks = expanded[expanded["DUE DATE"].dt.date == today_date].copy()
 
         print(f"  → {len(today_tasks)} tasks for today")
-
         return today_tasks
 
     except Exception as e:
         print(f"  ❌ Error loading tasks: {e}")
+        import traceback; traceback.print_exc()
         return pd.DataFrame()
 
 

@@ -3,15 +3,21 @@ streamlit_app/email_job.py
 
 Unified CRM Delivery Email Job — called by GitHub Actions.
 
-Schedule:
-  10:00 AM IST  [SLOT=morning]  → Email 1: Pending deliveries with delivery_date ≤ yesterday (D-1)
-  11:00 AM IST  [SLOT=reminder] → Email 2: All pending (delivery_date ≤ today) — action required
-   5:00 PM IST  [SLOT=evening]  → Email 3: Evening pending (delivery_date ≤ today)
+Schedule (cron set in .github/workflows/godrej-email.yaml):
+  08:00 AM IST  [SLOT=morning]  → Email 1: Pending deliveries with delivery_date ≤ yesterday (D-1)
+  09:00 AM IST  [SLOT=reminder] → Email 2: All pending (delivery_date ≤ today) — action required
+  03:00 PM IST  [SLOT=evening]  → Email 3: Evening pending (delivery_date ≤ today)
 
 Manual trigger via MANUAL_JOB env var:
   crm_email1 → morning
   crm_email2 → reminder
   crm_email3 → evening
+
+ISOLATION GUARANTEE:
+  This script ONLY honours MANUAL_JOB or SLOT. There is no hour-based fallback —
+  if a cron run somehow triggers without SLOT being set (shouldn't happen), the
+  job exits with code 1 and sends nothing. This prevents a delayed/misfired run
+  from ever sending an email that wasn't scheduled for that time.
 """
 
 import sys
@@ -230,22 +236,12 @@ elif SLOT == "evening":
     print("SLOT=evening → Evening Pending Delivery Report (all overdue+today)...")
     send_evening_delivery_email_4s(pending)
 
-# PRIORITY 3: Hour fallback (handles GitHub Actions clock drift)
-elif current_hour in (9, 10):
-    print(f"Hour-fallback ({current_hour}h IST) → Morning Pending Delivery Report...")
-    send_pending_delivery_email_4s(pending)
-
-elif current_hour == 11:
-    print(f"Hour-fallback (11h IST) → Delivery Status Reminder...")
-    send_update_delivery_status_email_4s(pending)
-
-elif current_hour in (16, 17, 18):
-    print(f"Hour-fallback ({current_hour}h IST) → Evening Pending Delivery Report...")
-    send_evening_delivery_email_4s(pending)
-
+# STRICT MODE: no hour-based fallback. If SLOT/MANUAL_JOB are both unset
+# we must NOT guess — silently doing nothing avoids cross-triggering an
+# email that wasn't scheduled for this time slot.
 else:
     print(
-        f"[Delivery Email Job] No email mapped for IST hour {current_hour}. "
-        "Set SLOT='morning', 'reminder', or 'evening' via the workflow step."
+        "[Delivery Email Job] Neither MANUAL_JOB nor SLOT was set — refusing to "
+        "send any email. (Cron runs always set SLOT via the workflow file.)"
     )
     sys.exit(1)

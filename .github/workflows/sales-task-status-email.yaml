@@ -1,9 +1,9 @@
-name: Sales Team Task Status Email (Evening 8 PM)
+name: Sales Team Task Status Email (Evening)
 
 on:
   schedule:
     # All times in UTC. IST = UTC + 5:30
-    - cron: '30 14 * * *'   # 8:00 PM IST → Sales Task Status Email
+    - cron: '30 12 * * *'   # 6:00 PM IST → Sales Task Status Email
 
   # Allow manual trigger from GitHub Actions UI for testing
   workflow_dispatch:

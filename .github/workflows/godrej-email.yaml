@@ -3,9 +3,9 @@ name: CRM Pending Delivery Emails
 on:
   schedule:
     # All times UTC. IST = UTC+5:30
-    - cron: '30 4 * * *'    # 10:00 AM IST → Morning Delivery Report (D-1 cutoff)
-    - cron: '30 5 * * *'    # 11:00 AM IST → Delivery Status Reminder (all overdue+today)
-    - cron: '30 11 * * *'   # 05:00 PM IST → Evening Delivery Report (all overdue+today)
+    - cron: '30 2 * * *'    # 08:00 AM IST → Morning Delivery Report (D-1 cutoff)
+    - cron: '30 3 * * *'    # 09:00 AM IST → Delivery Status Reminder (all overdue+today)
+    - cron: '30 9 * * *'    # 03:00 PM IST → Evening Delivery Report (all overdue+today)
 
   workflow_dispatch:
     inputs:
@@ -51,11 +51,13 @@ jobs:
         run: |
           cd streamlit_app
 
-          # Map cron schedule → SLOT (immune to GitHub Actions clock drift)
+          # Map cron schedule → SLOT (immune to GitHub Actions clock drift).
+          # SLOT is the ONLY thing that decides which email is sent for a
+          # scheduled run — see email_job.py (no hour-fallback any more).
           SCHEDULE="${{ github.event.schedule }}"
-          if   [ "$SCHEDULE" = "30 4 * * *" ];  then export SLOT=morning
-          elif [ "$SCHEDULE" = "30 5 * * *" ];  then export SLOT=reminder
-          elif [ "$SCHEDULE" = "30 11 * * *" ]; then export SLOT=evening
+          if   [ "$SCHEDULE" = "30 2 * * *" ]; then export SLOT=morning
+          elif [ "$SCHEDULE" = "30 3 * * *" ]; then export SLOT=reminder
+          elif [ "$SCHEDULE" = "30 9 * * *" ]; then export SLOT=evening
           fi
 
           echo "SLOT=${SLOT:-unset}  SCHEDULE=${SCHEDULE:-manual}  MANUAL_JOB=${MANUAL_JOB:-}"

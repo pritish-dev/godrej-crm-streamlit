@@ -1,9 +1,9 @@
-name: Sales Team Tasks Email (11 AM)
+name: Sales Team Tasks Email (Morning)
 
 on:
   schedule:
     # All times UTC. IST = UTC+5:30
-    - cron: '30 5 * * *'    # 11:00 AM IST → Sales Tasks Email (grouped by type)
+    - cron: '30 3 * * *'    # 09:00 AM IST → Sales Tasks Email (grouped by type)
 
   workflow_dispatch:
 
@@ -30,6 +30,8 @@ jobs:
           fi
 
       - name: Run sales team tasks email
+        # Single-purpose workflow: only the 11→9 AM IST cron above triggers it.
+        # No SLOT logic needed — the script always runs the same email.
         env:
           EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}

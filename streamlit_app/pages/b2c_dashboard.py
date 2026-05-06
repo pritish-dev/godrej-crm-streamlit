@@ -165,31 +165,37 @@ def load_b2c_data():
     crm = pd.concat(dfs, ignore_index=True, sort=False)
 
     # ── Rename verbose 26-27 column names → short working names ─────────────
-    # NOTE: rename is applied BEFORE dedup so that if two verbose names map to
-    # the same working name (e.g. both "CUSTOMER DELIVERY DATE (TO BE)" and
-    # "CUSTOMER DELIVERY DATE" appear), they become duplicate "DELIVERY DATE"
-    # columns — which we then collapse in the dedup step below.
     crm = crm.rename(columns={
         "ORDER UNIT PRICE=(AFTER DISC + TAX)":             "ORDER VALUE",
         # All known variants of the delivery-status column
         "DELIVERY REMARKS(DELIVERED/PENDING)":             "DELIVERY STATUS",
-        "DELIVERY REMARKS (DELIVERED/PENDING)":            "DELIVERY STATUS",   # space before paren
-        "DELIVERY REMARKS":                                "DELIVERY STATUS",   # internal CRM sheet
+        "DELIVERY REMARKS (DELIVERED/PENDING)":            "DELIVERY STATUS",
+        "DELIVERY REMARKS":                                "DELIVERY STATUS",
         "CUSTOMER DELIVERY DATE (TO BE)":                  "DELIVERY DATE",
         "CROSS CHECK GROSS AMT (ORDER VALUE WITHOUT TAX)": "GROSS AMT EX-TAX",
-        # Old column compat
         "CUSTOMER DELIVERY DATE":                          "DELIVERY DATE",
         "SALES REP":                                       "SALES PERSON",
     })
 
-    # ── Fallback: if rename still didn't produce DELIVERY STATUS, find any
-    # column whose name STARTS WITH "DELIVERY REMARKS" (catches any variant
-    # not in the dict above) and rename it.
+    # ── Exhaustive fallback: scan every column for a delivery-status candidate ─
+    # This runs only when none of the exact rename keys above matched, i.e. the
+    # sheet uses a column name we've never seen before.
     if "DELIVERY STATUS" not in crm.columns:
+        # Priority 1: any column whose normalised name starts with "DELIVERY REMARKS"
         for col in crm.columns:
-            if col.startswith("DELIVERY REMARKS"):
+            if col.replace(" ", "").startswith("DELIVERYREMARKS"):
                 crm = crm.rename(columns={col: "DELIVERY STATUS"})
                 break
+    if "DELIVERY STATUS" not in crm.columns:
+        # Priority 2: any column that contains "DELIVERY" but is NOT a date column
+        for col in crm.columns:
+            if "DELIVERY" in col and "DATE" not in col:
+                crm = crm.rename(columns={col: "DELIVERY STATUS"})
+                break
+    if "DELIVERY STATUS" not in crm.columns:
+        # Priority 3: a bare "REMARKS" column (old format)
+        if "REMARKS" in crm.columns:
+            crm = crm.rename(columns={"REMARKS": "DELIVERY STATUS"})
 
     # ── Collapse any duplicate columns produced by the rename ───────────────
     # For each set of duplicate columns, coalesce left-to-right (first non-NaN wins).
@@ -332,6 +338,37 @@ else:
 if crm.empty:
     st.error("No valid B2C data found. Check that SHEET_DETAILS has sheet names and they are accessible.")
     st.stop()
+
+# ── 🔧 TEMPORARY DEBUG PANEL — remove once delivery status is confirmed fixed ──
+with st.expander("🔧 Debug: Sheet Column Inspector (remove after fix confirmed)", expanded=False):
+    st.markdown("**Columns in each raw sheet (before any renaming):**")
+    for _sname in (franchise_sheets + fours_sheets):
+        _raw = get_df(_sname)
+        if _raw is not None and not _raw.empty:
+            _raw_cols_upper = [" ".join(str(c).split()).upper() for c in _raw.columns]
+            st.write(f"📄 **{_sname}** → `{_raw_cols_upper}`")
+            _del_candidates = [c for c in _raw_cols_upper
+                               if "DELIVERY" in c or "REMARK" in c or "STATUS" in c]
+            if _del_candidates:
+                st.success(f"   Delivery-related columns found: `{_del_candidates}`")
+                # Show first 5 sample values
+                for _dc in _del_candidates:
+                    _orig_col = next((c for c in _raw.columns
+                                      if " ".join(str(c).split()).upper() == _dc), None)
+                    if _orig_col:
+                        _samples = _raw[_orig_col].dropna().astype(str).str.strip()
+                        _samples = _samples[_samples != ""].head(5).tolist()
+                        st.write(f"   `{_dc}` sample values: `{_samples}`")
+            else:
+                st.warning(f"   ⚠️ No delivery/remarks/status column found in this sheet!")
+    st.markdown("---")
+    st.markdown("**DELIVERY STATUS column in final merged CRM (after rename):**")
+    if "DELIVERY STATUS" in crm.columns:
+        _vc = crm["DELIVERY STATUS"].value_counts(dropna=False).head(10)
+        st.dataframe(_vc.reset_index().rename(columns={"index": "Value", "DELIVERY STATUS": "Count"}))
+    else:
+        st.error("❌ DELIVERY STATUS column was NOT created — column name in sheet is unknown!")
+# ── END DEBUG PANEL ────────────────────────────────────────────────────────────
 
 today    = datetime.now().date()
 tomorrow = today + timedelta(days=1)
