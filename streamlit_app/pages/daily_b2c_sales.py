@@ -937,4 +937,38 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                 _has_achievement = _chart_df["Achievement (₹)"].sum() > 0
                 st.subheader(f"📊 {calendar.month_name[_cur_m]} {_cur_y} — Team Snapshot")
                 if _has_achievement:
-     
+                    _fig2 = go.Figure()
+                    _fig2.add_trace(go.Bar(
+                        name="Target",
+                        x=_chart_df["Sales Person"],
+                        y=_chart_df["Target (₹)"],
+                        marker_color="#90caf9",
+                        opacity=0.85,
+                    ))
+                    _fig2.add_trace(go.Bar(
+                        name="Achievement",
+                        x=_chart_df["Sales Person"],
+                        y=_chart_df["Achievement (₹)"],
+                        marker_color=[
+                            "#2e7d32" if v >= t else ("#e65100" if v >= 0.8 * t else "#c62828")
+                            for v, t in zip(_chart_df["Achievement (₹)"], _chart_df["Target (₹)"])
+                        ],
+                        opacity=0.9,
+                    ))
+                    _fig2.update_layout(
+                        barmode="group",
+                        height=350,
+                        yaxis_title="Amount (₹)",
+                        margin=dict(t=20, b=40),
+                        legend=dict(
+                            orientation="h", yanchor="bottom", y=1.02,
+                            xanchor="right", x=1,
+                        ),
+                    )
+                    _fig2.update_yaxes(tickprefix="₹", tickformat=",.0f")
+                    st.plotly_chart(_fig2, use_container_width=True)
+                else:
+                    st.info(
+                        f"No sales recorded yet for {calendar.month_name[_cur_m]} {_cur_y}. "
+                        "The chart will appear once achievement data is available."
+                    )

@@ -34,6 +34,7 @@ pages = [
     st.Page("pages/20_Product_Sales_Analysis.py",       title="Product Sales Analysis",           icon="📊"),
     st.Page("pages/30_Sales_Reports_and_Strategy.py",   title="Sales Reports and Strategy",       icon="💡"),
     st.Page("pages/40_Products_catalog.py",             title="Products Catalog",                 icon="🪑"),
+    st.Page("pages/50_MIS_Update.py",                   title="MIS Update",                       icon="📦"),
     st.Page("pages/70_Leads.py",                        title="Leads",                            icon="🎯"),
     st.Page("pages/90_Sales_Team_Tasks.py",             title="Sales Team Tasks",                 icon="✅"),
     st.Page("pages/95_Happy_Calling.py",                title="Happy Calling",                    icon="📞"),

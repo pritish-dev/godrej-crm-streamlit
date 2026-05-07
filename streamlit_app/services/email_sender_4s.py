@@ -230,11 +230,30 @@ def _payment_display_cols(df: pd.DataFrame) -> list:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _filter_morning_delivery(df: pd.DataFrame) -> pd.DataFrame:
+    """Used by the SCHEDULED job — keeps records with delivery_date ≤ yesterday."""
     today     = datetime.now().date()
     yesterday = today - timedelta(days=1)
     d = df.copy()
     d["_dd"] = pd.to_datetime(d[COL_DELIVERY_DATE], errors="coerce").dt.date
     d = d[(d["_dd"] >= DATA_START_DATE) & (d["_dd"] <= yesterday)].drop(columns=["_dd"])
+    return d.reset_index(drop=True)
+
+
+def _filter_upcoming_delivery(df: pd.DataFrame) -> pd.DataFrame:
+    """Dashboard Pending table — keeps PENDING records with delivery_date >= today."""
+    today = datetime.now().date()
+    d = df.copy()
+    d["_dd"] = pd.to_datetime(d[COL_DELIVERY_DATE], errors="coerce").dt.date
+    d = d[d["_dd"] >= today].drop(columns=["_dd"])
+    return d.reset_index(drop=True)
+
+
+def _filter_overdue_delivery(df: pd.DataFrame) -> pd.DataFrame:
+    """Dashboard Overdue table — keeps PENDING records with delivery_date < today."""
+    today = datetime.now().date()
+    d = df.copy()
+    d["_dd"] = pd.to_datetime(d[COL_DELIVERY_DATE], errors="coerce").dt.date
+    d = d[(d["_dd"] >= DATA_START_DATE) & (d["_dd"] < today)].drop(columns=["_dd"])
     return d.reset_index(drop=True)
 
 
@@ -444,6 +463,106 @@ def send_evening_delivery_email_4s(pending_del: pd.DataFrame) -> dict:
     subject = f"[4s CRM] Evening Pending Delivery Report - {today.strftime('%d %b %Y')} - {total} Pending"
     summary = _send_email(subject, body, job_name="Delivery Email 3 (Evening)", records_count=total)
     print(f"  → Delivery Email 3 (Evening) sent: {total} records")
+    return summary
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DASHBOARD EMAIL A — PENDING (UPCOMING) DELIVERIES
+#   Called from the dashboard "Pending Deliveries" table.
+#   Sends whatever pre-filtered upcoming data the dashboard passes.
+#   Colour-coded: green = tomorrow, white = further future.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def send_upcoming_delivery_email_4s(pending_del: pd.DataFrame) -> dict:
+    """Dashboard: Pending deliveries with delivery_date >= today (upcoming)."""
+    today    = datetime.now().date()
+    tomorrow = today + timedelta(days=1)
+
+    df = _filter_upcoming_delivery(pending_del)
+    total      = len(df)
+    today_cnt  = int((pd.to_datetime(df[COL_DELIVERY_DATE], errors="coerce").dt.date == today).sum())
+    tmrw_cnt   = int((pd.to_datetime(df[COL_DELIVERY_DATE], errors="coerce").dt.date == tomorrow).sum())
+
+    display_cols = _delivery_display_cols(df)
+    df_display   = df[display_cols].copy()
+    df_display   = _fmt_date_col(df_display, COL_DELIVERY_DATE)
+    df_display   = _fmt_date_col(df_display, COL_ORDER_DATE)
+
+    stats_html = (
+        _stat_block(total,     "Total Upcoming Pending", "#1b5e20") +
+        _stat_block(today_cnt, "Due Today",              "#f57c00") +
+        _stat_block(tmrw_cnt,  "Due Tomorrow",           "#388e3c")
+    )
+    legend_html = (
+        "<span style='background:#c8e6c9;padding:2px 8px;border-radius:3px'>🟢 Green = Tomorrow's delivery</span>"
+    )
+
+    body = _email_wrapper(
+        header_title    = "🚛 4SINTERIORS — Upcoming Pending Deliveries",
+        header_subtitle = f"Dashboard Report · {today.strftime('%d %B %Y')} · Delivery date ≥ today",
+        header_color    = "#1b5e20",
+        stats_html      = stats_html,
+        legend_html     = legend_html,
+        table_html      = _html_table_colour_coded(df_display, today),
+        footer_note     = (
+            f"Pending deliveries with delivery_date ≥ {today.strftime('%d %b %Y')} | "
+            "Automated from 4SINTERIORS CRM Dashboard. Do not reply."
+        ),
+    )
+    subject = (
+        f"[4s CRM] Upcoming Pending Deliveries — {today.strftime('%d %b %Y')} — {total} Orders"
+    )
+    summary = _send_email(subject, body,
+                          job_name="Dashboard: Upcoming Delivery Email", records_count=total)
+    return summary
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DASHBOARD EMAIL B — OVERDUE DELIVERY ORDERS
+#   Called from the dashboard "Overdue Delivery Orders" table.
+#   Sends all-red table of pre-filtered overdue data.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def send_overdue_delivery_email_4s(overdue_del: pd.DataFrame) -> dict:
+    """Dashboard: Overdue deliveries with delivery_date < today (all-red alert)."""
+    today = datetime.now().date()
+
+    df    = _filter_overdue_delivery(overdue_del)
+    total = len(df)
+
+    display_cols = _delivery_display_cols(df)
+    df_display   = df[display_cols].copy()
+    df_display   = _fmt_date_col(df_display, COL_DELIVERY_DATE)
+    df_display   = _fmt_date_col(df_display, COL_ORDER_DATE)
+
+    callout_html = _build_sales_person_callout(df)
+
+    stats_html = _stat_block(total, "Overdue Orders — Action Needed", "#c62828")
+    legend_html = (
+        "<span style='background:#ffcccc;padding:2px 8px;border-radius:3px'>"
+        "🔴 All records are overdue — delivery date has passed</span>"
+        "<br><br>"
+        "<strong style='color:#c62828;font-size:14px'>⚠️ Action Required:</strong> "
+        "Sales team must call customers and update the CRM with revised delivery dates."
+    )
+
+    body = _email_wrapper(
+        header_title    = "⚠️ 4SINTERIORS — Overdue Delivery Orders",
+        header_subtitle = f"Overdue Alert · {today.strftime('%d %B %Y')} · Delivery date &lt; today",
+        header_color    = "#b71c1c",
+        stats_html      = stats_html,
+        legend_html     = legend_html,
+        table_html      = _html_table_all_red(df_display) + callout_html,
+        footer_note     = (
+            f"Overdue PENDING deliveries with delivery_date < {today.strftime('%d %b %Y')} | "
+            "Automated from 4SINTERIORS CRM Dashboard. Do not reply."
+        ),
+    )
+    subject = (
+        f"[4s CRM] ⚠️ Overdue Delivery Orders — {today.strftime('%d %b %Y')} — {total} Overdue"
+    )
+    summary = _send_email(subject, body,
+                          job_name="Dashboard: Overdue Delivery Email", records_count=total)
     return summary
 
 

@@ -18,6 +18,8 @@ from services.automation4s import get_alerts, generate_whatsapp_group_link, gene
 from services.email_sender_4s import (
     send_pending_delivery_email_4s,
     send_update_delivery_status_email_4s,
+    send_upcoming_delivery_email_4s,
+    send_overdue_delivery_email_4s,
 )
 from services.delivery_updates import (
     append_pending_delivery_updates,
@@ -551,70 +553,189 @@ s_idx = st.session_state.b2c_page * PAGE_SIZE
 st.dataframe(sales_display.iloc[s_idx : s_idx + PAGE_SIZE], use_container_width=True)
 
 
-# ── Pending Deliveries ────────────────────────────────────────────────────────
+# ── Pending Deliveries — split into UPCOMING and OVERDUE ─────────────────────
+
+# All PENDING rows from CRM
+_all_pending = crm[
+    crm["DELIVERY STATUS"].astype(str).str.upper().str.strip() == "PENDING"
+].copy().sort_values("DELIVERY DATE", ascending=True).reset_index(drop=True)
+
+# Split by date: upcoming = delivery_date >= today, overdue = delivery_date < today
+_del_dates_all = pd.to_datetime(_all_pending["DELIVERY DATE"], errors="coerce").dt.date
+_upcoming_mask = _del_dates_all >= today
+_overdue_mask  = _del_dates_all < today
+
+pending_upcoming_raw = _all_pending[_upcoming_mask].copy().reset_index(drop=True)
+pending_overdue_raw  = _all_pending[_overdue_mask].copy().reset_index(drop=True)
+
+
+# ─── Helper: build the editable data_editor block ────────────────────────────
+
+def _render_delivery_editor(grouped_df: pd.DataFrame, editor_key: str,
+                             save_btn_key: str, section_label: str):
+    """Render an inline editable delivery-date / remarks editor and save logic."""
+    pend_cols    = [c for c in PENDING_DISPLAY_COLS if c in grouped_df.columns]
+    pend_display = grouped_df[pend_cols].copy()
+
+    editor_df = pend_display.copy()
+    if "ORDER DATE" in editor_df.columns:
+        editor_df["ORDER DATE"] = (
+            pd.to_datetime(editor_df["ORDER DATE"], errors="coerce").dt.strftime("%d-%b-%Y")
+        )
+    if "DELIVERY DATE" in editor_df.columns:
+        editor_df["DELIVERY DATE"] = (
+            pd.to_datetime(editor_df["DELIVERY DATE"], errors="coerce").dt.strftime("%d-%b-%Y")
+        )
+    for amt in ("ORDER VALUE", "ADV RECEIVED", "PENDING DUE"):
+        if amt in editor_df.columns:
+            editor_df[amt] = editor_df[amt].apply(fmt_amount)
+
+    editor_df["Updated Delivery Date"] = pd.NaT
+    editor_df["Remarks"]               = ""
+    editor_df["Updated Customer"]      = False
+    editor_df["Updated Date"]          = ""
+
+    editor_cfg = {
+        "Updated Delivery Date": st.column_config.DateColumn(
+            "Updated Delivery Date",
+            help="Tick 'Updated Customer ✓' before saving.",
+            format="DD-MMM-YYYY",
+        ),
+        "Remarks": st.column_config.TextColumn(
+            "Remarks", help="Optional note (max 500 chars)", max_chars=500
+        ),
+        "Updated Customer": st.column_config.CheckboxColumn(
+            "Updated Customer ✓",
+            help="Tick to confirm the customer has been informed.",
+            default=False,
+        ),
+        "Updated Date": st.column_config.TextColumn(
+            "Updated Date", disabled=True, help="Auto-stamped on save."
+        ),
+    }
+    for col in pend_display.columns:
+        editor_cfg[col] = st.column_config.TextColumn(disabled=True)
+
+    edited = st.data_editor(
+        editor_df,
+        column_config=editor_cfg,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="fixed",
+        key=editor_key,
+    )
+
+    if st.button(f"💾 Save {section_label} updates", type="primary", key=save_btn_key):
+        rows_to_log, warnings = [], []
+        for _, r in edited.iterrows():
+            udd  = r.get("Updated Delivery Date")
+            rem  = (r.get("Remarks") or "").strip()
+            tick = bool(r.get("Updated Customer"))
+            if not udd and not rem and not tick:
+                continue
+            if udd and not tick:
+                warnings.append(
+                    f"❗ {r.get('CUSTOMER NAME', '')}: Updated Delivery Date set but "
+                    "'Updated Customer' is unticked — not saved. Tick the box to confirm."
+                )
+                continue
+            rows_to_log.append({
+                "ORDER NO":               r.get("ORDER NO", ""),
+                "CUSTOMER NAME":          r.get("CUSTOMER NAME", ""),
+                "ORIGINAL DELIVERY DATE": r.get("DELIVERY DATE", ""),
+                "UPDATED DELIVERY DATE":  (
+                    udd.strftime("%d-%m-%Y") if hasattr(udd, "strftime") and udd else ""
+                ),
+                "REMARKS":                rem,
+                "UPDATED CUSTOMER (Y/N)": "Y" if tick else "N",
+                "SALES PERSON":           r.get("SALES PERSON", ""),
+            })
+
+        for w in warnings:
+            st.warning(w)
+
+        if rows_to_log:
+            try:
+                n = append_pending_delivery_updates(rows_to_log, updated_by="CRM Dashboard")
+                synced, sync_errors = 0, []
+                for r in rows_to_log:
+                    ord_no = str(r.get("ORDER NO", "")).strip()
+                    new_d  = str(r.get("UPDATED DELIVERY DATE", "")).strip()
+                    if not ord_no or not new_d:
+                        continue
+                    try:
+                        res = update_source_delivery_date(ord_no, new_d)
+                        if res.get("updated", 0) > 0:
+                            synced += res["updated"]
+                        if res.get("skipped"):
+                            sync_errors.extend(res["skipped"])
+                    except Exception as src_err:
+                        sync_errors.append(f"{ord_no}: {src_err}")
+
+                msg = f"✅ Saved {n} update(s) to the Google Sheet."
+                if synced:
+                    msg += f" Source CRM sheet updated for {synced} row(s)."
+                st.success(msg)
+                if sync_errors:
+                    with st.expander("⚠️ Source-sheet sync notes"):
+                        for err in sync_errors:
+                            st.write(f"• {err}")
+                st.cache_data.clear()
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Save failed: {e}")
+        elif not warnings:
+            st.info("Nothing to save — no rows were edited.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SECTION A — PENDING DELIVERIES  (delivery_date ≥ today)
+# ══════════════════════════════════════════════════════════════════════════════
 
 st.divider()
 st.subheader("🚚 Pending Deliveries")
-st.info("🟢 Green = Tomorrow's Deliveries  |  🔴 Red = Overdue / Missed")
+st.info("🟢 Green = Tomorrow's deliveries  |  Upcoming orders only (overdue shown separately below)")
 
-# Individual pending items — not grouped by ORDER NO.
-# If an order has mixed delivery status, only PENDING items appear here.
-pending_del = crm[
-    crm["DELIVERY STATUS"].astype(str).str.upper().str.strip() == "PENDING"
-].copy().sort_values("DELIVERY DATE", ascending=False).reset_index(drop=True)
+if not pending_upcoming_raw.empty:
+    pending_grouped = (
+        group_by_order_no(pending_upcoming_raw)
+        .sort_values("DELIVERY DATE", ascending=True)
+        .reset_index(drop=True)
+    )
 
-if not pending_del.empty:
+    ub1, ub2, ub3, ub4 = st.columns(4)
 
-    # Group by ORDER NO first — used for BOTH emails and display
-    pending_grouped = group_by_order_no(pending_del).sort_values(
-        "DELIVERY DATE", ascending=False
-    ).reset_index(drop=True)
-
-    eb1, eb2, eb3, eb4 = st.columns(4)
-
-    with eb1:
+    with ub1:
         if st.button("📧 Tomorrow's Delivery Email", use_container_width=True, key="em_tomorrow_del"):
-            tomorrow_del = pending_grouped[
+            tmrw_del = pending_grouped[
                 pd.to_datetime(pending_grouped["DELIVERY DATE"], errors="coerce").dt.date == tomorrow
             ]
-            if not tomorrow_del.empty:
+            if not tmrw_del.empty:
                 try:
-                    _smry = send_pending_delivery_email_4s(tomorrow_del)
+                    _smry = send_upcoming_delivery_email_4s(tmrw_del)
                     st.success(f"✅ Tomorrow's Delivery email sent to {len(_smry.get('recipients', []))} recipient(s)!")
-                    with st.expander("📋 Send details"):
+                    with st.expander("📋 Details"):
                         st.write(f"**Recipients:** {', '.join(_smry.get('recipients', []))}")
-                        st.write(f"**Records sent:** {_smry.get('records', len(tomorrow_del))}")
+                        st.write(f"**Records:** {_smry.get('records', len(tmrw_del))}")
                         st.write(f"**Subject:** {_smry.get('subject', '')}")
                 except Exception as e:
                     st.error(f"❌ Failed: {e}")
             else:
                 st.info("No deliveries scheduled for tomorrow.")
 
-    with eb2:
-        if st.button("📧 All Pending Deliveries Email", use_container_width=True, key="em_all_del"):
+    with ub2:
+        if st.button("📧 All Pending Deliveries Email", use_container_width=True, key="em_all_pending_del"):
             try:
-                _smry = send_pending_delivery_email_4s(pending_grouped)
+                _smry = send_upcoming_delivery_email_4s(pending_grouped)
                 st.success(f"✅ All Pending Deliveries email sent to {len(_smry.get('recipients', []))} recipient(s)!")
-                with st.expander("📋 Send details"):
+                with st.expander("📋 Details"):
                     st.write(f"**Recipients:** {', '.join(_smry.get('recipients', []))}")
-                    st.write(f"**Records sent:** {_smry.get('records', len(pending_grouped))}")
+                    st.write(f"**Records:** {_smry.get('records', len(pending_grouped))}")
                     st.write(f"**Subject:** {_smry.get('subject', '')}")
             except Exception as e:
                 st.error(f"❌ Failed: {e}")
 
-    with eb3:
-        if st.button("🔔 Update CRM Reminder Email", use_container_width=True, key="em_upd_del"):
-            try:
-                _smry = send_update_delivery_status_email_4s(pending_grouped)
-                st.success(f"✅ Update CRM Reminder sent to {len(_smry.get('recipients', []))} recipient(s)!")
-                with st.expander("📋 Send details"):
-                    st.write(f"**Recipients:** {', '.join(_smry.get('recipients', []))}")
-                    st.write(f"**Records sent:** {_smry.get('records', len(pending_grouped))}")
-                    st.write(f"**Subject:** {_smry.get('subject', '')}")
-            except Exception as e:
-                st.error(f"❌ Failed: {e}")
-
-    with eb4:
+    with ub3:
         if st.button("🚀 WhatsApp Delivery Alerts", use_container_width=True, key="wa_del"):
             alerts = get_alerts(crm, team_df, "delivery")
             if alerts:
@@ -633,153 +754,132 @@ if not pending_del.empty:
             else:
                 st.info("No delivery alerts for tomorrow.")
 
-    pend_cols     = [c for c in PENDING_DISPLAY_COLS if c in pending_grouped.columns]
-    pend_display  = pending_grouped[pend_cols].copy()
-
-    # ── Highlighted read-only view (overdue = red, tomorrow = green) ──────
-    raw_del_dates = pd.to_datetime(
-        pending_grouped["DELIVERY DATE"], errors="coerce"
-    ).reset_index(drop=True)
-    styled_pending = pend_display.style.apply(
-        highlight_delivery,
-        raw_dates=raw_del_dates,
-        today=today,
-        tomorrow=tomorrow,
-        axis=1,
-    )
-    st.dataframe(styled_pending, use_container_width=True, hide_index=True)
-
-    # ── Editable section ──────────────────────────────────────────────────
-    # Build the editor frame: read-only base columns + 4 new editable ones:
-    #   Updated Delivery Date | Remarks | Updated Customer (✓) | Updated Date
-    editor_df = pend_display.copy()
-    if "ORDER DATE" in editor_df.columns:
-        editor_df["ORDER DATE"] = pd.to_datetime(editor_df["ORDER DATE"], errors="coerce").dt.strftime("%d-%b-%Y")
-    if "DELIVERY DATE" in editor_df.columns:
-        editor_df["DELIVERY DATE"] = pd.to_datetime(editor_df["DELIVERY DATE"], errors="coerce").dt.strftime("%d-%b-%Y")
-    for amt in ("ORDER VALUE", "ADV RECEIVED", "PENDING DUE"):
-        if amt in editor_df.columns:
-            editor_df[amt] = editor_df[amt].apply(fmt_amount)
-
-    editor_df["Updated Delivery Date"] = pd.NaT
-    editor_df["Remarks"] = ""
-    editor_df["Updated Customer"] = False
-    editor_df["Updated Date"] = ""
-
-    editor_cfg = {
-        "Updated Delivery Date": st.column_config.DateColumn(
-            "Updated Delivery Date",
-            help="Tick 'Updated Customer' BEFORE saving an updated delivery date.",
-            format="DD-MMM-YYYY",
+    # Read-only colour-coded view (green = tomorrow, red = today, white = future)
+    pend_cols    = [c for c in PENDING_DISPLAY_COLS if c in pending_grouped.columns]
+    pend_display = pending_grouped[pend_cols].copy()
+    raw_del_dates = pd.to_datetime(pending_grouped["DELIVERY DATE"], errors="coerce").reset_index(drop=True)
+    st.dataframe(
+        pend_display.style.apply(
+            highlight_delivery, raw_dates=raw_del_dates, today=today, tomorrow=tomorrow, axis=1
         ),
-        "Remarks": st.column_config.TextColumn(
-            "Remarks",
-            help="Optional note (max 500 chars)",
-            max_chars=500,
-        ),
-        "Updated Customer": st.column_config.CheckboxColumn(
-            "Updated Customer ✓",
-            help="Tick to confirm you have informed the customer of the new delivery date.",
-            default=False,
-        ),
-        "Updated Date": st.column_config.TextColumn(
-            "Updated Date",
-            disabled=True,
-            help="Auto-stamped when the row is saved.",
-        ),
-    }
-    # Disable every other column so users only edit the four new ones
-    for col in pend_display.columns:
-        editor_cfg[col] = st.column_config.TextColumn(disabled=True)
-
-    edited_pend = st.data_editor(
-        editor_df,
-        column_config=editor_cfg,
         use_container_width=True,
         hide_index=True,
-        num_rows="fixed",
-        key="pending_delivery_editor",
     )
 
-    if st.button("💾 Save Pending Delivery updates", type="primary", key="save_pending_del_updates"):
-        rows_to_log = []
-        warnings = []
-        for _, r in edited_pend.iterrows():
-            udd  = r.get("Updated Delivery Date")
-            rem  = (r.get("Remarks") or "").strip()
-            tick = bool(r.get("Updated Customer"))
-            if not udd and not rem and not tick:
-                continue   # row untouched
-
-            if udd and not tick:
-                warnings.append(
-                    f"❗ {r.get('CUSTOMER NAME', '')}: "
-                    "Updated Delivery Date is set but the 'Updated Customer' "
-                    "checkbox is unticked — record was NOT saved. "
-                    "Tick the box if you have informed the customer."
-                )
-                continue
-
-            row = {
-                "ORDER NO":               r.get("ORDER NO", ""),
-                "CUSTOMER NAME":          r.get("CUSTOMER NAME", ""),
-                "ORIGINAL DELIVERY DATE": r.get("DELIVERY DATE", ""),
-                "UPDATED DELIVERY DATE":  udd.strftime("%d-%m-%Y") if hasattr(udd, "strftime") and udd else "",
-                "REMARKS":                rem,
-                "UPDATED CUSTOMER (Y/N)": "Y" if tick else "N",
-                "SALES PERSON":           r.get("SALES PERSON", ""),
-            }
-            rows_to_log.append(row)
-
-        for w in warnings:
-            st.warning(w)
-
-        if rows_to_log:
-            try:
-                n = append_pending_delivery_updates(rows_to_log, updated_by="CRM Dashboard")
-
-                # Also push the new delivery date back into the SOURCE CRM sheet
-                # for every row that had an Updated Delivery Date set.
-                synced, sync_errors = 0, []
-                for r in rows_to_log:
-                    ord_no = str(r.get("ORDER NO", "")).strip()
-                    new_d  = str(r.get("UPDATED DELIVERY DATE", "")).strip()
-                    if not ord_no or not new_d:
-                        continue
-                    try:
-                        res = update_source_delivery_date(ord_no, new_d)
-                        if res.get("updated", 0) > 0:
-                            synced += res["updated"]
-                        if res.get("skipped"):
-                            sync_errors.extend(res["skipped"])
-                    except Exception as src_err:
-                        sync_errors.append(f"{ord_no}: {src_err}")
-
-                msg = f"✅ Saved {n} pending-delivery update(s) to the Google Sheet."
-                if synced:
-                    msg += f" Source CRM sheet's Delivery Date updated for {synced} row(s)."
-                st.success(msg)
-                if sync_errors:
-                    with st.expander("⚠️ Source-sheet sync notes"):
-                        for err in sync_errors:
-                            st.write(f"• {err}")
-
-                st.cache_data.clear()
-                st.rerun()
-            except Exception as e:
-                st.error(f"❌ Save failed: {e}")
-        elif not warnings:
-            st.info("Nothing to save — no rows were edited.")
+    st.caption("✏️ Use the editor below to log an updated delivery date after calling the customer.")
+    _render_delivery_editor(
+        pending_grouped,
+        editor_key="pending_delivery_editor",
+        save_btn_key="save_pending_del_updates",
+        section_label="Pending Delivery",
+    )
 
     dm1, dm2, dm3 = st.columns(3)
-    dm1.metric("📦 Total Pending Orders", len(pending_grouped))
+    dm1.metric("📦 Total Upcoming Pending", len(pending_grouped))
     dm2.metric("🟢 Tomorrow",
                int((pd.to_datetime(pending_grouped["DELIVERY DATE"], errors="coerce").dt.date == tomorrow).sum()))
-    dm3.metric("🔴 Overdue",
-               int((pd.to_datetime(pending_grouped["DELIVERY DATE"], errors="coerce").dt.date < today).sum()))
-
+    dm3.metric("📅 Due Today",
+               int((pd.to_datetime(pending_grouped["DELIVERY DATE"], errors="coerce").dt.date == today).sum()))
 else:
-    st.success("✅ No pending deliveries right now!")
+    st.success("✅ No upcoming pending deliveries!")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SECTION B — OVERDUE DELIVERY ORDERS  (delivery_date < today)
+# ══════════════════════════════════════════════════════════════════════════════
+
+st.divider()
+st.subheader("⚠️ Overdue Delivery Orders")
+st.error("🔴 All orders below have passed their delivery date and are still PENDING — immediate follow-up required.")
+
+if not pending_overdue_raw.empty:
+    overdue_grouped = (
+        group_by_order_no(pending_overdue_raw)
+        .sort_values("DELIVERY DATE", ascending=True)
+        .reset_index(drop=True)
+    )
+
+    ob1, ob2, ob3 = st.columns(3)
+
+    with ob1:
+        if st.button("📧 Overdue Delivery Alert Email", use_container_width=True, key="em_overdue_del"):
+            try:
+                _smry = send_overdue_delivery_email_4s(overdue_grouped)
+                st.success(f"✅ Overdue Delivery email sent to {len(_smry.get('recipients', []))} recipient(s)!")
+                with st.expander("📋 Details"):
+                    st.write(f"**Recipients:** {', '.join(_smry.get('recipients', []))}")
+                    st.write(f"**Records:** {_smry.get('records', len(overdue_grouped))}")
+                    st.write(f"**Subject:** {_smry.get('subject', '')}")
+            except Exception as e:
+                st.error(f"❌ Failed: {e}")
+
+    with ob2:
+        if st.button("🔔 CRM Update Reminder Email", use_container_width=True, key="em_upd_overdue"):
+            try:
+                _smry = send_update_delivery_status_email_4s(overdue_grouped)
+                st.success(f"✅ CRM Update Reminder sent to {len(_smry.get('recipients', []))} recipient(s)!")
+                with st.expander("📋 Details"):
+                    st.write(f"**Recipients:** {', '.join(_smry.get('recipients', []))}")
+                    st.write(f"**Records:** {_smry.get('records', len(overdue_grouped))}")
+                    st.write(f"**Subject:** {_smry.get('subject', '')}")
+            except Exception as e:
+                st.error(f"❌ Failed: {e}")
+
+    with ob3:
+        if st.button("🚀 WhatsApp Overdue Alerts", use_container_width=True, key="wa_overdue"):
+            alerts = get_alerts(crm, team_df, "delivery")
+            if alerts:
+                st.caption("Choose how to open WhatsApp:")
+                _wa_ov_mode = st.radio(
+                    "WhatsApp mode (overdue)",
+                    ["📱 App (WhatsApp desktop/mobile)", "🌐 Web (WhatsApp Web in browser)"],
+                    horizontal=True,
+                    key="wa_ov_mode",
+                    label_visibility="collapsed",
+                )
+                _ov_use_app = _wa_ov_mode.startswith("📱")
+                for sp, msg in alerts:
+                    _link = generate_whatsapp_group_link(msg) if _ov_use_app else generate_whatsapp_web_link(msg)
+                    st.link_button(f"{'📱' if _ov_use_app else '🌐'} Send to {sp}", _link)
+            else:
+                st.info("No overdue WhatsApp alerts configured.")
+
+    # All-red read-only table
+    ov_cols      = [c for c in PENDING_DISPLAY_COLS if c in overdue_grouped.columns]
+    ov_display   = overdue_grouped[ov_cols].copy()
+    raw_ov_dates = pd.to_datetime(overdue_grouped["DELIVERY DATE"], errors="coerce").reset_index(drop=True)
+    ov_display_fmt = ov_display.copy()
+    if "ORDER DATE" in ov_display_fmt.columns:
+        ov_display_fmt["ORDER DATE"] = fmt_date(ov_display_fmt["ORDER DATE"])
+    if "DELIVERY DATE" in ov_display_fmt.columns:
+        ov_display_fmt["DELIVERY DATE"] = fmt_date(ov_display_fmt["DELIVERY DATE"])
+    ov_display_fmt = apply_amount_fmt(ov_display_fmt, ["ORDER VALUE", "ADV RECEIVED", "PENDING DUE"])
+    st.dataframe(
+        ov_display_fmt.style.apply(
+            highlight_delivery, raw_dates=raw_ov_dates, today=today, tomorrow=tomorrow, axis=1
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.caption("✏️ Use the editor below to log the updated delivery date after calling the customer.")
+    _render_delivery_editor(
+        overdue_grouped,
+        editor_key="overdue_delivery_editor",
+        save_btn_key="save_overdue_del_updates",
+        section_label="Overdue Delivery",
+    )
+
+    om1, om2, om3 = st.columns(3)
+    om1.metric("🔴 Total Overdue Orders", len(overdue_grouped))
+    om2.metric("📅 Oldest Overdue",
+               pd.to_datetime(overdue_grouped["DELIVERY DATE"], errors="coerce").min().strftime("%d-%b-%Y")
+               if not overdue_grouped.empty else "—")
+    om3.metric("💸 Overdue Pending Due",
+               f"₹{overdue_grouped['PENDING DUE'].sum():,.0f}"
+               if "PENDING DUE" in overdue_grouped.columns else "—")
+else:
+    st.success("✅ No overdue delivery orders!")
 
 
 # ── Payment Due ───────────────────────────────────────────────────────────────
