@@ -509,14 +509,57 @@ if not df_display.empty and all_execs:
     """, unsafe_allow_html=True)
 
     format_cols = {col: "{:,.2f}" for col in df_display.columns if col != "Date"}
+
+    _sp_cols = [c for c in df_display.columns if c not in ("Date", "Store Total")]
+
+    def _daily_sales_style(row):
+        styles = [""] * len(row)
+        col_list = list(row.index)
+        is_total_row = str(row.get("Date", "")).strip().upper() == "TOTAL"
+        store_total  = row.get("Store Total", 0)
+        try:
+            store_total = float(store_total)
+        except Exception:
+            store_total = 0.0
+
+        if is_total_row:
+            return styles  # leave totals row unstyled
+
+        if store_total == 0:
+            # Entire row red when store has zero sales
+            return ["background-color:#ffcccc"] * len(row)
+
+        if store_total > 500_000:
+            # Entire row green when store total > 5 lakh
+            row_styles = ["background-color:#c8e6c9;font-weight:bold"] * len(row)
+        else:
+            row_styles = [""] * len(row)
+
+        # Individual SP cell: red if zero, red if > 5 lakh
+        for sp in _sp_cols:
+            if sp in col_list:
+                idx = col_list.index(sp)
+                try:
+                    val = float(row[sp])
+                except Exception:
+                    val = 0.0
+                if val == 0:
+                    row_styles[idx] = "background-color:#ffcccc"
+                elif val > 500_000:
+                    row_styles[idx] = "background-color:#ffcccc;font-weight:bold"
+
+        return row_styles
+
     styled_html = (
         df_display.style
         .format(format_cols)
+        .apply(_daily_sales_style, axis=1)
         .set_table_attributes('class="squeezed-table"')
         .hide(axis="index")
         .to_html()
     )
     st.write(f'<div class="table-scroll-container">{styled_html}</div>', unsafe_allow_html=True)
+    st.caption("🔴 Red row = Zero store sales | 🟢 Green row = Store > ₹5L | 🔴 Red cell = SP zero or > ₹5L individual")
 
     # ── GMB Review Count Table ────────────────────────────────────────────────
     total_reviews_period = int(df_reviews[df_reviews["Date"] == "TOTAL"]["Store Total"].iloc[0]) \
@@ -894,34 +937,4 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                 _has_achievement = _chart_df["Achievement (₹)"].sum() > 0
                 st.subheader(f"📊 {calendar.month_name[_cur_m]} {_cur_y} — Team Snapshot")
                 if _has_achievement:
-                    _fig2 = go.Figure()
-                    _fig2.add_trace(go.Bar(
-                        name="Target",
-                        x=_chart_df["Sales Person"],
-                        y=_chart_df["Target (₹)"],
-                        marker_color="#90caf9", opacity=0.85,
-                    ))
-                    _fig2.add_trace(go.Bar(
-                        name="Achievement",
-                        x=_chart_df["Sales Person"],
-                        y=_chart_df["Achievement (₹)"],
-                        marker_color=[
-                            "#2e7d32" if v >= t else ("#e65100" if v >= 0.8 * t else "#c62828")
-                            for v, t in zip(_chart_df["Achievement (₹)"], _chart_df["Target (₹)"])
-                        ],
-                        opacity=0.9,
-                    ))
-                    _fig2.update_layout(
-                        barmode="group", height=350,
-                        yaxis_title="Amount (₹)", margin=dict(t=20, b=40),
-                        legend=dict(
-                            orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1
-                        ),
-                    )
-                    _fig2.update_yaxes(tickprefix="₹", tickformat=",.0f")
-                    st.plotly_chart(_fig2, use_container_width=True)
-                else:
-                    st.info(
-                        f"No sales recorded yet for {calendar.month_name[_cur_m]} {_cur_y}. "
-                        "The chart will appear once achievement data is available."
-                    )
+     

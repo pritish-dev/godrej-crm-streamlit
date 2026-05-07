@@ -636,6 +636,19 @@ if not pending_del.empty:
     pend_cols     = [c for c in PENDING_DISPLAY_COLS if c in pending_grouped.columns]
     pend_display  = pending_grouped[pend_cols].copy()
 
+    # ── Highlighted read-only view (overdue = red, tomorrow = green) ──────
+    raw_del_dates = pd.to_datetime(
+        pending_grouped["DELIVERY DATE"], errors="coerce"
+    ).reset_index(drop=True)
+    styled_pending = pend_display.style.apply(
+        highlight_delivery,
+        raw_dates=raw_del_dates,
+        today=today,
+        tomorrow=tomorrow,
+        axis=1,
+    )
+    st.dataframe(styled_pending, use_container_width=True, hide_index=True)
+
     # ── Editable section ──────────────────────────────────────────────────
     # Build the editor frame: read-only base columns + 4 new editable ones:
     #   Updated Delivery Date | Remarks | Updated Customer (✓) | Updated Date
