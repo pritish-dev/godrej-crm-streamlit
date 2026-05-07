@@ -346,7 +346,7 @@ def send_schedule_delivery_email(
         })
 
         # 2. Try to fetch invoice for this customer
-        atts, msg = fetch_customer_invoices(cust, cnum)
+        atts, msg = fetch_customer_invoices(gso, cnum)
         invoice_status_per_customer.append(f"{cust}: {msg}")
         if not atts:
             missing_invoices.append(cust)
