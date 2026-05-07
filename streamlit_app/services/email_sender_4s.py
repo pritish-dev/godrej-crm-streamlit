@@ -567,6 +567,118 @@ def send_overdue_delivery_email_4s(overdue_del: pd.DataFrame) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# COMBINED DELIVERY ALERT  (dashboard button + scheduled job)
+#
+#   Accepts two pre-filtered DataFrames:
+#     pending_df — PENDING orders with delivery_date >= today  (upcoming)
+#     overdue_df — PENDING orders with delivery_date <  today  (overdue)
+#
+#   Builds ONE email with two clearly labelled sections + stat counts.
+#   Skips sending (returns immediately) when both DataFrames are empty.
+#   Subject is passed by the caller so morning vs evening differ.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def send_combined_delivery_alert_email_4s(
+    pending_df: pd.DataFrame,
+    overdue_df: pd.DataFrame,
+    subject: str,
+) -> dict:
+    """
+    Single combined delivery-alert email — used by both the dashboard
+    'All Pending Delivery Alerts' button and the GitHub Actions job.
+
+    Returns a status dict.  When both DataFrames are empty the email is
+    NOT sent and {"sent": False, "error": "no_records"} is returned.
+    """
+    pending_count = len(pending_df) if pending_df is not None and not pending_df.empty else 0
+    overdue_count = len(overdue_df) if overdue_df is not None and not overdue_df.empty else 0
+    total         = pending_count + overdue_count
+
+    if total == 0:
+        print("[Combined Delivery Alert] No records — email skipped.")
+        return {
+            "sent": False, "recipients": RECIPIENTS or [],
+            "subject": subject, "records": 0, "error": "no_records",
+        }
+
+    today    = datetime.now().date()
+
+    # ── Stats block ──────────────────────────────────────────────────────────
+    stats_html = (
+        _stat_block(pending_count, "Upcoming Pending",  "#1b5e20") +
+        _stat_block(overdue_count, "Overdue",           "#c62828") +
+        _stat_block(total,         "Total Alerts",      "#424242")
+    )
+
+    # ── Two-section body ─────────────────────────────────────────────────────
+    sections_html = ""
+
+    if pending_count > 0:
+        display_cols = _delivery_display_cols(pending_df)
+        df_p = pending_df[display_cols].copy()
+        df_p = _fmt_date_col(df_p, COL_DELIVERY_DATE)
+        df_p = _fmt_date_col(df_p, COL_ORDER_DATE)
+        sections_html += (
+            "<h3 style='color:#1b5e20;font-family:Arial,sans-serif;"
+            "margin:24px 0 8px;font-size:15px;border-bottom:2px solid #c8e6c9;"
+            "padding-bottom:6px'>🚚 Upcoming Pending Deliveries"
+            f" &nbsp;<span style='font-weight:normal;font-size:13px'>"
+            f"({pending_count} order(s))</span></h3>"
+            + _html_table_colour_coded(df_p, today)
+        )
+
+    if overdue_count > 0:
+        display_cols = _delivery_display_cols(overdue_df)
+        df_o = overdue_df[display_cols].copy()
+        df_o = _fmt_date_col(df_o, COL_DELIVERY_DATE)
+        df_o = _fmt_date_col(df_o, COL_ORDER_DATE)
+        callout_html = _build_sales_person_callout(overdue_df)
+        sections_html += (
+            "<h3 style='color:#c62828;font-family:Arial,sans-serif;"
+            "margin:24px 0 8px;font-size:15px;border-bottom:2px solid #ffcdd2;"
+            "padding-bottom:6px'>⚠️ Overdue Delivery Orders"
+            f" &nbsp;<span style='font-weight:normal;font-size:13px'>"
+            f"({overdue_count} order(s))</span></h3>"
+            + _html_table_all_red(df_o)
+            + callout_html
+        )
+
+    legend_html = (
+        "<span style='background:#c8e6c9;padding:2px 8px;border-radius:3px'>"
+        "🟢 Green = Tomorrow's delivery</span>&nbsp;&nbsp;"
+        "<span style='background:#ffcccc;padding:2px 8px;border-radius:3px'>"
+        "🔴 Red = Overdue</span>"
+    )
+
+    # Header colour: red if any overdue, green if only upcoming
+    header_color = "#b71c1c" if overdue_count > 0 else "#1b5e20"
+
+    body = _email_wrapper(
+        header_title    = "🚛 4SINTERIORS — Pending Delivery Alerts",
+        header_subtitle = today.strftime("%d %B %Y"),
+        header_color    = header_color,
+        stats_html      = stats_html,
+        legend_html     = legend_html,
+        table_html      = sections_html,
+        footer_note     = (
+            f"Upcoming: {pending_count} order(s) · Overdue: {overdue_count} order(s) | "
+            "Automated from 4SINTERIORS CRM. Do not reply."
+        ),
+    )
+
+    summary = _send_email(
+        subject, body,
+        job_name="Combined Delivery Alert",
+        records_count=total,
+    )
+    print(
+        f"  → Combined Delivery Alert sent: {pending_count} upcoming + "
+        f"{overdue_count} overdue · subject='{subject}'"
+    )
+    return summary
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # EMAIL 4 — PAYMENT DUE MORNING  (10:00 AM)
 #
 #   • PENDING_DUE > 0  (ORDER VALUE − ADV RECEIVED)

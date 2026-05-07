@@ -1,61 +1,47 @@
 """
 streamlit_app/email_job.py
 
-Unified CRM Delivery Email Job — called by GitHub Actions.
+CRM Combined Delivery Alert Job — called by GitHub Actions.
 
-Schedule (cron set in .github/workflows/godrej-email.yaml):
-  08:00 AM IST  [SLOT=morning]  → Email 1: Pending deliveries with delivery_date ≤ yesterday (D-1)
-  09:00 AM IST  [SLOT=reminder] → Email 2: All pending (delivery_date ≤ today) — action required
-  03:00 PM IST  [SLOT=evening]  → Email 3: Evening pending (delivery_date ≤ today)
+Schedule (godrej-email.yaml):
+  07:00 AM IST  [SLOT=morning]  → subject "[4s CRM] Pending Delivery Alerts"
+  04:00 PM IST  [SLOT=evening]  → subject "[4s CRM] Update on Pending Delivery Alerts"
 
-Manual trigger via MANUAL_JOB env var:
-  crm_email1 → morning
-  crm_email2 → reminder
-  crm_email3 → evening
-
-ISOLATION GUARANTEE:
-  This script ONLY honours MANUAL_JOB or SLOT. There is no hour-based fallback —
-  if a cron run somehow triggers without SLOT being set (shouldn't happen), the
-  job exits with code 1 and sends nothing. This prevents a delayed/misfired run
-  from ever sending an email that wasn't scheduled for that time.
+Rules:
+  • No email is sent when both upcoming and overdue lists are empty.
+  • SLOT must be set explicitly by the workflow — no hour-based fallback.
+  • Manual trigger via workflow_dispatch sets SLOT through the workflow env.
 """
 
 import sys
 import os
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pandas as pd
 from services.sheets import get_df
-from services.email_sender_4s import (
-    send_pending_delivery_email_4s,
-    send_update_delivery_status_email_4s,
-    send_evening_delivery_email_4s,
-)
+from services.email_sender_4s import send_combined_delivery_alert_email_4s
 
-# ── IST time ──────────────────────────────────────────────────────────────────
-IST          = timezone(timedelta(hours=5, minutes=30))
-now_ist      = datetime.now(IST)
-current_hour = now_ist.hour
+# ── IST clock ─────────────────────────────────────────────────────────────────
+IST     = timezone(timedelta(hours=5, minutes=30))
+now_ist = datetime.now(IST)
+today   = now_ist.date()
 
-print(f"[Delivery Email Job] Running at IST: {now_ist.strftime('%Y-%m-%d %H:%M')}")
+SLOT = os.getenv("SLOT", "").strip().lower()
 
-MANUAL_JOB = os.getenv("MANUAL_JOB", "").strip()
-SLOT       = os.getenv("SLOT", "").strip().lower()   # morning | reminder | evening
-
-print(f"[Delivery Email Job] SLOT={SLOT!r}  MANUAL_JOB={MANUAL_JOB!r}  hour={current_hour}")
+print(f"[Delivery Alert Job] IST: {now_ist.strftime('%Y-%m-%d %H:%M')}  SLOT={SLOT!r}")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def parse_mixed_dates(series):
-    """Parse mixed-format date strings safely (never crashes on bad input)."""
+def _parse_dates(series: pd.Series) -> pd.Series:
+    """Robust multi-format date parser (never crashes on bad input)."""
     series = series.astype(str).str.strip()
     parsed = []
     for val in series:
         d = pd.NaT
-        for fmt in ("%d-%m-%Y", "%d-%b-%Y", "%d/%m/%Y"):
+        for fmt in ("%d-%m-%Y", "%d-%b-%Y", "%d/%m/%Y", "%Y-%m-%d"):
             try:
                 d = datetime.strptime(val, fmt)
                 break
@@ -71,37 +57,39 @@ def _group_by_order_no(df: pd.DataFrame) -> pd.DataFrame:
     """Collapse line-items sharing an ORDER NO into one row."""
     if df.empty or "ORDER NO" not in df.columns:
         return df
-    valid_mask = (
-        df["ORDER NO"].notna() &
-        (~df["ORDER NO"].astype(str).str.strip().str.upper().isin(["", "NAN", "NONE"]))
+    valid = df["ORDER NO"].notna() & (
+        ~df["ORDER NO"].astype(str).str.strip().str.upper().isin(["", "NAN", "NONE"])
     )
-    has_no = df[valid_mask].copy()
-    no_no  = df[~valid_mask].copy()
+    has_no, no_no = df[valid].copy(), df[~valid].copy()
     if has_no.empty:
         return df
+
     agg = {}
     if "PRODUCT NAME" in has_no.columns:
         agg["PRODUCT NAME"] = lambda x: ",\n".join(
-            x.dropna().astype(str).str.strip().unique())
-    for col in ["QTY", "ORDER VALUE", "GROSS AMT EX-TAX", "ADV RECEIVED", "ADVANCE RECEIVED"]:
+            x.dropna().astype(str).str.strip().unique()
+        )
+    for col in ("QTY", "ORDER VALUE", "GROSS AMT EX-TAX", "ADV RECEIVED"):
         if col in has_no.columns:
             agg[col] = "sum"
-    for col in ["ORDER DATE", "CUSTOMER NAME", "CONTACT NUMBER", "EMAIL ADDRESS",
+    for col in ("ORDER DATE", "CUSTOMER NAME", "CONTACT NUMBER", "EMAIL ADDRESS",
                 "CATEGORY", "SALES PERSON", "DELIVERY DATE",
-                "DELIVERY STATUS", "REMARKS", "SOURCE"]:
+                "DELIVERY STATUS", "REMARKS", "SOURCE"):
         if col in has_no.columns and col not in agg:
             agg[col] = "first"
-    if not agg:
-        return df
+
     grouped = has_no.groupby("ORDER NO", sort=False, as_index=False).agg(agg)
     return pd.concat([grouped, no_no], ignore_index=True)
 
 
 # ── Data loader ───────────────────────────────────────────────────────────────
 
-def fetch_all_pending():
-    """Load ALL pending delivery records from Franchise + 4S Interiors sheets."""
-    print("  → Fetching delivery data from Google Sheets...")
+def fetch_all_pending() -> pd.DataFrame:
+    """
+    Load all PENDING delivery records from every Franchise + 4S sheet
+    listed in SHEET_DETAILS. Returns grouped-by-ORDER-NO DataFrame.
+    """
+    print("  → Fetching delivery data from Google Sheets …")
     config_df = get_df("SHEET_DETAILS")
     if config_df is None or config_df.empty:
         print("  → SHEET_DETAILS not found.")
@@ -119,20 +107,19 @@ def fetch_all_pending():
     )
 
     dfs = []
-    for source_label, sheet_list in [("Franchise", franchise_sheets), ("4S Interiors", fours_sheets)]:
+    for label, sheet_list in [("Franchise", franchise_sheets), ("4S Interiors", fours_sheets)]:
         for name in sheet_list:
             try:
                 df = get_df(name)
                 if df is None or df.empty:
                     continue
-                df.columns = [str(col).strip().upper() for col in df.columns]
-                df = df.loc[:, ~df.columns.duplicated()]
-                df = df.dropna(axis=1, how="all")
-                df["SOURCE"] = source_label
+                df.columns = [str(c).strip().upper() for c in df.columns]
+                df = df.loc[:, ~df.columns.duplicated()].dropna(axis=1, how="all")
+                df["SOURCE"] = label
                 dfs.append(df)
-                print(f"  → Loaded '{name}' ({source_label}): {len(df)} rows")
-            except Exception as e:
-                print(f"  → Skipping sheet '{name}': {e}")
+                print(f"  → Loaded '{name}' ({label}): {len(df)} rows")
+            except Exception as exc:
+                print(f"  → Skipping '{name}': {exc}")
 
     if not dfs:
         print("  → No data found.")
@@ -140,7 +127,7 @@ def fetch_all_pending():
 
     crm = pd.concat(dfs, ignore_index=True, sort=False)
 
-    # Rename column variants
+    # Normalise column names
     crm = crm.rename(columns={
         "ORDER UNIT PRICE=(AFTER DISC + TAX)":             "ORDER VALUE",
         "CROSS CHECK GROSS AMT (ORDER VALUE WITHOUT TAX)": "GROSS AMT EX-TAX",
@@ -149,21 +136,20 @@ def fetch_all_pending():
         "CUSTOMER DELIVERY DATE":                          "DELIVERY DATE",
         "SALES REP":                                       "SALES PERSON",
         "SALES EXECUTIVE":                                 "SALES PERSON",
-        "ADV RECEIVED":                                    "ADV RECEIVED",
         "ADVANCE RECEIVED":                                "ADV RECEIVED",
+        "DELIVERY REMARKS(DELIVERED/PENDING)":             "DELIVERY STATUS",
+        "DELIVERY REMARKS (DELIVERED/PENDING)":            "DELIVERY STATUS",
+        "DELIVERY REMARKS":                                "DELIVERY STATUS",
     })
     crm = crm.loc[:, ~crm.columns.duplicated()]
 
-    # Resolve delivery status column
+    # Resolve delivery-status column if still missing
     if "DELIVERY STATUS" not in crm.columns:
-        found = None
         for col in crm.columns:
             n = str(col).upper().strip().replace(" ", "")
             if n.startswith("DELIVERYREMARKS") or n in ("REMARKS", "DELIVERYSTATUS"):
-                found = col
+                crm = crm.rename(columns={col: "DELIVERY STATUS"})
                 break
-        if found:
-            crm = crm.rename(columns={found: "DELIVERY STATUS"})
         else:
             crm["DELIVERY STATUS"] = "PENDING"
 
@@ -171,77 +157,77 @@ def fetch_all_pending():
     for col in ("ORDER VALUE", "ADV RECEIVED", "GROSS AMT EX-TAX"):
         if col in crm.columns:
             crm[col] = pd.to_numeric(
-                crm[col].astype(str).str.replace(r"[₹,\s]", "", regex=True), errors="coerce"
+                crm[col].astype(str).str.replace(r"[₹,\s]", "", regex=True),
+                errors="coerce",
             ).fillna(0)
-
     if "ORDER VALUE" not in crm.columns and "GROSS AMT EX-TAX" in crm.columns:
         crm["ORDER VALUE"] = crm["GROSS AMT EX-TAX"]
 
     # Date cleanup
     for date_col in ("ORDER DATE", "DELIVERY DATE"):
         if date_col in crm.columns:
-            crm[date_col] = parse_mixed_dates(crm[date_col])
+            crm[date_col] = _parse_dates(crm[date_col])
 
-    # Filter valid orders
+    # Filter valid orders (positive value only)
     if "ORDER VALUE" in crm.columns:
         crm = crm[crm["ORDER VALUE"] > 0].copy()
 
-    # Default empty status → PENDING
-    empty_mask = crm["DELIVERY STATUS"].astype(str).str.strip().isin(
-        ["", "nan", "NaN", "None", "none"])
-    crm.loc[empty_mask, "DELIVERY STATUS"] = "PENDING"
+    # Default blank status → PENDING
+    crm["DELIVERY STATUS"] = crm["DELIVERY STATUS"].astype(str).str.strip()
+    crm.loc[
+        crm["DELIVERY STATUS"].isin(["", "nan", "NaN", "None", "none"]),
+        "DELIVERY STATUS",
+    ] = "PENDING"
 
     # Keep only PENDING rows
     pending = crm[
         crm["DELIVERY STATUS"].astype(str).str.upper().str.strip() == "PENDING"
     ].copy()
 
-    print(f"  → {len(pending)} pending line-items total")
+    print(f"  → {len(pending)} pending line-item(s) before grouping.")
     pending = _group_by_order_no(pending)
-    print(f"  → {len(pending)} pending orders after grouping by ORDER NO.")
+    print(f"  → {len(pending)} pending order(s) after grouping.")
     return pending
+
+
+def split_by_date(df: pd.DataFrame):
+    """
+    Split a DataFrame of PENDING orders into:
+      upcoming — delivery_date >= today
+      overdue  — delivery_date <  today
+    Both sorted oldest-first.
+    """
+    if df.empty or "DELIVERY DATE" not in df.columns:
+        return pd.DataFrame(), pd.DataFrame()
+    dd = pd.to_datetime(df["DELIVERY DATE"], errors="coerce").dt.date
+    upcoming = df[dd >= today].copy().sort_values("DELIVERY DATE").reset_index(drop=True)
+    overdue  = df[dd <  today].copy().sort_values("DELIVERY DATE").reset_index(drop=True)
+    print(f"  → Split: {len(upcoming)} upcoming, {len(overdue)} overdue.")
+    return upcoming, overdue
 
 
 # ── Execute ───────────────────────────────────────────────────────────────────
 
-pending = fetch_all_pending()
-
-if pending.empty:
-    print("[Delivery Email Job] No pending deliveries found. Skipping email.")
-    sys.exit(0)
-
-# PRIORITY 1: Manual trigger
-if MANUAL_JOB in ("crm_email1", "godrej_email1", "fours_email1"):
-    print("Manual → Sending Morning Pending Delivery Report...")
-    send_pending_delivery_email_4s(pending)
-
-elif MANUAL_JOB in ("crm_email2", "godrej_email2", "fours_email2"):
-    print("Manual → Sending Delivery Status Reminder...")
-    send_update_delivery_status_email_4s(pending)
-
-elif MANUAL_JOB in ("crm_email3", "godrej_email3", "fours_email3"):
-    print("Manual → Sending Evening Pending Delivery Report...")
-    send_evening_delivery_email_4s(pending)
-
-# PRIORITY 2: SLOT env var
-elif SLOT == "morning":
-    print("SLOT=morning → Morning Pending Delivery Report (D-1 cutoff)...")
-    send_pending_delivery_email_4s(pending)
-
-elif SLOT == "reminder":
-    print("SLOT=reminder → Delivery Status Reminder (all overdue+today)...")
-    send_update_delivery_status_email_4s(pending)
-
-elif SLOT == "evening":
-    print("SLOT=evening → Evening Pending Delivery Report (all overdue+today)...")
-    send_evening_delivery_email_4s(pending)
-
-# STRICT MODE: no hour-based fallback. If SLOT/MANUAL_JOB are both unset
-# we must NOT guess — silently doing nothing avoids cross-triggering an
-# email that wasn't scheduled for this time slot.
-else:
+if SLOT not in ("morning", "evening"):
     print(
-        "[Delivery Email Job] Neither MANUAL_JOB nor SLOT was set — refusing to "
-        "send any email. (Cron runs always set SLOT via the workflow file.)"
+        f"[Delivery Alert Job] SLOT={SLOT!r} is not 'morning' or 'evening'. "
+        "Refusing to run — SLOT must be set explicitly by the workflow."
     )
     sys.exit(1)
+
+all_pending             = fetch_all_pending()
+upcoming_df, overdue_df = split_by_date(all_pending)
+
+if upcoming_df.empty and overdue_df.empty:
+    print("[Delivery Alert Job] No pending or overdue orders found. Email skipped.")
+    sys.exit(0)
+
+SUBJECTS = {
+    "morning": "[4s CRM] Pending Delivery Alerts",
+    "evening": "[4s CRM] Update on Pending Delivery Alerts",
+}
+subject = SUBJECTS[SLOT]
+print(f"[Delivery Alert Job] Sending {SLOT} alert: '{subject}'")
+
+send_combined_delivery_alert_email_4s(upcoming_df, overdue_df, subject)
+print("[Delivery Alert Job] Done.")
