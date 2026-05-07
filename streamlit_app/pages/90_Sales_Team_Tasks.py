@@ -14,6 +14,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
 from services.sheets import get_df, write_df
+from services.sales_task_expander import load_employee_weekoff_map
 
 st.set_page_config(layout="wide", page_title="Sales Team Tasks")
 
@@ -74,6 +75,7 @@ def load_sales_team():
 
 def generate_tasks(df, year, month):
     """Expand master tasks into one row per (due-date x employee)."""
+    weekoff_map = load_employee_weekoff_map()
     rows = []
     for _, row in df.iterrows():
         freq = str(row["FREQUENCY"]).strip().lower()
@@ -104,6 +106,11 @@ def generate_tasks(df, year, month):
 
         for due in due_dates:
             for emp in employees:
+                # Skip daily tasks on the employee's weekoff day
+                if freq == "daily":
+                    wk = weekoff_map.get(emp.upper())
+                    if wk is not None and due.weekday() == wk:
+                        continue
                 new_row = row.copy()
                 new_row["DUE DATE"] = due
                 new_row["EMPLOYEE"] = emp

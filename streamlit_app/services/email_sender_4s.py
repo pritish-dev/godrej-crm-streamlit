@@ -274,13 +274,15 @@ def send_pending_delivery_email_4s(pending_del: pd.DataFrame) -> dict:
         "<span style='background:#ffcccc;padding:2px 8px;border-radius:3px'>🔴 Red = Overdue (yesterday or earlier)</span>"
     )
 
+    callout_html_morning = _build_sales_person_callout(df)
+
     body = _email_wrapper(
         header_title    = "🚛 4SINTERIORS — Pending Delivery Report (Morning)",
         header_subtitle = f"Morning Update · {today.strftime('%d %B %Y')} · Deliveries up to {yesterday.strftime('%d %b %Y')}",
         header_color    = "#1b5e20",
         stats_html      = stats_html,
         legend_html     = legend_html,
-        table_html      = _html_table_colour_coded(df_display, yesterday),
+        table_html      = _html_table_colour_coded(df_display, yesterday) + callout_html_morning,
         footer_note     = (
             f"Cutoff: delivery_date ≤ {yesterday.strftime('%d %b %Y')} (D-1) | "
             f"FY 2026-27 data | Automated from 4SINTERIORS CRM. Do not reply."
@@ -307,6 +309,54 @@ def _filter_all_overdue_delivery(df: pd.DataFrame) -> pd.DataFrame:
     return d.reset_index(drop=True)
 
 
+def _build_sales_person_callout(df: pd.DataFrame) -> str:
+    """
+    Build the closing callout block listing customers per sales person who
+    need a delivery-status follow-up call.
+    """
+    if df is None or df.empty:
+        return ""
+    if COL_SALES_PERSON not in df.columns or COL_CUSTOMER not in df.columns:
+        return ""
+
+    today = datetime.now().date()
+
+    work = df.copy()
+    work["_dd"] = pd.to_datetime(work[COL_DELIVERY_DATE], errors="coerce").dt.date
+    overdue = work[work["_dd"] < today].copy()
+    if overdue.empty:
+        return ""
+
+    overdue["_sp"] = overdue[COL_SALES_PERSON].fillna("(unassigned)").astype(str)
+    overdue["_cust"] = overdue.apply(
+        lambda r: f"{str(r.get(COL_CUSTOMER, '')).strip()} (overdue {r['_dd'].strftime('%d-%b-%Y')})"
+        if pd.notna(r["_dd"]) else str(r.get(COL_CUSTOMER, "")).strip(),
+        axis=1,
+    )
+
+    lines = []
+    for sp, sub in overdue.groupby("_sp", sort=False):
+        custs = ", ".join(sorted({c for c in sub["_cust"] if c}))
+        if not custs:
+            continue
+        lines.append(
+            f"<li><strong>{sp}</strong> needs to call and update these customers — "
+            f"<em>{custs}</em> — regarding their delivery delay status and the "
+            f"updated delivery date.</li>"
+        )
+
+    if not lines:
+        return ""
+
+    return (
+        f"<div style='background:#fff3e0;border-left:4px solid #c62828;"
+        f"padding:14px 18px;margin-top:18px;border-radius:4px'>"
+        f"<strong style='color:#c62828'>📞 Action — Sales Team Follow-up Calls:</strong>"
+        f"<ul style='margin:8px 0 0;padding-left:18px;font-size:13px;line-height:1.6'>"
+        f"{''.join(lines)}</ul></div>"
+    )
+
+
 def send_update_delivery_status_email_4s(pending_del: pd.DataFrame) -> dict:
     """EMAIL 2 — Reminder 11 AM: All pending deliveries with delivery_date ≤ today."""
     today = datetime.now().date()
@@ -328,13 +378,15 @@ def send_update_delivery_status_email_4s(pending_del: pd.DataFrame) -> dict:
         "Please log into the CRM and update the delivery status for each record."
     )
 
+    callout_html = _build_sales_person_callout(df)
+
     body = _email_wrapper(
         header_title    = "⚠️ Action Required — Update Overdue Delivery Status in CRM",
         header_subtitle = f"Delivery Reminder · {today.strftime('%d %B %Y')} · 4SINTERIORS",
         header_color    = "#b71c1c",
         stats_html      = stats_html,
         legend_html     = legend_html,
-        table_html      = _html_table_all_red(df_display),
+        table_html      = _html_table_all_red(df_display) + callout_html,
         footer_note     = (
             f"All PENDING deliveries with delivery_date ≤ {today.strftime('%d %b %Y')} | "
             "Automated reminder from 4SINTERIORS CRM. Do not reply."
@@ -375,13 +427,15 @@ def send_evening_delivery_email_4s(pending_del: pd.DataFrame) -> dict:
         "<span style='background:#ffcccc;padding:2px 8px;border-radius:3px'>🔴 Red = Overdue (today or earlier)</span>"
     )
 
+    callout_html_evening = _build_sales_person_callout(df)
+
     body = _email_wrapper(
         header_title    = "🚛 4SINTERIORS — Pending Delivery Report (Evening)",
         header_subtitle = f"Evening Update · {today.strftime('%d %B %Y')}",
         header_color    = "#1b5e20",
         stats_html      = stats_html,
         legend_html     = legend_html,
-        table_html      = _html_table_all_red(df_display),
+        table_html      = _html_table_all_red(df_display) + callout_html_evening,
         footer_note     = (
             f"All PENDING deliveries with delivery_date ≤ {today.strftime('%d %b %Y')} | "
             "Automated from 4SINTERIORS CRM. Do not reply."

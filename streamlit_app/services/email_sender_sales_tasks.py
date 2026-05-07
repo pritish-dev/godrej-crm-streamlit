@@ -257,8 +257,15 @@ def send_sales_team_tasks_email(tasks_df: pd.DataFrame, overdue_df: pd.DataFrame
 #   Status of all today's tasks with summary counts
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def send_sales_team_task_status_email(tasks_df: pd.DataFrame):
-    """8 PM email: Status of today's tasks with summary + detail by frequency."""
+def send_sales_team_task_status_email(tasks_df: pd.DataFrame,
+                                      missed_df: pd.DataFrame = None):
+    """
+    8 PM email: Status of today's tasks with summary + detail by frequency.
+
+    `missed_df` (optional): cumulative list of missed/overdue tasks across
+    Daily / Adhoc / Weekly / Monthly. Rendered as additional sections so the
+    list keeps growing whenever tasks are missed.
+    """
     today        = datetime.now()
     current_date = today.strftime("%d %B %Y")
 
@@ -312,6 +319,30 @@ def send_sales_team_task_status_email(tasks_df: pd.DataFrame):
                 )
     else:
         body_sections.append("<p style='color:#888'>No tasks were assigned for today.</p>")
+
+    # ── CUMULATIVE MISSED / OVERDUE TASKS ─────────────────────────────────
+    if missed_df is not None and not missed_df.empty:
+        body_sections.append(
+            "<h2 style='color:#c62828;margin-top:30px;border-bottom:2px solid #c62828;"
+            "padding-bottom:6px'>🚨 Missed / Overdue Tasks (Cumulative)</h2>"
+            "<p style='font-size:12px;color:#555'>"
+            "These tasks were not completed on their due date — broken down by "
+            "frequency. The list keeps growing whenever a task is missed.</p>"
+        )
+        missed_groups = _split_by_frequency(missed_df)
+        if missed_groups:
+            for key in FREQ_ORDER:
+                if key not in missed_groups:
+                    continue
+                sub = missed_groups[key].copy()
+                if "DUE DATE" in sub.columns:
+                    sub["DUE DATE"] = pd.to_datetime(sub["DUE DATE"], errors="coerce").dt.strftime("%d-%b-%Y")
+                meta = FREQ_META.get(key, {"label": key.title(), "color": "#c62828"})
+                body_sections.append(
+                    f"<h3 style='color:#c62828;margin:18px 0 6px'>"
+                    f"❌ Missed — {meta['label']} ({len(sub)})</h3>"
+                    + _html_task_table(sub, header_bg="#c62828")
+                )
 
     email_html = _email_wrapper(
         title     = "📊 Sales Team Task Status",

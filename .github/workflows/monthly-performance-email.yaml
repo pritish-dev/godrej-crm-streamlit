@@ -1,0 +1,49 @@
+name: Sales Team Monthly Performance Email (Last Day 7 PM)
+
+# 7:00 PM IST = 13:30 UTC. We schedule the job on the last 4 candidate days of
+# every month (28, 29, 30, 31). The Python script itself only sends the email
+# when today is the actual last day of the current month.
+on:
+  schedule:
+    - cron: '30 13 28-31 * *'   # 7:00 PM IST on days 28–31 of every month
+
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Send even if today is not the last day of the month'
+        type: boolean
+        required: false
+        default: false
+
+jobs:
+  monthly-performance-email:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          if [ -f streamlit_app/requirements.txt ]; then
+            pip install -r streamlit_app/requirements.txt
+          else
+            pip install -r requirements.txt
+          fi
+
+      - name: Run Monthly Performance email job
+        env:
+          EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECIPIENTS:   ${{ secrets.EMAIL_RECIPIENTS }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          FORCE_RUN:          ${{ github.event.inputs.force }}
+        run: |
+          cd streamlit_app
+          python monthly_performance_email_job.py

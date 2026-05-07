@@ -19,6 +19,7 @@ from services.email_sender_4s import (
     send_pending_delivery_email_4s,
     send_update_delivery_status_email_4s,
 )
+from services.delivery_updates import append_pending_delivery_updates
 
 FY_START = date(2026, 4, 1)
 
@@ -623,25 +624,103 @@ if not pending_del.empty:
 
     pend_cols     = [c for c in PENDING_DISPLAY_COLS if c in pending_grouped.columns]
     pend_display  = pending_grouped[pend_cols].copy()
-    raw_del_dates = (
-        pend_display["DELIVERY DATE"].copy()
-        if "DELIVERY DATE" in pend_display.columns
-        else pd.Series(dtype="object")
-    )
-    if "ORDER DATE"    in pend_display.columns:
-        pend_display["ORDER DATE"]    = fmt_date(pend_display["ORDER DATE"])
-    if "DELIVERY DATE" in pend_display.columns:
-        pend_display["DELIVERY DATE"] = fmt_date(pend_display["DELIVERY DATE"])
-    pend_display = apply_amount_fmt(pend_display, ["ORDER VALUE", "ADV RECEIVED", "PENDING DUE"])
-    pend_display = pend_display.rename(
-        columns={k: v for k, v in COL_RENAME_DISPLAY.items() if k in pend_display.columns}
-    )
-    st.dataframe(
-        pend_display.style.apply(
-            lambda row: highlight_delivery(row, raw_del_dates, today, tomorrow), axis=1
+
+    # ── Editable section ──────────────────────────────────────────────────
+    # Build the editor frame: read-only base columns + 4 new editable ones:
+    #   Updated Delivery Date | Remarks | Updated Customer (✓) | Updated Date
+    editor_df = pend_display.copy()
+    if "ORDER DATE" in editor_df.columns:
+        editor_df["ORDER DATE"] = pd.to_datetime(editor_df["ORDER DATE"], errors="coerce").dt.strftime("%d-%b-%Y")
+    if "DELIVERY DATE" in editor_df.columns:
+        editor_df["DELIVERY DATE"] = pd.to_datetime(editor_df["DELIVERY DATE"], errors="coerce").dt.strftime("%d-%b-%Y")
+    for amt in ("ORDER VALUE", "ADV RECEIVED", "PENDING DUE"):
+        if amt in editor_df.columns:
+            editor_df[amt] = editor_df[amt].apply(fmt_amount)
+
+    editor_df["Updated Delivery Date"] = pd.NaT
+    editor_df["Remarks"] = ""
+    editor_df["Updated Customer"] = False
+    editor_df["Updated Date"] = ""
+
+    editor_cfg = {
+        "Updated Delivery Date": st.column_config.DateColumn(
+            "Updated Delivery Date",
+            help="Tick 'Updated Customer' BEFORE saving an updated delivery date.",
+            format="DD-MMM-YYYY",
         ),
+        "Remarks": st.column_config.TextColumn(
+            "Remarks",
+            help="Optional note (max 500 chars)",
+            max_chars=500,
+        ),
+        "Updated Customer": st.column_config.CheckboxColumn(
+            "Updated Customer ✓",
+            help="Tick to confirm you have informed the customer of the new delivery date.",
+            default=False,
+        ),
+        "Updated Date": st.column_config.TextColumn(
+            "Updated Date",
+            disabled=True,
+            help="Auto-stamped when the row is saved.",
+        ),
+    }
+    # Disable every other column so users only edit the four new ones
+    for col in pend_display.columns:
+        editor_cfg[col] = st.column_config.TextColumn(disabled=True)
+
+    edited_pend = st.data_editor(
+        editor_df,
+        column_config=editor_cfg,
         use_container_width=True,
+        hide_index=True,
+        num_rows="fixed",
+        key="pending_delivery_editor",
     )
+
+    if st.button("💾 Save Pending Delivery updates", type="primary", key="save_pending_del_updates"):
+        rows_to_log = []
+        warnings = []
+        for _, r in edited_pend.iterrows():
+            udd  = r.get("Updated Delivery Date")
+            rem  = (r.get("Remarks") or "").strip()
+            tick = bool(r.get("Updated Customer"))
+            if not udd and not rem and not tick:
+                continue   # row untouched
+
+            if udd and not tick:
+                warnings.append(
+                    f"❗ {r.get('CUSTOMER NAME', '')}: "
+                    "Updated Delivery Date is set but the 'Updated Customer' "
+                    "checkbox is unticked — record was NOT saved. "
+                    "Tick the box if you have informed the customer."
+                )
+                continue
+
+            row = {
+                "ORDER NO":               r.get("ORDER NO", ""),
+                "CUSTOMER NAME":          r.get("CUSTOMER NAME", ""),
+                "ORIGINAL DELIVERY DATE": r.get("DELIVERY DATE", ""),
+                "UPDATED DELIVERY DATE":  udd.strftime("%d-%m-%Y") if hasattr(udd, "strftime") and udd else "",
+                "REMARKS":                rem,
+                "UPDATED CUSTOMER (Y/N)": "Y" if tick else "N",
+                "SALES PERSON":           r.get("SALES PERSON", ""),
+            }
+            rows_to_log.append(row)
+
+        for w in warnings:
+            st.warning(w)
+
+        if rows_to_log:
+            try:
+                n = append_pending_delivery_updates(rows_to_log, updated_by="CRM Dashboard")
+                st.success(f"✅ Saved {n} pending-delivery update(s) to the Google Sheet.")
+                st.cache_data.clear()
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Save failed: {e}")
+        elif not warnings:
+            st.info("Nothing to save — no rows were edited.")
+
     dm1, dm2, dm3 = st.columns(3)
     dm1.metric("📦 Total Pending Orders", len(pending_grouped))
     dm2.metric("🟢 Tomorrow",

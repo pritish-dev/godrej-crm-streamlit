@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pandas as pd
 from services.sheets import get_df
 from services.email_sender_sales_tasks import send_sales_team_task_status_email
-from services.sales_task_expander import expand_with_status
+from services.sales_task_expander import expand_with_status, get_missed_tasks
 
 
 # ── IST time ─────────────────────────────────────────────────────────────────
@@ -65,7 +65,15 @@ def load_and_process_tasks():
 # ── Main execution ───────────────────────────────────────────────────────────
 today_tasks = load_and_process_tasks()
 
+# Build cumulative missed/overdue list (for the new section in the status email)
+try:
+    df_master = get_df("SALES_TEAM_TASK")
+    missed_df = get_missed_tasks(df_master, today_date) if df_master is not None else None
+except Exception as _missed_err:
+    print(f"  ⚠️ Could not compute missed tasks: {_missed_err}")
+    missed_df = None
+
 # Send email (even if empty)
-send_sales_team_task_status_email(today_tasks)
+send_sales_team_task_status_email(today_tasks, missed_df=missed_df)
 
 print("✅ Sales Team Task Status Email (8 PM) job completed")
