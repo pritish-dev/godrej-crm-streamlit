@@ -1,9 +1,13 @@
 """
 pages/50_MIS_Update.py
 
-MIS UPDATE — Daily BR_MIS Excel data viewer
-Reads the latest 'BR_MIS - Interio MIS (4S INTERIO)' email from Gmail,
-extracts the PO sheet, and displays it in an interactive, filterable table.
+MIS UPDATE — Daily BR_MIS Excel data viewer (cached)
+Reads the cached MIS data from the 'MIS_Daily' Google Sheet (populated by
+the 11 AM scheduled fetch). Avoids hitting Gmail every page-load.
+
+Rows where Sales Order Qty == Sales Order Committed Qty AND the order belongs
+to a Franchise customer pending delivery are highlighted GREEN — they are
+ready for delivery.
 """
 
 import sys
@@ -14,13 +18,27 @@ sys.path.insert(0, BASE_DIR)
 
 import streamlit as st
 import pandas as pd
-from services.mis_email_import import fetch_mis_data, MIS_SUBJECT
+from services.mis_email_import import (
+    MIS_SUBJECT,
+    MIS_CACHE_SHEET,
+    load_cached_mis,
+    fetch_and_cache_mis,
+)
+from services.delivery_readiness import (
+    customer_to_godrej_so,
+    ready_so_set,
+    ready_mis_row_mask,
+)
+from services.sheets import get_df
 
 # ─── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(layout="wide", page_title="MIS Update", page_icon="📦")
 
 st.title("📦 MIS Update")
-st.caption(f"Source email subject: **{MIS_SUBJECT}**")
+st.caption(
+    f"Source email subject: **{MIS_SUBJECT}**  ·  "
+    f"Cached daily at 11 AM into the **{MIS_CACHE_SHEET}** Google Sheet tab."
+)
 
 # ─── Session state cache ──────────────────────────────────────────────────────
 if "mis_df" not in st.session_state:
@@ -31,27 +49,41 @@ if "mis_loaded" not in st.session_state:
     st.session_state.mis_loaded = False
 
 # ─── Fetch controls ───────────────────────────────────────────────────────────
-col_btn, col_days, col_spacer = st.columns([1.5, 1.5, 6])
-
-with col_days:
-    days_back = st.selectbox(
-        "Search last N days",
-        options=[1, 2, 3, 5, 7],
-        index=2,
-        help="How many days back to look for the MIS email",
-    )
+col_btn, col_force, col_spacer = st.columns([1.7, 1.7, 5])
 
 with col_btn:
-    st.markdown("<br>", unsafe_allow_html=True)   # vertical align with selectbox
-    fetch_clicked = st.button("🔄 Fetch MIS Data", type="primary", use_container_width=True)
+    reload_clicked = st.button("🔁 Reload Cached MIS", use_container_width=True)
+
+with col_force:
+    force_fetch = st.button(
+        "⚡ Force Fetch Now (Gmail)",
+        type="primary",
+        use_container_width=True,
+        help="Manually re-pull today's MIS email and overwrite the MIS_Daily sheet.",
+    )
 
 # Auto-load on first visit
-if not st.session_state.mis_loaded or fetch_clicked:
-    with st.spinner("Connecting to Gmail and reading MIS email…"):
-        df, status = fetch_mis_data(days_back=days_back)
+if not st.session_state.mis_loaded or reload_clicked:
+    with st.spinner(f"Reading cached MIS data from '{MIS_CACHE_SHEET}'…"):
+        df, status = load_cached_mis()
         st.session_state.mis_df     = df
         st.session_state.mis_status = status
         st.session_state.mis_loaded = True
+
+if force_fetch:
+    with st.spinner("Fetching today's MIS email and updating cache…"):
+        df, status = fetch_and_cache_mis()
+        # Re-load from sheet so we display the newly cached version
+        if not df.empty:
+            df, load_status = load_cached_mis()
+            status = f"{status}\n{load_status}"
+        st.session_state.mis_df     = df
+        st.session_state.mis_status = status
+        st.session_state.mis_loaded = True
+        try:
+            st.cache_data.clear()
+        except Exception:
+            pass
 
 # ─── Status banner ────────────────────────────────────────────────────────────
 status = st.session_state.mis_status
@@ -63,12 +95,35 @@ elif status.startswith("❌"):
     st.error(status)
     st.stop()
 else:
-    st.info(status or "Click **Fetch MIS Data** to load.")
+    st.info(status or "Click **Reload Cached MIS** to load.")
 
 df: pd.DataFrame = st.session_state.mis_df
 
 if df.empty:
     st.stop()
+
+# ─── Compute "ready" status for highlighting ──────────────────────────────────
+# Build the set of SO numbers that are READY (all line items match).
+try:
+    ready_sos = ready_so_set(df)
+except Exception:
+    ready_sos = set()
+
+# Restrict highlight to Franchise pending/overdue customers' SO numbers.
+relevant_sos = set(ready_sos)  # default: highlight all ready SOs
+try:
+    crm_master = get_df("CRM")
+    if crm_master is not None and not crm_master.empty:
+        cust_to_so = customer_to_godrej_so(crm_master)
+        all_franchise_sos: set[str] = set()
+        for sos in cust_to_so.values():
+            all_franchise_sos.update(sos)
+        if all_franchise_sos:
+            relevant_sos = ready_sos & all_franchise_sos
+except Exception:
+    pass
+
+green_mask = ready_mis_row_mask(df, relevant_so_numbers=relevant_sos)
 
 # ─── Summary metrics ──────────────────────────────────────────────────────────
 st.markdown("---")
@@ -85,14 +140,7 @@ if "Sales Order Qty" in df.columns:
 else:
     m3.metric("Total Order Qty", "—")
 
-if "Sales Order Committed Qty" in df.columns:
-    try:
-        committed = pd.to_numeric(df["Sales Order Committed Qty"], errors="coerce").sum()
-        m4.metric("Committed Qty", f"{int(committed):,}")
-    except Exception:
-        m4.metric("Committed Qty", "—")
-else:
-    m4.metric("Committed Qty", "—")
+m4.metric("🟢 Ready Items", int(green_mask.sum()))
 
 # ─── Filters ──────────────────────────────────────────────────────────────────
 st.markdown("### 🔍 Filters")
@@ -118,32 +166,47 @@ if "Sales Order Warehouse" in df.columns:
 else:
     selected_wh = "All"
 
-# Apply filters
-filtered = df.copy()
+# Apply filters (also filter the green_mask in lock-step)
+filtered     = df.copy()
+filtered_msk = green_mask.copy()
 
 if search_order:
-    filtered = filtered[
-        filtered["Sales Order No."].astype(str).str.contains(search_order, case=False, na=False)
-    ]
+    keep = filtered["Sales Order No."].astype(str).str.contains(search_order, case=False, na=False)
+    filtered     = filtered[keep]
+    filtered_msk = filtered_msk.loc[filtered.index] if not filtered_msk.empty else filtered_msk
 
 if search_customer and "Customer Name" in filtered.columns:
-    filtered = filtered[
-        filtered["Customer Name"].astype(str).str.contains(search_customer, case=False, na=False)
-    ]
+    keep = filtered["Customer Name"].astype(str).str.contains(search_customer, case=False, na=False)
+    filtered     = filtered[keep]
+    filtered_msk = filtered_msk.loc[filtered.index] if not filtered_msk.empty else filtered_msk
 
 if search_item and "Item Description" in filtered.columns:
-    filtered = filtered[
-        filtered["Item Description"].astype(str).str.contains(search_item, case=False, na=False)
-    ]
+    keep = filtered["Item Description"].astype(str).str.contains(search_item, case=False, na=False)
+    filtered     = filtered[keep]
+    filtered_msk = filtered_msk.loc[filtered.index] if not filtered_msk.empty else filtered_msk
 
 if selected_wh != "All" and "Sales Order Warehouse" in filtered.columns:
-    filtered = filtered[filtered["Sales Order Warehouse"] == selected_wh]
+    keep = filtered["Sales Order Warehouse"] == selected_wh
+    filtered     = filtered[keep]
+    filtered_msk = filtered_msk.loc[filtered.index] if not filtered_msk.empty else filtered_msk
 
 # ─── Data table ───────────────────────────────────────────────────────────────
-st.markdown(f"### 📋 PO Data — {len(filtered):,} rows")
+st.markdown(f"### 📋 PO Data — {len(filtered):,} rows  ·  🟢 Green = Ready for Delivery")
+
+display_df  = filtered.reset_index(drop=True)
+display_msk = filtered_msk.reset_index(drop=True) if not filtered_msk.empty else \
+              pd.Series([False] * len(display_df))
+
+def _row_style(row):
+    try:
+        if bool(display_msk.iloc[row.name]):
+            return ["background-color:#c8e6c9"] * len(row)
+    except Exception:
+        pass
+    return [""] * len(row)
 
 st.dataframe(
-    filtered.reset_index(drop=True),
+    display_df.style.apply(_row_style, axis=1),
     use_container_width=True,
     height=550,
     column_config={

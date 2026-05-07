@@ -122,17 +122,32 @@ def job_email2():
         print(f"  ❌ Email 2 failed: {e}")
 
 
+# ─── MIS daily import (11 AM) ────────────────────────────────────────────────
+
+def job_mis_daily_import():
+    """11:00 AM — Fetch today's MIS email and cache to MIS_Daily sheet."""
+    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M')}] 📦 Running MIS Daily Import")
+    try:
+        from services.mis_email_import import fetch_and_cache_mis
+        df, status = fetch_and_cache_mis()
+        print(f"  → {status}")
+    except Exception as e:
+        print(f"  ❌ MIS Daily Import failed: {e}")
+
+
 # ─── Schedule ────────────────────────────────────────────────────────────────
 
-schedule.every().day.at("10:00").do(job_email1)   # Email 1 — Morning
-schedule.every().day.at("11:00").do(job_email2)   # Email 2 — once daily
-schedule.every().day.at("17:00").do(job_email1)   # Email 1 — Evening
+schedule.every().day.at("10:00").do(job_email1)             # Email 1 — Morning
+schedule.every().day.at("11:00").do(job_email2)             # Email 2 — once daily
+schedule.every().day.at("11:00").do(job_mis_daily_import)   # MIS Daily Import
+schedule.every().day.at("17:00").do(job_email1)             # Email 1 — Evening
 
 print("=" * 55)
 print("  Godrej CRM Email Scheduler Started")
 print("=" * 55)
 print("  10:00 AM → Email 1: Pending Delivery Report")
 print("  11:00 AM → Email 2: Update Delivery Status Reminder")
+print("  11:00 AM → MIS Daily Import (cache to 'MIS_Daily' sheet)")
 print("   5:00 PM → Email 1: Pending Delivery Report (Evening)")
 print("=" * 55)
 print("  Press Ctrl+C to stop.\n")

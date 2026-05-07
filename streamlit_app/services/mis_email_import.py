@@ -124,7 +124,11 @@ def _get_attachment_bytes(msg) -> bytes | None:
 # MAIN PUBLIC FUNCTION
 # ═════════════════════════════════════════════════════════════════════════════
 
-def fetch_mis_data(days_back: int = 3) -> tuple[pd.DataFrame, str]:
+# Sheet name where today's MIS data is cached
+MIS_CACHE_SHEET = "MIS_Daily"
+
+
+def fetch_mis_data(days_back: int = 3, today_only: bool = False) -> tuple[pd.DataFrame, str]:
     """
     Connect to Gmail IMAP, find the latest MIS email, extract the Excel
     attachment, and return a (DataFrame, status_message) tuple.
@@ -133,6 +137,8 @@ def fetch_mis_data(days_back: int = 3) -> tuple[pd.DataFrame, str]:
     ----------
     days_back : int
         How many calendar days back to search for the email (default 3).
+    today_only : bool
+        If True, only fetch the email received today (used by 11 AM scheduler).
 
     Returns
     -------
@@ -150,13 +156,17 @@ def fetch_mis_data(days_back: int = 3) -> tuple[pd.DataFrame, str]:
         return pd.DataFrame(), f"❌ IMAP login failed: {e}"
 
     # Build date filter (IMAP uses DD-Mon-YYYY format)
-    since_date = (datetime.now() - timedelta(days=days_back)).strftime("%d-%b-%Y")
+    if today_only:
+        # SINCE today, BEFORE tomorrow → strictly today's emails only
+        today_str    = datetime.now().strftime("%d-%b-%Y")
+        tomorrow_str = (datetime.now() + timedelta(days=1)).strftime("%d-%b-%Y")
+        search_query = f'(SUBJECT "{MIS_SUBJECT}" SINCE {today_str} BEFORE {tomorrow_str})'
+    else:
+        since_date = (datetime.now() - timedelta(days=days_back)).strftime("%d-%b-%Y")
+        search_query = f'(SUBJECT "{MIS_SUBJECT}" SINCE {since_date})'
 
     try:
-        status, data = mail.search(
-            None,
-            f'(SUBJECT "{MIS_SUBJECT}" SINCE {since_date})'
-        )
+        status, data = mail.search(None, search_query)
     except Exception as e:
         mail.logout()
         return pd.DataFrame(), f"❌ IMAP search error: {e}"
@@ -165,6 +175,11 @@ def fetch_mis_data(days_back: int = 3) -> tuple[pd.DataFrame, str]:
 
     if not email_ids:
         mail.logout()
+        if today_only:
+            return pd.DataFrame(), (
+                f"⚠️ No MIS email received today.\n"
+                f"Looking for subject: **{MIS_SUBJECT}**"
+            )
         return pd.DataFrame(), (
             f"⚠️ No MIS email found in the last {days_back} days.\n"
             f"Looking for subject: **{MIS_SUBJECT}**"
@@ -245,3 +260,70 @@ def fetch_mis_data(days_back: int = 3) -> tuple[pd.DataFrame, str]:
         status_msg += f"\n⚠️ Columns not found in sheet (skipped): {', '.join(missing_cols)}"
 
     return df, status_msg
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# GOOGLE SHEET CACHE — write today's MIS, read cached MIS
+# ═════════════════════════════════════════════════════════════════════════════
+
+def save_mis_to_sheet(df: pd.DataFrame) -> str:
+    """
+    Persist today's MIS DataFrame to the MIS_Daily Google Sheet tab.
+    Adds a 'Fetched On' column with today's date (DD-MMM-YYYY).
+    Overwrites the entire sheet on every call (single-day cache).
+    """
+    if df is None or df.empty:
+        return "⚠️ Nothing to save — DataFrame is empty."
+
+    out = df.copy()
+    out.insert(0, "Fetched On", datetime.now().strftime("%d-%b-%Y %H:%M"))
+
+    try:
+        # Local import to avoid circular deps
+        from services.sheets import write_df
+        write_df(MIS_CACHE_SHEET, out.fillna("").astype(str))
+        return f"✅ Cached {len(out)} MIS rows to '{MIS_CACHE_SHEET}'."
+    except Exception as e:
+        return f"❌ Failed to cache MIS to sheet: {e}"
+
+
+def load_cached_mis() -> tuple[pd.DataFrame, str]:
+    """
+    Read today's cached MIS data from the MIS_Daily Google Sheet.
+    Returns (df, status_msg). df is empty if the sheet doesn't exist or is empty.
+    """
+    try:
+        from services.sheets import get_df
+        df = get_df(MIS_CACHE_SHEET)
+    except Exception as e:
+        return pd.DataFrame(), f"❌ Could not read '{MIS_CACHE_SHEET}': {e}"
+
+    if df is None or df.empty:
+        return pd.DataFrame(), (
+            f"⚠️ MIS cache sheet '{MIS_CACHE_SHEET}' is empty. "
+            "Wait for the 11 AM scheduled fetch or run mis_daily_import_job manually."
+        )
+
+    fetched_on = ""
+    if "Fetched On" in df.columns:
+        fetched_on = df["Fetched On"].iloc[0] if len(df) else ""
+        df = df.drop(columns=["Fetched On"])
+
+    df = df.replace("", pd.NA).dropna(how="all").reset_index(drop=True)
+
+    msg = f"✅ Loaded {len(df)} MIS rows from cache."
+    if fetched_on:
+        msg += f"  ·  Fetched on: **{fetched_on}**"
+    return df, msg
+
+
+def fetch_and_cache_mis() -> tuple[pd.DataFrame, str]:
+    """
+    11 AM scheduler entry-point.
+    Pulls today's MIS email and writes it to the MIS_Daily sheet.
+    """
+    df, status = fetch_mis_data(days_back=1, today_only=True)
+    if df is None or df.empty:
+        return df, status
+    save_msg = save_mis_to_sheet(df)
+    return df, f"{status}\n{save_msg}"

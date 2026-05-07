@@ -25,6 +25,16 @@ from services.delivery_updates import (
     update_source_delivery_date,
 )
 from services.dashboard_ticker import render_ticker
+from services.delivery_readiness import (
+    customer_to_godrej_so,
+    ready_so_set,
+)
+from services.mis_email_import import load_cached_mis
+from services.email_sender_delivery_schedule import (
+    send_schedule_delivery_email,
+    fetch_customer_invoices,
+    get_delivery_recipients,
+)
 
 FY_START = date(2026, 4, 1)
 
@@ -32,6 +42,7 @@ FY_START = date(2026, 4, 1)
 COL_RENAME_DISPLAY = {
     "ORDER DATE":       "Order Date",
     "ORDER NO":         "Order No",
+    "GODREJ SO NO":     "Godrej SO No",
     "CUSTOMER NAME":    "Customer Name",
     "CONTACT NUMBER":   "Contact No",
     "EMAIL ADDRESS":    "Email",
@@ -49,9 +60,10 @@ COL_RENAME_DISPLAY = {
     "SOURCE":           "Source",
 }
 
-# Columns shown in the All Sales table
+# Columns shown in the All Sales table  (GODREJ SO NO added per requirement)
 SALES_DISPLAY_COLS = [
-    "ORDER DATE", "ORDER NO", "CUSTOMER NAME", "CONTACT NUMBER", "EMAIL ADDRESS",
+    "ORDER DATE", "ORDER NO", "GODREJ SO NO",
+    "CUSTOMER NAME", "CONTACT NUMBER", "EMAIL ADDRESS",
     "PRODUCT NAME", "CATEGORY", "QTY",
     "ORDER VALUE", "ADV RECEIVED", "PENDING DUE",
     "SALES PERSON", "DELIVERY DATE", "DELIVERY STATUS",
@@ -60,7 +72,8 @@ SALES_DISPLAY_COLS = [
 
 # Columns shown in pending-delivery and payment-due tables
 PENDING_DISPLAY_COLS = [
-    "DELIVERY DATE", "ORDER DATE", "ORDER NO", "CUSTOMER NAME", "CONTACT NUMBER",
+    "DELIVERY DATE", "ORDER DATE", "ORDER NO", "GODREJ SO NO",
+    "CUSTOMER NAME", "CONTACT NUMBER",
     "PRODUCT NAME", "QTY", "ORDER VALUE", "ADV RECEIVED", "PENDING DUE",
     "SALES PERSON", "DELIVERY STATUS", "REMARKS", "SOURCE",
 ]
@@ -278,7 +291,8 @@ def group_by_order_no(df):
             agg[col] = "sum"
 
     # String fields: take first non-null value
-    for col in ["ORDER DATE", "CUSTOMER NAME", "CONTACT NUMBER", "EMAIL ADDRESS",
+    for col in ["ORDER DATE", "GODREJ SO NO",
+                "CUSTOMER NAME", "CONTACT NUMBER", "EMAIL ADDRESS",
                 "CATEGORY", "SALES PERSON", "DELIVERY DATE",
                 "REVIEW", "REMARKS", "SOURCE"]:
         if col in has_no.columns:
@@ -323,11 +337,83 @@ def highlight_delivery(row, raw_dates, today, tomorrow):
     return [""] * len(row)
 
 
+# ── Traffic-light row colouring for Pending / Overdue tables ─────────────────
+#   Green  = Ready for delivery (MIS qty match for all items in the order)
+#   Orange = Pending Delivery table, NOT ready
+#   Red    = Overdue Delivery table, NOT ready
+def traffic_light_style(ready_flags: pd.Series, default_color: str):
+    """
+    Returns a Styler-compatible row function.
+    `ready_flags` must be aligned to the displayed dataframe (same .reset_index).
+    `default_color` is applied to non-ready rows ('orange' or 'red').
+    """
+    def _style(row):
+        try:
+            if bool(ready_flags.iloc[row.name]):
+                return ["background-color:#c8e6c9"] * len(row)        # green
+            if default_color == "orange":
+                return ["background-color:#ffe0b2"] * len(row)        # orange
+            if default_color == "red":
+                return ["background-color:#ffcccc"] * len(row)        # red
+        except Exception:
+            pass
+        return [""] * len(row)
+    return _style
+
+
+def _compute_ready_flags(grouped_df: pd.DataFrame,
+                        cust_so_map: dict,
+                        ready_sos: set) -> pd.Series:
+    """
+    Per-row 'ready for delivery' boolean flag.
+
+    Rule (per spec):
+      • Source must be 'Franchise'
+      • Customer name has at least one GODREJ SO NO in CRM
+      • That SO is fully ready in MIS (all items: SO Qty == Committed Qty)
+    """
+    if grouped_df is None or grouped_df.empty:
+        return pd.Series([], dtype=bool)
+
+    flags = []
+    for _, r in grouped_df.iterrows():
+        src = str(r.get("SOURCE", "")).strip()
+        if src != "Franchise":
+            flags.append(False); continue
+
+        # Prefer GODREJ SO NO already on the row, else look up by customer
+        sos_for_row: list[str] = []
+        row_so = str(r.get("GODREJ SO NO", "")).strip()
+        if row_so and row_so.lower() not in ("nan", "none"):
+            sos_for_row.append(row_so)
+        cust_key = str(r.get("CUSTOMER NAME", "")).strip().upper()
+        if cust_key:
+            sos_for_row.extend(cust_so_map.get(cust_key, []))
+
+        flags.append(any(so in ready_sos for so in sos_for_row) if sos_for_row else False)
+
+    return pd.Series(flags, index=grouped_df.reset_index(drop=True).index)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # MAIN PAGE
 # ═══════════════════════════════════════════════════════════════════════════════
 
 crm, team_df, franchise_sheets, fours_sheets = load_b2c_data()
+
+# ── Load cached MIS once for the page; compute readiness lookup ─────────────
+@st.cache_data(ttl=120)
+def _load_mis_for_dashboard():
+    df, _msg = load_cached_mis()
+    return df
+
+try:
+    mis_df_for_page = _load_mis_for_dashboard()
+except Exception as _mis_err:
+    mis_df_for_page = pd.DataFrame()
+
+cust_so_map_global = customer_to_godrej_so(crm)
+ready_sos_global   = ready_so_set(mis_df_for_page) if not mis_df_for_page.empty else set()
 
 # ── Live attention ticker (right-to-left marquee) ────────────────────────────
 try:
@@ -716,6 +802,123 @@ def _render_overdue_editor(grouped_df: pd.DataFrame):
             st.info("Nothing to save — no rows were edited.")
 
 
+# ─── Schedule-Delivery editor (Pending + Overdue) ────────────────────────────
+# Renders an editor with two checkbox columns:
+#   • Schedule for Delivery               (only allowed on GREEN/ready rows)
+#   • Same day Delivery and Installation
+# Returns the edited DataFrame so the caller can read selections.
+
+def _render_schedule_editor(grouped_df: pd.DataFrame,
+                            ready_flags: pd.Series,
+                            key_prefix: str,
+                            base_color: str):
+    """
+    grouped_df : pending_grouped or overdue_grouped (already grouped by order)
+    ready_flags: aligned to grouped_df.reset_index — bool per row
+    key_prefix : 'pend' or 'ov' (unique editor key)
+    base_color : 'orange' (pending) or 'red' (overdue) used to style non-ready rows
+    """
+    pend_cols = [c for c in PENDING_DISPLAY_COLS if c in grouped_df.columns]
+    base = grouped_df[pend_cols].copy().reset_index(drop=True)
+
+    # Pretty-format dates and amounts for display only
+    if "ORDER DATE" in base.columns:
+        base["ORDER DATE"] = fmt_date(base["ORDER DATE"])
+    if "DELIVERY DATE" in base.columns:
+        base["DELIVERY DATE"] = fmt_date(base["DELIVERY DATE"])
+    base = apply_amount_fmt(base, ["ORDER VALUE", "ADV RECEIVED", "PENDING DUE"])
+
+    # Insert traffic-light marker + checkbox columns
+    base.insert(0, "🚦", ready_flags.map(lambda v: "🟢" if v else ("🟠" if base_color == "orange" else "🔴")))
+    base["Schedule for Delivery"] = False
+    base["Same day Delivery and Installation"] = False
+
+    # Build column-config: every original column is read-only;
+    # the two checkbox columns are editable.
+    col_cfg = {}
+    for c in base.columns:
+        if c in ("Schedule for Delivery", "Same day Delivery and Installation"):
+            col_cfg[c] = st.column_config.CheckboxColumn(c, default=False)
+        else:
+            col_cfg[c] = st.column_config.TextColumn(c, disabled=True)
+
+    edited = st.data_editor(
+        base,
+        column_config=col_cfg,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="fixed",
+        key=f"{key_prefix}_schedule_editor",
+    )
+
+    # Enforce: only ready (green) rows may be ticked for "Schedule for Delivery"
+    illegal_rows = []
+    for i, row in edited.iterrows():
+        if bool(row.get("Schedule for Delivery")) and not bool(ready_flags.iloc[i]):
+            illegal_rows.append(str(row.get("ORDER NO", "")))
+
+    return edited, illegal_rows
+
+
+def _selected_rows_for_email(edited: pd.DataFrame) -> list[dict]:
+    sel = edited[edited["Schedule for Delivery"] == True].copy()
+    out = []
+    for _, r in sel.iterrows():
+        out.append({
+            "customer":        str(r.get("CUSTOMER NAME", "")).strip(),
+            "godrej_so":       str(r.get("GODREJ SO NO", "")).strip(),
+            "contact_number":  str(r.get("CONTACT NUMBER", "")).strip(),
+            "same_day":        bool(r.get("Same day Delivery and Installation")),
+            "order_no":        str(r.get("ORDER NO", "")).strip(),
+        })
+    return out
+
+
+def _handle_schedule_delivery_button(edited_df: pd.DataFrame,
+                                     mis_df_local: pd.DataFrame,
+                                     button_key: str,
+                                     subject_default: str):
+    """Renders the 'Schedule Delivery Email' button and handles the send flow."""
+    if st.button("📧 Schedule Delivery Email", type="primary",
+                 use_container_width=True, key=button_key):
+        rows = _selected_rows_for_email(edited_df)
+        if not rows:
+            st.warning("⚠️ Tick at least one GREEN row's 'Schedule for Delivery' checkbox first.")
+            return
+        if mis_df_local is None or mis_df_local.empty:
+            st.error("❌ MIS data unavailable. Run the 11 AM MIS import first.")
+            return
+
+        with st.spinner("Composing email and fetching invoices from Gmail…"):
+            res = send_schedule_delivery_email(rows, mis_df_local, subject=subject_default)
+
+        # Surface invoice search outcome row by row
+        if res.get("invoice_status"):
+            with st.expander("🧾 Invoice search details", expanded=bool(res.get("missing_invoices"))):
+                for line in res["invoice_status"]:
+                    st.write(f"• {line}")
+
+        if res.get("missing_invoices"):
+            st.warning(
+                "⚠️ No invoices found for: **" +
+                ", ".join(res["missing_invoices"]) + "**"
+            )
+
+        if res.get("sent"):
+            st.success(
+                f"✅ Delivery email sent — {res.get('records', 0)} record(s), "
+                f"{len(res.get('attachments', []))} invoice attachment(s)."
+            )
+            with st.expander("📋 Send details"):
+                st.write(f"**To:** {', '.join(res.get('to', []))}")
+                st.write(f"**Cc:** {', '.join(res.get('cc', []))}")
+                st.write(f"**Bcc:** {', '.join(res.get('bcc', []))}")
+                st.write(f"**Subject:** {res.get('subject', '')}")
+                st.write(f"**Attachments:** {', '.join(res.get('attachments', []))}")
+        else:
+            st.error(f"❌ Email NOT sent — {res.get('error', 'unknown error')}")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # SECTION A — PENDING DELIVERIES  (delivery_date ≥ today)  — READ-ONLY TABLE
 # ══════════════════════════════════════════════════════════════════════════════
@@ -778,28 +981,53 @@ if not pending_grouped.empty:
             else:
                 st.info("No delivery alerts for tomorrow.")
 
-    # ── Read-only colour-coded table (no editor) ──────────────────────────────
-    pend_cols     = [c for c in PENDING_DISPLAY_COLS if c in pending_grouped.columns]
-    pend_display  = pending_grouped[pend_cols].copy()
-    raw_del_dates = pd.to_datetime(
-        pending_grouped["DELIVERY DATE"], errors="coerce"
+    # ── Compute readiness flags for each pending order ───────────────────────
+    pend_ready_flags = _compute_ready_flags(
+        pending_grouped, cust_so_map_global, ready_sos_global
     ).reset_index(drop=True)
-    st.dataframe(
-        pend_display.style.apply(
-            highlight_delivery,
-            raw_dates=raw_del_dates, today=today, tomorrow=tomorrow,
-            axis=1,
-        ),
-        use_container_width=True,
-        hide_index=True,
+
+    st.caption(
+        "🟢 Green = Ready for delivery (MIS Sales Order Qty matches Committed Qty for all items).  "
+        "🟠 Orange = Pending but not yet ready.  "
+        "Tick **Schedule for Delivery** ONLY on green rows, then click *Schedule Delivery Email*."
     )
 
-    dm1, dm2, dm3 = st.columns(3)
+    # Schedule Delivery Email button on top of the table
+    pend_btn_col, _ = st.columns([2, 6])
+
+    # Editor with checkboxes (renders before button reads its values)
+    pend_edited, pend_illegal = _render_schedule_editor(
+        pending_grouped, pend_ready_flags,
+        key_prefix="pend", base_color="orange",
+    )
+
+    if pend_illegal:
+        st.warning(
+            "⚠️ The following non-ready order(s) cannot be scheduled — please untick: "
+            + ", ".join(pend_illegal)
+        )
+
+    with pend_btn_col:
+        # If illegal selections exist, disable the send by replacing button with notice
+        if pend_illegal:
+            st.button("📧 Schedule Delivery Email", type="primary",
+                      use_container_width=True, key="schd_pend_disabled",
+                      disabled=True,
+                      help="Untick non-green rows before sending.")
+        else:
+            _handle_schedule_delivery_button(
+                pend_edited, mis_df_for_page,
+                button_key="schd_pend",
+                subject_default=f"[4S CRM] Schedule Delivery — {datetime.now().strftime('%d-%b-%Y')}",
+            )
+
+    dm1, dm2, dm3, dm4 = st.columns(4)
     dm1.metric("📦 Total Upcoming Pending", len(pending_grouped))
-    dm2.metric("🟢 Tomorrow",
+    dm2.metric("🟢 Ready", int(pend_ready_flags.sum()))
+    dm3.metric("🟢 Tomorrow",
                int((pd.to_datetime(pending_grouped["DELIVERY DATE"],
                                    errors="coerce").dt.date == tomorrow).sum()))
-    dm3.metric("📅 Due Today",
+    dm4.metric("📅 Due Today",
                int((pd.to_datetime(pending_grouped["DELIVERY DATE"],
                                    errors="coerce").dt.date == today).sum()))
 
@@ -841,34 +1069,44 @@ if not overdue_grouped.empty:
         else:
             st.info("No overdue WhatsApp alerts configured.")
 
-    # All-red read-only table
-    ov_cols       = [c for c in PENDING_DISPLAY_COLS if c in overdue_grouped.columns]
-    ov_display    = overdue_grouped[ov_cols].copy()
-    raw_ov_dates  = pd.to_datetime(
-        overdue_grouped["DELIVERY DATE"], errors="coerce"
+    # ── Schedule-Delivery editor for OVERDUE rows ────────────────────────────
+    ov_ready_flags = _compute_ready_flags(
+        overdue_grouped, cust_so_map_global, ready_sos_global
     ).reset_index(drop=True)
-    ov_display_fmt = ov_display.copy()
-    if "ORDER DATE" in ov_display_fmt.columns:
-        ov_display_fmt["ORDER DATE"] = fmt_date(ov_display_fmt["ORDER DATE"])
-    if "DELIVERY DATE" in ov_display_fmt.columns:
-        ov_display_fmt["DELIVERY DATE"] = fmt_date(ov_display_fmt["DELIVERY DATE"])
-    ov_display_fmt = apply_amount_fmt(
-        ov_display_fmt, ["ORDER VALUE", "ADV RECEIVED", "PENDING DUE"]
-    )
-    st.dataframe(
-        ov_display_fmt.style.apply(
-            highlight_delivery,
-            raw_dates=raw_ov_dates, today=today, tomorrow=tomorrow,
-            axis=1,
-        ),
-        use_container_width=True,
-        hide_index=True,
+
+    st.caption(
+        "🟢 Green = Ready for delivery.  🔴 Red = Overdue and not yet ready.  "
+        "Tick **Schedule for Delivery** ONLY on green rows, then click *Schedule Delivery Email*."
     )
 
-    # Inline editor — only on overdue table
+    ov_btn_col, _ = st.columns([2, 6])
+    ov_edited, ov_illegal = _render_schedule_editor(
+        overdue_grouped, ov_ready_flags,
+        key_prefix="ov", base_color="red",
+    )
+
+    if ov_illegal:
+        st.warning(
+            "⚠️ The following non-ready order(s) cannot be scheduled — please untick: "
+            + ", ".join(ov_illegal)
+        )
+
+    with ov_btn_col:
+        if ov_illegal:
+            st.button("📧 Schedule Delivery Email (overdue)", type="primary",
+                      use_container_width=True, key="schd_ov_disabled",
+                      disabled=True, help="Untick non-green rows before sending.")
+        else:
+            _handle_schedule_delivery_button(
+                ov_edited, mis_df_for_page,
+                button_key="schd_ov",
+                subject_default=f"[4S CRM] Schedule Delivery (Overdue) — {datetime.now().strftime('%d-%b-%Y')}",
+            )
+
+    # Inline editor for date-update workflow (existing functionality preserved)
     st.caption(
-        "✏️ Enter the new delivery date agreed with the customer, tick 'Updated Customer ✓', "
-        "then click Save. The record will move to Pending Deliveries automatically."
+        "✏️ Or — enter a new delivery date agreed with the customer below, tick "
+        "'Updated Customer ✓' and click Save to move the record to Pending Deliveries."
     )
     _render_overdue_editor(overdue_grouped)
 
