@@ -19,7 +19,11 @@ from services.email_sender_4s import (
     send_pending_delivery_email_4s,
     send_update_delivery_status_email_4s,
 )
-from services.delivery_updates import append_pending_delivery_updates
+from services.delivery_updates import (
+    append_pending_delivery_updates,
+    update_source_delivery_date,
+)
+from services.dashboard_ticker import render_ticker
 
 FY_START = date(2026, 4, 1)
 
@@ -323,6 +327,13 @@ def highlight_delivery(row, raw_dates, today, tomorrow):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 crm, team_df, franchise_sheets, fours_sheets = load_b2c_data()
+
+# ── Live attention ticker (right-to-left marquee) ────────────────────────────
+try:
+    render_ticker(crm, today=datetime.now().date())
+except Exception as _ticker_err:
+    # Never let a ticker glitch take down the dashboard
+    st.caption(f"(Ticker temporarily unavailable: {_ticker_err})")
 
 st.title("🛋️ 4sInteriors B2C Sales Dashboard")
 
@@ -713,7 +724,33 @@ if not pending_del.empty:
         if rows_to_log:
             try:
                 n = append_pending_delivery_updates(rows_to_log, updated_by="CRM Dashboard")
-                st.success(f"✅ Saved {n} pending-delivery update(s) to the Google Sheet.")
+
+                # Also push the new delivery date back into the SOURCE CRM sheet
+                # for every row that had an Updated Delivery Date set.
+                synced, sync_errors = 0, []
+                for r in rows_to_log:
+                    ord_no = str(r.get("ORDER NO", "")).strip()
+                    new_d  = str(r.get("UPDATED DELIVERY DATE", "")).strip()
+                    if not ord_no or not new_d:
+                        continue
+                    try:
+                        res = update_source_delivery_date(ord_no, new_d)
+                        if res.get("updated", 0) > 0:
+                            synced += res["updated"]
+                        if res.get("skipped"):
+                            sync_errors.extend(res["skipped"])
+                    except Exception as src_err:
+                        sync_errors.append(f"{ord_no}: {src_err}")
+
+                msg = f"✅ Saved {n} pending-delivery update(s) to the Google Sheet."
+                if synced:
+                    msg += f" Source CRM sheet's Delivery Date updated for {synced} row(s)."
+                st.success(msg)
+                if sync_errors:
+                    with st.expander("⚠️ Source-sheet sync notes"):
+                        for err in sync_errors:
+                            st.write(f"• {err}")
+
                 st.cache_data.clear()
                 st.rerun()
             except Exception as e:

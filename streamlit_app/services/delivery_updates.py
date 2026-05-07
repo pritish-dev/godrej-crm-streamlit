@@ -19,9 +19,17 @@ from __future__ import annotations
 from datetime import datetime, timezone, timedelta
 import pandas as pd
 
-from services.sheets import get_df, write_df
+from services.sheets import get_df, write_df, _get_spreadsheet
 
 LOG_SHEET = "Pending Delivery Updates"
+
+# Candidate column names for the delivery-date column in the source sheets.
+# We try them in order until we find one that exists.
+DELIVERY_DATE_COL_CANDIDATES = [
+    "CUSTOMER DELIVERY DATE (TO BE)",
+    "CUSTOMER DELIVERY DATE",
+    "DELIVERY DATE",
+]
 
 LOG_HEADERS = [
     "ORDER NO",
@@ -112,3 +120,103 @@ def append_pending_delivery_updates(rows: list[dict], updated_by: str = "") -> i
     df = _ensure_cols(df)
     write_df(LOG_SHEET, df)
     return written
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sync delivery date back into the source CRM sheet (Franchise / 4S Interiors)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _list_source_sheet_names() -> list[str]:
+    """Return all sheet names referenced in SHEET_DETAILS (Franchise + 4S)."""
+    cfg = get_df("SHEET_DETAILS")
+    if cfg is None or cfg.empty:
+        return []
+    names = []
+    for col in ("Franchise_sheets", "four_s_sheets"):
+        if col in cfg.columns:
+            names.extend(
+                cfg[col].dropna().astype(str).str.strip()
+                .pipe(lambda s: s[s != ""].unique().tolist())
+            )
+    return names
+
+
+def update_source_delivery_date(order_no: str, new_date_str: str) -> dict:
+    """
+    Update the delivery-date column in the source CRM sheet for ALL line-items
+    that share the given ORDER NO. Returns:
+        {"updated": <count>, "sheet": <sheet_name>, "column": <column>, "skipped": <list>}
+    The new_date_str is written verbatim — pass it as "DD-MM-YYYY" to match the
+    sheet's existing formatting.
+    """
+    result = {"updated": 0, "sheet": "", "column": "", "skipped": []}
+
+    if not order_no or str(order_no).strip().upper() in ("", "NAN", "NONE"):
+        result["skipped"].append("blank ORDER NO")
+        return result
+    if not new_date_str:
+        result["skipped"].append("blank new_date_str")
+        return result
+
+    target_order = str(order_no).strip()
+    sh = _get_spreadsheet()
+
+    for name in _list_source_sheet_names():
+        try:
+            ws = sh.worksheet(name)
+        except Exception:
+            continue
+
+        all_values = ws.get_all_values()
+        if not all_values:
+            continue
+
+        # Header normalisation (preserve original index → original header mapping)
+        raw_headers = all_values[0]
+        norm_headers = [" ".join(str(h).split()).upper() for h in raw_headers]
+
+        # Find ORDER NO column index
+        if "ORDER NO" not in norm_headers:
+            continue
+        order_col_idx = norm_headers.index("ORDER NO")  # 0-based
+
+        # Find delivery date column index — try candidates in order
+        delivery_col_idx = None
+        delivery_col_name = ""
+        for cand in DELIVERY_DATE_COL_CANDIDATES:
+            if cand in norm_headers:
+                delivery_col_idx = norm_headers.index(cand)
+                delivery_col_name = cand
+                break
+
+        if delivery_col_idx is None:
+            continue
+
+        # Find matching rows (1-based row numbers in Google Sheets, +1 for header)
+        updates = []
+        for row_idx, row in enumerate(all_values[1:], start=2):
+            if order_col_idx >= len(row):
+                continue
+            cell_val = (row[order_col_idx] or "").strip()
+            if cell_val and cell_val == target_order:
+                updates.append(row_idx)
+
+        if not updates:
+            continue
+
+        # gspread is 1-based for both rows and columns
+        col_letter_idx = delivery_col_idx + 1
+        for row_num in updates:
+            try:
+                ws.update_cell(row_num, col_letter_idx, new_date_str)
+            except Exception as e:
+                result["skipped"].append(f"row {row_num}: {e}")
+
+        result["updated"] += len(updates) - len([s for s in result["skipped"] if "row" in s])
+        result["sheet"]   = name
+        result["column"]  = delivery_col_name
+        # Update at most one sheet per call (orders are unique to a sheet)
+        return result
+
+    result["skipped"].append(f"ORDER NO {target_order} not found in any source sheet")
+    return result
