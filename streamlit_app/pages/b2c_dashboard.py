@@ -34,8 +34,9 @@ from services.email_sender_delivery_schedule import (
     send_schedule_delivery_email,
     compose_schedule_delivery_email,
     send_prepared_delivery_email,
+    save_delivery_email_as_draft,
     build_default_subject,
-    fetch_customer_invoices,
+    fetch_invoice_from_drive,
     get_delivery_recipients,
 )
 import streamlit.components.v1 as components
@@ -927,7 +928,7 @@ def _handle_schedule_delivery_button(edited_df: pd.DataFrame,
                 st.error("❌ MIS data unavailable. Run the 11 AM MIS import first.")
                 return
 
-            with st.spinner("Composing email and fetching invoices from Gmail…"):
+            with st.spinner("Composing email and fetching invoices from Google Drive…"):
                 prepared = compose_schedule_delivery_email(
                     rows, mis_df_local, subject=subject_default
                 )
@@ -995,10 +996,21 @@ def _handle_schedule_delivery_button(edited_df: pd.DataFrame,
             else:
                 st.error(f"❌ Email NOT sent — {res.get('error', 'unknown error')}")
     with btn_cancel:
-        if st.button("❌ Cancel", use_container_width=True,
+        if st.button("💾 Save as Draft", use_container_width=True,
                      key=f"{button_key}_cancel"):
-            del st.session_state[preview_state_key]
-            st.rerun()
+            with st.spinner("Saving email to Gmail Drafts…"):
+                draft_res = save_delivery_email_as_draft(prepared)
+            if draft_res.get("saved"):
+                st.success(
+                    "📝 Email saved to Gmail Drafts — you can review and send it "
+                    "directly from your inbox. Action logged in CRM."
+                )
+                del st.session_state[preview_state_key]
+                st.rerun()
+            else:
+                st.error(
+                    f"❌ Could not save to Drafts — {draft_res.get('error', 'unknown error')}"
+                )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1304,17 +1316,4 @@ if not payment_due.empty:
         columns={k: v for k, v in COL_RENAME_DISPLAY.items() if k in pay_display.columns}
     )
     st.dataframe(
-        pay_display.style.apply(
-            lambda row: highlight_delivery(row, raw_pay_dates, today, tomorrow), axis=1
-        ),
-        use_container_width=True,
-    )
-    pm1, pm2, pm3 = st.columns(3)
-    pm1.metric("🧾 Total Payment Orders", len(payment_grouped))
-    pm2.metric("🟢 Tomorrow",
-               int((pd.to_datetime(payment_grouped["DELIVERY DATE"], errors="coerce").dt.date == tomorrow).sum()))
-    pm3.metric("🔴 Overdue",
-               int((pd.to_datetime(payment_grouped["DELIVERY DATE"], errors="coerce").dt.date < today).sum()))
-
-else:
-    st.success("✅ No outstanding payments!")
+        pay_display.styl

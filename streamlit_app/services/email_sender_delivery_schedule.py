@@ -16,24 +16,30 @@ For each ticked Pending/Overdue Delivery record (must already be GREEN = ready):
        (If "Same day Delivery and Installation" is ticked, append text
         " — Same day Delivery and installation request" to that record's last cell.)
 
-  4. Look up customer invoices in Gmail (subject "invoice information"),
-     fall back to contact number if none match. Attach all PDFs found.
+  4. Look up customer invoices from Google Drive.
+     Drive folder structure:
+       <GOOGLE_DRIVE_INVOICES_FOLDER_ID>
+         └── <Month Name Year>   (e.g. "April 2026")
+               └── <Day>         (e.g. "21")
+                     └── <Customer Name>.pdf
+     Searches all month/day sub-folders for a PDF whose name matches the customer.
   5. Read recipients (To / CC / BCC) from the 'Delivery mail Recipients' sheet.
   6. ABORT if no invoice attachments — caller should surface a clear warning.
+  7. "Cancel" on the preview screen saves the email to Gmail Drafts instead of
+     discarding it, and logs the action in the EMAIL_LOG sheet.
 """
 from __future__ import annotations
 
 import os
 import io
 import re
+import time
 import smtplib
 import imaplib
-import email
 import pandas as pd
 from collections import Counter
 from datetime import datetime, date, timedelta
 from email.message import EmailMessage
-from email.header import decode_header
 
 # ── Reuse credential pattern from email_sender_4s ──────────────────────────
 SENDER_EMAIL = None
@@ -73,8 +79,51 @@ if SENDER_EMAIL is None:
         pass
 
 IMAP_HOST = "imap.gmail.com"
-INVOICE_SUBJECT_HINT = "invoice information"
 RECIPIENTS_SHEET = "Delivery mail Recipients"
+
+# ── Google Drive invoice folder ────────────────────────────────────────────────
+# Set GOOGLE_DRIVE_INVOICES_FOLDER_ID in secrets.toml / .env / environment.
+# This is the ID of the ROOT folder that contains month sub-folders.
+GOOGLE_DRIVE_INVOICES_FOLDER_ID: str | None = None
+
+def _load_drive_folder_id() -> str | None:
+    """Lazy-load the Drive folder ID from env / Streamlit secrets."""
+    global GOOGLE_DRIVE_INVOICES_FOLDER_ID
+    if GOOGLE_DRIVE_INVOICES_FOLDER_ID:
+        return GOOGLE_DRIVE_INVOICES_FOLDER_ID
+
+    fid = os.getenv("GOOGLE_DRIVE_INVOICES_FOLDER_ID", "").strip()
+    if fid:
+        GOOGLE_DRIVE_INVOICES_FOLDER_ID = fid
+        return fid
+
+    try:
+        import streamlit as _st
+        fid = (
+            _st.secrets.get("GOOGLE_DRIVE_INVOICES_FOLDER_ID", "")
+            or _st.secrets.get("admin", {}).get("GOOGLE_DRIVE_INVOICES_FOLDER_ID", "")
+        )
+        if fid:
+            GOOGLE_DRIVE_INVOICES_FOLDER_ID = fid.strip()
+            return GOOGLE_DRIVE_INVOICES_FOLDER_ID
+    except Exception:
+        pass
+
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+        fid = os.getenv("GOOGLE_DRIVE_INVOICES_FOLDER_ID", "").strip()
+        if fid:
+            GOOGLE_DRIVE_INVOICES_FOLDER_ID = fid
+            return fid
+    except Exception:
+        pass
+
+    return None
+
+_DRIVE_SCOPES = [
+    "https://www.googleapis.com/auth/drive.readonly",
+]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -116,124 +165,286 @@ def get_delivery_recipients() -> dict:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# HELPERS — invoice fetching from Gmail
+# HELPERS — Google Drive service + invoice fetching
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _decode_str(value) -> str:
-    if value is None:
-        return ""
-    parts = decode_header(value)
-    out = []
-    for part, charset in parts:
-        if isinstance(part, bytes):
-            out.append(part.decode(charset or "utf-8", errors="replace"))
-        else:
-            out.append(part)
-    return " ".join(out)
-
-
-def _imap_connect():
-    if not SENDER_EMAIL or not SENDER_PASSWORD:
-        raise RuntimeError("EMAIL_SENDER / EMAIL_PASSWORD not configured.")
-    mail = imaplib.IMAP4_SSL(IMAP_HOST)
-    mail.login(SENDER_EMAIL, SENDER_PASSWORD)
-    mail.select("inbox")
-    return mail
-
-
-def _search_invoices(mail, term: str) -> list[bytes]:
+def _get_drive_service():
     """
-    Search Gmail for emails containing `term` AND subject INVOICE_SUBJECT_HINT.
-    Returns list of email IDs.
+    Build a Google Drive API service using the same service-account credentials
+    already used for Sheets (GOOGLE_CREDENTIALS env / Streamlit secrets / file).
+    The service account must have been granted access to the invoice root folder
+    (either shared directly or via domain-wide delegation).
     """
-    term_safe = term.replace('"', '')
-    # Combined: term in body/from/etc.  +  subject contains "invoice information"
-    query = f'(SUBJECT "{INVOICE_SUBJECT_HINT}" TEXT "{term_safe}")'
+    import json
+    from google.oauth2.service_account import Credentials
+    from googleapiclient.discovery import build
+
+    creds = None
+
+    # 1. Environment variable (GitHub Actions / server)
     try:
-        status, data = mail.search(None, query)
-        ids = data[0].split() if data and data[0] else []
-        return ids
+        raw = os.getenv("GOOGLE_CREDENTIALS", "").strip()
+        if raw:
+            creds = Credentials.from_service_account_info(
+                json.loads(raw), scopes=_DRIVE_SCOPES
+            )
     except Exception:
-        return []
+        pass
 
-
-def _extract_pdf_attachments(msg) -> list[tuple[str, bytes]]:
-    """Walk MIME tree and return (filename, bytes) for all PDF attachments."""
-    out = []
-    for part in msg.walk():
-        filename = part.get_filename()
-        if not filename:
-            continue
-        fn = _decode_str(filename)
-        if fn.lower().endswith(".pdf"):
-            try:
-                payload = part.get_payload(decode=True)
-                if payload:
-                    out.append((fn, payload))
-            except Exception:
-                continue
-    return out
-
-
-def fetch_customer_invoices(customer_name: str,
-                            contact_number: str = "") -> tuple[list[tuple[str, bytes]], str]:
-    """
-    Search Gmail for the customer's invoice emails and return PDF attachments.
-    Falls back to contact number if no match by customer name.
-
-    Returns (attachments, message)
-    """
-    customer_name = str(customer_name or "").strip()
-    contact_number = str(contact_number or "").strip()
-
-    if not customer_name and not contact_number:
-        return [], "No customer name or contact number provided."
-
-    try:
-        mail = _imap_connect()
-    except Exception as e:
-        return [], f"IMAP connect failed: {e}"
-
-    attachments: list[tuple[str, bytes]] = []
-    messages: list[str] = []
-    try:
-        ids = _search_invoices(mail, customer_name) if customer_name else []
-        if not ids and contact_number:
-            messages.append(f"No invoice match for '{customer_name}', trying contact {contact_number}…")
-            ids = _search_invoices(mail, contact_number)
-
-        if not ids:
-            return [], f"No invoice email found for '{customer_name}' (or contact '{contact_number}')."
-
-        # Pull the most recent up to 5 matches and grab any PDF attachments
-        for eid in ids[-5:]:
-            try:
-                _, data = mail.fetch(eid, "(RFC822)")
-                if not data or not data[0]:
-                    continue
-                msg = email.message_from_bytes(data[0][1])
-                pdfs = _extract_pdf_attachments(msg)
-                attachments.extend(pdfs)
-            except Exception:
-                continue
-    finally:
+    # 2. Streamlit secrets — key can be [google] table OR top-level
+    if creds is None:
         try:
-            mail.logout()
+            import streamlit as _st
+            try:
+                info = dict(_st.secrets["google"])
+            except Exception:
+                raw = _st.secrets.get("GOOGLE_CREDENTIALS", "")
+                info = json.loads(raw) if raw else None
+            if info:
+                creds = Credentials.from_service_account_info(
+                    info, scopes=_DRIVE_SCOPES
+                )
         except Exception:
             pass
 
-    if not attachments:
-        return [], f"Found invoice email(s) for '{customer_name}' but no PDF attachments."
+    # 3. GOOGLE_APPLICATION_CREDENTIALS path
+    if creds is None:
+        try:
+            path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+            if path and os.path.exists(path):
+                creds = Credentials.from_service_account_file(
+                    path, scopes=_DRIVE_SCOPES
+                )
+        except Exception:
+            pass
 
-    # De-duplicate by filename
-    seen = set()
-    deduped = []
-    for fn, payload in attachments:
-        if fn in seen:
-            continue
-        seen.add(fn)
-        deduped.append((fn, payload))
-    return deduped, f"Found {len(deduped)} invoice file(s) for '{customer_name}'."
+    # 4. Local file fallback
+    if creds is None:
+        try:
+            creds = Credentials.from_service_account_file(
+                "config/credentials.json", scopes=_DRIVE_SCOPES
+            )
+        except Exception:
+            pass
+
+    if creds is None:
+        raise RuntimeError(
+            "Could not build Google Drive service — no valid credentials found. "
+            "Set GOOGLE_CREDENTIALS env var or configure Streamlit secrets."
+        )
+
+    return build("drive", "v3", credentials=creds, cache_discovery=False)
+
+
+def _list_drive_folders(drive_service, parent_id: str) -> list[dict]:
+    """Return all sub-folders (id, name) directly inside `parent_id`."""
+    q = (
+        f"'{parent_id}' in parents "
+        "and mimeType = 'application/vnd.google-apps.folder' "
+        "and trashed = false"
+    )
+    result = (
+        drive_service.files()
+        .list(q=q, fields="files(id, name)", pageSize=200)
+        .execute()
+    )
+    return result.get("files", [])
+
+
+def _list_drive_pdfs(drive_service, parent_id: str) -> list[dict]:
+    """Return all PDF files (id, name) directly inside `parent_id`."""
+    q = (
+        f"'{parent_id}' in parents "
+        "and mimeType = 'application/pdf' "
+        "and trashed = false"
+    )
+    result = (
+        drive_service.files()
+        .list(q=q, fields="files(id, name)", pageSize=200)
+        .execute()
+    )
+    return result.get("files", [])
+
+
+def _download_drive_file(drive_service, file_id: str) -> bytes | None:
+    """Download a Drive file by ID and return its raw bytes."""
+    try:
+        from googleapiclient.http import MediaIoBaseDownload
+        request = drive_service.files().get_media(fileId=file_id)
+        buf = io.BytesIO()
+        downloader = MediaIoBaseDownload(buf, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        return buf.getvalue()
+    except Exception:
+        return None
+
+
+def _name_matches(file_name: str, customer_name: str) -> bool:
+    """
+    Case-insensitive check: does the file's stem contain the customer name
+    (or vice-versa)?  Strips common PDF extension and extra whitespace.
+    """
+    stem = re.sub(r"\.pdf$", "", file_name, flags=re.IGNORECASE).strip().lower()
+    cust = customer_name.strip().lower()
+    return cust in stem or stem in cust
+
+
+def fetch_invoice_from_drive(
+    customer_name: str,
+) -> tuple[list[tuple[str, bytes]], str]:
+    """
+    Search Google Drive for the customer's invoice PDF.
+
+    Drive folder layout expected:
+        <GOOGLE_DRIVE_INVOICES_FOLDER_ID>   ← root
+          └── <Month Name Year>             e.g. "April 2026"
+                └── <Day>                  e.g. "21"
+                      └── <CustomerName>.pdf
+
+    Strategy:
+      1. List all month folders under root.
+      2. For each month folder, list all day sub-folders.
+      3. In every day folder (and in the month folder itself as fallback),
+         look for a PDF whose name matches `customer_name`.
+      4. Download and return the first match found (max 3 files).
+
+    Returns (attachments, status_message).
+    """
+    customer_name = str(customer_name or "").strip()
+    if not customer_name:
+        return [], "No customer name provided."
+
+    root_id = _load_drive_folder_id()
+    if not root_id:
+        return [], (
+            "GOOGLE_DRIVE_INVOICES_FOLDER_ID is not configured. "
+            "Please add it to secrets.toml or your .env file."
+        )
+
+    try:
+        drive = _get_drive_service()
+    except Exception as e:
+        return [], f"Google Drive connection failed: {e}"
+
+    found_files: list[dict] = []   # {id, name}
+
+    try:
+        month_folders = _list_drive_folders(drive, root_id)
+        if not month_folders:
+            return [], f"No month folders found in the Drive invoice root folder."
+
+        for mf in month_folders:
+            # Also check files sitting directly in the month folder (no day sub-folder)
+            direct_pdfs = _list_drive_pdfs(drive, mf["id"])
+            for f in direct_pdfs:
+                if _name_matches(f["name"], customer_name):
+                    found_files.append(f)
+
+            # Check inside each day sub-folder
+            day_folders = _list_drive_folders(drive, mf["id"])
+            for df in day_folders:
+                day_pdfs = _list_drive_pdfs(drive, df["id"])
+                for f in day_pdfs:
+                    if _name_matches(f["name"], customer_name):
+                        found_files.append(f)
+
+            if found_files:
+                break   # Stop as soon as we find a match in any month folder
+
+    except Exception as e:
+        return [], f"Drive search error: {e}"
+
+    if not found_files:
+        return [], (
+            f"No invoice PDF found for '{customer_name}' in Google Drive. "
+            "Make sure the file is stored as '<Customer Name>.pdf' inside the "
+            "correct month/day folder."
+        )
+
+    # De-duplicate by file id and download (cap at 3)
+    seen_ids: set[str] = set()
+    attachments: list[tuple[str, bytes]] = []
+    for f in found_files:
+        if f["id"] in seen_ids or len(attachments) >= 3:
+            break
+        seen_ids.add(f["id"])
+        content = _download_drive_file(drive, f["id"])
+        if content:
+            fn = f["name"] if f["name"].lower().endswith(".pdf") else f["name"] + ".pdf"
+            attachments.append((fn, content))
+
+    if not attachments:
+        return [], f"Found matching file(s) for '{customer_name}' but download failed."
+
+    return attachments, f"Found {len(attachments)} invoice file(s) for '{customer_name}' from Google Drive."
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# HELPERS — save email to Gmail Drafts (IMAP APPEND)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def save_delivery_email_as_draft(prepared: dict) -> dict:
+    """
+    Save the composed delivery email to Gmail Drafts via IMAP APPEND
+    without sending it.  Also logs the action to the EMAIL_LOG sheet.
+
+    Returns {"saved": bool, "error": str}
+    """
+    if not SENDER_EMAIL or not SENDER_PASSWORD:
+        return {"saved": False, "error": "EMAIL_SENDER / EMAIL_PASSWORD not configured."}
+
+    subj = prepared.get("subject", "")
+    msg = EmailMessage()
+    msg["Subject"] = subj
+    msg["From"]    = SENDER_EMAIL
+    msg["To"]      = ", ".join(prepared.get("to", []))
+    if prepared.get("cc"):
+        msg["Cc"]  = ", ".join(prepared["cc"])
+    msg.set_content("Please view this email in HTML format.")
+    msg.add_alternative(prepared.get("html_body", ""), subtype="html")
+
+    for fn, payload in prepared.get("attachments", []):
+        msg.add_attachment(
+            payload, maintype="application", subtype="pdf", filename=fn
+        )
+
+    raw_msg = msg.as_bytes()
+
+    try:
+        mail = imaplib.IMAP4_SSL(IMAP_HOST)
+        mail.login(SENDER_EMAIL, SENDER_PASSWORD)
+        # Gmail's Drafts folder label
+        mail.append(
+            "[Gmail]/Drafts",
+            "\\Draft",
+            imaplib.Time2Internaldate(time.time()),
+            raw_msg,
+        )
+        mail.logout()
+    except Exception as e:
+        return {"saved": False, "error": f"IMAP draft save failed: {e}"}
+
+    # Audit log
+    all_rcpts = (
+        list(prepared.get("to", []))
+        + list(prepared.get("cc", []))
+        + list(prepared.get("bcc", []))
+    )
+    try:
+        from services.sheets import append_email_log
+        append_email_log(
+            job_name="Schedule Delivery Email",
+            records_count=prepared.get("records_count", 0),
+            recipients=all_rcpts,
+            status="draft",
+            error="Saved to Drafts (user cancelled send)",
+        )
+    except Exception:
+        pass
+
+    return {"saved": True, "error": ""}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -390,216 +601,4 @@ def build_email_html(records: list[dict], sales_person: str = "") -> str:
         order_blocks.append(block)
 
     body = (
-        "<p>Dear Sir,</p>"
-        "<p>Please deliver the materials as mentioned below.</p>"
-        + "".join(order_blocks)
-        + _build_signature_html(sales_person)
-    )
-    return body
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# MAIN ENTRY-POINT
-# ──────────────────────────────────────────────────────────────────────────────
-
-def compose_schedule_delivery_email(
-    selected_rows: list[dict],
-    mis_df: pd.DataFrame,
-    subject: str | None = None,
-) -> dict:
-    """
-    Prepare the Schedule-Delivery email WITHOUT sending it.
-
-    Returns a dict with keys:
-        ready              : bool — True if every prerequisite is satisfied
-        error              : str  — populated when ready is False
-        subject            : str  — final subject line
-        html_body          : str  — full HTML body (preview-ready)
-        sales_person       : str  — name shown in the signature
-        to / cc / bcc      : list[str]
-        attachments        : list[tuple[str, bytes]]   (raw payloads)
-        attachment_names   : list[str]                 (filenames only)
-        missing_invoices   : list[str]
-        invoice_status     : list[str]
-        records_count      : int
-        selected_rows      : echoed back
-    """
-    final_subject = subject or build_default_subject()
-
-    if not selected_rows:
-        return {
-            "ready": False,
-            "error": "No rows selected for scheduling.",
-            "missing_invoices": [],
-            "subject": final_subject,
-        }
-
-    # 1. Build per-record line items + same-day flag
-    rec_payload = []
-    missing_invoices: list[str] = []
-    all_attachments: list[tuple[str, bytes]] = []
-    invoice_status_per_customer: list[str] = []
-
-    for r in selected_rows:
-        cust = r.get("customer", "")
-        gso  = r.get("godrej_so", "")
-        cnum = r.get("contact_number", "")
-        sday = bool(r.get("same_day", False))
-
-        lines = lines_for_so(mis_df, gso)
-        rec_payload.append({
-            "customer": cust, "godrej_so": gso,
-            "lines": lines, "same_day": sday,
-        })
-
-        atts, msg = fetch_customer_invoices(gso, cnum)
-        invoice_status_per_customer.append(f"{cust}: {msg}")
-        if not atts:
-            missing_invoices.append(cust)
-        else:
-            all_attachments.extend(atts)
-
-    # De-duplicate attachments globally by filename (keep first occurrence)
-    seen_fn: set[str] = set()
-    deduped_attachments: list[tuple[str, bytes]] = []
-    for fn, payload in all_attachments:
-        if fn in seen_fn:
-            continue
-        seen_fn.add(fn)
-        deduped_attachments.append((fn, payload))
-
-    # 2. ABORT prep if no attachments at all
-    if not deduped_attachments:
-        return {
-            "ready": False,
-            "error": "No invoice attachments found — email NOT ready to send.",
-            "missing_invoices": missing_invoices,
-            "invoice_status": invoice_status_per_customer,
-            "subject": final_subject,
-        }
-
-    # 3. Recipients
-    rcpt = get_delivery_recipients()
-    if not rcpt["to"]:
-        return {
-            "ready": False,
-            "error": rcpt.get("error") or "No recipients configured.",
-            "missing_invoices": missing_invoices,
-            "invoice_status": invoice_status_per_customer,
-            "subject": final_subject,
-        }
-
-    # 4. Pick sales person + build HTML body
-    sales_person = _pick_dominant_sales_person(selected_rows)
-    html_body = build_email_html(rec_payload, sales_person=sales_person)
-
-    return {
-        "ready": True,
-        "error": "",
-        "subject": final_subject,
-        "html_body": html_body,
-        "sales_person": sales_person,
-        "to": rcpt["to"],
-        "cc": rcpt["cc"],
-        "bcc": rcpt["bcc"],
-        "attachments": deduped_attachments,
-        "attachment_names": [fn for fn, _ in deduped_attachments],
-        "missing_invoices": missing_invoices,
-        "invoice_status": invoice_status_per_customer,
-        "records_count": len(selected_rows),
-        "selected_rows": selected_rows,
-    }
-
-
-def send_prepared_delivery_email(prepared: dict) -> dict:
-    """
-    Send a previously composed email returned by `compose_schedule_delivery_email`.
-    """
-    if not prepared or not prepared.get("ready"):
-        return {
-            "sent": False,
-            "error": (prepared or {}).get("error", "Email not ready to send."),
-            "missing_invoices": (prepared or {}).get("missing_invoices", []),
-            "invoice_status": (prepared or {}).get("invoice_status", []),
-            "subject": (prepared or {}).get("subject", ""),
-        }
-
-    subj = prepared["subject"]
-    msg = EmailMessage()
-    msg["Subject"] = subj
-    msg["From"]    = SENDER_EMAIL
-    msg["To"]      = ", ".join(prepared.get("to", []))
-    if prepared.get("cc"):
-        msg["Cc"]  = ", ".join(prepared["cc"])
-    msg.set_content("Please view this email in HTML format.")
-    msg.add_alternative(prepared["html_body"], subtype="html")
-
-    for fn, payload in prepared.get("attachments", []):
-        msg.add_attachment(payload, maintype="application", subtype="pdf", filename=fn)
-
-    all_rcpts = (
-        list(prepared.get("to", []))
-        + list(prepared.get("cc", []))
-        + list(prepared.get("bcc", []))
-    )
-
-    try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(SENDER_EMAIL, SENDER_PASSWORD)
-            server.send_message(msg, from_addr=SENDER_EMAIL, to_addrs=all_rcpts)
-    except Exception as e:
-        return {
-            "sent": False,
-            "error": f"SMTP send failed: {e}",
-            "missing_invoices": prepared.get("missing_invoices", []),
-            "invoice_status": prepared.get("invoice_status", []),
-            "subject": subj,
-        }
-
-    # Audit log
-    try:
-        from services.sheets import append_email_log
-        append_email_log(
-            job_name="Schedule Delivery Email",
-            records_count=prepared.get("records_count", 0),
-            recipients=all_rcpts,
-            status="success",
-        )
-    except Exception:
-        pass
-
-    return {
-        "sent": True,
-        "recipients": all_rcpts,
-        "to": prepared.get("to", []),
-        "cc": prepared.get("cc", []),
-        "bcc": prepared.get("bcc", []),
-        "subject": subj,
-        "records": prepared.get("records_count", 0),
-        "attachments": prepared.get("attachment_names", []),
-        "missing_invoices": prepared.get("missing_invoices", []),
-        "invoice_status": prepared.get("invoice_status", []),
-        "sales_person": prepared.get("sales_person", ""),
-    }
-
-
-def send_schedule_delivery_email(
-    selected_rows: list[dict],
-    mis_df: pd.DataFrame,
-    subject: str | None = None,
-) -> dict:
-    """
-    Backward-compatible wrapper — composes the email and sends it in one step.
-    Prefer `compose_schedule_delivery_email` + `send_prepared_delivery_email`
-    when a preview step is desired.
-    """
-    prepared = compose_schedule_delivery_email(selected_rows, mis_df, subject)
-    if not prepared.get("ready"):
-        return {
-            "sent": False,
-            "error": prepared.get("error", "Email not ready."),
-            "missing_invoices": prepared.get("missing_invoices", []),
-            "invoice_status": prepared.get("invoice_status", []),
-            "subject": prepared.get("subject", subject or ""),
-        }
-    return send_prepared_delivery_email(prepared)
+        "<p>Dear Sir,<
