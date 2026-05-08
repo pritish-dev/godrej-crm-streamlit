@@ -372,7 +372,7 @@ def fetch_invoice_from_drive(
                         found_files.append(f)
 
             if found_files:
-                break   # Stop as soon as we find a match in any month folder
+                break   # Stop as soon as we find a match in any month folder.
 
     except Exception as e:
         return [], f"Drive search error: {e}"
