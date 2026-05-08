@@ -92,30 +92,33 @@ def _load_drive_folder_id() -> str | None:
     if GOOGLE_DRIVE_INVOICES_FOLDER_ID:
         return GOOGLE_DRIVE_INVOICES_FOLDER_ID
 
+    # Try .env / environment first
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except Exception:
+        pass
     fid = os.getenv("GOOGLE_DRIVE_INVOICES_FOLDER_ID", "").strip()
-    if fid:
+    if fid and fid != "PASTE_YOUR_FOLDER_ID_HERE":
         GOOGLE_DRIVE_INVOICES_FOLDER_ID = fid
         return fid
 
     try:
         import streamlit as _st
-        fid = (
-            _st.secrets.get("GOOGLE_DRIVE_INVOICES_FOLDER_ID", "")
-            or _st.secrets.get("admin", {}).get("GOOGLE_DRIVE_INVOICES_FOLDER_ID", "")
-        )
-        if fid:
-            GOOGLE_DRIVE_INVOICES_FOLDER_ID = fid.strip()
-            return GOOGLE_DRIVE_INVOICES_FOLDER_ID
-    except Exception:
-        pass
-
-    try:
-        from dotenv import load_dotenv
-        load_dotenv()
-        fid = os.getenv("GOOGLE_DRIVE_INVOICES_FOLDER_ID", "").strip()
-        if fid:
+        # Use direct key access — st.secrets doesn't reliably support .get()
+        try:
+            fid = str(_st.secrets["GOOGLE_DRIVE_INVOICES_FOLDER_ID"]).strip()
+        except (KeyError, Exception):
+            fid = ""
+        if not fid:
+            # Check inside [admin] table as fallback
+            try:
+                fid = str(_st.secrets["admin"]["GOOGLE_DRIVE_INVOICES_FOLDER_ID"]).strip()
+            except (KeyError, Exception):
+                fid = ""
+        if fid and fid != "PASTE_YOUR_FOLDER_ID_HERE":
             GOOGLE_DRIVE_INVOICES_FOLDER_ID = fid
-            return fid
+            return GOOGLE_DRIVE_INVOICES_FOLDER_ID
     except Exception:
         pass
 
@@ -593,224 +596,4 @@ def build_email_html(records: list[dict], sales_person: str = "") -> str:
         block = (
             f"<p style='font-family:Arial,sans-serif;font-size:14px;"
             f"font-weight:bold;margin:18px 0 6px 0;'>{order_idx}</p>"
-            "<table style='border-collapse:collapse;font-family:Arial,sans-serif;"
-            "font-size:13px;margin-bottom:18px;'>"
-            + "".join(rows_html) +
-            "</table>"
-        )
-        order_blocks.append(block)
-
-    body = (
-        "<p>Dear Sir,</p>"
-        "<p>Please deliver the materials as mentioned below.</p>"
-        + "".join(order_blocks)
-        + _build_signature_html(sales_person)
-    )
-    return body
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# MAIN ENTRY-POINT
-# ──────────────────────────────────────────────────────────────────────────────
-
-def compose_schedule_delivery_email(
-    selected_rows: list[dict],
-    mis_df: pd.DataFrame,
-    subject: str | None = None,
-) -> dict:
-    """
-    Prepare the Schedule-Delivery email WITHOUT sending it.
-
-    Returns a dict with keys:
-        ready              : bool — True if every prerequisite is satisfied
-        error              : str  — populated when ready is False
-        subject            : str  — final subject line
-        html_body          : str  — full HTML body (preview-ready)
-        sales_person       : str  — name shown in the signature
-        to / cc / bcc      : list[str]
-        attachments        : list[tuple[str, bytes]]   (raw payloads)
-        attachment_names   : list[str]                 (filenames only)
-        missing_invoices   : list[str]
-        invoice_status     : list[str]
-        records_count      : int
-        selected_rows      : echoed back
-    """
-    final_subject = subject or build_default_subject()
-
-    if not selected_rows:
-        return {
-            "ready": False,
-            "error": "No rows selected for scheduling.",
-            "missing_invoices": [],
-            "subject": final_subject,
-        }
-
-    # 1. Build per-record line items + same-day flag
-    rec_payload = []
-    missing_invoices: list[str] = []
-    all_attachments: list[tuple[str, bytes]] = []
-    invoice_status_per_customer: list[str] = []
-
-    for r in selected_rows:
-        cust = r.get("customer", "")
-        gso  = r.get("godrej_so", "")
-        cnum = r.get("contact_number", "")
-        sday = bool(r.get("same_day", False))
-
-        lines = lines_for_so(mis_df, gso)
-        rec_payload.append({
-            "customer": cust, "godrej_so": gso,
-            "lines": lines, "same_day": sday,
-        })
-
-        atts, msg = fetch_invoice_from_drive(cust)
-        invoice_status_per_customer.append(f"{cust}: {msg}")
-        if not atts:
-            missing_invoices.append(cust)
-        else:
-            all_attachments.extend(atts)
-
-    # De-duplicate attachments globally by filename (keep first occurrence)
-    seen_fn: set[str] = set()
-    deduped_attachments: list[tuple[str, bytes]] = []
-    for fn, payload in all_attachments:
-        if fn in seen_fn:
-            continue
-        seen_fn.add(fn)
-        deduped_attachments.append((fn, payload))
-
-    # 2. ABORT prep if no attachments at all
-    if not deduped_attachments:
-        return {
-            "ready": False,
-            "error": "No invoice attachments found — email NOT ready to send.",
-            "missing_invoices": missing_invoices,
-            "invoice_status": invoice_status_per_customer,
-            "subject": final_subject,
-        }
-
-    # 3. Recipients
-    rcpt = get_delivery_recipients()
-    if not rcpt["to"]:
-        return {
-            "ready": False,
-            "error": rcpt.get("error") or "No recipients configured.",
-            "missing_invoices": missing_invoices,
-            "invoice_status": invoice_status_per_customer,
-            "subject": final_subject,
-        }
-
-    # 4. Pick sales person + build HTML body
-    sales_person = _pick_dominant_sales_person(selected_rows)
-    html_body = build_email_html(rec_payload, sales_person=sales_person)
-
-    return {
-        "ready": True,
-        "error": "",
-        "subject": final_subject,
-        "html_body": html_body,
-        "sales_person": sales_person,
-        "to": rcpt["to"],
-        "cc": rcpt["cc"],
-        "bcc": rcpt["bcc"],
-        "attachments": deduped_attachments,
-        "attachment_names": [fn for fn, _ in deduped_attachments],
-        "missing_invoices": missing_invoices,
-        "invoice_status": invoice_status_per_customer,
-        "records_count": len(selected_rows),
-        "selected_rows": selected_rows,
-    }
-
-
-def send_prepared_delivery_email(prepared: dict) -> dict:
-    """
-    Send a previously composed email returned by `compose_schedule_delivery_email`.
-    """
-    if not prepared or not prepared.get("ready"):
-        return {
-            "sent": False,
-            "error": (prepared or {}).get("error", "Email not ready to send."),
-            "missing_invoices": (prepared or {}).get("missing_invoices", []),
-            "invoice_status": (prepared or {}).get("invoice_status", []),
-            "subject": (prepared or {}).get("subject", ""),
-        }
-
-    subj = prepared["subject"]
-    msg = EmailMessage()
-    msg["Subject"] = subj
-    msg["From"]    = SENDER_EMAIL
-    msg["To"]      = ", ".join(prepared.get("to", []))
-    if prepared.get("cc"):
-        msg["Cc"]  = ", ".join(prepared["cc"])
-    msg.set_content("Please view this email in HTML format.")
-    msg.add_alternative(prepared["html_body"], subtype="html")
-
-    for fn, payload in prepared.get("attachments", []):
-        msg.add_attachment(payload, maintype="application", subtype="pdf", filename=fn)
-
-    all_rcpts = (
-        list(prepared.get("to", []))
-        + list(prepared.get("cc", []))
-        + list(prepared.get("bcc", []))
-    )
-
-    try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(SENDER_EMAIL, SENDER_PASSWORD)
-            server.send_message(msg, from_addr=SENDER_EMAIL, to_addrs=all_rcpts)
-    except Exception as e:
-        return {
-            "sent": False,
-            "error": f"SMTP send failed: {e}",
-            "missing_invoices": prepared.get("missing_invoices", []),
-            "invoice_status": prepared.get("invoice_status", []),
-            "subject": subj,
-        }
-
-    # Audit log
-    try:
-        from services.sheets import append_email_log
-        append_email_log(
-            job_name="Schedule Delivery Email",
-            records_count=prepared.get("records_count", 0),
-            recipients=all_rcpts,
-            status="success",
-        )
-    except Exception:
-        pass
-
-    return {
-        "sent": True,
-        "recipients": all_rcpts,
-        "to": prepared.get("to", []),
-        "cc": prepared.get("cc", []),
-        "bcc": prepared.get("bcc", []),
-        "subject": subj,
-        "records": prepared.get("records_count", 0),
-        "attachments": prepared.get("attachment_names", []),
-        "missing_invoices": prepared.get("missing_invoices", []),
-        "invoice_status": prepared.get("invoice_status", []),
-        "sales_person": prepared.get("sales_person", ""),
-    }
-
-
-def send_schedule_delivery_email(
-    selected_rows: list[dict],
-    mis_df: pd.DataFrame,
-    subject: str | None = None,
-) -> dict:
-    """
-    Backward-compatible wrapper — composes the email and sends it in one step.
-    Prefer `compose_schedule_delivery_email` + `send_prepared_delivery_email`
-    when a preview step is desired.
-    """
-    prepared = compose_schedule_delivery_email(selected_rows, mis_df, subject)
-    if not prepared.get("ready"):
-        return {
-            "sent": False,
-            "error": prepared.get("error", "Email not ready."),
-            "missing_invoices": prepared.get("missing_invoices", []),
-            "invoice_status": prepared.get("invoice_status", []),
-            "subject": prepared.get("subject", subject or ""),
-        }
-    return send_prepared_delivery_email(prepared)
+            "<table style='borde
