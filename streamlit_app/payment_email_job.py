@@ -132,9 +132,13 @@ def fetch_all_crm():
 
     crm = pd.concat(dfs, ignore_index=True, sort=False)
 
-    # Rename column variants
+    # Rename column variants — ORDER VALUE = Gross Order Value (after disc+tax)
     crm = crm.rename(columns={
+        "GROSS ORDER VALUE":                               "ORDER VALUE",
         "ORDER UNIT PRICE=(AFTER DISC + TAX)":             "ORDER VALUE",
+        "ORDER VALUE (AFTER DISC + TAX)":                  "ORDER VALUE",
+        "ORDER VALUE(AFTER DISC + TAX)":                   "ORDER VALUE",
+        "ORDER AMOUNT":                                    "ORDER VALUE",
         "CROSS CHECK GROSS AMT (ORDER VALUE WITHOUT TAX)": "GROSS AMT EX-TAX",
         "DATE":                                            "ORDER DATE",
         "CUSTOMER DELIVERY DATE (TO BE)":                  "DELIVERY DATE",

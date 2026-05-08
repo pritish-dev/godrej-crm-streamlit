@@ -10,6 +10,30 @@ sys.path.insert(0, BASE_DIR)
 
 from services.sheets import get_df, write_df
 
+
+# ─── Number formatting helpers ────────────────────────────────────────────────
+def _fmt_num(val):
+    """Floats: max 2 dp (trailing zeros stripped). Integers: no decimals."""
+    if val is None or val == "":
+        return ""
+    try:
+        f = float(val)
+    except Exception:
+        return str(val)
+    if pd.isna(f):
+        return ""
+    if float(f).is_integer():
+        return f"{int(round(f)):,}"
+    s = f"{f:,.2f}"
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    return s
+
+
+def _fmt_inr(val):
+    s = _fmt_num(val)
+    return f"₹{s}" if s != "" else ""
+
 st.set_page_config(layout="wide", page_title="Leads Management")
 
 # =========================================================
@@ -555,7 +579,7 @@ else:
     with col5:
         if total_leads > 0:
             conversion_rate = (converted / total_leads) * 100
-            st.metric("📈 Conv. Rate", f"{conversion_rate:.1f}%")
+            st.metric("📈 Conv. Rate", f"{_fmt_num(conversion_rate)}%")
         else:
             st.metric("📈 Conv. Rate", "0%")
 
@@ -710,6 +734,27 @@ if not df_leads.empty:
                         )
 
                         # ═══════════════════════════════════════════════════════════
+                        # ASSIGN TO SALES PERSON
+                        # ═══════════════════════════════════════════════════════════
+                        sales_options = ["Unassigned"] + (
+                            sorted(team_df["EMPLOYEE"].unique().tolist())
+                            if not team_df.empty else []
+                        )
+
+                        current_assigned = str(
+                            selected_row.get("ASSIGNED TO", "")
+                        ).strip().upper() or "Unassigned"
+                        if current_assigned not in sales_options:
+                            sales_options = sales_options + [current_assigned]
+
+                        new_assigned = st.selectbox(
+                            "Assign to Sales Person",
+                            sales_options,
+                            index=sales_options.index(current_assigned),
+                            key="assigned_update",
+                        )
+
+                        # ═══════════════════════════════════════════════════════════
                         # SAFE DATE HANDLING - Validate the date value
                         # ═══════════════════════════════════════════════════════════
                         try:
@@ -730,6 +775,10 @@ if not df_leads.empty:
                         if st.button("💾 Save Changes", key="save_changes"):
                             updates = {
                                 "STATUS": new_status,
+                                "ASSIGNED TO": (
+                                    "" if new_assigned == "Unassigned"
+                                    else new_assigned.upper()
+                                ),
                                 "FOLLOW UP DATE": new_follow_up.strftime("%d-%m-%Y"),
                                 "LAST CONTACT": datetime.now().strftime("%d-%m-%Y %H:%M")
                             }
@@ -761,7 +810,7 @@ if not df_leads.empty and "STATUS" in df_leads.columns:
             if count > 0:
                 percentage = (count / len(df_leads)) * 100
                 st.write(f"**{stage}** ({count})")
-                st.progress(percentage / 100, text=f"{percentage:.0f}%")
+                st.progress(percentage / 100, text=f"{_fmt_num(percentage)}%")
 
     with col2:
         st.write("#### Conversion Funnel")
@@ -849,8 +898,8 @@ if not df_leads.empty and "ASSIGNED TO" in df_leads.columns:
             "Sales Person": person,
             "Total Leads": total,
             "Converted": converted,
-            "Conv. Rate %": f"{conversion_rate:.1f}%",
-            "Avg Deal Value": f"₹{avg_deal_value:,.0f}" if avg_deal_value > 0 else "N/A"
+            "Conv. Rate %": f"{_fmt_num(conversion_rate)}%",
+            "Avg Deal Value": _fmt_inr(avg_deal_value) if avg_deal_value > 0 else "N/A"
         })
 
     if performance_data:
@@ -887,7 +936,7 @@ if not df_leads.empty and "SOURCE" in df_leads.columns:
                 with col_count:
                     st.write(f"{count}")
                 with col_pct:
-                    st.write(f"{percentage:.0f}%")
+                    st.write(f"{_fmt_num(percentage)}%")
 
                 st.progress(percentage / 100)
 
@@ -907,7 +956,7 @@ if not df_leads.empty and "SOURCE" in df_leads.columns:
 
             source_conversion.append({
                 "Source": source,
-                "Conv%": f"{conv_rate:.0f}%"
+                "Conv%": f"{_fmt_num(conv_rate)}%"
             })
 
         if source_conversion:

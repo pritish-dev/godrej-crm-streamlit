@@ -133,6 +133,30 @@ def _stat_block(value, label: str, color: str) -> str:
             f"<div style='color:#555;font-size:13px'>{label}</div></div>")
 
 
+def _fmt_number(val):
+    """Floats: max 2 dp (trailing zeros stripped). Integers: no decimals."""
+    if val is None or val == "":
+        return ""
+    try:
+        f = float(val)
+    except Exception:
+        return str(val)
+    if pd.isna(f):
+        return ""
+    if float(f).is_integer():
+        return f"{int(round(f)):,}"
+    s = f"{f:,.2f}"
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    return s
+
+
+def _fmt_inr(val) -> str:
+    """INR amount: floats up to 2 dp, integers no dp. Empty string if invalid."""
+    s = _fmt_number(val)
+    return f"₹{s}" if s != "" else ""
+
+
 def _fmt_date_col(df: pd.DataFrame, col: str) -> pd.DataFrame:
     if col in df.columns:
         df[col] = (pd.to_datetime(df[col], errors="coerce")
@@ -300,19 +324,26 @@ def _get_readiness_flags(
 
     flags: list[bool] = []
     for _, row in df.iterrows():
-        # Option A: GODREJ SO NO directly on the row
-        godrej_so = str(row.get("GODREJ SO NO", "")).strip()
-        if godrej_so and godrej_so.lower() not in ("nan", "none", ""):
-            flags.append(godrej_so in ready_sos)
-            continue
-        # Option B: look up by customer name
-        source = str(row.get("SOURCE", "Franchise")).strip()
-        if source == "Franchise":
-            cust = str(row.get(COL_CUSTOMER, "")).strip().upper()
-            sos  = cust_so_map.get(cust, [])
-            flags.append(any(so in ready_sos for so in sos))
-        else:
+        # Mirror the dashboard's _compute_ready_flags logic so the email's
+        # green list matches the dashboard's green-dot list exactly.
+        # 1) Collect ALL SOs for the row: row's own GODREJ SO NO + customer's
+        #    mapped SOs.
+        # 2) Mark ready when ANY of those SOs is in ready_sos.
+        sos_for_row: list[str] = []
+
+        row_so = str(row.get("GODREJ SO NO", "")).strip()
+        if row_so and row_so.lower() not in ("nan", "none", ""):
+            sos_for_row.append(row_so)
+
+        cust_key = str(row.get(COL_CUSTOMER, "")).strip().upper()
+        if cust_key:
+            sos_for_row.extend(cust_so_map.get(cust_key, []))
+
+        if not sos_for_row:
             flags.append(False)
+            continue
+
+        flags.append(any(so in ready_sos for so in sos_for_row))
 
     return flags
 
@@ -921,10 +952,26 @@ def send_combined_delivery_alert_email_4s(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _compute_pending_due(df: pd.DataFrame) -> pd.DataFrame:
-    """Add PENDING DUE column = ORDER VALUE − ADV RECEIVED (clipped at 0)."""
+    """
+    Add PENDING DUE column.
+
+    Rule (per spec):
+        Pending Due = Gross Order Value (discount + tax) − Advance Received
+
+    If Advance == Gross Order Value, Pending Due = 0 (nothing pending).
+    Negative values are clipped to 0; rounding residue ≤ ₹1 is also treated as
+    zero so an exact match never leaks into the Payment Due table.
+    """
     d = df.copy()
     for col, aliases in {
-        COL_ORDER_AMOUNT:  ["ORDER VALUE", "ORDER UNIT PRICE=(AFTER DISC + TAX)", "GROSS AMT EX-TAX"],
+        COL_ORDER_AMOUNT:  [
+            "ORDER VALUE",
+            "GROSS ORDER VALUE",
+            "ORDER UNIT PRICE=(AFTER DISC + TAX)",
+            "ORDER VALUE (AFTER DISC + TAX)",
+            "ORDER AMOUNT",
+            "GROSS AMT EX-TAX",
+        ],
         COL_ADV_RECEIVED:  ["ADV RECEIVED", "ADVANCE RECEIVED"],
     }.items():
         if col not in d.columns:
@@ -938,7 +985,10 @@ def _compute_pending_due(df: pd.DataFrame) -> pd.DataFrame:
             d[col].astype(str).str.replace(r"[₹,\s]", "", regex=True),
             errors="coerce"
         ).fillna(0)
-    d[COL_PENDING_DUE] = (d[COL_ORDER_AMOUNT] - d[COL_ADV_RECEIVED]).clip(lower=0)
+    diff = (d[COL_ORDER_AMOUNT] - d[COL_ADV_RECEIVED]).round(2)
+    # Treat tiny rounding residue as zero (advance exactly matches gross)
+    diff = diff.where(diff.abs() > 1.0, 0.0)
+    d[COL_PENDING_DUE] = diff.clip(lower=0)
     return d
 
 
@@ -964,15 +1014,15 @@ def send_payment_due_morning_email_4s(crm_df: pd.DataFrame) -> dict:
     df_display   = _fmt_date_col(df_display, COL_DELIVERY_DATE)
     df_display   = _fmt_date_col(df_display, COL_ORDER_DATE)
     if COL_ORDER_AMOUNT in df_display.columns:
-        df_display[COL_ORDER_AMOUNT]  = df_display[COL_ORDER_AMOUNT].apply(lambda v: f"₹{float(v):,.0f}" if str(v).replace('.','',1).isdigit() else v)
+        df_display[COL_ORDER_AMOUNT]  = df_display[COL_ORDER_AMOUNT].apply(_fmt_inr)
     if COL_ADV_RECEIVED in df_display.columns:
-        df_display[COL_ADV_RECEIVED]  = df_display[COL_ADV_RECEIVED].apply(lambda v: f"₹{float(v):,.0f}" if str(v).replace('.','',1).isdigit() else v)
+        df_display[COL_ADV_RECEIVED]  = df_display[COL_ADV_RECEIVED].apply(_fmt_inr)
     if COL_PENDING_DUE in df_display.columns:
-        df_display[COL_PENDING_DUE]   = payment_df[COL_PENDING_DUE].apply(lambda v: f"₹{v:,.0f}")
+        df_display[COL_PENDING_DUE]   = payment_df[COL_PENDING_DUE].apply(_fmt_inr)
 
     stats_html = (
         _stat_block(total,                         "Orders with Pending Payment", "#e65100") +
-        _stat_block(f"₹{total_outstanding:,.0f}",  "Total Outstanding (D-1)",    "#c62828")
+        _stat_block(_fmt_inr(total_outstanding),   "Total Outstanding (D-1)",    "#c62828")
     )
     legend_html = (
         "<strong style='color:#c62828'>⚠️ Payment Due Alert (D-1 Cutoff):</strong> "
@@ -994,7 +1044,7 @@ def send_payment_due_morning_email_4s(crm_df: pd.DataFrame) -> dict:
     )
     subject = f"[4s CRM] 💰 Payment Due Report - {today.strftime('%d %b %Y')} - {total} Orders"
     summary = _send_email(subject, body, job_name="Payment Email 1 (Morning)", records_count=total)
-    print(f"  → Payment Email 1 sent: {total} orders, ₹{total_outstanding:,.0f} outstanding")
+    print(f"  → Payment Email 1 sent: {total} orders, {_fmt_inr(total_outstanding)} outstanding")
     return summary
 
 
@@ -1025,15 +1075,15 @@ def send_payment_due_reminder_email_4s(crm_df: pd.DataFrame) -> dict:
     df_display   = _fmt_date_col(df_display, COL_DELIVERY_DATE)
     df_display   = _fmt_date_col(df_display, COL_ORDER_DATE)
     if COL_ORDER_AMOUNT in df_display.columns:
-        df_display[COL_ORDER_AMOUNT]  = payment_df[COL_ORDER_AMOUNT].apply(lambda v: f"₹{v:,.0f}")
+        df_display[COL_ORDER_AMOUNT]  = payment_df[COL_ORDER_AMOUNT].apply(_fmt_inr)
     if COL_ADV_RECEIVED in df_display.columns:
-        df_display[COL_ADV_RECEIVED]  = payment_df[COL_ADV_RECEIVED].apply(lambda v: f"₹{v:,.0f}")
+        df_display[COL_ADV_RECEIVED]  = payment_df[COL_ADV_RECEIVED].apply(_fmt_inr)
     if COL_PENDING_DUE in df_display.columns:
-        df_display[COL_PENDING_DUE]   = payment_df[COL_PENDING_DUE].apply(lambda v: f"₹{v:,.0f}")
+        df_display[COL_PENDING_DUE]   = payment_df[COL_PENDING_DUE].apply(_fmt_inr)
 
     stats_html = (
         _stat_block(total,                         "Orders with Pending Payment", "#e65100") +
-        _stat_block(f"₹{total_outstanding:,.0f}",  "Total Outstanding (All)",    "#c62828")
+        _stat_block(_fmt_inr(total_outstanding),   "Total Outstanding (All)",     "#c62828")
     )
     legend_html = (
         "<strong style='color:#c62828'>⚠️ Payment Due Reminder:</strong> "
@@ -1055,5 +1105,5 @@ def send_payment_due_reminder_email_4s(crm_df: pd.DataFrame) -> dict:
     )
     subject = f"[4s CRM] ⚠️ Payment Due Reminder - {today.strftime('%d %b %Y')} - {total} Orders"
     summary = _send_email(subject, body, job_name="Payment Email 2 (Reminder)", records_count=total)
-    print(f"  → Payment Email 2 sent: {total} orders, ₹{total_outstanding:,.0f} outstanding")
+    print(f"  → Payment Email 2 sent: {total} orders, {_fmt_inr(total_outstanding)} outstanding")
     return summary

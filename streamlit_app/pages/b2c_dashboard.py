@@ -128,12 +128,37 @@ def fmt_date(series):
     return pd.to_datetime(series, errors="coerce").dt.strftime("%d-%b-%Y").str.upper()
 
 
-def fmt_amount(val):
-    """Format numeric value as INR string with 2 decimal places."""
-    try:
-        return f"₹{float(val):,.2f}"
-    except Exception:
+def fmt_number(val):
+    """
+    Format any numeric value:
+      • Floats: max 2 decimal places, trailing zeros trimmed
+      • Whole numbers: no decimal point at all
+      • Empty / non-numeric: empty string
+    """
+    if val is None or val == "":
         return ""
+    try:
+        f = float(val)
+    except Exception:
+        return str(val)
+    if pd.isna(f):
+        return ""
+    # If value is a whole number, render as integer (no decimals)
+    if float(f).is_integer():
+        return f"{int(round(f)):,}"
+    # Else: 2-dp with trailing zeros stripped (e.g. 12.50 → 12.5)
+    s = f"{f:,.2f}"
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    return s
+
+
+def fmt_amount(val):
+    """Format numeric value as INR string. Floats up to 2 dp; integers no dp."""
+    s = fmt_number(val)
+    if s == "":
+        return ""
+    return f"₹{s}"
 
 
 def apply_amount_fmt(df, cols):
@@ -141,6 +166,14 @@ def apply_amount_fmt(df, cols):
     for col in cols:
         if col in df.columns:
             df[col] = df[col].apply(fmt_amount)
+    return df
+
+
+def apply_number_fmt(df, cols):
+    """Apply plain numeric formatting (max 2 dp for floats, no dp for ints)."""
+    for col in cols:
+        if col in df.columns:
+            df[col] = df[col].apply(fmt_number)
     return df
 
 
@@ -189,8 +222,16 @@ def load_b2c_data():
     crm = pd.concat(dfs, ignore_index=True, sort=False)
 
     # ── Rename verbose 26-27 column names → short working names ─────────────
+    # NOTE: "ORDER VALUE" represents the GROSS ORDER VALUE after discount + tax
+    # — i.e. the amount the customer actually pays. PENDING DUE is computed as
+    # (ORDER VALUE - ADV RECEIVED), so when the advance equals the gross order
+    # value, the row is excluded from the Payment Due table automatically.
     crm = crm.rename(columns={
+        "GROSS ORDER VALUE":                               "ORDER VALUE",
         "ORDER UNIT PRICE=(AFTER DISC + TAX)":             "ORDER VALUE",
+        "ORDER VALUE (AFTER DISC + TAX)":                  "ORDER VALUE",
+        "ORDER VALUE(AFTER DISC + TAX)":                   "ORDER VALUE",
+        "ORDER AMOUNT":                                    "ORDER VALUE",
         # All known variants of the delivery-status column
         "DELIVERY REMARKS(DELIVERED/PENDING)":             "DELIVERY STATUS",
         "DELIVERY REMARKS (DELIVERED/PENDING)":            "DELIVERY STATUS",
@@ -199,6 +240,7 @@ def load_b2c_data():
         "CROSS CHECK GROSS AMT (ORDER VALUE WITHOUT TAX)": "GROSS AMT EX-TAX",
         "CUSTOMER DELIVERY DATE":                          "DELIVERY DATE",
         "SALES REP":                                       "SALES PERSON",
+        "ADVANCE RECEIVED":                                "ADV RECEIVED",
     })
 
     # ── Exhaustive fallback: scan every column for a delivery-status candidate ─
@@ -257,7 +299,13 @@ def load_b2c_data():
         crm.loc[empty_mask, "DELIVERY STATUS"] = "PENDING"
 
     # ── Calculated column ────────────────────────────────────────────────────
-    crm["PENDING DUE"] = (crm["ORDER VALUE"] - crm["ADV RECEIVED"]).clip(lower=0)
+    # Pending due = Gross Order Value (after discount + tax) − Advance Received.
+    # Negative values (over-payment) are clipped to 0. Tiny floating-point
+    # residue (≤ ₹1) is also treated as fully-paid so an advance that exactly
+    # equals the gross order value never lingers in the Payment Due table.
+    diff = (crm["ORDER VALUE"] - crm["ADV RECEIVED"]).round(2)
+    diff = diff.where(diff.abs() > 1.0, 0.0)
+    crm["PENDING DUE"] = diff.clip(lower=0)
 
     return crm, team, franchise_sheets, fours_sheets
 
@@ -493,8 +541,8 @@ else:
 
 k1, k2, k3, k4 = st.columns(4)
 k1.metric("📦 Total Orders",       total_orders)
-k2.metric("💰 Total Order Value",  f"₹{total_value:,.2f}")
-k3.metric("🧾 Pending Due",        f"₹{total_pending:,.2f}")
+k2.metric("💰 Total Order Value",  fmt_amount(total_value))
+k3.metric("🧾 Pending Due",        fmt_amount(total_pending))
 k4.metric("🚚 Pending Deliveries", pending_del_cnt)
 
 st.divider()
@@ -525,7 +573,7 @@ if not _crm_this_month.empty and "SALES PERSON" in _crm_this_month.columns:
     )
     _lb.index = _lb.index + 1   # 1-based rank
     _lb.index.name = "Rank"
-    _lb["Total_Value"] = _lb["Total_Value"].apply(lambda v: f"₹{v:,.0f}")
+    _lb["Total_Value"] = _lb["Total_Value"].apply(fmt_amount)
     _lb.columns = ["Sales Person", "Orders", "Total Value", "Pending Deliveries"]
 
     # Colour top performer green
@@ -1212,7 +1260,7 @@ if not overdue_grouped.empty:
                pd.to_datetime(overdue_grouped["DELIVERY DATE"], errors="coerce")
                .min().strftime("%d-%b-%Y"))
     om3.metric("💸 Overdue Pending Due",
-               f"₹{overdue_grouped['PENDING DUE'].sum():,.0f}"
+               fmt_amount(overdue_grouped['PENDING DUE'].sum())
                if "PENDING DUE" in overdue_grouped.columns else "—")
 
 else:
@@ -1230,7 +1278,7 @@ payment_due = crm[crm["PENDING DUE"] > 0].copy().sort_values(
 
 if not payment_due.empty:
     total_outstanding = payment_due["PENDING DUE"].sum()
-    st.warning(f"💸 Total Outstanding Balance: ₹{total_outstanding:,.2f}")
+    st.warning(f"💸 Total Outstanding Balance: {fmt_amount(total_outstanding)}")
 
     # Group by ORDER NO first — used for BOTH emails and display
     payment_grouped = group_by_order_no(payment_due).sort_values(

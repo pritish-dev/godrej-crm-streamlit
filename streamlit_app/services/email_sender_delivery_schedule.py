@@ -189,6 +189,30 @@ def get_delivery_recipients() -> dict:
 # HELPERS — Google Drive service + invoice fetching
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _safe_json_loads(raw: str):
+    """
+    Robust JSON loader for service-account JSON pasted into a TOML basic
+    multi-line string ("""...""") where TOML may have converted the `\\n`
+    inside `private_key` into literal newlines, which json.loads rejects.
+    """
+    import json
+    try:
+        return json.loads(raw)
+    except Exception:
+        # Re-escape any literal newlines / carriage returns / tabs so the
+        # JSON parser can read them as escape sequences again.
+        try:
+            fixed = (
+                raw.replace("\r\n", "\\n")
+                   .replace("\r", "\\n")
+                   .replace("\n", "\\n")
+                   .replace("\t", "\\t")
+            )
+            return json.loads(fixed)
+        except Exception:
+            return None
+
+
 def _get_drive_service():
     """
     Build a Google Drive API service using the same service-account credentials
@@ -201,34 +225,91 @@ def _get_drive_service():
     from googleapiclient.discovery import build
 
     creds = None
+    last_err: Exception | None = None
+
+    # 0. Load .env so GOOGLE_CREDENTIALS / GOOGLE_APPLICATION_CREDENTIALS work
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(override=False)
+    except Exception:
+        pass
 
     # 1. Environment variable (GitHub Actions / server)
     try:
         raw = os.getenv("GOOGLE_CREDENTIALS", "").strip()
         if raw:
-            creds = Credentials.from_service_account_info(
-                json.loads(raw), scopes=_DRIVE_SCOPES
-            )
-    except Exception:
-        pass
+            info = _safe_json_loads(raw)
+            if info:
+                creds = Credentials.from_service_account_info(
+                    info, scopes=_DRIVE_SCOPES
+                )
+    except Exception as e:
+        last_err = e
 
     # 2. Streamlit secrets — key can be [google] table OR top-level
     if creds is None:
         try:
             import streamlit as _st
+            info = None
+            # Try [google] table first
             try:
                 info = dict(_st.secrets["google"])
             except Exception:
-                raw = _st.secrets.get("GOOGLE_CREDENTIALS", "")
-                info = json.loads(raw) if raw else None
+                pass
+            # Then top-level GOOGLE_CREDENTIALS string
+            if info is None:
+                try:
+                    raw = _st.secrets.get("GOOGLE_CREDENTIALS", "") or ""
+                except Exception:
+                    raw = ""
+                if not raw:
+                    try:
+                        raw = str(_st.secrets["GOOGLE_CREDENTIALS"])
+                    except Exception:
+                        raw = ""
+                if raw:
+                    info = _safe_json_loads(raw)
             if info:
                 creds = Credentials.from_service_account_info(
                     info, scopes=_DRIVE_SCOPES
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            last_err = e
 
-    # 3. GOOGLE_APPLICATION_CREDENTIALS path
+    # 3. Read .streamlit/secrets.toml from disk and pull GOOGLE_CREDENTIALS
+    #    directly. Bypasses any st.secrets caching/parsing quirks.
+    if creds is None:
+        try:
+            base = os.path.dirname(os.path.abspath(__file__))
+            secrets_path = os.path.normpath(
+                os.path.join(base, "..", "..", ".streamlit", "secrets.toml")
+            )
+            if os.path.exists(secrets_path):
+                with open(secrets_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                # Match GOOGLE_CREDENTIALS = """ ... """  (multi-line)
+                m = re.search(
+                    r'GOOGLE_CREDENTIALS\s*=\s*"""(.*?)"""',
+                    content,
+                    re.DOTALL,
+                )
+                if not m:
+                    m = re.search(
+                        r"GOOGLE_CREDENTIALS\s*=\s*'''(.*?)'''",
+                        content,
+                        re.DOTALL,
+                    )
+                if m:
+                    raw = m.group(1).strip()
+                    info = _safe_json_loads(raw)
+                    if info:
+                        creds = Credentials.from_service_account_info(
+                            info, scopes=_DRIVE_SCOPES
+                        )
+        except Exception as e:
+            last_err = e
+
+    # 4. GOOGLE_APPLICATION_CREDENTIALS path
     if creds is None:
         try:
             path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
@@ -236,22 +317,40 @@ def _get_drive_service():
                 creds = Credentials.from_service_account_file(
                     path, scopes=_DRIVE_SCOPES
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            last_err = e
 
-    # 4. Local file fallback
+    # 5. Local file fallback (relative to project root or streamlit_app dir)
     if creds is None:
-        try:
-            creds = Credentials.from_service_account_file(
-                "config/credentials.json", scopes=_DRIVE_SCOPES
-            )
-        except Exception:
-            pass
+        candidate_paths = [
+            "config/credentials.json",
+            os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "..", "config", "credentials.json",
+            ),
+            os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "..", "..", "config", "credentials.json",
+            ),
+        ]
+        for p in candidate_paths:
+            try:
+                if os.path.exists(p):
+                    creds = Credentials.from_service_account_file(
+                        p, scopes=_DRIVE_SCOPES
+                    )
+                    if creds is not None:
+                        break
+            except Exception as e:
+                last_err = e
 
     if creds is None:
         raise RuntimeError(
-            "Could not build Google Drive service — no valid credentials found. "
-            "Set GOOGLE_CREDENTIALS env var or configure Streamlit secrets."
+            "Could not build Google Drive service — no valid service-account "
+            "credentials found. Add GOOGLE_CREDENTIALS to .env or "
+            ".streamlit/secrets.toml (use ''' ... ''' literal multi-line in TOML "
+            "to preserve the private_key newlines)."
+            + (f"  Last error: {last_err}" if last_err else "")
         )
 
     return build("drive", "v3", credentials=creds, cache_discovery=False)
