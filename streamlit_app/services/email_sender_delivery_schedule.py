@@ -84,19 +84,32 @@ RECIPIENTS_SHEET = "Delivery mail Recipients"
 _DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 
 # ── Google Drive invoice folder ID resolver ────────────────────────────────────
+# Hard-coded fallback — used only when the value cannot be found in any other
+# source.  Replace this if the invoice root folder ever moves in Drive.
+_HARDCODED_DRIVE_FOLDER_ID = "1Sss9vlv_BKLiUXWcTtS8Uc5kzoAuBh1r"
+
 # Called at function-call time (not import time) so it always reads the latest
 # value regardless of module caching or Streamlit secrets initialisation order.
 
 def _get_drive_folder_id() -> str | None:
-    """
-    Resolve GOOGLE_DRIVE_INVOICES_FOLDER_ID from every possible source.
-    Tries in order:
-      1. Environment variable (works for .env via dotenv)
-      2. st.secrets direct bracket access (runtime, not import-time)
-      3. Parse .streamlit/secrets.toml directly from disk with regex
-         — this is the 100% reliable fallback that bypasses all caching.
-    """
+    # Resolve GOOGLE_DRIVE_INVOICES_FOLDER_ID from every possible source.
+    # Tries in order:
+    #   1. Environment variable (works for .env via dotenv)
+    #   2. st.secrets direct bracket access (runtime)
+    #   3. st.secrets nested tables ([admin] / [google] / [drive])
+    #   4. Walk all secret keys (case-insensitive)
+    #   5. Parse .streamlit/secrets.toml directly from disk
+    #   6. Hard-coded fallback (last resort — keeps the app working
+    #      on Streamlit Cloud even before the secret is configured)
+
     _placeholder = "PASTE_YOUR_FOLDER_ID_HERE"
+    _key = "GOOGLE_DRIVE_INVOICES_FOLDER_ID"
+
+    def _ok(v) -> str | None:
+        s = str(v or "").strip().strip('"').strip("'")
+        if s and s != _placeholder:
+            return s
+        return None
 
     # 1. Environment variable / .env file
     try:
@@ -104,47 +117,70 @@ def _get_drive_folder_id() -> str | None:
         load_dotenv(override=False)
     except Exception:
         pass
-    fid = os.getenv("GOOGLE_DRIVE_INVOICES_FOLDER_ID", "").strip()
-    if fid and fid != _placeholder:
-        return fid
+    v = _ok(os.getenv(_key, ""))
+    if v:
+        return v
 
-    # 2. st.secrets (called at runtime so secrets are definitely loaded)
+    # 2 + 3 + 4. Streamlit secrets — every plausible location
     try:
         import streamlit as _st
-        fid = str(_st.secrets["GOOGLE_DRIVE_INVOICES_FOLDER_ID"]).strip()
-        if fid and fid != _placeholder:
-            return fid
+        # 2. Top-level
+        try:
+            v = _ok(_st.secrets[_key])
+            if v:
+                return v
+        except Exception:
+            pass
+        # 3. Nested tables
+        for tbl_name in ("admin", "google", "drive", "GOOGLE", "DRIVE"):
+            try:
+                tbl = _st.secrets[tbl_name]
+                v = _ok(tbl[_key])
+                if v:
+                    return v
+            except Exception:
+                pass
+        # 4. Walk all keys (case-insensitive search)
+        try:
+            for k in list(_st.secrets.keys()):
+                if str(k).strip().upper() == _key.upper():
+                    v = _ok(_st.secrets[k])
+                    if v:
+                        return v
+        except Exception:
+            pass
     except Exception:
         pass
 
-    # 3. Read .streamlit/secrets.toml directly from disk — bypasses all caching
+    # 5. Read .streamlit/secrets.toml directly from disk — bypasses all caching
     try:
-        # This file lives at <project_root>/.streamlit/secrets.toml
-        # __file__ is at <project_root>/streamlit_app/services/<this_file>.py
         base = os.path.dirname(os.path.abspath(__file__))
-        secrets_path = os.path.normpath(
-            os.path.join(base, "..", "..", ".streamlit", "secrets.toml")
-        )
-        if os.path.exists(secrets_path):
+        for rel in (
+            ("..", "..", ".streamlit", "secrets.toml"),
+            ("..", ".streamlit", "secrets.toml"),
+            (".streamlit", "secrets.toml"),
+        ):
+            secrets_path = os.path.normpath(os.path.join(base, *rel))
+            if not os.path.exists(secrets_path):
+                continue
             with open(secrets_path, "r", encoding="utf-8") as f:
                 content = f.read()
             m = re.search(
-                r'^GOOGLE_DRIVE_INVOICES_FOLDER_ID\s*=\s*"([^"]+)"',
-                content, re.MULTILINE
+                rf'^{_key}\s*=\s*"([^"]+)"',
+                content, re.MULTILINE,
+            ) or re.search(
+                rf"^{_key}\s*=\s*'([^']+)'",
+                content, re.MULTILINE,
             )
-            if not m:
-                m = re.search(
-                    r"^GOOGLE_DRIVE_INVOICES_FOLDER_ID\s*=\s*'([^']+)'",
-                    content, re.MULTILINE
-                )
             if m:
-                fid = m.group(1).strip()
-                if fid and fid != _placeholder:
-                    return fid
+                v = _ok(m.group(1))
+                if v:
+                    return v
     except Exception:
         pass
 
-    return None
+    # 6. Hard-coded fallback — guarantees the feature works.
+    return _HARDCODED_DRIVE_FOLDER_ID or None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
