@@ -32,9 +32,13 @@ from services.delivery_readiness import (
 from services.mis_email_import import load_cached_mis
 from services.email_sender_delivery_schedule import (
     send_schedule_delivery_email,
+    compose_schedule_delivery_email,
+    send_prepared_delivery_email,
+    build_default_subject,
     fetch_customer_invoices,
     get_delivery_recipients,
 )
+import streamlit.components.v1 as components
 
 FY_START = date(2026, 4, 1)
 
@@ -870,6 +874,7 @@ def _selected_rows_for_email(edited: pd.DataFrame) -> list[dict]:
             "contact_number":  str(r.get("CONTACT NUMBER", "")).strip(),
             "same_day":        bool(r.get("Same day Delivery and Installation")),
             "order_no":        str(r.get("ORDER NO", "")).strip(),
+            "sales_person":    str(r.get("SALES PERSON", "")).strip(),
         })
     return out
 
@@ -878,45 +883,122 @@ def _handle_schedule_delivery_button(edited_df: pd.DataFrame,
                                      mis_df_local: pd.DataFrame,
                                      button_key: str,
                                      subject_default: str):
-    """Renders the 'Schedule Delivery Email' button and handles the send flow."""
-    if st.button("📧 Schedule Delivery Email", type="primary",
-                 use_container_width=True, key=button_key):
-        rows = _selected_rows_for_email(edited_df)
-        if not rows:
-            st.warning("⚠️ Tick at least one GREEN row's 'Schedule for Delivery' checkbox first.")
-            return
-        if mis_df_local is None or mis_df_local.empty:
-            st.error("❌ MIS data unavailable. Run the 11 AM MIS import first.")
-            return
+    """
+    Renders the 'Schedule Delivery Email' button with a PREVIEW step.
 
-        with st.spinner("Composing email and fetching invoices from Gmail…"):
-            res = send_schedule_delivery_email(rows, mis_df_local, subject=subject_default)
+    Flow:
+      1. User clicks "Compose & Preview" → email is built (no send yet)
+      2. Subject, recipients, signature, attachments and HTML body are
+         shown in the page so the user can review.
+      3. User clicks "Confirm & Send" to actually send, or "Cancel" to abort.
+    """
+    preview_state_key = f"{button_key}_preview"
+    sent_flag_key     = f"{button_key}_sent_flag"
 
-        # Surface invoice search outcome row by row
-        if res.get("invoice_status"):
-            with st.expander("🧾 Invoice search details", expanded=bool(res.get("missing_invoices"))):
-                for line in res["invoice_status"]:
-                    st.write(f"• {line}")
+    # ── If a previous send just succeeded, show the success banner once ──────
+    if st.session_state.get(sent_flag_key):
+        res = st.session_state[sent_flag_key]
+        st.success(
+            f"✅ Delivery email sent — {res.get('records', 0)} record(s), "
+            f"{len(res.get('attachments', []))} invoice attachment(s)."
+        )
+        with st.expander("📋 Send details", expanded=False):
+            st.write(f"**To:** {', '.join(res.get('to', []))}")
+            st.write(f"**Cc:** {', '.join(res.get('cc', []))}")
+            st.write(f"**Bcc:** {', '.join(res.get('bcc', []))}")
+            st.write(f"**Subject:** {res.get('subject', '')}")
+            st.write(f"**Sales Person (signature):** {res.get('sales_person', '')}")
+            st.write(f"**Attachments:** {', '.join(res.get('attachments', []))}")
+        # Clear so the banner only shows once after the click
+        del st.session_state[sent_flag_key]
 
-        if res.get("missing_invoices"):
-            st.warning(
-                "⚠️ No invoices found for: **" +
-                ", ".join(res["missing_invoices"]) + "**"
-            )
+    prepared = st.session_state.get(preview_state_key)
 
-        if res.get("sent"):
-            st.success(
-                f"✅ Delivery email sent — {res.get('records', 0)} record(s), "
-                f"{len(res.get('attachments', []))} invoice attachment(s)."
-            )
-            with st.expander("📋 Send details"):
-                st.write(f"**To:** {', '.join(res.get('to', []))}")
-                st.write(f"**Cc:** {', '.join(res.get('cc', []))}")
-                st.write(f"**Bcc:** {', '.join(res.get('bcc', []))}")
-                st.write(f"**Subject:** {res.get('subject', '')}")
-                st.write(f"**Attachments:** {', '.join(res.get('attachments', []))}")
-        else:
-            st.error(f"❌ Email NOT sent — {res.get('error', 'unknown error')}")
+    # ── STAGE 1: no preview prepared yet → show "Compose & Preview" button ──
+    if prepared is None:
+        if st.button("📧 Schedule Delivery Email — Preview",
+                     type="primary",
+                     use_container_width=True, key=button_key):
+            rows = _selected_rows_for_email(edited_df)
+            if not rows:
+                st.warning("⚠️ Tick at least one GREEN row's 'Schedule for Delivery' checkbox first.")
+                return
+            if mis_df_local is None or mis_df_local.empty:
+                st.error("❌ MIS data unavailable. Run the 11 AM MIS import first.")
+                return
+
+            with st.spinner("Composing email and fetching invoices from Gmail…"):
+                prepared = compose_schedule_delivery_email(
+                    rows, mis_df_local, subject=subject_default
+                )
+
+            st.session_state[preview_state_key] = prepared
+            st.rerun()
+        return
+
+    # ── STAGE 2: preview is prepared → show preview UI ───────────────────────
+    st.markdown("#### 📧 Email Preview — review before sending")
+
+    # Surface invoice search outcome (if any)
+    if prepared.get("invoice_status"):
+        with st.expander("🧾 Invoice search details",
+                         expanded=bool(prepared.get("missing_invoices"))):
+            for line in prepared["invoice_status"]:
+                st.write(f"• {line}")
+
+    if prepared.get("missing_invoices"):
+        st.warning(
+            "⚠️ No invoices found for: **"
+            + ", ".join(prepared["missing_invoices"]) + "**"
+        )
+
+    # If composition failed (no invoices, no recipients, …) — show error & back
+    if not prepared.get("ready"):
+        st.error(f"❌ Cannot send — {prepared.get('error', 'unknown error')}")
+        if st.button("🔙 Back", key=f"{button_key}_back_err",
+                     use_container_width=True):
+            del st.session_state[preview_state_key]
+            st.rerun()
+        return
+
+    # Header info
+    info_cols = st.columns(2)
+    with info_cols[0]:
+        st.write(f"**Subject:** {prepared.get('subject', '')}")
+        st.write(f"**To:** {', '.join(prepared.get('to', []))}")
+        if prepared.get("cc"):
+            st.write(f"**Cc:** {', '.join(prepared['cc'])}")
+        if prepared.get("bcc"):
+            st.write(f"**Bcc:** {', '.join(prepared['bcc'])}")
+    with info_cols[1]:
+        st.write(f"**Sales Person (signature):** {prepared.get('sales_person', '') or '— none —'}")
+        st.write(f"**Records:** {prepared.get('records_count', 0)}")
+        if prepared.get("attachment_names"):
+            st.write(f"**Attachments ({len(prepared['attachment_names'])}):** "
+                     + ", ".join(prepared["attachment_names"]))
+
+    st.markdown("**Body:**")
+    components.html(prepared.get("html_body", ""), height=520, scrolling=True)
+
+    # Action buttons
+    btn_send, btn_cancel = st.columns(2)
+    with btn_send:
+        if st.button("✅ Confirm & Send", type="primary",
+                     use_container_width=True,
+                     key=f"{button_key}_confirm"):
+            with st.spinner("Sending email…"):
+                res = send_prepared_delivery_email(prepared)
+            if res.get("sent"):
+                st.session_state[sent_flag_key] = res
+                del st.session_state[preview_state_key]
+                st.rerun()
+            else:
+                st.error(f"❌ Email NOT sent — {res.get('error', 'unknown error')}")
+    with btn_cancel:
+        if st.button("❌ Cancel", use_container_width=True,
+                     key=f"{button_key}_cancel"):
+            del st.session_state[preview_state_key]
+            st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1018,7 +1100,7 @@ if not pending_grouped.empty:
             _handle_schedule_delivery_button(
                 pend_edited, mis_df_for_page,
                 button_key="schd_pend",
-                subject_default=f"[4S CRM] Schedule Delivery — {datetime.now().strftime('%d-%b-%Y')}",
+                subject_default=build_default_subject(),
             )
 
     dm1, dm2, dm3, dm4 = st.columns(4)
@@ -1100,7 +1182,7 @@ if not overdue_grouped.empty:
             _handle_schedule_delivery_button(
                 ov_edited, mis_df_for_page,
                 button_key="schd_ov",
-                subject_default=f"[4S CRM] Schedule Delivery (Overdue) — {datetime.now().strftime('%d-%b-%Y')}",
+                subject_default=build_default_subject(),
             )
 
     # Inline editor for date-update workflow (existing functionality preserved)
