@@ -222,6 +222,23 @@ if upcoming_df.empty and overdue_df.empty:
     print("[Delivery Alert Job] No pending or overdue orders found. Email skipped.")
     sys.exit(0)
 
+# ── Fetch MIS data for readiness check (best-effort) ─────────────────────────
+mis_df     = pd.DataFrame()
+crm_all_df = pd.DataFrame()
+try:
+    print("  → Fetching MIS_Daily for readiness check …")
+    mis_df = get_df("MIS_Daily") or pd.DataFrame()
+    if not mis_df.empty:
+        print(f"  → MIS_Daily loaded: {len(mis_df)} rows")
+    else:
+        print("  → MIS_Daily empty or not found — readiness check skipped.")
+except Exception as _mis_err:
+    print(f"  → Could not load MIS_Daily: {_mis_err}")
+
+# all_pending already contains GODREJ SO NO if it exists in the source sheets;
+# pass it as crm_all_df so the readiness helper can fall back to customer-name lookup.
+crm_all_df = all_pending.copy() if not all_pending.empty else pd.DataFrame()
+
 SUBJECTS = {
     "morning": "[4s CRM] Pending Delivery Alerts",
     "evening": "[4s CRM] Update on Pending Delivery Alerts",
@@ -229,5 +246,9 @@ SUBJECTS = {
 subject = SUBJECTS[SLOT]
 print(f"[Delivery Alert Job] Sending {SLOT} alert: '{subject}'")
 
-send_combined_delivery_alert_email_4s(upcoming_df, overdue_df, subject)
+send_combined_delivery_alert_email_4s(
+    upcoming_df, overdue_df, subject,
+    mis_df=mis_df,
+    crm_all_df=crm_all_df,
+)
 print("[Delivery Alert Job] Done.")

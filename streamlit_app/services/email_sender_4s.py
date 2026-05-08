@@ -176,6 +176,147 @@ def _html_table_colour_coded(df: pd.DataFrame, today: date,
             f"<thead><tr>{headers}</tr></thead><tbody>{rows_html}</tbody></table>")
 
 
+def _html_table_all_green(df: pd.DataFrame, header_bg: str = "#2e7d32") -> str:
+    """All rows green — used for ready-to-deliver orders."""
+    rows_html = ""
+    for _, row in df.iterrows():
+        cells = "".join(_format_cell(c, row[c]) for c in df.columns)
+        rows_html += f"<tr style='background:#c8e6c9'>{cells}</tr>"
+    headers = "".join(
+        f"<th style='padding:8px 10px;background:{header_bg};color:#fff;"
+        f"border:1px solid #ddd;text-align:left;white-space:nowrap'>{c}</th>"
+        for c in df.columns)
+    return (f"<table style='border-collapse:collapse;width:100%;"
+            f"font-family:Arial,sans-serif;font-size:12px'>"
+            f"<thead><tr>{headers}</tr></thead><tbody>{rows_html}</tbody></table>")
+
+
+def _html_table_tomorrow_deliveries(
+        df: pd.DataFrame,
+        ready_flags: list[bool],
+        header_bg: str = "#1565c0") -> str:
+    """
+    Build the tomorrow-deliveries table.
+    Green rows = ready for delivery; Red rows = NOT ready (delivery approaching).
+    Adds a READINESS STATUS column as the last column.
+    """
+    rows_html = ""
+    for i, (_, row) in enumerate(df.iterrows()):
+        is_ready = ready_flags[i] if i < len(ready_flags) else False
+        bg        = "#c8e6c9" if is_ready else "#ffcccc"
+        badge_html = (
+            "<td style='padding:6px 10px;border:1px solid #ddd;"
+            "background:#c8e6c9;color:#1b5e20;font-weight:bold;"
+            "white-space:nowrap;vertical-align:top'>✅ Ready</td>"
+            if is_ready else
+            "<td style='padding:6px 10px;border:1px solid #ddd;"
+            "background:#ffcccc;color:#b71c1c;font-weight:bold;"
+            "white-space:nowrap;vertical-align:top'>⚠️ Not Ready</td>"
+        )
+        cells = "".join(_format_cell(c, row[c]) for c in df.columns)
+        rows_html += f"<tr style='background:{bg}'>{cells}{badge_html}</tr>"
+
+    col_headers = "".join(
+        f"<th style='padding:8px 10px;background:{header_bg};color:#fff;"
+        f"border:1px solid #ddd;text-align:left;white-space:nowrap'>{c}</th>"
+        for c in df.columns)
+    col_headers += (
+        f"<th style='padding:8px 10px;background:{header_bg};color:#fff;"
+        f"border:1px solid #ddd;text-align:left;white-space:nowrap'>READINESS STATUS</th>"
+    )
+    return (f"<table style='border-collapse:collapse;width:100%;"
+            f"font-family:Arial,sans-serif;font-size:12px'>"
+            f"<thead><tr>{col_headers}</tr></thead><tbody>{rows_html}</tbody></table>")
+
+
+def _build_not_ready_callout(
+        df: pd.DataFrame,
+        ready_flags: list[bool]) -> str:
+    """
+    Build a warning callout listing customers/products that are NOT ready
+    for tomorrow's delivery.
+    """
+    not_ready_items = []
+    for i, (_, row) in enumerate(df.iterrows()):
+        if i < len(ready_flags) and ready_flags[i]:
+            continue
+        cust    = str(row.get(COL_CUSTOMER, "")).strip()
+        product = (str(row.get(COL_PRODUCT, "")).strip()
+                   .replace(",\r\n", ", ").replace(",\n", ", ").replace("\n", ", "))
+        not_ready_items.append(
+            f"<li><strong>{cust}</strong>"
+            + (f" — <em>{product}</em>" if product else "")
+            + "</li>"
+        )
+    if not not_ready_items:
+        return ""
+    return (
+        "<div style='background:#fff3e0;border-left:4px solid #e53935;"
+        "padding:14px 18px;margin-top:12px;border-radius:4px'>"
+        "<strong style='color:#e53935'>⚠️ Items NOT Ready for Tomorrow's Delivery:</strong>"
+        "<ul style='margin:8px 0 4px;padding-left:18px;font-size:13px;line-height:1.6'>"
+        + "".join(not_ready_items)
+        + "</ul>"
+        "<p style='margin:6px 0 0;font-size:12px;color:#b71c1c;'>"
+        "These orders are scheduled for tomorrow but stock has NOT been fully committed "
+        "in MIS. Please coordinate with the warehouse immediately."
+        "</p></div>"
+    )
+
+
+def _get_readiness_flags(
+        df: pd.DataFrame,
+        mis_df,
+        crm_all_df) -> list[bool]:
+    """
+    Returns a list of booleans (same length as df) — True = order is READY for delivery.
+    Readiness: GODREJ SO has all items fully committed in MIS
+               (Sales Order Qty == Sales Order Committed Qty).
+    Gracefully returns all-False when MIS data is unavailable.
+    """
+    n = len(df)
+    if df.empty:
+        return []
+    if mis_df is None or (hasattr(mis_df, "empty") and mis_df.empty):
+        return [False] * n
+
+    try:
+        from services.delivery_readiness import ready_so_set, customer_to_godrej_so
+        ready_sos: set = ready_so_set(mis_df)
+    except Exception:
+        return [False] * n
+
+    if not ready_sos:
+        return [False] * n
+
+    # Build customer → GODREJ SO map from crm_all_df (if provided)
+    cust_so_map: dict = {}
+    if crm_all_df is not None and not (hasattr(crm_all_df, "empty") and crm_all_df.empty):
+        try:
+            from services.delivery_readiness import customer_to_godrej_so
+            cust_so_map = customer_to_godrej_so(crm_all_df)
+        except Exception:
+            pass
+
+    flags: list[bool] = []
+    for _, row in df.iterrows():
+        # Option A: GODREJ SO NO directly on the row
+        godrej_so = str(row.get("GODREJ SO NO", "")).strip()
+        if godrej_so and godrej_so.lower() not in ("nan", "none", ""):
+            flags.append(godrej_so in ready_sos)
+            continue
+        # Option B: look up by customer name
+        source = str(row.get("SOURCE", "Franchise")).strip()
+        if source == "Franchise":
+            cust = str(row.get(COL_CUSTOMER, "")).strip().upper()
+            sos  = cust_so_map.get(cust, [])
+            flags.append(any(so in ready_sos for so in sos))
+        else:
+            flags.append(False)
+
+    return flags
+
+
 def _html_table_all_red(df: pd.DataFrame, header_bg: str = "#b71c1c") -> str:
     """All rows red — used for overdue / reminder emails."""
     rows_html = ""
@@ -582,10 +723,23 @@ def send_combined_delivery_alert_email_4s(
     pending_df: pd.DataFrame,
     overdue_df: pd.DataFrame,
     subject: str,
+    mis_df=None,
+    crm_all_df=None,
 ) -> dict:
     """
     Single combined delivery-alert email — used by both the dashboard
     'All Pending Delivery Alerts' button and the GitHub Actions job.
+
+    Builds THREE clearly labelled sections:
+      1. Pending for Delivery Tomorrow   — green if ready, red if NOT ready
+      2. Orders Ready for Delivery       — all upcoming orders fully committed in MIS
+      3. Overdue Delivery Orders         — all red
+
+    Optional params:
+      mis_df     — MIS_Daily DataFrame for readiness check
+                   (Sales Order Qty == Sales Order Committed Qty)
+      crm_all_df — Full CRM DataFrame used to map Customer Name → GODREJ SO NO
+                   when that column is not already present in pending_df.
 
     Returns a status dict.  When both DataFrames are empty the email is
     NOT sent and {"sent": False, "error": "no_records"} is returned.
@@ -602,56 +756,135 @@ def send_combined_delivery_alert_email_4s(
         }
 
     today    = datetime.now().date()
+    tomorrow = today + timedelta(days=1)
+
+    # ── Readiness flags for all upcoming pending orders ──────────────────────
+    has_mis = mis_df is not None and not (hasattr(mis_df, "empty") and mis_df.empty)
+
+    if pending_count > 0:
+        ready_flags_all = _get_readiness_flags(pending_df, mis_df, crm_all_df)
+        # Split: tomorrow vs rest
+        dd_series    = pd.to_datetime(pending_df[COL_DELIVERY_DATE], errors="coerce").dt.date
+        tmrw_indices = [i for i, d in enumerate(dd_series) if d == tomorrow]
+        all_indices  = list(range(pending_count))
+
+        tomorrow_rows  = pending_df.iloc[tmrw_indices].copy().reset_index(drop=True)
+        tmrw_flags     = [ready_flags_all[i] for i in tmrw_indices]
+
+        ready_indices  = [i for i, f in enumerate(ready_flags_all) if f]
+        ready_rows     = pending_df.iloc[ready_indices].copy().reset_index(drop=True)
+        ready_flags_section = [True] * len(ready_rows)
+    else:
+        tomorrow_rows = pd.DataFrame()
+        tmrw_flags    = []
+        ready_rows    = pd.DataFrame()
+        ready_flags_section = []
+
+    tomorrow_count     = len(tomorrow_rows)
+    tomorrow_ready_cnt = sum(tmrw_flags)
+    tomorrow_not_ready = tomorrow_count - tomorrow_ready_cnt
+    ready_count        = len(ready_rows)
 
     # ── Stats block ──────────────────────────────────────────────────────────
     stats_html = (
-        _stat_block(pending_count, "Upcoming Pending",  "#1b5e20") +
-        _stat_block(overdue_count, "Overdue",           "#c62828") +
-        _stat_block(total,         "Total Alerts",      "#424242")
+        _stat_block(tomorrow_count,     "Pending Tomorrow",        "#1565c0") +
+        _stat_block(tomorrow_ready_cnt, "Ready for Tomorrow ✅",    "#2e7d32") +
+        _stat_block(tomorrow_not_ready, "Not Ready (Tomorrow) ⚠️", "#e53935") +
+        _stat_block(ready_count,        "Total Ready to Deliver",  "#388e3c") +
+        _stat_block(overdue_count,      "Overdue",                 "#c62828") +
+        _stat_block(total,              "Total Alerts",            "#424242")
     )
 
-    # ── Two-section body ─────────────────────────────────────────────────────
-    sections_html = ""
-
-    if pending_count > 0:
-        display_cols = _delivery_display_cols(pending_df)
-        df_p = pending_df[display_cols].copy()
-        df_p = _fmt_date_col(df_p, COL_DELIVERY_DATE)
-        df_p = _fmt_date_col(df_p, COL_ORDER_DATE)
-        sections_html += (
-            "<h3 style='color:#1b5e20;font-family:Arial,sans-serif;"
-            "margin:24px 0 8px;font-size:15px;border-bottom:2px solid #c8e6c9;"
-            "padding-bottom:6px'>🚚 Upcoming Pending Deliveries"
-            f" &nbsp;<span style='font-weight:normal;font-size:13px'>"
-            f"({pending_count} order(s))</span></h3>"
-            + _html_table_colour_coded(df_p, today)
+    # ── Section 1 — Pending for Delivery Tomorrow ────────────────────────────
+    sec1_html = (
+        "<h3 style='color:#1565c0;font-family:Arial,sans-serif;"
+        "margin:28px 0 6px;font-size:15px;border-bottom:2px solid #bbdefb;"
+        "padding-bottom:6px'>📅 Pending for Delivery Tomorrow"
+        f"&nbsp;<span style='font-weight:normal;font-size:13px'>"
+        f"({tomorrow_count} order(s)"
+        + (f" &nbsp;|&nbsp; <span style='color:#2e7d32'>{tomorrow_ready_cnt} Ready ✅</span>"
+           f" &nbsp;|&nbsp; <span style='color:#b71c1c'>{tomorrow_not_ready} Not Ready ⚠️</span>"
+           if has_mis else "")
+        + ")</span></h3>"
+    )
+    if tomorrow_rows.empty:
+        sec1_html += (
+            "<p style='color:#555;font-size:13px;font-style:italic;'>"
+            "No orders are scheduled for tomorrow.</p>"
         )
+    else:
+        display_cols = _delivery_display_cols(tomorrow_rows)
+        df_tmrw      = tomorrow_rows[display_cols].copy()
+        df_tmrw      = _fmt_date_col(df_tmrw, COL_DELIVERY_DATE)
+        df_tmrw      = _fmt_date_col(df_tmrw, COL_ORDER_DATE)
+        sec1_html   += _html_table_tomorrow_deliveries(df_tmrw, tmrw_flags)
+        if has_mis and tomorrow_not_ready > 0:
+            sec1_html += _build_not_ready_callout(tomorrow_rows[display_cols].copy(), tmrw_flags)
 
+    # ── Section 2 — Orders Ready for Delivery ───────────────────────────────
+    sec2_html = (
+        "<h3 style='color:#2e7d32;font-family:Arial,sans-serif;"
+        "margin:28px 0 6px;font-size:15px;border-bottom:2px solid #c8e6c9;"
+        "padding-bottom:6px'>✅ Orders Ready for Delivery"
+        f"&nbsp;<span style='font-weight:normal;font-size:13px'>"
+        f"({ready_count} order(s))</span></h3>"
+    )
+    if ready_rows.empty:
+        no_ready_msg = (
+            "No upcoming orders are currently ready for delivery."
+            if has_mis else
+            "MIS data not available — readiness could not be determined."
+        )
+        sec2_html += (
+            f"<p style='color:#555;font-size:13px;font-style:italic;'>{no_ready_msg}</p>"
+        )
+    else:
+        display_cols  = _delivery_display_cols(ready_rows)
+        df_ready_disp = ready_rows[display_cols].copy()
+        df_ready_disp = _fmt_date_col(df_ready_disp, COL_DELIVERY_DATE)
+        df_ready_disp = _fmt_date_col(df_ready_disp, COL_ORDER_DATE)
+        sec2_html    += _html_table_all_green(df_ready_disp)
+
+    # ── Section 3 — Overdue Delivery Orders ─────────────────────────────────
+    sec3_html = (
+        "<h3 style='color:#c62828;font-family:Arial,sans-serif;"
+        "margin:28px 0 6px;font-size:15px;border-bottom:2px solid #ffcdd2;"
+        "padding-bottom:6px'>⚠️ Overdue Delivery Orders"
+        f"&nbsp;<span style='font-weight:normal;font-size:13px'>"
+        f"({overdue_count} order(s))</span></h3>"
+    )
     if overdue_count > 0:
         display_cols = _delivery_display_cols(overdue_df)
-        df_o = overdue_df[display_cols].copy()
-        df_o = _fmt_date_col(df_o, COL_DELIVERY_DATE)
-        df_o = _fmt_date_col(df_o, COL_ORDER_DATE)
+        df_o         = overdue_df[display_cols].copy()
+        df_o         = _fmt_date_col(df_o, COL_DELIVERY_DATE)
+        df_o         = _fmt_date_col(df_o, COL_ORDER_DATE)
         callout_html = _build_sales_person_callout(overdue_df)
-        sections_html += (
-            "<h3 style='color:#c62828;font-family:Arial,sans-serif;"
-            "margin:24px 0 8px;font-size:15px;border-bottom:2px solid #ffcdd2;"
-            "padding-bottom:6px'>⚠️ Overdue Delivery Orders"
-            f" &nbsp;<span style='font-weight:normal;font-size:13px'>"
-            f"({overdue_count} order(s))</span></h3>"
-            + _html_table_all_red(df_o)
-            + callout_html
+        sec3_html   += _html_table_all_red(df_o) + callout_html
+    else:
+        sec3_html += (
+            "<p style='color:#2e7d32;font-size:13px;'>✅ No overdue orders — great work!</p>"
         )
 
+    # ── Legend ───────────────────────────────────────────────────────────────
     legend_html = (
         "<span style='background:#c8e6c9;padding:2px 8px;border-radius:3px'>"
-        "🟢 Green = Tomorrow's delivery</span>&nbsp;&nbsp;"
+        "🟢 Green = Ready for delivery</span>&nbsp;&nbsp;"
         "<span style='background:#ffcccc;padding:2px 8px;border-radius:3px'>"
-        "🔴 Red = Overdue</span>"
+        "🔴 Red = Not ready / Overdue</span>"
+        + ("&nbsp;&nbsp;<span style='color:#888;font-size:12px'>"
+           "(Readiness based on MIS committed qty)</span>"
+           if has_mis else
+           "&nbsp;&nbsp;<span style='color:#e65100;font-size:12px'>"
+           "⚠️ MIS data unavailable — readiness could not be determined</span>")
     )
 
-    # Header colour: red if any overdue, green if only upcoming
-    header_color = "#b71c1c" if overdue_count > 0 else "#1b5e20"
+    # Header colour: red if any overdue or tomorrow-not-ready, blue if only tomorrow
+    if overdue_count > 0 or tomorrow_not_ready > 0:
+        header_color = "#b71c1c"
+    elif tomorrow_count > 0:
+        header_color = "#1565c0"
+    else:
+        header_color = "#1b5e20"
 
     body = _email_wrapper(
         header_title    = "🚛 4SINTERIORS — Pending Delivery Alerts",
@@ -659,9 +892,10 @@ def send_combined_delivery_alert_email_4s(
         header_color    = header_color,
         stats_html      = stats_html,
         legend_html     = legend_html,
-        table_html      = sections_html,
+        table_html      = sec1_html + sec2_html + sec3_html,
         footer_note     = (
-            f"Upcoming: {pending_count} order(s) · Overdue: {overdue_count} order(s) | "
+            f"Tomorrow: {tomorrow_count} ({tomorrow_ready_cnt} ready, {tomorrow_not_ready} not ready) · "
+            f"Total Ready: {ready_count} · Overdue: {overdue_count} order(s) | "
             "Automated from 4SINTERIORS CRM. Do not reply."
         ),
     )
@@ -672,8 +906,9 @@ def send_combined_delivery_alert_email_4s(
         records_count=total,
     )
     print(
-        f"  → Combined Delivery Alert sent: {pending_count} upcoming + "
-        f"{overdue_count} overdue · subject='{subject}'"
+        f"  → Combined Delivery Alert sent: {tomorrow_count} tomorrow "
+        f"({tomorrow_ready_cnt} ready, {tomorrow_not_ready} not ready) + "
+        f"{ready_count} total ready + {overdue_count} overdue · subject='{subject}'"
     )
     return summary
 

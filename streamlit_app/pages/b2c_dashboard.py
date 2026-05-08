@@ -1030,6 +1030,8 @@ if not pending_grouped.empty:
                         pending_grouped,
                         overdue_grouped,
                         "[4s CRM] Pending Delivery Alerts",
+                        mis_df=mis_df_for_page,
+                        crm_all_df=crm,
                     )
                     if _smry.get("sent"):
                         st.success(
