@@ -376,7 +376,7 @@ def send_schedule_delivery_email(
 
     # 5. Build email
     msg = EmailMessage()
-    subj = subject or f"Delivery Schedule — {datetime.now().strftime('%d-%b-%Y')}"
+    subj = subject or f"Delivery on — {(datetime.now() + timedelta(days=1)).strftime('%d-%b-%Y')}"
     msg["Subject"] = subj
     msg["From"]    = SENDER_EMAIL
     msg["To"]      = ", ".join(rcpt["to"])
