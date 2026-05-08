@@ -10,7 +10,7 @@ Automated lead import from `4sinteriorsbbsr@gmail.com` emails with "Lead" in the
 ✅ **IMAP Email Reader** - `services/imap_lead_import.py`  
 ✅ **Scheduled Job** - `lead_email_import_job.py`  
 ✅ **Credential Loading** - Uses same pattern as email_sender.py  
-✅ **Lead Import** - Auto-creates leads in LEADS sheet  
+✅ **Lead Import** - Auto-creates leads in LEADS sheet. 
 
 ---
 
