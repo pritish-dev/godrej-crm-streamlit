@@ -1316,4 +1316,17 @@ if not payment_due.empty:
         columns={k: v for k, v in COL_RENAME_DISPLAY.items() if k in pay_display.columns}
     )
     st.dataframe(
-        pay_display.styl
+        pay_display.style.apply(
+            lambda row: highlight_delivery(row, raw_pay_dates, today, tomorrow), axis=1
+        ),
+        use_container_width=True,
+    )
+    pm1, pm2, pm3 = st.columns(3)
+    pm1.metric("🧾 Total Payment Orders", len(payment_grouped))
+    pm2.metric("🟢 Tomorrow",
+               int((pd.to_datetime(payment_grouped["DELIVERY DATE"], errors="coerce").dt.date == tomorrow).sum()))
+    pm3.metric("🔴 Overdue",
+               int((pd.to_datetime(payment_grouped["DELIVERY DATE"], errors="coerce").dt.date < today).sum()))
+
+else:
+    st.success("✅ No outstanding payments!")
