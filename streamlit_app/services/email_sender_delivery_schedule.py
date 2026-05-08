@@ -190,11 +190,9 @@ def get_delivery_recipients() -> dict:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _safe_json_loads(raw: str):
-    """
-    Robust JSON loader for service-account JSON pasted into a TOML basic
-    multi-line string ("""...""") where TOML may have converted the `\\n`
-    inside `private_key` into literal newlines, which json.loads rejects.
-    """
+    # Robust JSON loader for service-account JSON pasted into a TOML basic
+    # multi-line string (triple-double-quoted) where TOML may have converted
+    # the \n inside private_key into literal newlines, which json.loads rejects.
     import json
     try:
         return json.loads(raw)
