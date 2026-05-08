@@ -345,29 +345,54 @@ def build_email_html(records: list[dict], sales_person: str = "") -> str:
           "same_day": bool,
         }
     sales_person: name to be shown in the email signature.
+
+    Layout:
+        <order index>
+        <table containing ALL line items for that order>
+
+        <next order index>
+        <table containing ALL line items for that next order>
+
+    Indexing increments PER ORDER, not per line item.
     """
-    rows_html = []
-    idx = 0
+    order_blocks: list[str] = []
+    order_idx = 0
+
     for rec in records:
         lines: pd.DataFrame = rec.get("lines", pd.DataFrame())
         if lines is None or lines.empty:
             continue
+
+        order_idx += 1
+        same_day = bool(rec.get("same_day", False))
+
+        # Build the rows for this single order's table
+        rows_html: list[str] = []
         for _, r in lines.iterrows():
-            idx += 1
             cells = _row_to_cells(r)
-            if rec.get("same_day"):
+            if same_day:
                 cells.append("Same day Delivery and installation request")
-            tds = "".join(f"<td style='border:1px solid #999;padding:6px;'>{c}</td>" for c in cells)
-            rows_html.append(
-                f"<tr><td style='border:1px solid #999;padding:6px;text-align:center;'>{idx}</td>{tds}</tr>"
+            tds = "".join(
+                f"<td style='border:1px solid #999;padding:6px;'>{c}</td>"
+                for c in cells
             )
+            rows_html.append(f"<tr>{tds}</tr>")
+
+        # One block = order number + the order's table
+        block = (
+            f"<p style='font-family:Arial,sans-serif;font-size:14px;"
+            f"font-weight:bold;margin:18px 0 6px 0;'>{order_idx}</p>"
+            "<table style='border-collapse:collapse;font-family:Arial,sans-serif;"
+            "font-size:13px;margin-bottom:18px;'>"
+            + "".join(rows_html) +
+            "</table>"
+        )
+        order_blocks.append(block)
 
     body = (
         "<p>Dear Sir,</p>"
         "<p>Please deliver the materials as mentioned below.</p>"
-        "<table style='border-collapse:collapse;font-family:Arial,sans-serif;font-size:13px;'>"
-        + "".join(rows_html) +
-        "</table>"
+        + "".join(order_blocks)
         + _build_signature_html(sales_person)
     )
     return body
