@@ -164,15 +164,15 @@ def create_new_lead(lead_data: dict):
         "COMPANY": lead_data.get("company", ""),
         "EMAIL": lead_data.get("email", ""),
         "PHONE": lead_data.get("phone", ""),
+        "ADDRESS": lead_data.get("address", ""),
         "WHATSAPP NUMBER": lead_data.get("whatsapp_number", ""),
         "ALTERNATE NUMBER": lead_data.get("alternate_number", ""),
-        "ADDRESS": lead_data.get("address", ""),
         "STORE LOCATION": lead_data.get("store_location", "Patia, Bhubaneswar"),
         "STATUS": lead_data.get("status", "🟢 New"),
         "PRIORITY": lead_data.get("priority", "Medium"),
         "SOURCE": lead_data.get("source", "Manual"),
         "SOURCE_DETAILS": lead_data.get("source_details", ""),
-        "ASSIGNED TO": lead_data.get("assigned_to", "").upper() if lead_data.get("assigned_to") else "",
+        "ASSIGNED TO": lead_data.get("assigned_to", "").upper(),
         "SALESFORCE URL": lead_data.get("salesforce_url", ""),
         "CREATED DATE": datetime.now().strftime("%d-%m-%Y %H:%M"),
         "LAST CONTACT": "",
@@ -232,7 +232,6 @@ with st.sidebar:
     quick_alternate = st.text_input("Alternate Number (Optional)", key="quick_alternate")
     quick_address = st.text_input("Address", key="quick_address")
 
-    # Sales person assignment dropdown
     quick_assigned = st.selectbox(
         "Assign to Sales Person",
         ["Unassigned"] + sorted(team_df["EMPLOYEE"].unique().tolist()) if not team_df.empty else ["Unassigned"],
@@ -288,18 +287,21 @@ with st.expander("➕ Add New Lead - Detailed Entry", expanded=False):
             showroom_name = st.text_input("Visitor Name *", key="showroom_name")
             showroom_email = st.text_input("Email", key="showroom_email")
             showroom_phone = st.text_input("Phone Number", key="showroom_phone")
-            showroom_location = st.selectbox(
-                "Showroom Location",
-                ["Bangalore Main", "Mumbai", "Delhi", "Pune", "Other"],
-                key="showroom_location"
-            )
+            showroom_whatsapp = st.text_input("WhatsApp Number (Optional)", key="showroom_whatsapp")
+            showroom_alternate = st.text_input("Alternate Number (Optional)", key="showroom_alternate")
 
         with col2:
             showroom_address = st.text_input("Address", key="showroom_address")
+            showroom_assigned = st.selectbox(
+                "Assign to Sales Person",
+                ["Unassigned"] + sorted(team_df["EMPLOYEE"].unique().tolist()) if not team_df.empty else ["Unassigned"],
+                key="showroom_assigned"
+            )
             showroom_product = st.text_input("Product Interest", key="showroom_product")
             showroom_date = st.date_input("Visit Date", value=datetime.now(), key="showroom_date")
             showroom_budget = st.text_input("Budget Range (Optional)", key="showroom_budget")
 
+        st.write("📍 **Store Location: Patia, Bhubaneswar** (Fixed)")
         showroom_notes = st.text_area("Notes", height=80, key="showroom_notes")
 
         if st.button("➕ Add Showroom Lead", key="add_showroom"):
@@ -308,11 +310,15 @@ with st.expander("➕ Add New Lead - Detailed Entry", expanded=False):
                     "lead_name": showroom_name,
                     "email": showroom_email,
                     "phone": showroom_phone,
+                    "whatsapp_number": showroom_whatsapp,
+                    "alternate_number": showroom_alternate,
                     "address": showroom_address,
+                    "assigned_to": showroom_assigned if showroom_assigned != "Unassigned" else "",
+                    "store_location": "Patia, Bhubaneswar",
                     "status": "🟢 New",
                     "priority": "🟡 Medium",
                     "source": "🏪 Showroom Walk-in",
-                    "source_details": f"Location: {showroom_location}",
+                    "source_details": "Showroom Visit",
                     "notes": f"Product: {showroom_product}\nBudget: {showroom_budget}\nNotes: {showroom_notes}\nVisit Date: {showroom_date}",
                     "follow_up_date": (datetime.now() + timedelta(days=2)).strftime("%d-%m-%Y")
                 }
@@ -336,16 +342,24 @@ with st.expander("➕ Add New Lead - Detailed Entry", expanded=False):
             )
             sm_username = st.text_input("Username/Profile", key="sm_username")
             sm_address = st.text_input("Address", key="sm_address")
+            sm_phone = st.text_input("Phone (if available)", key="sm_phone")
+            sm_whatsapp = st.text_input("WhatsApp Number (Optional)", key="sm_whatsapp")
+            sm_alternate = st.text_input("Alternate Number (Optional)", key="sm_alternate")
 
         with col2:
             sm_email = st.text_input("Email (if available)", key="sm_email")
-            sm_phone = st.text_input("Phone (if available)", key="sm_phone")
+            sm_assigned = st.selectbox(
+                "Assign to Sales Person",
+                ["Unassigned"] + sorted(team_df["EMPLOYEE"].unique().tolist()) if not team_df.empty else ["Unassigned"],
+                key="sm_assigned"
+            )
             sm_engagement = st.selectbox(
                 "Engagement Level",
                 ["🔴 Low", "🟡 Medium", "🟢 High"],
                 key="sm_engagement"
             )
 
+        st.write("📍 **Store Location: Patia, Bhubaneswar** (Fixed)")
         sm_post_url = st.text_input("Post/Message Link (Optional)", key="sm_post_url")
         sm_notes = st.text_area("Notes", height=80, key="sm_notes")
 
@@ -355,7 +369,11 @@ with st.expander("➕ Add New Lead - Detailed Entry", expanded=False):
                     "lead_name": sm_name,
                     "email": sm_email,
                     "phone": sm_phone,
+                    "whatsapp_number": sm_whatsapp,
+                    "alternate_number": sm_alternate,
                     "address": sm_address,
+                    "assigned_to": sm_assigned if sm_assigned != "Unassigned" else "",
+                    "store_location": "Patia, Bhubaneswar",
                     "status": "🟢 New",
                     "priority": "Medium",
                     "source": f"📱 {sm_platform}",
@@ -378,6 +396,8 @@ with st.expander("➕ Add New Lead - Detailed Entry", expanded=False):
             web_name = st.text_input("Lead Name *", key="web_name")
             web_email = st.text_input("Email Address", key="web_email")
             web_phone = st.text_input("Phone Number", key="web_phone")
+            web_whatsapp = st.text_input("WhatsApp Number (Optional)", key="web_whatsapp")
+            web_alternate = st.text_input("Alternate Number (Optional)", key="web_alternate")
             web_source = st.selectbox(
                 "Traffic Source",
                 ["Google Search", "Facebook Ads", "Instagram Ads", "Direct", "Referral", "Other"],
@@ -387,8 +407,14 @@ with st.expander("➕ Add New Lead - Detailed Entry", expanded=False):
         with col2:
             web_address = st.text_input("Address", key="web_address")
             web_company = st.text_input("Company (if mentioned)", key="web_company")
+            web_assigned = st.selectbox(
+                "Assign to Sales Person",
+                ["Unassigned"] + sorted(team_df["EMPLOYEE"].unique().tolist()) if not team_df.empty else ["Unassigned"],
+                key="web_assigned"
+            )
             web_page = st.text_input("Form Page", key="web_page")
 
+        st.write("📍 **Store Location: Patia, Bhubaneswar** (Fixed)")
         web_inquiry = st.text_area("Inquiry/Message", height=80, key="web_inquiry")
 
         if st.button("➕ Add Website Lead", key="add_web"):
@@ -397,8 +423,12 @@ with st.expander("➕ Add New Lead - Detailed Entry", expanded=False):
                     "lead_name": web_name,
                     "email": web_email,
                     "phone": web_phone,
+                    "whatsapp_number": web_whatsapp,
+                    "alternate_number": web_alternate,
                     "address": web_address,
                     "company": web_company,
+                    "assigned_to": web_assigned if web_assigned != "Unassigned" else "",
+                    "store_location": "Patia, Bhubaneswar",
                     "status": "🟢 New",
                     "priority": "Medium",
                     "source": "🌐 Website",
@@ -420,11 +450,18 @@ with st.expander("➕ Add New Lead - Detailed Entry", expanded=False):
         with col1:
             call_name = st.text_input("Caller Name *", key="call_name")
             call_phone = st.text_input("Phone Number", key="call_phone")
+            call_whatsapp = st.text_input("WhatsApp Number (Optional)", key="call_whatsapp")
+            call_alternate = st.text_input("Alternate Number (Optional)", key="call_alternate")
             call_email = st.text_input("Email (if provided)", key="call_email")
             call_company = st.text_input("Company (if mentioned)", key="call_company")
 
         with col2:
             call_address = st.text_input("Address (if mentioned)", key="call_address")
+            call_assigned = st.selectbox(
+                "Assign to Sales Person",
+                ["Unassigned"] + sorted(team_df["EMPLOYEE"].unique().tolist()) if not team_df.empty else ["Unassigned"],
+                key="call_assigned"
+            )
             call_time = st.time_input("Call Time", value=datetime.now().time(), key="call_time")
             call_duration = st.text_input("Call Duration (minutes)", key="call_duration")
             call_outcome = st.selectbox(
@@ -433,6 +470,7 @@ with st.expander("➕ Add New Lead - Detailed Entry", expanded=False):
                 key="call_outcome"
             )
 
+        st.write("📍 **Store Location: Patia, Bhubaneswar** (Fixed)")
         call_notes = st.text_area("Call Details & Notes", height=80, key="call_notes")
 
         if st.button("➕ Add Call Lead", key="add_call"):
@@ -441,8 +479,12 @@ with st.expander("➕ Add New Lead - Detailed Entry", expanded=False):
                     "lead_name": call_name,
                     "email": call_email,
                     "phone": call_phone,
+                    "whatsapp_number": call_whatsapp,
+                    "alternate_number": call_alternate,
                     "address": call_address,
                     "company": call_company,
+                    "assigned_to": call_assigned if call_assigned != "Unassigned" else "",
+                    "store_location": "Patia, Bhubaneswar",
                     "status": "🔵 Contacted",
                     "priority": "Medium",
                     "source": "☎️ Phone Call",
