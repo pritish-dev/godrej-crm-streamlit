@@ -328,6 +328,48 @@ def upsert_target_record(sheet_name: str, unique_fields: dict, new_data: dict):
         return "Inserted Target"
 
 
+def _serialize_for_sheets(df: pd.DataFrame) -> list:
+    """
+    Safely convert a DataFrame to a list-of-lists suitable for gspread.
+    Handles NaT, NaN, pd.NA, Timestamp, and other non-JSON-serialisable types
+    so that worksheet.update() never crashes and leaves the sheet empty.
+    """
+    import math
+
+    headers = df.columns.values.tolist()
+    rows = []
+    for _, row in df.iterrows():
+        serialized_row = []
+        for val in row:
+            # Pandas / numpy NA types
+            if val is None or val is pd.NaT:
+                serialized_row.append("")
+            elif isinstance(val, float) and math.isnan(val):
+                serialized_row.append("")
+            # Pandas Timestamp → readable string
+            elif isinstance(val, pd.Timestamp):
+                if pd.isna(val):
+                    serialized_row.append("")
+                else:
+                    serialized_row.append(val.strftime("%d-%m-%Y %H:%M") if val.hour or val.minute else val.strftime("%d-%m-%Y"))
+            # Fallback: stringify everything else
+            else:
+                try:
+                    # Catch numpy scalars that have their own isnan
+                    import numpy as np
+                    if isinstance(val, (np.floating, np.integer)):
+                        if np.isnan(val) or np.isinf(val):
+                            serialized_row.append("")
+                        else:
+                            serialized_row.append(val.item())  # convert to native Python type
+                    else:
+                        serialized_row.append(str(val) if str(val) not in ("nan", "NaT", "<NA>") else "")
+                except Exception:
+                    serialized_row.append(str(val))
+        rows.append(serialized_row)
+    return [headers] + rows
+
+
 def write_df(sheet_name, df):
     import json
     import os
@@ -373,16 +415,25 @@ def write_df(sheet_name, df):
     SPREADSHEET_ID = "1wFpK-WokcZB6k1vzG7B6JO5TdGHrUwdgvVm_-UQse54"
     sheet = gc.open_by_key(SPREADSHEET_ID)
 
+    # ── SAFE SERIALIZATION (must happen BEFORE clear so we know it won't crash) ──
+    # Converts NaT / NaN / Timestamp / numpy scalars → plain strings / "".
+    # If serialisation itself fails, the exception will bubble up WITHOUT
+    # having touched the sheet at all — old data is safe.
+    data = _serialize_for_sheets(df)
+
+    # ── GET OR CREATE WORKSHEET ──
     try:
         worksheet = sheet.worksheet(sheet_name)
-        worksheet.clear()
-    except:
+    except Exception:
         worksheet = sheet.add_worksheet(title=sheet_name, rows="1000", cols="20")
 
-    # Convert dataframe to list
-    data = [df.columns.values.tolist()] + df.values.tolist()
+    # ── CLEAR THEN WRITE (clear only after data is ready) ──
+    # We clear AFTER serialisation succeeds so a crash during conversion
+    # never wipes the sheet with nothing to put back.
+    worksheet.clear()
 
-    worksheet.update(data)
+    # Explicit range 'A1' avoids deprecation warnings in gspread v6+
+    worksheet.update('A1', data)
 
 # ==============================
 # EMAIL LOG
