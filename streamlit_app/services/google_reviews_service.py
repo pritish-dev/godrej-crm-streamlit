@@ -819,17 +819,50 @@ def get_last_sync_info(spreadsheet_id: Optional[str] = None) -> Dict:
 # 6.  MAIN PROCESSOR
 # ═════════════════════════════════════════════════════════════════════════════
 
+def _discover_sales_sheets(client: gspread.Client, spreadsheet_id: str) -> List[str]:
+    """
+    Return the union of every sales-sheet name listed in SHEET_DETAILS
+    (Franchise_sheets + four_s_sheets).  Falls back to the legacy single
+    4S sheet if SHEET_DETAILS is missing.
+    """
+    try:
+        sh = client.open_by_key(spreadsheet_id)
+        ws = sh.worksheet("SHEET_DETAILS")
+        rows = ws.get_all_records()
+    except Exception:
+        return [SHEET_CONFIG["4S_SALES_SHEET"]]
+
+    out: List[str] = []
+    for r in rows:
+        for col in ("Franchise_sheets", "four_s_sheets",
+                    "FRANCHISE_SHEETS", "FOUR_S_SHEETS"):
+            v = str(r.get(col, "") or "").strip()
+            if v and v not in out:
+                out.append(v)
+    if not out:
+        out = [SHEET_CONFIG["4S_SALES_SHEET"]]
+    return out
+
+
 def process_and_update_reviews(
     reviews:        List[Dict],
     spreadsheet_id: str,
-    sales_df:       pd.DataFrame,
+    sales_df:       pd.DataFrame,   # accepted for back-compat — no longer used
 ) -> Dict:
     """
-    Match reviews against the CRM rows and write star ratings to the
-    REVIEW column in a SINGLE batch_update call.
+    Match reviews against every sales sheet listed in SHEET_DETAILS
+    (Franchise + 4S) and write each matched star rating into the REVIEW
+    column of whichever sheet contains the customer.
 
-    Returns:
-        {total_reviews, matched, unmatched, errors, written, status}
+    Matching strategies (in priority order, per review):
+        1. Email exact match
+        2. Phone exact match (extracted from reviewer name OR review text)
+        3. Customer name exact / fuzzy / token-overlap match
+
+    The first sheet that yields a match wins.  Unmatched reviews are logged
+    to REVIEW_DETAILS but no rating is written anywhere.
+
+    Returns {total_reviews, matched, unmatched, errors, written, status}.
     """
     stats = {
         "total_reviews": len(reviews),
@@ -845,55 +878,102 @@ def process_and_update_reviews(
     try:
         client = _get_sheets_client()
         sh     = client.open_by_key(spreadsheet_id)
-        ws     = sh.worksheet(SHEET_CONFIG["4S_SALES_SHEET"])
 
-        all_rows = ws.get_all_values()
-        if not all_rows:
-            print("  ⚠️  Sales sheet is empty.")
-            stats["status"] = "empty_sheet"
-            return stats
+        # ── Discover every sales sheet from SHEET_DETAILS ────────────────────
+        sheet_names = _discover_sales_sheets(client, spreadsheet_id)
+        print(f"  → Will scan {len(sheet_names)} sales sheet(s): {sheet_names}")
 
-        headers = [h.strip() for h in all_rows[0]]
-        review_col_idx, headers = _ensure_review_column(ws, headers)
+        # Per-sheet context (worksheet, header, REVIEW column idx, dataframe,
+        # lookup indexes, existing REVIEW values).  Built lazily but cached
+        # so we never re-fetch the same sheet twice in one run.
+        sheet_ctx: Dict[str, Dict] = {}
 
-        # Build a quick lookup for current REVIEW values so we only write
-        # cells whose value would actually change (idempotency).
-        existing_review_values: Dict[int, str] = {}
-        for i, row in enumerate(all_rows[1:], start=2):  # 1-indexed sheet rows, +1 for header
-            if review_col_idx - 1 < len(row):
-                existing_review_values[i] = str(row[review_col_idx - 1]).strip()
-            else:
-                existing_review_values[i] = ""
+        def _ctx_for(sheet_name: str) -> Dict | None:
+            """Load + cache the per-sheet context, or return None if unusable."""
+            if sheet_name in sheet_ctx:
+                return sheet_ctx[sheet_name]
+            try:
+                ws = sh.worksheet(sheet_name)
+            except gspread.WorksheetNotFound:
+                print(f"  ⚠️  Sheet '{sheet_name}' not found — skipping.")
+                sheet_ctx[sheet_name] = None
+                return None
 
-        # Normalised CRM df for matching
-        norm_df = sales_df.copy()
-        norm_df.columns = [str(c).strip().upper() for c in norm_df.columns]
-        email_idx, phone_idx, exact_name_idx, name_list = _build_lookup_indexes(norm_df)
+            all_rows = ws.get_all_values()
+            if not all_rows:
+                print(f"  ⚠️  Sheet '{sheet_name}' is empty — skipping.")
+                sheet_ctx[sheet_name] = None
+                return None
 
-        cells_to_update:    List[gspread.Cell] = []
+            headers = [h.strip() for h in all_rows[0]]
+            review_col_idx, headers = _ensure_review_column(ws, headers)
+
+            existing: Dict[int, str] = {}
+            for i, row in enumerate(all_rows[1:], start=2):
+                existing[i] = (
+                    str(row[review_col_idx - 1]).strip()
+                    if review_col_idx - 1 < len(row) else ""
+                )
+
+            # Build a DataFrame from the rows so the lookup indexes work
+            data_rows = all_rows[1:]
+            max_cols = max(len(headers), max((len(r) for r in data_rows), default=0))
+            padded_headers = headers + [f"_col{i}" for i in range(len(headers), max_cols)]
+            normalised_rows = [
+                r + [""] * (max_cols - len(r)) for r in data_rows
+            ]
+            df = pd.DataFrame(normalised_rows, columns=padded_headers)
+            df.columns = [str(c).strip().upper() for c in df.columns]
+            df = df.loc[:, ~df.columns.duplicated()]
+
+            email_idx, phone_idx, exact_name_idx, name_list = _build_lookup_indexes(df)
+
+            ctx = {
+                "ws":             ws,
+                "review_col_idx": review_col_idx,
+                "existing":       existing,
+                "email_idx":      email_idx,
+                "phone_idx":      phone_idx,
+                "exact_name_idx": exact_name_idx,
+                "name_list":      name_list,
+                "pending_cells":  [],   # gspread.Cell to write at the end
+            }
+            sheet_ctx[sheet_name] = ctx
+            return ctx
+
         matched_rows_log:   List[Dict] = []
         unmatched_rows_log: List[Dict] = []
 
+        # ── Iterate each review and try every sheet until a match wins ───────
         for review in reviews:
             try:
                 rating = int(review.get("rating", 0) or 0)
                 if rating < 1 or rating > 5:
-                    # Skip junk; still log
                     stats["unmatched"] += 1
                     unmatched_rows_log.append(review)
                     continue
 
-                result = match_customer(
-                    review_name    = review.get("reviewer_name", ""),
-                    review_email   = review.get("reviewer_email", ""),
-                    email_idx      = email_idx,
-                    phone_idx      = phone_idx,
-                    exact_name_idx = exact_name_idx,
-                    name_list      = name_list,
-                    review_text    = review.get("review_text", ""),
-                )
+                hit: Tuple[str, int, str, float] | None = None  # (sheet, row, type, conf)
 
-                if result is None:
+                for sheet_name in sheet_names:
+                    ctx = _ctx_for(sheet_name)
+                    if ctx is None:
+                        continue
+                    result = match_customer(
+                        review_name    = review.get("reviewer_name", ""),
+                        review_email   = review.get("reviewer_email", ""),
+                        email_idx      = ctx["email_idx"],
+                        phone_idx      = ctx["phone_idx"],
+                        exact_name_idx = ctx["exact_name_idx"],
+                        name_list      = ctx["name_list"],
+                        review_text    = review.get("review_text", ""),
+                    )
+                    if result is not None:
+                        row_idx_pd, match_type, confidence = result
+                        hit = (sheet_name, int(row_idx_pd) + 2, match_type, confidence)
+                        break
+
+                if hit is None:
                     stats["unmatched"] += 1
                     unmatched_rows_log.append(review)
                     print(
@@ -902,28 +982,30 @@ def process_and_update_reviews(
                     )
                     continue
 
-                row_idx_pd, match_type, confidence = result
-                # Sheet row = pandas row + 2  (1 for header row, 1 for 0-vs-1 indexing)
-                sheet_row = int(row_idx_pd) + 2
+                sheet_name, sheet_row, match_type, confidence = hit
+                ctx = sheet_ctx[sheet_name]
 
                 review["_match_type"] = match_type
                 review["_match_conf"] = confidence
                 review["_sheet_row"]  = sheet_row
+                review["_sheet_name"] = sheet_name
                 matched_rows_log.append(review)
                 stats["matched"] += 1
 
-                # Idempotency: only queue a write if the cell value differs
-                if existing_review_values.get(sheet_row, "") != str(rating):
-                    cells_to_update.append(
-                        gspread.Cell(row=sheet_row, col=review_col_idx, value=str(rating))
+                # Idempotency: only queue a write if the rating differs
+                if ctx["existing"].get(sheet_row, "") != str(rating):
+                    ctx["pending_cells"].append(
+                        gspread.Cell(row=sheet_row, col=ctx["review_col_idx"],
+                                     value=str(rating))
                     )
 
                 _snippet = (review.get("review_text", "") or "").strip().replace("\n", " ")
                 if len(_snippet) > 80:
                     _snippet = _snippet[:80] + "…"
                 print(
-                    f"  ✓ {rating}★ '{review.get('reviewer_name', '?')}' "
-                    f"→ row {sheet_row} (match={match_type}, conf={confidence})"
+                    f"  ✓ {rating}★ '{review.get('reviewer_name', '?')}' → "
+                    f"'{sheet_name}' row {sheet_row} "
+                    f"(match={match_type}, conf={confidence})"
                     + (f"  text: \"{_snippet}\"" if _snippet else "")
                 )
 
@@ -931,15 +1013,17 @@ def process_and_update_reviews(
                 stats["errors"] += 1
                 print(f"  ⚠️  Error processing review: {exc}")
 
-        # Single batch write
-        if cells_to_update:
-            ws.update_cells(cells_to_update, value_input_option="RAW")
-            stats["written"] = len(cells_to_update)
-            print(f"  → Batch wrote {len(cells_to_update)} rating(s) in one API call.")
-        else:
-            print("  → No new ratings to write (all sheet values already up-to-date).")
+        # ── One batch write per sheet that had pending updates ──────────────
+        for sheet_name, ctx in sheet_ctx.items():
+            if not ctx or not ctx["pending_cells"]:
+                continue
+            ctx["ws"].update_cells(ctx["pending_cells"], value_input_option="RAW")
+            stats["written"] += len(ctx["pending_cells"])
+            print(f"  → Wrote {len(ctx['pending_cells'])} rating(s) to '{sheet_name}'.")
+        if stats["written"] == 0:
+            print("  → No new ratings to write (already up-to-date or no matches).")
 
-        # Log details and unmatched
+        # Audit log
         _log_review_details(client, spreadsheet_id, matched_rows_log, unmatched_rows_log)
 
     except Exception as exc:
@@ -1043,15 +1127,8 @@ def fetch_and_update_reviews_4s(
             return _fail(f"Could not load 4S Sales sheet: {exc}")
 
     if sales_df is None or sales_df.empty:
-        print("  ⚠️  Sales DataFrame is empty — nothing to match against.")
-        stats = {"total_reviews": 0, "matched": 0, "unmatched": 0,
-                 "errors": 0, "written": 0, "status": "empty_sales_df"}
-        try:
-            client = _get_sheets_client()
-            _log_sync_run(client, spreadsheet_id, stats, triggered_by)
-        except Exception:
-            pass
-        return stats
+        print("  ⚠️  Sales DataFrame is empty — but the per-sheet matcher will still scan SHEET_DETAILS sheets directly.")
+        sales_df = pd.DataFrame()
 
     # ── Fetch reviews from whichever source is configured ────────────────────
     try:
@@ -1081,7 +1158,7 @@ def fetch_and_update_reviews_4s(
         traceback.print_exc()
         return _fail(f"Fetch failure: {exc}")
 
-    # ── Match + write ───────────────────────────────────────────────────────
+    # ── Match + write (across every sales sheet in SHEET_DETAILS) ───────────
     stats = process_and_update_reviews(reviews, spreadsheet_id, sales_df)
 
     # ── Persist a sync-log row (used by UI to show last-synced time) ────────

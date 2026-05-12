@@ -645,36 +645,61 @@ if not df_display.empty and all_execs:
         with st.spinner("Fetching latest reviews from Google Business Profile..."):
             try:
                 _stats = fetch_and_update_reviews_now()
-                _status = str(_stats.get("status", "")).lower()
-                if _status == "ok":
-                    st.success(
-                        f"✅ Fetched **{_stats.get('total_reviews', 0)}** review(s). "
-                        f"Matched **{_stats.get('matched', 0)}**, "
-                        f"unmatched **{_stats.get('unmatched', 0)}**, "
-                        f"wrote **{_stats.get('written', 0)}** rating cell(s)."
-                    )
-                elif _status.startswith("auth failure"):
-                    st.error(
-                        "❌ Auth failure. Add **GOOGLE_PLACES_API_KEY** and "
-                        "**GOOGLE_PLACE_ID** to Streamlit secrets and restart "
-                        "the app. (Or, if you've been allow-listed for the "
-                        "GMB v4 API, set GMB_REFRESH_TOKEN + GMB_ACCOUNT_ID + "
-                        "GMB_LOCATION_ID instead.)"
-                    )
-                elif _status.startswith("location resolve failure"):
-                    st.error(
-                        "❌ Couldn't resolve the review location. "
-                        "If you're using Places API: check GOOGLE_PLACE_ID. "
-                        "If you're using GMB v4: set GMB_ACCOUNT_ID + GMB_LOCATION_ID "
-                        "or GMB_LOCATION_PATH."
-                    )
-                else:
-                    st.warning(f"⚠️ Sync finished with status: {_stats.get('status')}")
-                # Refresh the cached data so the new ratings appear immediately
+                # Persist the result so it survives the cache-clear rerun
+                # below (otherwise the green / red banner flashes away and
+                # the user never sees what actually happened).
+                st.session_state["_gmb_fetch_result"] = _stats
                 st.cache_data.clear()
                 st.rerun()
             except Exception as exc:
-                st.error(f"❌ Fetch failed: {exc}")
+                st.session_state["_gmb_fetch_result"] = {"status": f"error: {exc}"}
+                st.rerun()
+
+    # Show the most recent fetch outcome (persists across the rerun above)
+    _last_fetch = st.session_state.get("_gmb_fetch_result")
+    if _last_fetch:
+        _status = str(_last_fetch.get("status", "")).lower()
+        if _status == "ok":
+            st.success(
+                f"✅ Fetched **{_last_fetch.get('total_reviews', 0)}** review(s) "
+                f"from Google (Places API returns up to 5 most recent). "
+                f"Matched **{_last_fetch.get('matched', 0)}**, "
+                f"unmatched **{_last_fetch.get('unmatched', 0)}**, "
+                f"wrote **{_last_fetch.get('written', 0)}** rating cell(s) "
+                f"to the 4S Sales sheet."
+            )
+            if int(_last_fetch.get("unmatched", 0)) > 0:
+                st.info(
+                    "ℹ️  Unmatched reviews are logged in the **REVIEW_DETAILS** "
+                    "sheet — usually the reviewer's Google name doesn't match "
+                    "the customer name on the sales sheet. Fix the name there "
+                    "and re-fetch."
+                )
+            if int(_last_fetch.get("matched", 0)) > 0 and total_reviews_period == 0:
+                st.warning(
+                    "ℹ️  Reviews were matched but **none fall in the date range "
+                    "above**. Try expanding the From-date to 1 Apr 2026 — the "
+                    "matched order may be from an earlier month."
+                )
+        elif _status.startswith("auth failure"):
+            st.error(
+                "❌ Auth failure. Add **GOOGLE_PLACES_API_KEY** and "
+                "**GOOGLE_PLACE_ID** to Streamlit secrets and restart "
+                "the app. (Or, if you've been allow-listed for the "
+                "GMB v4 API, set GMB_REFRESH_TOKEN + GMB_ACCOUNT_ID + "
+                "GMB_LOCATION_ID instead.)"
+            )
+        elif _status.startswith("location resolve failure"):
+            st.error(
+                "❌ Couldn't resolve the review location. "
+                "If you're using Places API: check GOOGLE_PLACE_ID. "
+                "If you're using GMB v4: set GMB_ACCOUNT_ID + GMB_LOCATION_ID "
+                "or GMB_LOCATION_PATH."
+            )
+        elif _status.startswith("error"):
+            st.error(f"❌ Fetch failed: {_last_fetch.get('status')}")
+        else:
+            st.warning(f"⚠️ Sync finished with status: {_last_fetch.get('status')}")
 
     st.caption(
         f"Net GMB review score per salesperson · +1 per ≥4★ rating, −1 per ≤3★ rating · "
@@ -1166,6 +1191,31 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                     _fig2.add_trace(go.Bar(
                         name="Achievement",
                         x=_chart_df["Sales Person"],
+                        y=_chart_df["Achievement (₹)"],
+                        marker_color=[
+                            "#2e7d32" if v >= t else ("#e65100" if v >= 0.8 * t else "#c62828")
+                            for v, t in zip(_chart_df["Achievement (₹)"], _chart_df["Target (₹)"])
+                        ],
+                        opacity=0.9,
+                    ))
+                    _fig2.update_layout(
+                        barmode="group",
+                        height=350,
+                        yaxis_title="Amount (₹)",
+                        margin=dict(t=20, b=40),
+                        legend=dict(
+                            orientation="h", yanchor="bottom", y=1.02,
+                            xanchor="right", x=1,
+                        ),
+                    )
+                    _fig2.update_yaxes(tickprefix="₹", tickformat=",.0f")
+                    st.plotly_chart(_fig2, use_container_width=True)
+                else:
+                    st.info(
+                        f"No sales recorded yet for {calendar.month_name[_cur_m]} {_cur_y}. "
+                        "The chart will appear once achievement data is available."
+                    )
+ Person"],
                         y=_chart_df["Achievement (₹)"],
                         marker_color=[
                             "#2e7d32" if v >= t else ("#e65100" if v >= 0.8 * t else "#c62828")
