@@ -1138,3 +1138,6 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                         f"No sales recorded yet for {calendar.month_name[_cur_m]} {_cur_y}. "
                         "The chart will appear once achievement data is available."
                     )
+                        f"No sales recorded yet for {calendar.month_name[_cur_m]} {_cur_y}. "
+                        "The chart will appear once achievement data is available."
+                    )
