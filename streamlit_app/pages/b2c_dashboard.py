@@ -241,7 +241,23 @@ def load_b2c_data():
         "CUSTOMER DELIVERY DATE":                          "DELIVERY DATE",
         "SALES REP":                                       "SALES PERSON",
         "ADVANCE RECEIVED":                                "ADV RECEIVED",
+        # GMB review column — normalise all known variants to "REVIEW".
+        # The 4S Sales sheet column is written by the daily GMB-review
+        # fetch job (services/google_reviews_service.py) and surfaces in
+        # the All Sales Records table as "GMB Ratings" via COL_RENAME_DISPLAY.
+        "REVIEW RATING":                                   "REVIEW",
+        "GMB RATING":                                      "REVIEW",
+        "GMB RATINGS":                                     "REVIEW",
+        "GOOGLE REVIEW":                                   "REVIEW",
+        "GOOGLE RATING":                                   "REVIEW",
     })
+
+    # Coerce REVIEW to an integer 0-5 so styling / aggregation never silently
+    # treats blank cells as NaN propagating through downstream metrics.
+    if "REVIEW" in crm.columns:
+        crm["REVIEW"] = pd.to_numeric(crm["REVIEW"], errors="coerce").fillna(0).astype(int)
+    else:
+        crm["REVIEW"] = 0
 
     # ── Exhaustive fallback: scan every column for a delivery-status candidate ─
     # This runs only when none of the exact rename keys above matched, i.e. the

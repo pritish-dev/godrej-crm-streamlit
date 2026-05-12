@@ -163,6 +163,131 @@ def _split_by_frequency(df: pd.DataFrame) -> dict:
     return result
 
 
+# ── Compact MTD missed-summary renderer ────────────────────────────────────
+# Renders the cumulative missed-task section as a single small table:
+#   Employee | Task Title | Missed | Done
+# limited to the current month so far.
+def _render_missed_summary_html(missed_df: pd.DataFrame, today: datetime) -> str:
+    """
+    Build the compact 'month-to-date missed vs done' summary block.
+
+    Parameters
+    ----------
+    missed_df : DataFrame produced by services.sales_task_expander.get_missed_tasks()
+                — already filtered to the current month and to rows whose
+                status is Missed / Overdue.
+    today     : the current datetime (used to determine the month window
+                and to pull matching Done rows from TASK_LOGS).
+    """
+    month_start = today.replace(day=1).date()
+    today_date  = today.date()
+
+    df = missed_df.copy()
+    if "EMPLOYEE" not in df.columns or "TASK TITLE" not in df.columns:
+        return ""
+
+    # Restrict missed rows to the current month (defensive — get_missed_tasks
+    # is already month-scoped but we double-guard so the count never drifts)
+    if "DUE DATE" in df.columns:
+        df["_dd"] = pd.to_datetime(df["DUE DATE"], errors="coerce")
+        df = df[
+            (df["_dd"].dt.date >= month_start)
+            & (df["_dd"].dt.date <= today_date)
+        ]
+
+    if df.empty:
+        return (
+            "<h2 style='color:#2e7d32;margin-top:30px;border-bottom:2px solid #2e7d32;"
+            "padding-bottom:6px'>✅ Missed / Overdue (Month-to-Date)</h2>"
+            "<p style='color:#2e7d32'>No missed tasks this month — well done!</p>"
+        )
+
+    # Missed counts: (EMPLOYEE, TASK TITLE) -> count
+    missed_counts = (
+        df.groupby([
+            df["EMPLOYEE"].astype(str).str.strip().str.upper(),
+            df["TASK TITLE"].astype(str).str.strip(),
+        ])
+        .size()
+        .rename("Missed")
+        .reset_index()
+        .rename(columns={"EMPLOYEE": "Employee", "TASK TITLE": "Task Title"})
+    )
+
+    # Done counts from TASK_LOGS for the same month + (employee, task title)
+    done_counts: dict[tuple[str, str], int] = {}
+    try:
+        from services.sheets import get_df as _get_df
+        log_df = _get_df("TASK_LOGS")
+        if log_df is not None and not log_df.empty:
+            log_df.columns = [str(c).strip().upper() for c in log_df.columns]
+            log_df = log_df[
+                log_df["STATUS"].astype(str).str.strip().str.lower() == "done"
+            ].copy()
+            if not log_df.empty:
+                log_df["DATE_DT"] = pd.to_datetime(
+                    log_df["DATE"], dayfirst=True, errors="coerce"
+                )
+                log_df = log_df[
+                    (log_df["DATE_DT"].dt.date >= month_start)
+                    & (log_df["DATE_DT"].dt.date <= today_date)
+                ]
+                for _, r in log_df.iterrows():
+                    key = (
+                        str(r.get("EMPLOYEE", "")).strip().upper(),
+                        str(r.get("TASK TITLE", "")).strip(),
+                    )
+                    done_counts[key] = done_counts.get(key, 0) + 1
+    except Exception:
+        done_counts = {}
+
+    # Build HTML table
+    header_html = (
+        "<thead><tr>"
+        "<th style='padding:8px 10px;background:#c62828;color:#fff;"
+        "border:1px solid #ddd;text-align:left'>Salesperson</th>"
+        "<th style='padding:8px 10px;background:#c62828;color:#fff;"
+        "border:1px solid #ddd;text-align:left'>Task</th>"
+        "<th style='padding:8px 10px;background:#c62828;color:#fff;"
+        "border:1px solid #ddd;text-align:right'>Missed</th>"
+        "<th style='padding:8px 10px;background:#2e7d32;color:#fff;"
+        "border:1px solid #ddd;text-align:right'>Done</th>"
+        "</tr></thead>"
+    )
+
+    rows_html = ""
+    # Sort by Missed DESC so worst offenders surface first
+    missed_counts = missed_counts.sort_values(
+        by=["Missed", "Employee", "Task Title"], ascending=[False, True, True]
+    )
+    for _, r in missed_counts.iterrows():
+        emp   = str(r["Employee"])
+        title = str(r["Task Title"])
+        miss  = int(r["Missed"])
+        done  = int(done_counts.get((emp, title), 0))
+        rows_html += (
+            f"<tr>"
+            f"<td style='padding:6px 10px;border:1px solid #ddd'>{emp}</td>"
+            f"<td style='padding:6px 10px;border:1px solid #ddd'>{title}</td>"
+            f"<td style='padding:6px 10px;border:1px solid #ddd;"
+            f"text-align:right;color:#c62828;font-weight:bold'>{miss} Missed</td>"
+            f"<td style='padding:6px 10px;border:1px solid #ddd;"
+            f"text-align:right;color:#2e7d32;font-weight:bold'>{done} Done</td>"
+            f"</tr>"
+        )
+
+    month_label = today.strftime("%B %Y")
+    return (
+        f"<h2 style='color:#c62828;margin-top:30px;border-bottom:2px solid #c62828;"
+        f"padding-bottom:6px'>🚨 Missed / Overdue — {month_label} (Month-to-Date)</h2>"
+        f"<p style='font-size:12px;color:#555'>"
+        f"Count of missed vs done tasks per salesperson per task title this month. "
+        f"Detailed lists were intentionally removed — just the headline numbers.</p>"
+        f"<table style='border-collapse:collapse;font-family:Arial,sans-serif;"
+        f"font-size:12px;min-width:560px'>{header_html}<tbody>{rows_html}</tbody></table>"
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # EMAIL 1 — SALES TEAM TASKS  (11:00 AM)
 #   Today's tasks + overdue, grouped by Daily / Adhoc / Weekly / Monthly
@@ -320,29 +445,13 @@ def send_sales_team_task_status_email(tasks_df: pd.DataFrame,
     else:
         body_sections.append("<p style='color:#888'>No tasks were assigned for today.</p>")
 
-    # ── CUMULATIVE MISSED / OVERDUE TASKS ─────────────────────────────────
+    # ── MISSED / OVERDUE TASKS — COMPACT MONTH-TO-DATE COUNTS ──────────────
+    # Per the latest spec the cumulative-missed section is now a single
+    # compact table:  Employee | Task Title | Missed (count) | Done (count)
+    # restricted to the CURRENT MONTH so far.  No more verbose per-row
+    # tables — the manager just wants a one-line view per (SP × task).
     if missed_df is not None and not missed_df.empty:
-        body_sections.append(
-            "<h2 style='color:#c62828;margin-top:30px;border-bottom:2px solid #c62828;"
-            "padding-bottom:6px'>🚨 Missed / Overdue Tasks (Cumulative)</h2>"
-            "<p style='font-size:12px;color:#555'>"
-            "These tasks were not completed on their due date — broken down by "
-            "frequency. The list keeps growing whenever a task is missed.</p>"
-        )
-        missed_groups = _split_by_frequency(missed_df)
-        if missed_groups:
-            for key in FREQ_ORDER:
-                if key not in missed_groups:
-                    continue
-                sub = missed_groups[key].copy()
-                if "DUE DATE" in sub.columns:
-                    sub["DUE DATE"] = pd.to_datetime(sub["DUE DATE"], errors="coerce").dt.strftime("%d-%b-%Y")
-                meta = FREQ_META.get(key, {"label": key.title(), "color": "#c62828"})
-                body_sections.append(
-                    f"<h3 style='color:#c62828;margin:18px 0 6px'>"
-                    f"❌ Missed — {meta['label']} ({len(sub)})</h3>"
-                    + _html_task_table(sub, header_bg="#c62828")
-                )
+        body_sections.append(_render_missed_summary_html(missed_df, today))
 
     email_html = _email_wrapper(
         title     = "📊 Sales Team Task Status",

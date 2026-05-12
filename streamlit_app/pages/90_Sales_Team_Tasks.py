@@ -120,33 +120,78 @@ def generate_tasks(df, year, month):
 
 
 # ---------------------------------------------------------------------------
-# STATUS LOGIC
+# STATUS LOGIC  (per-employee, via TASK_LOGS)
 #
-#   DAILY  : LCD == DUE  -> Done
-#             DUE < today -> Missed   (never Overdue)
-#             else        -> Pending
+# Important: the master sheet's LAST COMPLETED DATE column is shared across
+# every assignee of a task, so we CANNOT use it to derive per-employee status
+# (otherwise marking one assignee done flips every other assignee to "Done"
+# as well).  Instead, the source of truth for completion is the TASK_LOGS
+# sheet which already records one row per (TASK ID, EMPLOYEE, DATE, STATUS).
+#
+#   DAILY  : (task_id, employee, due_date) in done-set  -> Done
+#             DUE < today                                -> Missed
+#             else                                       -> Pending
 #
 #   WEEKLY / MONTHLY / ADHOC:
-#             LCD >= DUE  -> Done
-#             DUE < today -> Overdue
-#             else        -> Pending
+#             ANY done log row for (task_id, employee) with DATE >= DUE -> Done
+#             DUE < today                                                -> Overdue
+#             else                                                       -> Pending
 # ---------------------------------------------------------------------------
 
-def get_status(row):
+@st.cache_data(ttl=30)
+def load_task_completions() -> dict:
+    """
+    Build a {(task_id, employee_upper): [completion_dates]} lookup from the
+    TASK_LOGS sheet so we can resolve per-employee status without touching
+    the shared LAST COMPLETED DATE column on the master sheet.
+    """
+    log_df = get_df("TASK_LOGS")
+    if log_df is None or log_df.empty:
+        return {}
+
+    log_df.columns = [str(c).strip().upper() for c in log_df.columns]
+    if not {"TASK ID", "EMPLOYEE", "DATE", "STATUS"}.issubset(log_df.columns):
+        return {}
+
+    done = log_df[
+        log_df["STATUS"].astype(str).str.strip().str.lower() == "done"
+    ].copy()
+    if done.empty:
+        return {}
+
+    done["DATE_DT"] = pd.to_datetime(done["DATE"], dayfirst=True, errors="coerce")
+    done = done[done["DATE_DT"].notna()]
+
+    out: dict = {}
+    for _, r in done.iterrows():
+        tid = str(r["TASK ID"]).strip()
+        emp = str(r["EMPLOYEE"]).strip().upper()
+        d   = r["DATE_DT"].date()
+        out.setdefault((tid, emp), []).append(d)
+    return out
+
+
+def get_status(row, completions: dict | None = None):
     today = datetime.now().date()
     freq = str(row.get("FREQUENCY", "")).strip().lower()
     due = row["DUE DATE"].date() if pd.notna(row["DUE DATE"]) else None
-    lcd = row["LAST COMPLETED DATE"].date() if pd.notna(row["LAST COMPLETED DATE"]) else None
 
     if due is None:
         return "Pending"
 
+    tid = str(row.get("TASK ID", "")).strip()
+    emp = str(row.get("EMPLOYEE", "")).strip().upper()
+
+    done_dates = (completions or {}).get((tid, emp), [])
+
     if freq == "daily":
-        if lcd is not None and lcd == due:
+        # Daily: done only if the SAME calendar day was marked done
+        if any(d == due for d in done_dates):
             return "Done"
         return "Missed" if due < today else "Pending"
     else:
-        if lcd is not None and lcd >= due:
+        # Weekly / Monthly / Adhoc: done if any completion logged on/after DUE
+        if any(d >= due for d in done_dates):
             return "Done"
         return "Overdue" if due < today else "Pending"
 
@@ -174,18 +219,58 @@ STATUS_EMOJI = {
 
 
 # ---------------------------------------------------------------------------
-# TASK UPDATE
+# TASK UPDATE  (per-employee — writes to TASK_LOGS, NOT to the master sheet)
 # ---------------------------------------------------------------------------
 
-def update_task(task_id):
+def update_task(task_id, employee, task_title: str = "", frequency: str = ""):
+    """
+    Mark a task as Done for ONE specific employee on today's date.
+
+    We deliberately do NOT touch the master SALES_TEAM_TASK row here.  The
+    master sheet's LAST COMPLETED DATE column is shared across every
+    assignee, so updating it would mark all assignees as "Done" — which is
+    the exact bug we're fixing.  Per-employee completion is tracked in the
+    TASK_LOGS sheet (TASK ID + EMPLOYEE + DATE + STATUS).
+    """
     today_str = datetime.now().strftime("%d-%m-%Y")
-    df = get_df("SALES_TEAM_TASK")
-    if df is None or df.empty:
-        return
-    df.columns = [str(c).strip().upper() for c in df.columns]
-    mask = df["TASK ID"].astype(str).str.strip() == str(task_id).strip()
-    df.loc[mask, "LAST COMPLETED DATE"] = today_str
-    write_df("SALES_TEAM_TASK", df)
+    emp_upper = str(employee).strip().upper()
+    tid_str   = str(task_id).strip()
+
+    log_df = get_df("TASK_LOGS")
+    COLS = ["TASK ID", "TASK TITLE", "FREQUENCY", "EMPLOYEE", "DATE", "STATUS"]
+
+    if log_df is None or log_df.empty:
+        log_df = pd.DataFrame(columns=COLS)
+    else:
+        log_df.columns = [str(c).strip().upper() for c in log_df.columns]
+        for col in COLS:
+            if col not in log_df.columns:
+                log_df[col] = ""
+
+    mask = (
+        (log_df["TASK ID"].astype(str).str.strip() == tid_str)
+        & (log_df["EMPLOYEE"].astype(str).str.strip().str.upper() == emp_upper)
+        & (log_df["DATE"].astype(str).str.strip() == today_str)
+    )
+
+    if mask.any():
+        log_df.loc[mask, "STATUS"]     = "Done"
+        if task_title:
+            log_df.loc[mask, "TASK TITLE"] = task_title
+        if frequency:
+            log_df.loc[mask, "FREQUENCY"]  = frequency
+    else:
+        new_entry = pd.DataFrame([{
+            "TASK ID":    tid_str,
+            "TASK TITLE": task_title,
+            "FREQUENCY":  frequency,
+            "EMPLOYEE":   emp_upper,
+            "DATE":       today_str,
+            "STATUS":     "Done",
+        }])
+        log_df = pd.concat([log_df, new_entry], ignore_index=True)
+
+    write_df("TASK_LOGS", log_df)
     st.cache_data.clear()
 
 
@@ -353,7 +438,12 @@ def render_task_table(df, freq_type, helper_text, valid_statuses):
                     help="Mark this task as done",
                 )
                 if checked:
-                    update_task(task_id)
+                    update_task(
+                        task_id,
+                        row["EMPLOYEE"],
+                        task_title=str(row.get("TASK TITLE", "")).strip(),
+                        frequency=str(row.get("FREQUENCY", "")).strip(),
+                    )
                     st.rerun()
 
         r2.write(row["TASK TITLE"])
@@ -454,7 +544,8 @@ EMPTY_COLS = [
 ]
 
 if not tasks.empty:
-    tasks["STATUS"] = tasks.apply(get_status, axis=1)
+    completions_lookup = load_task_completions()
+    tasks["STATUS"] = tasks.apply(lambda r: get_status(r, completions_lookup), axis=1)
     tasks["DUE DATE"] = pd.to_datetime(tasks["DUE DATE"])
 else:
     tasks = pd.DataFrame(columns=EMPTY_COLS)

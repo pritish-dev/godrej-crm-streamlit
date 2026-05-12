@@ -1,0 +1,59 @@
+name: MIS Daily Import (11 AM IST)
+
+# Runs once per day at 11:00 AM IST.
+# IST = UTC + 5:30, so 11:00 IST = 05:30 UTC.
+#
+# The schedule.py in-process loop only fires when the long-running Python
+# process happens to be alive, which is unreliable on a Streamlit-Cloud
+# style deployment (the app sleeps when idle).  Driving the daily MIS
+# import from GitHub Actions instead guarantees the 11 AM IST run executes
+# regardless of whether the Streamlit app is awake.
+
+on:
+  schedule:
+    - cron: '30 5 * * *'        # 05:30 UTC = 11:00 IST
+
+  # Manual trigger from the Actions UI for backfill / debugging
+  workflow_dispatch:
+
+# Cancel an older in-flight run if a new one is queued
+concurrency:
+  group: mis-daily-import
+  cancel-in-progress: false
+
+jobs:
+  mis-daily-import:
+    name: Fetch BR_MIS Excel attachment and cache to MIS_Daily sheet
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f streamlit_app/requirements.txt ]; then
+            pip install -r streamlit_app/requirements.txt
+          else
+            pip install -r requirements.txt
+          fi
+
+      - name: Run MIS Daily Import
+        env:
+          # Gmail IMAP — same credentials used by the lead-email-import job
+          EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
+
+          # Service-account JSON for writing the MIS_Daily sheet
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: |
+          cd streamlit_app
+          python mis_daily_import_job.py

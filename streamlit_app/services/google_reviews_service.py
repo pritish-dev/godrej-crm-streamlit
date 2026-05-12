@@ -393,22 +393,31 @@ def match_customer(
     phone_idx:    Dict[str, int],
     exact_name_idx: Dict[str, int],
     name_list:    List[Tuple[str, int]],
+    review_text:  str = "",
 ) -> Optional[Tuple[int, str, float]]:
     """
     Multi-strategy reviewer → CRM row matcher.
 
     Returns (row_index, match_type, confidence_0_to_1) or None.
+
+    The Google Places API does NOT expose a reviewer phone number, but
+    reviewers themselves frequently paste their number either in their
+    display name ("Rakesh 9876543210") or, more commonly, in the body of
+    the review itself ("Thanks team — 9876543210 - Rakesh").  We scan both
+    fields so the contact-number match strategy actually catches those.
     """
     # 1. Email exact match
     e = _normalize_email(review_email)
     if e and e in email_idx:
         return (email_idx[e], "email", 1.00)
 
-    # 2. Phone match — Google reviewers sometimes paste a phone in their
-    #    display name ("Rakesh 9876543210"). It's worth a shot.
+    # 2. Phone match — try the display name first, then the review text body
     phone_in_name = _extract_phone_from_text(review_name)
     if phone_in_name and phone_in_name in phone_idx:
-        return (phone_idx[phone_in_name], "phone", 1.00)
+        return (phone_idx[phone_in_name], "phone_name", 1.00)
+    phone_in_text = _extract_phone_from_text(review_text)
+    if phone_in_text and phone_in_text in phone_idx:
+        return (phone_idx[phone_in_text], "phone_text", 1.00)
 
     n = _normalize_name(review_name)
     if not n:
@@ -881,6 +890,7 @@ def process_and_update_reviews(
                     phone_idx      = phone_idx,
                     exact_name_idx = exact_name_idx,
                     name_list      = name_list,
+                    review_text    = review.get("review_text", ""),
                 )
 
                 if result is None:
@@ -908,9 +918,13 @@ def process_and_update_reviews(
                         gspread.Cell(row=sheet_row, col=review_col_idx, value=str(rating))
                     )
 
+                _snippet = (review.get("review_text", "") or "").strip().replace("\n", " ")
+                if len(_snippet) > 80:
+                    _snippet = _snippet[:80] + "…"
                 print(
                     f"  ✓ {rating}★ '{review.get('reviewer_name', '?')}' "
                     f"→ row {sheet_row} (match={match_type}, conf={confidence})"
+                    + (f"  text: \"{_snippet}\"" if _snippet else "")
                 )
 
             except Exception as exc:

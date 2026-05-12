@@ -162,21 +162,63 @@ def expand_master_tasks(df_master: pd.DataFrame, year: int, month: int,
     return out
 
 
-# ── status (mirrors pages/90 logic) ──────────────────────────────────────────
-def compute_status(row, today: date) -> str:
+# ── per-employee completion log loader ──────────────────────────────────────
+def load_task_completions() -> dict:
+    """
+    Build {(task_id, employee_upper): [date, date, …]} from TASK_LOGS.
+
+    The master sheet's LAST COMPLETED DATE column is SHARED across all
+    assignees, so it cannot be used to derive per-employee status.  The
+    authoritative source of completions is the TASK_LOGS sheet which holds
+    one row per (TASK ID, EMPLOYEE, DATE, STATUS).
+    """
+    try:
+        from services.sheets import get_df
+        log_df = get_df("TASK_LOGS")
+    except Exception:
+        return {}
+    if log_df is None or log_df.empty:
+        return {}
+
+    log_df.columns = [str(c).strip().upper() for c in log_df.columns]
+    if not {"TASK ID", "EMPLOYEE", "DATE", "STATUS"}.issubset(log_df.columns):
+        return {}
+
+    done = log_df[
+        log_df["STATUS"].astype(str).str.strip().str.lower() == "done"
+    ].copy()
+    if done.empty:
+        return {}
+
+    done["DATE_DT"] = pd.to_datetime(done["DATE"], dayfirst=True, errors="coerce")
+    done = done[done["DATE_DT"].notna()]
+
+    out: dict = {}
+    for _, r in done.iterrows():
+        tid = str(r["TASK ID"]).strip()
+        emp = str(r["EMPLOYEE"]).strip().upper()
+        out.setdefault((tid, emp), []).append(r["DATE_DT"].date())
+    return out
+
+
+# ── status (mirrors pages/90 logic — per-employee via TASK_LOGS) ────────────
+def compute_status(row, today: date, completions: dict | None = None) -> str:
     freq = str(row.get("FREQUENCY", "")).strip().lower()
     due = row["DUE DATE"].date() if pd.notna(row["DUE DATE"]) else None
-    lcd = row["LAST COMPLETED DATE"].date() if pd.notna(row.get("LAST COMPLETED DATE")) else None
 
     if due is None:
         return "🟡 Pending"
 
+    tid = str(row.get("TASK ID", "")).strip()
+    emp = str(row.get("EMPLOYEE", "")).strip().upper()
+    done_dates = (completions or {}).get((tid, emp), [])
+
     if freq == "daily":
-        if lcd is not None and lcd == due:
+        if any(d == due for d in done_dates):
             return "🟢 Done"
         return "🔴 Missed" if due < today else "🟡 Pending"
     else:
-        if lcd is not None and lcd >= due:
+        if any(d >= due for d in done_dates):
             return "🟢 Done"
         return "🔴 Overdue" if due < today else "🟡 Pending"
 
@@ -189,7 +231,10 @@ def expand_with_status(df_master: pd.DataFrame, today: date,
     expanded = expand_master_tasks(df_master, today.year, today.month, weekoff_map=weekoff_map)
     if expanded.empty:
         return expanded
-    expanded["STATUS"] = expanded.apply(lambda r: compute_status(r, today), axis=1)
+    completions = load_task_completions()
+    expanded["STATUS"] = expanded.apply(
+        lambda r: compute_status(r, today, completions), axis=1
+    )
     return expanded
 
 

@@ -446,8 +446,20 @@ for d in date_range:
 
 df_display = pd.DataFrame(table_data) if table_data else pd.DataFrame()
 
-# ── GMB review count per salesperson per day ──────────────────────────────────
-# Count rows where REVIEW > 0 (i.e. a star rating was recorded for that day)
+# ── GMB review SCORE per salesperson per day ─────────────────────────────────
+# Per the latest spec the count is a NET SCORE, not a raw count:
+#   • Rating ≥ 4 (4★ or 5★)  → +1 for the order's salesperson
+#   • Rating ≤ 3 (1★ / 2★ / 3★) → −1 for the order's salesperson
+#   • Rating == 0 / blank     →  0 (no review yet)
+# Each customer order is scored once.  The per-day table aggregates these
+# +1 / −1 contributions to give a running view of each SP's review health.
+
+def _gmb_score(series: pd.Series) -> int:
+    """Sum of +1 (rating ≥ 4) and −1 (rating ≤ 3, rating > 0) for a column."""
+    vals = pd.to_numeric(series, errors="coerce").fillna(0).astype(int)
+    pos = int((vals >= 4).sum())
+    neg = int(((vals <= 3) & (vals > 0)).sum())
+    return pos - neg
 
 review_data = []
 for d in date_range:
@@ -455,9 +467,10 @@ for d in date_range:
     row      = {"Date": d.strftime("%d-%b-%Y")}
     day_rev  = 0
     for sp in all_execs:
-        rev_count  = int((day_data[day_data["SALES PERSON"] == sp]["REVIEW"] > 0).sum())
-        row[sp]    = rev_count
-        day_rev   += rev_count
+        sp_rows    = day_data[day_data["SALES PERSON"] == sp]
+        score      = _gmb_score(sp_rows["REVIEW"]) if "REVIEW" in sp_rows.columns else 0
+        row[sp]    = score
+        day_rev   += score
     row["Store Total"] = day_rev
     review_data.append(row)
 
@@ -577,6 +590,12 @@ if not df_display.empty and all_execs:
     total_reviews_period = int(df_reviews[df_reviews["Date"] == "TOTAL"]["Store Total"].iloc[0]) \
         if not df_reviews.empty else 0
 
+    # Net rating score across the whole filtered period — used by the
+    # 'Reviews Collected — Per Salesperson Summary' table below.
+    period_review_score = int(
+        df_reviews[df_reviews["Date"] == "TOTAL"]["Store Total"].iloc[0]
+    ) if not df_reviews.empty else 0
+
     st.divider()
     st.subheader("⭐ Google My Business — Reviews Collected by Sales Executive")
 
@@ -658,28 +677,47 @@ if not df_display.empty and all_execs:
                 st.error(f"❌ Fetch failed: {exc}")
 
     st.caption(
-        f"Count of orders in the selected period whose customer left a Google review · "
-        f"Total in period: **{total_reviews_period}** review(s)"
+        f"Net GMB review score per salesperson · +1 per ≥4★ rating, −1 per ≤3★ rating · "
+        f"Total in period: **{total_reviews_period}** net score"
     )
 
-    if not df_reviews.empty and total_reviews_period > 0:
+    # Show the table whenever at least one rating exists (positive or negative).
+    if not df_reviews.empty and (total_reviews_period != 0 or
+                                 (df_filtered["REVIEW"] > 0).any()):
         # ── Per-Salesperson Summary Table ────────────────────────────────────
-        # How many ratings each salesperson has collected, plus avg star rating
-        st.markdown("##### 📊 Reviews Collected — Per Salesperson Summary")
+        # Scoring rule:
+        #   • Each rating  ≥ 4 contributes +1 to the SP's Net Score
+        #   • Each rating  ≤ 3 (but > 0) contributes −1 to the SP's Net Score
+        # That Net Score replaces the old raw 'Reviews Collected' count.
+        st.markdown(
+            "##### 📊 Reviews Collected — Per Salesperson Summary "
+            "<span style='font-size:11px;color:#888'>"
+            "(Net Score = +1 per ≥4★ rating, −1 per ≤3★ rating)</span>",
+            unsafe_allow_html=True,
+        )
 
         sp_summary_rows = []
         for sp in all_execs:
-            sp_data = df_filtered[df_filtered["SALES PERSON"] == sp]
+            sp_data       = df_filtered[df_filtered["SALES PERSON"] == sp]
             sp_reviews_df = sp_data[sp_data["REVIEW"] > 0]
-            count_reviews = int(len(sp_reviews_df))
+
+            positive      = int((sp_reviews_df["REVIEW"] >= 4).sum())
+            negative      = int((sp_reviews_df["REVIEW"] <= 3).sum())
+            net_score     = positive - negative
+
             total_orders  = int(len(sp_data[sp_data["GROSS AMT"] > 0]))
+            count_reviews = int(len(sp_reviews_df))
             avg_rating    = float(sp_reviews_df["REVIEW"].mean()) if count_reviews else 0.0
             coverage_pct  = (count_reviews / total_orders * 100) if total_orders else 0.0
             five_star     = int((sp_reviews_df["REVIEW"] == 5).sum())
+
             sp_summary_rows.append({
                 "Sales Person":          sp,
                 "Total Orders":          total_orders,
                 "Reviews Collected":     count_reviews,
+                "+1 (≥4★)":             positive,
+                "−1 (≤3★)":             negative,
+                "Net Score":             net_score,
                 "Coverage %":            round(coverage_pct, 1),
                 "5★ Reviews":            five_star,
                 "Avg Rating":            round(avg_rating, 2) if avg_rating else 0.0,
@@ -691,6 +729,9 @@ if not df_display.empty and all_execs:
         if not sp_summary_df.empty:
             _tot_orders   = int(sp_summary_df["Total Orders"].sum())
             _tot_reviews  = int(sp_summary_df["Reviews Collected"].sum())
+            _tot_pos      = int(sp_summary_df["+1 (≥4★)"].sum())
+            _tot_neg      = int(sp_summary_df["−1 (≤3★)"].sum())
+            _tot_net      = _tot_pos - _tot_neg
             _tot_5star    = int(sp_summary_df["5★ Reviews"].sum())
             _tot_cov      = (_tot_reviews / _tot_orders * 100) if _tot_orders else 0.0
             _all_revs     = df_filtered[df_filtered["REVIEW"] > 0]["REVIEW"]
@@ -701,6 +742,9 @@ if not df_display.empty and all_execs:
                     "Sales Person":      "TOTAL",
                     "Total Orders":      _tot_orders,
                     "Reviews Collected": _tot_reviews,
+                    "+1 (≥4★)":         _tot_pos,
+                    "−1 (≤3★)":         _tot_neg,
+                    "Net Score":         _tot_net,
                     "Coverage %":        round(_tot_cov, 1),
                     "5★ Reviews":        _tot_5star,
                     "Avg Rating":        round(_tot_avg, 2),
@@ -716,14 +760,14 @@ if not df_display.empty and all_execs:
             if str(row.get("Sales Person", "")).strip().upper() == "TOTAL":
                 return ["background-color:#eeeeee;font-weight:bold"] * len(row)
             try:
-                cnt = int(row.get("Reviews Collected", 0))
+                net = int(row.get("Net Score", 0))
             except Exception:
-                cnt = 0
-            if cnt == 0:
-                return ["background-color:#ffebee"] * len(row)
-            if cnt >= 5:
-                return ["background-color:#c8e6c9"] * len(row)
-            return [""] * len(row)
+                net = 0
+            if net > 0:
+                return ["background-color:#c8e6c9"] * len(row)   # positive
+            if net < 0:
+                return ["background-color:#ffcdd2"] * len(row)   # negative
+            return ["background-color:#ffebee"] * len(row)       # no reviews
 
         st.dataframe(
             sp_summary_df.style
@@ -736,12 +780,20 @@ if not df_display.empty and all_execs:
             hide_index=True,
         )
 
-        # ── Daily Review-Count Heatmap Table ─────────────────────────────────
-        st.markdown("##### 📅 Daily Review Counts")
+        # ── Daily Review-Score Heatmap Table ─────────────────────────────────
+        st.markdown(
+            "##### 📅 Daily Review Net Score "
+            "<span style='font-size:11px;color:#888'>"
+            "(green = positive, red = negative — each ≥4★ adds +1, each ≤3★ subtracts 1)</span>",
+            unsafe_allow_html=True,
+        )
 
         def _style_reviews(val):
-            if isinstance(val, (int, float)) and val > 0:
-                return "background-color:#c8e6c9;font-weight:bold"
+            if isinstance(val, (int, float)):
+                if val > 0:
+                    return "background-color:#c8e6c9;font-weight:bold"
+                if val < 0:
+                    return "background-color:#ffcdd2;font-weight:bold"
             return ""
 
         rev_styled = (
