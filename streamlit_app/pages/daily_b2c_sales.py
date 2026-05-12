@@ -25,6 +25,16 @@ try:
 except Exception:
     _IQ_AVAILABLE = False
 
+# GMB Reviews integration (manual "Fetch Now" + last-sync display)
+try:
+    from services.google_reviews_service import (
+        fetch_and_update_reviews_now,
+        get_last_sync_info,
+    )
+    _GMB_AVAILABLE = True
+except Exception:
+    _GMB_AVAILABLE = False
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 FY_START     = date(2026, 4, 1)
@@ -561,19 +571,174 @@ if not df_display.empty and all_execs:
     st.write(f'<div class="table-scroll-container">{styled_html}</div>', unsafe_allow_html=True)
     st.caption("🔴 Red row = Zero store sales | 🟢 Green row = Store > ₹5L | 🔴 Red cell = SP zero or > ₹5L individual")
 
-    # ── GMB Review Count Table ────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════════
+    # ⭐ GMB Review Section — Fetch button + Daily table + Salesperson summary
+    # ═════════════════════════════════════════════════════════════════════════
     total_reviews_period = int(df_reviews[df_reviews["Date"] == "TOTAL"]["Store Total"].iloc[0]) \
         if not df_reviews.empty else 0
 
     st.divider()
-    st.subheader("⭐ Daily GMB Review Count by Sales Executive")
+    st.subheader("⭐ Google My Business — Reviews Collected by Sales Executive")
+
+    # ── Fetch Now button + last sync info ─────────────────────────────────────
+    btn_col, info_col = st.columns([1, 3])
+
+    with btn_col:
+        fetch_clicked = st.button(
+            "🔄 Fetch Reviews Now",
+            type="primary",
+            use_container_width=True,
+            disabled=not _GMB_AVAILABLE,
+            help=(
+                "Triggers an immediate fetch from Google Business Profile. "
+                "Otherwise the job runs automatically every day at 10 PM IST."
+                if _GMB_AVAILABLE else
+                "GMB service module could not be loaded — see logs."
+            ),
+            key="gmb_fetch_now_btn",
+        )
+
+    with info_col:
+        if _GMB_AVAILABLE:
+            try:
+                _last_sync = get_last_sync_info()
+            except Exception:
+                _last_sync = {}
+            if _last_sync and _last_sync.get("timestamp"):
+                _matched   = _last_sync.get("matched", 0)
+                _unmatched = _last_sync.get("unmatched", 0)
+                _total     = _last_sync.get("total", 0)
+                _trig      = _last_sync.get("triggered_by", "")
+                st.markdown(
+                    f"**🕓 Last synced:** {_last_sync.get('timestamp', '—')}  · "
+                    f"Total **{_total}** · Matched **{_matched}** · "
+                    f"Unmatched **{_unmatched}** · Source: `{_trig}`"
+                )
+            else:
+                st.caption(
+                    "No sync run logged yet. Click **Fetch Reviews Now** "
+                    "or wait for the 10 PM IST scheduled run."
+                )
+        else:
+            st.warning("GMB integration not available in this build.")
+
+    if fetch_clicked and _GMB_AVAILABLE:
+        with st.spinner("Fetching latest reviews from Google Business Profile..."):
+            try:
+                _stats = fetch_and_update_reviews_now()
+                _status = str(_stats.get("status", "")).lower()
+                if _status == "ok":
+                    st.success(
+                        f"✅ Fetched **{_stats.get('total_reviews', 0)}** review(s). "
+                        f"Matched **{_stats.get('matched', 0)}**, "
+                        f"unmatched **{_stats.get('unmatched', 0)}**, "
+                        f"wrote **{_stats.get('written', 0)}** rating cell(s)."
+                    )
+                elif _status.startswith("auth failure"):
+                    st.error(
+                        "❌ Auth failure. Add **GOOGLE_PLACES_API_KEY** and "
+                        "**GOOGLE_PLACE_ID** to Streamlit secrets and restart "
+                        "the app. (Or, if you've been allow-listed for the "
+                        "GMB v4 API, set GMB_REFRESH_TOKEN + GMB_ACCOUNT_ID + "
+                        "GMB_LOCATION_ID instead.)"
+                    )
+                elif _status.startswith("location resolve failure"):
+                    st.error(
+                        "❌ Couldn't resolve the review location. "
+                        "If you're using Places API: check GOOGLE_PLACE_ID. "
+                        "If you're using GMB v4: set GMB_ACCOUNT_ID + GMB_LOCATION_ID "
+                        "or GMB_LOCATION_PATH."
+                    )
+                else:
+                    st.warning(f"⚠️ Sync finished with status: {_stats.get('status')}")
+                # Refresh the cached data so the new ratings appear immediately
+                st.cache_data.clear()
+                st.rerun()
+            except Exception as exc:
+                st.error(f"❌ Fetch failed: {exc}")
+
     st.caption(
-        f"Count of orders where a Google review (star rating) was recorded · "
+        f"Count of orders in the selected period whose customer left a Google review · "
         f"Total in period: **{total_reviews_period}** review(s)"
     )
 
     if not df_reviews.empty and total_reviews_period > 0:
-        # Style: highlight any cell with count > 0 in light green
+        # ── Per-Salesperson Summary Table ────────────────────────────────────
+        # How many ratings each salesperson has collected, plus avg star rating
+        st.markdown("##### 📊 Reviews Collected — Per Salesperson Summary")
+
+        sp_summary_rows = []
+        for sp in all_execs:
+            sp_data = df_filtered[df_filtered["SALES PERSON"] == sp]
+            sp_reviews_df = sp_data[sp_data["REVIEW"] > 0]
+            count_reviews = int(len(sp_reviews_df))
+            total_orders  = int(len(sp_data[sp_data["GROSS AMT"] > 0]))
+            avg_rating    = float(sp_reviews_df["REVIEW"].mean()) if count_reviews else 0.0
+            coverage_pct  = (count_reviews / total_orders * 100) if total_orders else 0.0
+            five_star     = int((sp_reviews_df["REVIEW"] == 5).sum())
+            sp_summary_rows.append({
+                "Sales Person":          sp,
+                "Total Orders":          total_orders,
+                "Reviews Collected":     count_reviews,
+                "Coverage %":            round(coverage_pct, 1),
+                "5★ Reviews":            five_star,
+                "Avg Rating":            round(avg_rating, 2) if avg_rating else 0.0,
+            })
+
+        sp_summary_df = pd.DataFrame(sp_summary_rows)
+
+        # Append a totals row
+        if not sp_summary_df.empty:
+            _tot_orders   = int(sp_summary_df["Total Orders"].sum())
+            _tot_reviews  = int(sp_summary_df["Reviews Collected"].sum())
+            _tot_5star    = int(sp_summary_df["5★ Reviews"].sum())
+            _tot_cov      = (_tot_reviews / _tot_orders * 100) if _tot_orders else 0.0
+            _all_revs     = df_filtered[df_filtered["REVIEW"] > 0]["REVIEW"]
+            _tot_avg      = float(_all_revs.mean()) if not _all_revs.empty else 0.0
+            sp_summary_df = pd.concat([
+                sp_summary_df,
+                pd.DataFrame([{
+                    "Sales Person":      "TOTAL",
+                    "Total Orders":      _tot_orders,
+                    "Reviews Collected": _tot_reviews,
+                    "Coverage %":        round(_tot_cov, 1),
+                    "5★ Reviews":        _tot_5star,
+                    "Avg Rating":        round(_tot_avg, 2),
+                }]),
+            ], ignore_index=True)
+
+        sp_summary_df = sp_summary_df.sort_values(
+            by=["Sales Person"],
+            key=lambda c: c.where(c != "TOTAL", "ZZZ_TOTAL"),
+        ).reset_index(drop=True)
+
+        def _style_summary(row):
+            if str(row.get("Sales Person", "")).strip().upper() == "TOTAL":
+                return ["background-color:#eeeeee;font-weight:bold"] * len(row)
+            try:
+                cnt = int(row.get("Reviews Collected", 0))
+            except Exception:
+                cnt = 0
+            if cnt == 0:
+                return ["background-color:#ffebee"] * len(row)
+            if cnt >= 5:
+                return ["background-color:#c8e6c9"] * len(row)
+            return [""] * len(row)
+
+        st.dataframe(
+            sp_summary_df.style
+                .apply(_style_summary, axis=1)
+                .format({
+                    "Coverage %": "{:.1f}%",
+                    "Avg Rating": "{:.2f} ⭐",
+                }),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        # ── Daily Review-Count Heatmap Table ─────────────────────────────────
+        st.markdown("##### 📅 Daily Review Counts")
+
         def _style_reviews(val):
             if isinstance(val, (int, float)) and val > 0:
                 return "background-color:#c8e6c9;font-weight:bold"
@@ -590,8 +755,9 @@ if not df_display.empty and all_execs:
     else:
         st.info(
             "No GMB reviews recorded for the selected period. "
-            "Reviews are fetched nightly via the Google Reviews job and written to the "
-            "'REVIEW' column in the 4S Sales sheet."
+            "Reviews are fetched automatically every day at 10 PM IST and written to "
+            "the **REVIEW** column of the 4S Sales sheet. Click **Fetch Reviews Now** "
+            "above to pull them on demand."
         )
 
     # ── Week-over-Week Trend ───────────────────────────────────────────────────
@@ -969,6 +1135,9 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                     st.plotly_chart(_fig2, use_container_width=True)
                 else:
                     st.info(
+                        f"No sales recorded yet for {calendar.month_name[_cur_m]} {_cur_y}. "
+                        "The chart will appear once achievement data is available."
+                    )
                         f"No sales recorded yet for {calendar.month_name[_cur_m]} {_cur_y}. "
                         "The chart will appear once achievement data is available."
                     )

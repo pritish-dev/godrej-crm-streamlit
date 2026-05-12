@@ -1,16 +1,24 @@
-name: Google Reviews Fetch (Daily 10 PM)
+name: Google Reviews Fetch (Daily 10 PM IST)
 
 on:
   schedule:
-    # All times in UTC. IST = UTC + 5:30
-    - cron: '30 16 * * *'   # 10:00 PM IST → Google Reviews Fetch
+    # cron is in UTC. IST = UTC + 5:30
+    # 22:00 IST = 16:30 UTC, runs every day.
+    - cron: '30 16 * * *'
 
-  # Allow manual trigger from GitHub Actions UI for testing
+  # Manual run from Actions UI for debugging or first-time backfill
   workflow_dispatch:
+
+# Cancel an older in-flight run if a new one is scheduled or dispatched
+concurrency:
+  group: google-reviews-fetch
+  cancel-in-progress: false
 
 jobs:
   google-reviews-fetch:
+    name: Fetch GMB reviews and update 4S Sales sheet
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout code
@@ -20,20 +28,37 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
 
       - name: Install dependencies
         run: |
+          python -m pip install --upgrade pip
           if [ -f streamlit_app/requirements.txt ]; then
             pip install -r streamlit_app/requirements.txt
           else
             pip install -r requirements.txt
           fi
 
-      - name: Fetch and Update Google Reviews (Daily 10 PM)
+      - name: Run Google Reviews Fetch
         env:
-          GOOGLE_CREDENTIALS:   ${{ secrets.GOOGLE_CREDENTIALS }}
-          GOOGLE_ACCESS_TOKEN:  ${{ secrets.GOOGLE_ACCESS_TOKEN }}
-          GOOGLE_LOCATION_ID:   ${{ secrets.GOOGLE_LOCATION_ID }}
+          # ── Sheets writes (service account JSON) ─────────────────────────
+          GOOGLE_CREDENTIALS:    ${{ secrets.GOOGLE_CREDENTIALS }}
+
+          # ── PRIMARY: Google Places API (free, recommended) ───────────────
+          # No allow-listing needed. Returns up to 5 most-recent reviews per
+          # call — plenty at typical showroom volumes.
+          GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
+          GOOGLE_PLACE_ID:       ${{ secrets.GOOGLE_PLACE_ID }}
+
+          # ── OPTIONAL: GMB v4 API (full history, requires allow-listing) ──
+          # Leave these unset until/unless Google allow-lists your project.
+          # If both Places and v4 are configured, Places wins.
+          GMB_CLIENT_ID:         ${{ secrets.GMB_CLIENT_ID }}
+          GMB_CLIENT_SECRET:     ${{ secrets.GMB_CLIENT_SECRET }}
+          GMB_REFRESH_TOKEN:     ${{ secrets.GMB_REFRESH_TOKEN }}
+          GMB_ACCOUNT_ID:        ${{ secrets.GMB_ACCOUNT_ID }}
+          GMB_LOCATION_ID:       ${{ secrets.GMB_LOCATION_ID }}
+          GMB_LOCATION_PATH:     ${{ secrets.GMB_LOCATION_PATH }}
         run: |
           cd streamlit_app
           python google_reviews_update_job.py

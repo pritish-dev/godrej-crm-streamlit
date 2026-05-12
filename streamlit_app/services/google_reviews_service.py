@@ -1,111 +1,300 @@
 """
 services/google_reviews_service.py
-Google Business Profile Reviews Integration for 4S Interiors CRM.
+Google Business Profile (GMB) Reviews Integration for 4S Interiors CRM.
 
-Fetches reviews via the Google Business Profile API, matches each reviewer
-to a CRM sales record, stores the actual star rating (1–5) in the "REVIEW"
-column of the 4S Sales sheet, and uses batch updates for performance.
+What this module does
+─────────────────────
+1. Authenticates to the Google My Business v4 API using an OAuth 2.0
+   refresh-token (the only auth flow Google supports for the Reviews API —
+   service accounts cannot read GMB reviews).
+2. Pulls every review for the configured GMB location (with pagination).
+3. Matches each reviewer to a CRM row in the 4S Sales sheet using a
+   robust multi-strategy matcher:
+       Priority 1 — exact email match (when reviewer email is exposed)
+       Priority 2 — exact phone match (when reviewer name contains digits
+                    that look like a phone number — rare but cheap to try)
+       Priority 3 — exact normalised-name match
+       Priority 4 — fuzzy SequenceMatcher name match (≥ NAME_THRESHOLD)
+       Priority 5 — token-overlap match (first/last name swap-tolerant)
+4. Writes the actual star rating (1–5) to the "REVIEW" column of the
+   4S Sales sheet in a single batch update (one API call no matter how
+   many reviews are processed).
+5. Logs every sync run to REVIEW_SYNC_LOG and every review (matched or
+   not) to REVIEW_DETAILS for full traceability and manual follow-up.
 
-Key improvements vs. previous version:
-  - Stores real star rating (1–5) instead of a binary +1/-1 score so
-    dashboards can show true averages and nuanced colour coding.
-  - Standardised column name "REVIEW" (matches b2c_dashboard.py and
-    30_Sales_Reports_and_Strategy.py expectations).
-  - Phone matching removed — Google Business Profile API does not expose
-    reviewer phone numbers, so that code path was always dead.
-  - Fuzzy name threshold raised 0.80 → 0.90 to reduce false positives.
-  - Pre-built index dicts for O(1) email lookup instead of O(n²) scans.
-  - Single batch_update_cells() call instead of one API call per review.
-  - Unmatched reviews logged to REVIEW_UNMATCHED sheet for manual follow-up.
-  - Pagination support — fetches all pages of reviews, not just the first.
+This module is safe to call from:
+   • A scheduled GitHub Actions workflow (10 PM IST daily)
+   • The Streamlit "Fetch Reviews Now" button (Daily B2C Sales page)
+
+Idempotency
+───────────
+Each review carries a stable Google `reviewId`. We write only when the
+rating in the sheet differs from the rating from the API, so re-running
+the job is a no-op when nothing has changed.
+
+Failure isolation
+─────────────────
+Any exception is caught, logged, and reported back through the stats
+dict so callers (UI button, scheduler) can show a friendly message
+without ever wiping the sheet.
 """
 
-import os
-import json
-import traceback
-import pandas as pd
-from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from __future__ import annotations
 
-import gspread
-import requests
+import os
+import re
+import json
+import time
+import traceback
+from datetime import datetime, timezone, timedelta
 from difflib import SequenceMatcher
-from google.oauth2.service_account import Credentials
+from typing import Dict, List, Optional, Tuple, Iterable
+
+import pandas as pd
+import requests
+import gspread
+from google.oauth2.credentials import Credentials as UserCredentials
+from google.oauth2.service_account import Credentials as ServiceCredentials
+from google.auth.transport.requests import Request as GoogleAuthRequest
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-SCOPES                   = ["https://www.googleapis.com/auth/spreadsheets"]
-GOOGLE_BUSINESS_API_BASE = "https://mybusinessbusinessinformation.googleapis.com/v1"
+SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+GMB_SCOPES    = ["https://www.googleapis.com/auth/business.manage"]
+
+# Google Places API — the recommended, free, always-available reviews source.
+# Returns up to 5 MOST-RECENT reviews per call (set `reviews_sort=newest`).
+# Free under Google Maps Platform's $200/month credit (your ~30 calls/month
+# usage = well under 1% of the free quota).
+PLACES_API_URL = "https://maps.googleapis.com/maps/api/place/details/json"
+
+# Google My Business v4 — older endpoint that returns FULL history, but
+# is hidden from the API Library and requires per-project allow-listing.
+# Used only if GMB_REFRESH_TOKEN is set; otherwise we use Places API.
+GMB_API_BASE  = "https://mybusiness.googleapis.com/v4"
+GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 SHEET_CONFIG = {
-    "4S_SALES_SHEET":  "FY 2026-27 4S Sales",
-    "4S_REVIEW_COLUMN": "REVIEW",           # matches dashboard column expectations
-    "UNMATCHED_SHEET":  "REVIEW_UNMATCHED", # audit trail for unmatched reviews
+    "4S_SALES_SHEET":    "FY 2026-27 4S Sales",
+    "4S_REVIEW_COLUMN":  "REVIEW",            # 1–5 star rating, 0/blank = none
+    "DETAILS_SHEET":     "REVIEW_DETAILS",    # audit log of every review
+    "SYNC_LOG_SHEET":    "REVIEW_SYNC_LOG",   # one row per fetch run
+    "UNMATCHED_SHEET":   "REVIEW_UNMATCHED",  # legacy — kept for back-compat
 }
 
-# Fuzzy name similarity threshold.
-# 0.90 avoids false positives on short Indian names that matched at 0.80.
-NAME_SIMILARITY_THRESHOLD = 0.90
+# Fuzzy name similarity threshold. 0.85 catches common abbreviations like
+# "Sushil Kr" → "Sushil Kumar" (~0.857) but still avoids false positives
+# on short, common Indian first names alone.
+NAME_SIMILARITY_THRESHOLD = 0.85
 
-# Google Business Profile API returns starRating as a string enum
+# Token-overlap threshold for first/last name swaps and middle-name drops.
+# Using "shorter-name-tokens ⊂ longer-name-tokens" semantics (intersection
+# divided by the SMALLER set), so "Pritish Sahoo" ⊂ "Pritish Kumar Sahoo"
+# matches at 1.0, while still rejecting single-name-only collisions.
+TOKEN_OVERLAP_THRESHOLD   = 1.00     # short name must be FULLY inside long
+TOKEN_MIN_SHORT_LEN       = 2        # but at least 2 tokens must overlap
+
+# Star-rating enum from the GMB API (may also arrive as plain int)
 STAR_RATING_MAP = {"ONE": 1, "TWO": 2, "THREE": 3, "FOUR": 4, "FIVE": 5}
 
+IST = timezone(timedelta(hours=5, minutes=30))
 
-# ── Credential Loading ────────────────────────────────────────────────────────
 
-def _load_google_credentials() -> Credentials:
-    """Load Google service-account credentials (env → Streamlit secrets → .env)."""
+# ═════════════════════════════════════════════════════════════════════════════
+# 1.  CREDENTIAL LOADING
+# ═════════════════════════════════════════════════════════════════════════════
 
-    # 1. Environment variable (GitHub Actions)
+def _load_secret(name: str) -> str:
+    """
+    Resolve a secret in this order:
+        1. Plain environment variable (GitHub Actions injects these)
+        2. Streamlit secrets    (used when running inside Streamlit)
+        3. .env file            (local dev fallback)
+    Returns "" if not found anywhere — callers decide what to do.
+    """
+    val = (os.getenv(name) or "").strip()
+    if val:
+        return val
+
+    # Streamlit secrets (only available inside Streamlit runtime)
     try:
-        raw = os.getenv("GOOGLE_CREDENTIALS", "").strip()
-        if raw:
-            return Credentials.from_service_account_info(json.loads(raw), scopes=SCOPES)
+        import streamlit as st  # type: ignore
+        # Try flat keys, then a nested [gmb] section
+        try:
+            v = st.secrets.get(name, "")
+            if v:
+                return str(v).strip()
+        except Exception:
+            pass
+        try:
+            section = st.secrets.get("gmb", {}) or {}
+            v = section.get(name, "")
+            if v:
+                return str(v).strip()
+        except Exception:
+            pass
     except Exception:
         pass
 
-    # 2. Streamlit secrets
+    # .env fallback
     try:
-        import streamlit as st
-        for key in ("admin", None):
-            try:
-                val = st.secrets[key]["GOOGLE_CREDENTIALS"] if key else st.secrets["GOOGLE_CREDENTIALS"]
-                d = json.loads(val) if isinstance(val, str) else val
-                return Credentials.from_service_account_info(d, scopes=SCOPES)
-            except Exception:
-                continue
-    except Exception:
-        pass
-
-    # 3. .env file
-    try:
-        from dotenv import load_dotenv
+        from dotenv import load_dotenv  # type: ignore
         load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
-        raw = os.getenv("GOOGLE_CREDENTIALS", "").strip()
-        if raw:
-            return Credentials.from_service_account_info(json.loads(raw), scopes=SCOPES)
+        val = (os.getenv(name) or "").strip()
+        if val:
+            return val
+    except Exception:
+        pass
+
+    return ""
+
+
+def _load_sheets_credentials() -> ServiceCredentials:
+    """Load the service-account creds used for Google Sheets writes."""
+    raw = _load_secret("GOOGLE_CREDENTIALS")
+    if raw:
+        try:
+            info = json.loads(raw)
+            return ServiceCredentials.from_service_account_info(info, scopes=SHEETS_SCOPES)
+        except Exception as e:
+            raise ValueError(f"GOOGLE_CREDENTIALS is not valid JSON: {e}")
+
+    # Streamlit nested-dict format (used elsewhere in this codebase)
+    try:
+        import streamlit as st  # type: ignore
+        info = dict(st.secrets["google"])  # raises if missing
+        return ServiceCredentials.from_service_account_info(info, scopes=SHEETS_SCOPES)
     except Exception:
         pass
 
     raise ValueError(
-        "GOOGLE_CREDENTIALS not found in environment, Streamlit secrets, or .env file"
+        "Sheets credentials missing. Set GOOGLE_CREDENTIALS env var "
+        "or st.secrets['google']."
     )
 
 
 def _get_sheets_client() -> gspread.Client:
-    return gspread.authorize(_load_google_credentials())
+    return gspread.authorize(_load_sheets_credentials())
 
 
-# ── Customer Matching ─────────────────────────────────────────────────────────
+def get_gmb_access_token() -> str:
+    """
+    Exchange a refresh token for a fresh GMB access token.
 
-def _normalize_email(email: str) -> str:
-    return str(email).lower().strip() if email else ""
+    Required secrets (env / Streamlit / .env):
+        GMB_CLIENT_ID
+        GMB_CLIENT_SECRET
+        GMB_REFRESH_TOKEN
+
+    A static GMB_ACCESS_TOKEN is also accepted as a one-off override (handy
+    for local debugging) but should NOT be used in production because access
+    tokens expire every 60 minutes.
+    """
+    # One-off override (debug only)
+    static_token = _load_secret("GMB_ACCESS_TOKEN") or _load_secret("GOOGLE_ACCESS_TOKEN")
+    if static_token:
+        return static_token
+
+    client_id     = _load_secret("GMB_CLIENT_ID")
+    client_secret = _load_secret("GMB_CLIENT_SECRET")
+    refresh_token = _load_secret("GMB_REFRESH_TOKEN")
+
+    missing = [k for k, v in (
+        ("GMB_CLIENT_ID", client_id),
+        ("GMB_CLIENT_SECRET", client_secret),
+        ("GMB_REFRESH_TOKEN", refresh_token),
+    ) if not v]
+    if missing:
+        raise ValueError(
+            "Missing GMB OAuth secrets: " + ", ".join(missing)
+            + ". See GOOGLE_REVIEWS_SETUP.md for how to generate a refresh token."
+        )
+
+    resp = requests.post(
+        GOOGLE_OAUTH_TOKEN_URL,
+        data={
+            "client_id":     client_id,
+            "client_secret": client_secret,
+            "refresh_token": refresh_token,
+            "grant_type":    "refresh_token",
+        },
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"Failed to refresh GMB access token "
+            f"(HTTP {resp.status_code}): {resp.text[:300]}"
+        )
+    token = resp.json().get("access_token", "")
+    if not token:
+        raise RuntimeError("Token endpoint returned no access_token")
+    return token
 
 
-def _normalize_name(name: str) -> str:
+def get_gmb_location_path() -> str:
+    """
+    Build the GMB resource path used by the v4 reviews endpoint:
+        accounts/{accountId}/locations/{locationId}
+
+    Accepts either a pre-built full path in GMB_LOCATION_PATH, or two
+    separate IDs in GMB_ACCOUNT_ID + GMB_LOCATION_ID.
+    """
+    full = _load_secret("GMB_LOCATION_PATH")
+    if full:
+        return full.strip().lstrip("/")
+
+    account_id  = _load_secret("GMB_ACCOUNT_ID")
+    location_id = _load_secret("GMB_LOCATION_ID") or _load_secret("GOOGLE_LOCATION_ID")
+
+    if not account_id or not location_id:
+        raise ValueError(
+            "Missing GMB_ACCOUNT_ID and/or GMB_LOCATION_ID. "
+            "See GOOGLE_REVIEWS_SETUP.md."
+        )
+
+    # Strip any accidental "accounts/" / "locations/" prefixes
+    account_id  = account_id.replace("accounts/", "").strip("/")
+    location_id = location_id.replace("locations/", "").strip("/")
+    return f"accounts/{account_id}/locations/{location_id}"
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 2.  TEXT NORMALISATION HELPERS
+# ═════════════════════════════════════════════════════════════════════════════
+
+_NAME_PREFIX_RE = re.compile(
+    r"^\s*(mr|mrs|ms|miss|dr|er|smt|shri|sri|prof)\.?\s+",
+    flags=re.IGNORECASE,
+)
+_NON_ALNUM_RE = re.compile(r"[^a-z0-9 ]+")
+_DIGIT_ONLY_RE = re.compile(r"\D+")
+
+
+def _normalize_email(email: object) -> str:
+    if not email:
+        return ""
+    return str(email).strip().lower()
+
+
+def _normalize_name(name: object) -> str:
+    """Lowercase, strip salutations, drop punctuation, collapse whitespace."""
     if not name:
         return ""
-    return " ".join(str(name).lower().strip().split())
+    s = str(name).strip().lower()
+    s = _NAME_PREFIX_RE.sub("", s)
+    s = _NON_ALNUM_RE.sub(" ", s)
+    s = " ".join(s.split())
+    return s
+
+
+def _normalize_phone(phone: object) -> str:
+    """Keep only digits; trim to last 10 digits (Indian mobile format)."""
+    if not phone:
+        return ""
+    digits = _DIGIT_ONLY_RE.sub("", str(phone))
+    if len(digits) >= 10:
+        return digits[-10:]
+    return digits
 
 
 def _string_similarity(a: str, b: str) -> float:
@@ -114,112 +303,219 @@ def _string_similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
 
+def _token_overlap(a: str, b: str) -> float:
+    """
+    Tolerant token overlap. Returns intersection / min(set_size) so that
+    a shorter name fully contained in a longer one (e.g. "Pritish Sahoo"
+    inside "Pritish Kumar Sahoo") scores 1.0 — handles dropped middle
+    names and first/last-name swaps.
+    """
+    ta, tb = set(a.split()), set(b.split())
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / min(len(ta), len(tb))
+
+
+def _extract_phone_from_text(text: str) -> str:
+    """Pull a 10-digit Indian-style phone out of arbitrary text. Empty if none."""
+    if not text:
+        return ""
+    digits = _DIGIT_ONLY_RE.sub("", str(text))
+    # Keep last 10 digits if there are at least 10 (covers +91-prefixed numbers)
+    if len(digits) >= 10:
+        candidate = digits[-10:]
+        if candidate[0] in "6789":   # Indian mobile numbers start with 6-9
+            return candidate
+    return ""
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 3.  CRM LOOKUP INDEXES
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _resolve_column(df: pd.DataFrame, *candidates: str) -> Optional[str]:
+    """Return the first matching column name (case-insensitive), or None."""
+    upper_map = {c.upper(): c for c in df.columns}
+    for cand in candidates:
+        if cand.upper() in upper_map:
+            return upper_map[cand.upper()]
+    return None
+
+
 def _build_lookup_indexes(
     sales_df: pd.DataFrame,
-    email_col: str = "EMAIL",
-    name_col:  str = "CUSTOMER NAME",
-) -> Tuple[Dict[str, int], List[Tuple[str, int]]]:
+) -> Tuple[Dict[str, int], Dict[str, int], Dict[str, int], List[Tuple[str, int]]]:
     """
-    Build O(1) email index and name list once before looping over reviews,
-    avoiding an O(n²) scan per review.
+    Pre-build indexes once, so we don't scan the whole DataFrame for every
+    review (which would be O(n × m)).
 
     Returns:
-        email_idx : {normalised_email: row_index}
-        name_list : [(normalised_name, row_index), ...]
+        email_idx     : {normalised_email   → row_index}
+        phone_idx     : {normalised_phone10 → row_index}
+        exact_name_idx: {normalised_name    → row_index}
+        name_list     : [(normalised_name, row_index), ...] for fuzzy scan
     """
-    email_idx: Dict[str, int] = {}
-    name_list: List[Tuple[str, int]] = []
+    email_idx:      Dict[str, int]            = {}
+    phone_idx:      Dict[str, int]            = {}
+    exact_name_idx: Dict[str, int]            = {}
+    name_list:      List[Tuple[str, int]]     = []
+
+    name_col  = _resolve_column(sales_df, "CUSTOMER NAME", "CUSTOMER_NAME", "NAME")
+    email_col = _resolve_column(sales_df, "EMAIL ADDRESS", "EMAIL", "CUSTOMER EMAIL")
+    phone_col = _resolve_column(sales_df, "CONTACT NUMBER", "CONTACT NO", "PHONE",
+                                "MOBILE", "MOBILE NUMBER", "CUSTOMER PHONE")
 
     for idx, row in sales_df.iterrows():
-        if email_col in sales_df.columns:
-            e = _normalize_email(str(row.get(email_col, "")))
-            if e and e not in email_idx:
+        if email_col:
+            e = _normalize_email(row.get(email_col, ""))
+            if e and "@" in e and e not in email_idx:
                 email_idx[e] = idx
 
-        if name_col in sales_df.columns:
-            n = _normalize_name(str(row.get(name_col, "")))
+        if phone_col:
+            p = _normalize_phone(row.get(phone_col, ""))
+            if p and len(p) == 10 and p not in phone_idx:
+                phone_idx[p] = idx
+
+        if name_col:
+            n = _normalize_name(row.get(name_col, ""))
             if n:
+                if n not in exact_name_idx:
+                    exact_name_idx[n] = idx
                 name_list.append((n, idx))
 
-    return email_idx, name_list
+    return email_idx, phone_idx, exact_name_idx, name_list
 
 
 def match_customer(
-    review_customer_name:  str,
-    review_customer_email: str,
-    email_idx:             Dict[str, int],
-    name_list:             List[Tuple[str, int]],
-) -> Optional[Tuple[int, str]]:
+    review_name:  str,
+    review_email: str,
+    email_idx:    Dict[str, int],
+    phone_idx:    Dict[str, int],
+    exact_name_idx: Dict[str, int],
+    name_list:    List[Tuple[str, int]],
+) -> Optional[Tuple[int, str, float]]:
     """
-    Match a reviewer to a CRM row.
+    Multi-strategy reviewer → CRM row matcher.
 
-    Priority:
-      1. Email — exact, O(1) dict lookup.
-      2. Name  — fuzzy SequenceMatcher, threshold 0.90.
-
-    Phone matching removed: Google Business Profile API does not expose
-    reviewer phone numbers, so that lookup was always dead code.
-
-    Returns (row_index, match_type) or None.
+    Returns (row_index, match_type, confidence_0_to_1) or None.
     """
-    # 1. Email (exact)
-    rev_email = _normalize_email(review_customer_email)
-    if rev_email and rev_email in email_idx:
-        return (email_idx[rev_email], "email")
+    # 1. Email exact match
+    e = _normalize_email(review_email)
+    if e and e in email_idx:
+        return (email_idx[e], "email", 1.00)
 
-    # 2. Name (fuzzy)
-    rev_name = _normalize_name(review_customer_name)
-    if rev_name:
-        best_idx, best_score = None, NAME_SIMILARITY_THRESHOLD
+    # 2. Phone match — Google reviewers sometimes paste a phone in their
+    #    display name ("Rakesh 9876543210"). It's worth a shot.
+    phone_in_name = _extract_phone_from_text(review_name)
+    if phone_in_name and phone_in_name in phone_idx:
+        return (phone_idx[phone_in_name], "phone", 1.00)
+
+    n = _normalize_name(review_name)
+    if not n:
+        return None
+
+    # 3. Name exact match (after normalisation)
+    if n in exact_name_idx:
+        return (exact_name_idx[n], "name_exact", 0.99)
+
+    # 4. Name fuzzy match (SequenceMatcher)
+    best_idx, best_score, best_strategy = None, NAME_SIMILARITY_THRESHOLD, ""
+    for sales_name, row_idx in name_list:
+        score = _string_similarity(n, sales_name)
+        if score > best_score:
+            best_score, best_idx, best_strategy = score, row_idx, "name_fuzzy"
+
+    # 5. Token overlap — handles middle-name drops and first/last swaps.
+    #    Requires the shorter name to be FULLY inside the longer one
+    #    (overlap == 1.0) AND at least TOKEN_MIN_SHORT_LEN tokens to overlap,
+    #    so a one-word match like "Rakesh" doesn't accidentally pick the
+    #    wrong "Rakesh Singh" row.
+    rev_tokens = set(n.split())
+    if len(rev_tokens) >= TOKEN_MIN_SHORT_LEN:
         for sales_name, row_idx in name_list:
-            score = _string_similarity(rev_name, sales_name)
-            if score > best_score:
-                best_score = score
-                best_idx   = row_idx
-        if best_idx is not None:
-            return (best_idx, "name")
+            sales_tokens = set(sales_name.split())
+            if not sales_tokens:
+                continue
+            overlap_count = len(rev_tokens & sales_tokens)
+            min_size      = min(len(rev_tokens), len(sales_tokens))
+            if min_size < TOKEN_MIN_SHORT_LEN:
+                continue
+            score = overlap_count / min_size
+            if score >= TOKEN_OVERLAP_THRESHOLD and score > best_score:
+                best_score, best_idx, best_strategy = score, row_idx, "name_tokens"
+
+    if best_idx is not None:
+        return (best_idx, best_strategy, round(best_score, 2))
 
     return None
 
 
-# ── Google Business Profile API ───────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# 4.  GOOGLE BUSINESS PROFILE API
+# ═════════════════════════════════════════════════════════════════════════════
 
-def fetch_google_reviews(access_token: str, location_id: str) -> List[Dict]:
+def fetch_google_reviews(
+    access_token: str,
+    location_path: str,
+    page_size: int = 50,
+    max_pages: int = 200,
+) -> List[Dict]:
     """
-    Fetch ALL reviews for a location (handles pagination automatically).
+    Fetch ALL reviews for a location, transparently handling pagination.
 
-    Returns list of dicts with keys:
-        rating, reviewer_name, reviewer_email, review_date, review_text, review_id
+    `location_path` must be of the form 'accounts/{aid}/locations/{lid}'.
+    Returns a list of dicts with keys:
+        review_id, rating, reviewer_name, reviewer_email,
+        review_date, review_text, reply_text, reply_date
     """
-    reviews:    List[Dict]       = []
-    page_token: Optional[str]    = None
+    out: List[Dict]       = []
+    page_token: Optional[str] = None
+    pages_fetched = 0
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type":  "application/json",
+    }
+    url = f"{GMB_API_BASE}/{location_path.strip('/')}/reviews"
 
     while True:
-        params: Dict = {"pageSize": 50}
+        params: Dict = {"pageSize": page_size}
         if page_token:
             params["pageToken"] = page_token
 
         try:
-            resp = requests.get(
-                f"{GOOGLE_BUSINESS_API_BASE}/{location_id}/reviews",
-                headers={"Authorization": f"Bearer {access_token}",
-                         "Content-Type": "application/json"},
-                params=params,
-                timeout=30,
-            )
+            resp = requests.get(url, headers=headers, params=params, timeout=30)
         except requests.RequestException as exc:
             print(f"  ⚠️  Network error fetching reviews: {exc}")
             break
 
+        # Retry once on transient 5xx
+        if 500 <= resp.status_code < 600:
+            time.sleep(2.0)
+            try:
+                resp = requests.get(url, headers=headers, params=params, timeout=30)
+            except requests.RequestException as exc:
+                print(f"  ⚠️  Retry failed: {exc}")
+                break
+
+        if resp.status_code == 401:
+            raise RuntimeError(
+                "GMB API returned 401 Unauthorized. Refresh token may be revoked "
+                "or scopes are wrong. Re-run the OAuth setup script."
+            )
+        if resp.status_code == 403:
+            raise RuntimeError(
+                f"GMB API returned 403 Forbidden: {resp.text[:300]}\n"
+                f"Common causes: business.manage scope missing, account "
+                f"doesn't own the location, or API not enabled in GCP."
+            )
         if resp.status_code != 200:
             print(f"  ⚠️  Reviews API returned {resp.status_code}: {resp.text[:300]}")
             break
 
         data = resp.json()
-
         for r in data.get("reviews", []):
             raw_rating = str(r.get("starRating", "")).upper()
-            # API may return string enum ("FIVE") or integer
             rating = STAR_RATING_MAP.get(raw_rating, 0)
             if rating == 0:
                 try:
@@ -227,53 +523,292 @@ def fetch_google_reviews(access_token: str, location_id: str) -> List[Dict]:
                 except ValueError:
                     rating = 0
 
-            reviews.append({
+            reviewer = r.get("reviewer", {}) or {}
+            reply    = r.get("reviewReply", {}) or {}
+
+            out.append({
+                "review_id":      r.get("reviewId", "") or r.get("name", ""),
                 "rating":         rating,
-                "reviewer_name":  r.get("reviewer", {}).get("displayName", ""),
-                "reviewer_email": r.get("reviewer", {}).get("emailAddress", ""),
-                "review_date":    r.get("createTime", ""),
-                "review_text":    r.get("comment", ""),
-                "review_id":      r.get("reviewId", ""),
+                "reviewer_name":  reviewer.get("displayName", "") or "",
+                "reviewer_email": reviewer.get("emailAddress", "") or "",
+                "review_date":    r.get("createTime", "") or "",
+                "review_text":    r.get("comment", "") or "",
+                "reply_text":     reply.get("comment", "") or "",
+                "reply_date":     reply.get("updateTime", "") or "",
             })
 
         page_token = data.get("nextPageToken")
-        if not page_token:
+        pages_fetched += 1
+        if not page_token or pages_fetched >= max_pages:
             break
 
-    return reviews
+    return out
 
 
-# ── Sheet Update ──────────────────────────────────────────────────────────────
+# ─── Places API path (the DEFAULT / recommended one) ──────────────────────────
 
-def _log_unmatched(
-    client:         gspread.Client,
+import hashlib
+
+
+def _places_review_id(author_name: str, unix_time: int, text: str) -> str:
+    """
+    Build a stable synthetic review_id for Places-API reviews.
+
+    Places API doesn't expose a real review_id, so we hash author + time +
+    text-prefix into a 16-hex-char digest. Stable across runs ⇒ the
+    REVIEW_DETAILS sheet de-dups correctly on re-fetch.
+    """
+    raw = f"{(author_name or '').strip().lower()}|{int(unix_time or 0)}|{(text or '')[:80]}"
+    return "places_" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def fetch_google_reviews_via_places(
+    api_key:  str,
+    place_id: str,
+    language: str = "en",
+) -> List[Dict]:
+    """
+    Fetch up to 5 most-recent reviews via the Google Places API.
+
+    Pros: No allow-listing needed. Works the moment an API key + Place ID
+          are configured. Free at any realistic showroom volume.
+    Cons: API caps the response at 5 reviews per call (Google's limit, not
+          ours). Running the job daily means anything beyond ≥6 reviews/day
+          for a single business gets missed — at your volume this never
+          happens. For full history, switch to the v4 path once allow-listed.
+
+    Returns the same dict shape as `fetch_google_reviews()` so the matcher
+    and sheet writer don't need to know which source produced the data.
+    """
+    out: List[Dict] = []
+    if not api_key or not place_id:
+        return out
+
+    params = {
+        "place_id":     place_id,
+        "fields":       "name,reviews,user_ratings_total,rating",
+        "reviews_sort": "newest",       # newest-first ⇒ best fit for daily fetch
+        "language":     language,
+        "key":          api_key,
+    }
+
+    try:
+        resp = requests.get(PLACES_API_URL, params=params, timeout=30)
+    except requests.RequestException as exc:
+        print(f"  ⚠️  Network error calling Places API: {exc}")
+        return out
+
+    if resp.status_code != 200:
+        print(f"  ⚠️  Places API returned {resp.status_code}: {resp.text[:300]}")
+        return out
+
+    data = resp.json()
+    status = data.get("status", "UNKNOWN")
+    if status != "OK":
+        # Common statuses: ZERO_RESULTS (no reviews yet), REQUEST_DENIED
+        # (API key/restrictions bad), INVALID_REQUEST (place_id wrong),
+        # OVER_QUERY_LIMIT (quota exhausted).
+        err = data.get("error_message", "")
+        print(f"  ⚠️  Places API status='{status}'  msg='{err}'")
+        if status in {"REQUEST_DENIED", "INVALID_REQUEST"}:
+            raise RuntimeError(
+                f"Places API rejected the request (status={status}): {err}. "
+                f"Check that GOOGLE_PLACES_API_KEY is valid, Places API is "
+                f"enabled on the GCP project, and GOOGLE_PLACE_ID is correct."
+            )
+        return out
+
+    result = data.get("result", {}) or {}
+    biz_name = result.get("name", "")
+    print(f"  → Places API: business='{biz_name}', total_ratings="
+          f"{result.get('user_ratings_total', 0)}, avg={result.get('rating', 0)}")
+
+    for r in result.get("reviews", []) or []:
+        try:
+            rating = int(r.get("rating", 0) or 0)
+        except Exception:
+            rating = 0
+
+        unix_t = int(r.get("time", 0) or 0)
+        iso_date = (
+            datetime.fromtimestamp(unix_t, tz=timezone.utc).isoformat()
+            if unix_t > 0 else ""
+        )
+
+        out.append({
+            "review_id":      _places_review_id(
+                                  r.get("author_name", ""), unix_t, r.get("text", "")
+                              ),
+            "rating":         rating,
+            "reviewer_name":  r.get("author_name", "") or "",
+            "reviewer_email": "",                          # not exposed by Places
+            "review_date":    iso_date,
+            "review_text":    r.get("text", "") or "",
+            "reply_text":     "",
+            "reply_date":     "",
+        })
+
+    return out
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 5.  SHEET I/O
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _ensure_review_column(ws: gspread.Worksheet, headers: List[str]) -> Tuple[int, List[str]]:
+    """
+    Ensure the REVIEW column exists in the sheet header row.
+    Returns (1-indexed column number, possibly-updated headers list).
+    """
+    review_col = SHEET_CONFIG["4S_REVIEW_COLUMN"].upper()
+    upper_headers = [h.upper() for h in headers]
+    if review_col not in upper_headers:
+        headers = list(headers) + [SHEET_CONFIG["4S_REVIEW_COLUMN"]]
+        ws.update("A1", [headers])
+        upper_headers = [h.upper() for h in headers]
+    return upper_headers.index(review_col) + 1, headers
+
+
+def _log_review_details(
+    client: gspread.Client,
     spreadsheet_id: str,
-    unmatched:      List[Dict],
+    matched_rows: List[Dict],
+    unmatched_rows: List[Dict],
 ) -> None:
-    """Append unmatched reviews to REVIEW_UNMATCHED sheet for manual follow-up."""
-    if not unmatched:
+    """Append every processed review to REVIEW_DETAILS for traceability."""
+    if not matched_rows and not unmatched_rows:
         return
     try:
-        sh         = client.open_by_key(spreadsheet_id)
-        sheet_name = SHEET_CONFIG["UNMATCHED_SHEET"]
+        sh = client.open_by_key(spreadsheet_id)
+        sheet_name = SHEET_CONFIG["DETAILS_SHEET"]
         try:
             ws = sh.worksheet(sheet_name)
         except gspread.WorksheetNotFound:
-            ws = sh.add_worksheet(title=sheet_name, rows=2000, cols=6)
-            ws.append_row(["LOGGED AT", "RATING", "REVIEWER NAME",
-                           "REVIEWER EMAIL", "REVIEW DATE", "REVIEW TEXT"])
+            ws = sh.add_worksheet(title=sheet_name, rows=5000, cols=11)
+            ws.append_row([
+                "LOGGED AT (IST)", "REVIEW ID", "RATING", "REVIEWER NAME",
+                "REVIEWER EMAIL", "REVIEW DATE", "REVIEW TEXT",
+                "MATCH STATUS", "MATCH TYPE", "MATCH CONFIDENCE",
+                "MATCHED CRM ROW",
+            ])
 
-        now  = datetime.now().strftime("%Y-%m-%d %H:%M")
-        rows = [
-            [now, r["rating"], r["reviewer_name"], r["reviewer_email"],
-             r["review_date"], r["review_text"][:300]]
-            for r in unmatched
-        ]
-        ws.append_rows(rows, value_input_option="RAW")
-        print(f"  → Logged {len(rows)} unmatched review(s) to '{sheet_name}'.")
+        # De-dup against existing review_ids so re-runs don't pile rows up
+        existing = set()
+        try:
+            existing_data = ws.col_values(2)[1:]   # skip header
+            existing = {x.strip() for x in existing_data if x.strip()}
+        except Exception:
+            pass
+
+        now = datetime.now(IST).strftime("%Y-%m-%d %H:%M IST")
+        rows: List[List[str]] = []
+
+        for r in matched_rows:
+            rid = str(r.get("review_id", ""))
+            if rid and rid in existing:
+                continue
+            rows.append([
+                now, rid, r.get("rating", 0),
+                r.get("reviewer_name", ""), r.get("reviewer_email", ""),
+                r.get("review_date", ""), str(r.get("review_text", ""))[:500],
+                "MATCHED", r.get("_match_type", ""), str(r.get("_match_conf", "")),
+                str(r.get("_sheet_row", "")),
+            ])
+        for r in unmatched_rows:
+            rid = str(r.get("review_id", ""))
+            if rid and rid in existing:
+                continue
+            rows.append([
+                now, rid, r.get("rating", 0),
+                r.get("reviewer_name", ""), r.get("reviewer_email", ""),
+                r.get("review_date", ""), str(r.get("review_text", ""))[:500],
+                "UNMATCHED", "", "", "",
+            ])
+
+        if rows:
+            ws.append_rows(rows, value_input_option="RAW")
+            print(f"  → Logged {len(rows)} review row(s) to '{sheet_name}'.")
     except Exception as exc:
-        print(f"  ⚠️  Could not log unmatched reviews: {exc}")
+        print(f"  ⚠️  Could not log review details: {exc}")
 
+
+def _log_sync_run(
+    client: gspread.Client,
+    spreadsheet_id: str,
+    stats: Dict,
+    triggered_by: str,
+) -> None:
+    """One row per fetch run — used by the UI to show 'last synced' time."""
+    try:
+        sh = client.open_by_key(spreadsheet_id)
+        sheet_name = SHEET_CONFIG["SYNC_LOG_SHEET"]
+        try:
+            ws = sh.worksheet(sheet_name)
+        except gspread.WorksheetNotFound:
+            ws = sh.add_worksheet(title=sheet_name, rows=2000, cols=7)
+            ws.append_row([
+                "TIMESTAMP (IST)", "TRIGGERED BY",
+                "TOTAL REVIEWS", "MATCHED", "UNMATCHED", "ERRORS", "STATUS",
+            ])
+
+        now = datetime.now(IST).strftime("%Y-%m-%d %H:%M IST")
+        ws.append_row([
+            now, triggered_by,
+            int(stats.get("total_reviews", 0)),
+            int(stats.get("matched", 0)),
+            int(stats.get("unmatched", 0)),
+            int(stats.get("errors", 0)),
+            stats.get("status", "ok"),
+        ], value_input_option="RAW")
+    except Exception as exc:
+        print(f"  ⚠️  Could not log sync run: {exc}")
+
+
+def get_last_sync_info(spreadsheet_id: Optional[str] = None) -> Dict:
+    """
+    Read the most recent row from REVIEW_SYNC_LOG.
+
+    Returned dict (always present, fields may be empty strings):
+        {timestamp, triggered_by, total, matched, unmatched, errors, status}
+    """
+    empty = {"timestamp": "", "triggered_by": "", "total": 0, "matched": 0,
+             "unmatched": 0, "errors": 0, "status": ""}
+    try:
+        if spreadsheet_id is None:
+            from services.sheets import SPREADSHEET_ID  # late import
+            spreadsheet_id = SPREADSHEET_ID
+        client = _get_sheets_client()
+        sh = client.open_by_key(spreadsheet_id)
+        try:
+            ws = sh.worksheet(SHEET_CONFIG["SYNC_LOG_SHEET"])
+        except gspread.WorksheetNotFound:
+            return empty
+        rows = ws.get_all_values()
+        if len(rows) < 2:
+            return empty
+        last = rows[-1]
+        # pad if shorter
+        last = last + [""] * max(0, 7 - len(last))
+        def _to_int(x):
+            try: return int(x)
+            except Exception: return 0
+        return {
+            "timestamp":    last[0],
+            "triggered_by": last[1],
+            "total":        _to_int(last[2]),
+            "matched":      _to_int(last[3]),
+            "unmatched":    _to_int(last[4]),
+            "errors":       _to_int(last[5]),
+            "status":       last[6],
+        }
+    except Exception as exc:
+        print(f"  ⚠️  Could not read sync log: {exc}")
+        return empty
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 6.  MAIN PROCESSOR
+# ═════════════════════════════════════════════════════════════════════════════
 
 def process_and_update_reviews(
     reviews:        List[Dict],
@@ -281,18 +816,20 @@ def process_and_update_reviews(
     sales_df:       pd.DataFrame,
 ) -> Dict:
     """
-    Match reviews to CRM rows and write the actual star rating (1–5) to the
-    REVIEW column in a single batch API call.
+    Match reviews against the CRM rows and write star ratings to the
+    REVIEW column in a SINGLE batch_update call.
 
-    Returns: {total_reviews, matched, unmatched, errors}
+    Returns:
+        {total_reviews, matched, unmatched, errors, written, status}
     """
     stats = {
         "total_reviews": len(reviews),
         "matched":       0,
         "unmatched":     0,
         "errors":        0,
+        "written":       0,
+        "status":        "ok",
     }
-
     if not reviews:
         return stats
 
@@ -304,101 +841,256 @@ def process_and_update_reviews(
         all_rows = ws.get_all_values()
         if not all_rows:
             print("  ⚠️  Sales sheet is empty.")
+            stats["status"] = "empty_sheet"
             return stats
 
-        headers         = [h.strip().upper() for h in all_rows[0]]
-        review_col_name = SHEET_CONFIG["4S_REVIEW_COLUMN"].upper()
+        headers = [h.strip() for h in all_rows[0]]
+        review_col_idx, headers = _ensure_review_column(ws, headers)
 
-        # Add REVIEW column header if it doesn't exist yet
-        if review_col_name not in headers:
-            headers.append(review_col_name)
-            ws.update("A1", [headers])
+        # Build a quick lookup for current REVIEW values so we only write
+        # cells whose value would actually change (idempotency).
+        existing_review_values: Dict[int, str] = {}
+        for i, row in enumerate(all_rows[1:], start=2):  # 1-indexed sheet rows, +1 for header
+            if review_col_idx - 1 < len(row):
+                existing_review_values[i] = str(row[review_col_idx - 1]).strip()
+            else:
+                existing_review_values[i] = ""
 
-        review_col_idx = headers.index(review_col_name) + 1   # gspread 1-indexed
-
-        # Normalise sales_df column names once
-        norm_df         = sales_df.copy()
+        # Normalised CRM df for matching
+        norm_df = sales_df.copy()
         norm_df.columns = [str(c).strip().upper() for c in norm_df.columns]
+        email_idx, phone_idx, exact_name_idx, name_list = _build_lookup_indexes(norm_df)
 
-        # Build O(1) lookup indexes (avoids O(n²) per-review scan)
-        email_idx, name_list = _build_lookup_indexes(norm_df)
-
-        # Collect all cell writes first, then flush in one batch call
-        cells_to_update: List[gspread.Cell] = []
-        unmatched_reviews:  List[Dict]      = []
+        cells_to_update:    List[gspread.Cell] = []
+        matched_rows_log:   List[Dict] = []
+        unmatched_rows_log: List[Dict] = []
 
         for review in reviews:
             try:
-                rating = int(review.get("rating", 0))
+                rating = int(review.get("rating", 0) or 0)
+                if rating < 1 or rating > 5:
+                    # Skip junk; still log
+                    stats["unmatched"] += 1
+                    unmatched_rows_log.append(review)
+                    continue
 
                 result = match_customer(
-                    review_customer_name  = review.get("reviewer_name", ""),
-                    review_customer_email = review.get("reviewer_email", ""),
-                    email_idx             = email_idx,
-                    name_list             = name_list,
+                    review_name    = review.get("reviewer_name", ""),
+                    review_email   = review.get("reviewer_email", ""),
+                    email_idx      = email_idx,
+                    phone_idx      = phone_idx,
+                    exact_name_idx = exact_name_idx,
+                    name_list      = name_list,
                 )
 
-                if result:
-                    row_idx, match_type = result
-                    sheet_row = row_idx + 2   # +1 header row, +1 for 0-indexed pandas
-                    cells_to_update.append(
-                        gspread.Cell(row=sheet_row, col=review_col_idx, value=str(rating))
-                    )
-                    stats["matched"] += 1
-                    print(
-                        f"  ✓ {rating}★ by '{review.get('reviewer_name', '?')}' "
-                        f"→ sheet row {sheet_row} (matched via {match_type})"
-                    )
-                else:
+                if result is None:
                     stats["unmatched"] += 1
-                    unmatched_reviews.append(review)
+                    unmatched_rows_log.append(review)
                     print(
                         f"  ✗ No match: '{review.get('reviewer_name', '?')}' "
                         f"<{review.get('reviewer_email', '')}>"
                     )
+                    continue
+
+                row_idx_pd, match_type, confidence = result
+                # Sheet row = pandas row + 2  (1 for header row, 1 for 0-vs-1 indexing)
+                sheet_row = int(row_idx_pd) + 2
+
+                review["_match_type"] = match_type
+                review["_match_conf"] = confidence
+                review["_sheet_row"]  = sheet_row
+                matched_rows_log.append(review)
+                stats["matched"] += 1
+
+                # Idempotency: only queue a write if the cell value differs
+                if existing_review_values.get(sheet_row, "") != str(rating):
+                    cells_to_update.append(
+                        gspread.Cell(row=sheet_row, col=review_col_idx, value=str(rating))
+                    )
+
+                print(
+                    f"  ✓ {rating}★ '{review.get('reviewer_name', '?')}' "
+                    f"→ row {sheet_row} (match={match_type}, conf={confidence})"
+                )
 
             except Exception as exc:
                 stats["errors"] += 1
                 print(f"  ⚠️  Error processing review: {exc}")
 
-        # Single batch write — one API call regardless of number of reviews
+        # Single batch write
         if cells_to_update:
             ws.update_cells(cells_to_update, value_input_option="RAW")
+            stats["written"] = len(cells_to_update)
             print(f"  → Batch wrote {len(cells_to_update)} rating(s) in one API call.")
+        else:
+            print("  → No new ratings to write (all sheet values already up-to-date).")
 
-        # Persist unmatched reviews for manual review
-        _log_unmatched(client, spreadsheet_id, unmatched_reviews)
+        # Log details and unmatched
+        _log_review_details(client, spreadsheet_id, matched_rows_log, unmatched_rows_log)
 
     except Exception as exc:
+        stats["errors"]  += 1
+        stats["status"]   = f"error: {exc}"
         print(f"  ❌ Sheet update failed: {exc}")
         traceback.print_exc()
-        stats["errors"] += 1
 
     return stats
 
 
-# ── Public Entry Point ────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# 7.  PUBLIC ENTRY POINTS
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _resolve_review_source() -> str:
+    """
+    Decide which API to call based on which secrets are configured.
+
+    Priority order:
+        1. "places"  if GOOGLE_PLACES_API_KEY + GOOGLE_PLACE_ID are set
+                     (free, always available — the recommended path)
+        2. "gmb_v4"  if GMB_REFRESH_TOKEN + GMB_LOCATION info are set
+                     (requires Google allow-listing of the legacy GMB API;
+                      gives full review history when available)
+        3. "none"    otherwise
+
+    """
+    places_key = _load_secret("GOOGLE_PLACES_API_KEY")
+    place_id   = _load_secret("GOOGLE_PLACE_ID")
+    if places_key and place_id:
+        return "places"
+
+    refresh_tok = _load_secret("GMB_REFRESH_TOKEN")
+    static_tok  = _load_secret("GMB_ACCESS_TOKEN") or _load_secret("GOOGLE_ACCESS_TOKEN")
+    has_loc     = bool(_load_secret("GMB_LOCATION_PATH") or
+                       (_load_secret("GMB_ACCOUNT_ID") and
+                        (_load_secret("GMB_LOCATION_ID") or _load_secret("GOOGLE_LOCATION_ID"))))
+    if (refresh_tok or static_tok) and has_loc:
+        return "gmb_v4"
+
+    return "none"
+
 
 def fetch_and_update_reviews_4s(
-    access_token:   str,
-    location_id:    str,
-    spreadsheet_id: str,
-    sales_df:       pd.DataFrame,
+    access_token:   Optional[str] = None,
+    location_id:    Optional[str] = None,    # may be either bare id or full path
+    spreadsheet_id: Optional[str] = None,
+    sales_df:       Optional[pd.DataFrame] = None,
+    triggered_by:   str = "scheduler",
 ) -> Dict:
     """
-    Called by google_reviews_update_job.py.
-    Fetches all GMB reviews then writes star ratings back to the 4S Sales sheet.
+    Top-level entry point used by the scheduled job and the Streamlit
+    'Fetch Reviews Now' button.
+
+    Auto-selects the review source based on configured secrets:
+        • Google Places API (preferred — free, no allow-listing)
+        • Google My Business v4 (only if allow-listed by Google)
+
+    All four parameters are optional — when omitted, we resolve everything
+    from secrets / env / sheets so this 'just works' from either context.
     """
-    ts = lambda: datetime.now().strftime("%Y-%m-%d %H:%M")
-    print(f"[{ts()}] Starting Google Reviews fetch for 4S Interiors...")
+    ts = lambda: datetime.now(IST).strftime("%Y-%m-%d %H:%M IST")
+    print(f"[{ts()}] ▶ Google Reviews fetch started (triggered_by={triggered_by})")
 
-    reviews = fetch_google_reviews(access_token, location_id)
-    print(f"  → Fetched {len(reviews)} review(s) from Google Business Profile")
+    # ── Resolve which source we'll use ───────────────────────────────────────
+    source = _resolve_review_source()
+    print(f"  → Review source: {source}")
 
+    def _fail(msg: str) -> Dict:
+        print(f"  ❌ {msg}")
+        s = {"total_reviews": 0, "matched": 0, "unmatched": 0,
+             "errors": 1, "written": 0, "status": msg}
+        try:
+            client = _get_sheets_client()
+            sid = spreadsheet_id
+            if sid is None:
+                from services.sheets import SPREADSHEET_ID
+                sid = SPREADSHEET_ID
+            _log_sync_run(client, sid, s, triggered_by)
+        except Exception:
+            pass
+        return s
+
+    if source == "none":
+        return _fail(
+            "Auth failure: no review source configured. "
+            "Set GOOGLE_PLACES_API_KEY + GOOGLE_PLACE_ID (recommended) "
+            "or GMB_REFRESH_TOKEN + GMB_ACCOUNT_ID + GMB_LOCATION_ID."
+        )
+
+    if spreadsheet_id is None:
+        from services.sheets import SPREADSHEET_ID  # late import to avoid cycles
+        spreadsheet_id = SPREADSHEET_ID
+
+    if sales_df is None:
+        try:
+            from services.sheets import get_df  # late import
+            sales_df = get_df(SHEET_CONFIG["4S_SALES_SHEET"])
+        except Exception as exc:
+            return _fail(f"Could not load 4S Sales sheet: {exc}")
+
+    if sales_df is None or sales_df.empty:
+        print("  ⚠️  Sales DataFrame is empty — nothing to match against.")
+        stats = {"total_reviews": 0, "matched": 0, "unmatched": 0,
+                 "errors": 0, "written": 0, "status": "empty_sales_df"}
+        try:
+            client = _get_sheets_client()
+            _log_sync_run(client, spreadsheet_id, stats, triggered_by)
+        except Exception:
+            pass
+        return stats
+
+    # ── Fetch reviews from whichever source is configured ────────────────────
+    try:
+        if source == "places":
+            api_key  = _load_secret("GOOGLE_PLACES_API_KEY")
+            place_id = _load_secret("GOOGLE_PLACE_ID")
+            reviews  = fetch_google_reviews_via_places(api_key, place_id)
+            print(f"  → Fetched {len(reviews)} review(s) from Google Places API")
+        else:   # gmb_v4
+            try:
+                token = (access_token or "").strip() or get_gmb_access_token()
+            except Exception as exc:
+                return _fail(f"Auth failure: {exc}")
+
+            if location_id and "/" in location_id:
+                location_path = location_id.lstrip("/")
+            else:
+                try:
+                    location_path = get_gmb_location_path()
+                except Exception as exc:
+                    return _fail(f"Location resolve failure: {exc}")
+
+            reviews = fetch_google_reviews(token, location_path)
+            print(f"  → Fetched {len(reviews)} review(s) from GMB v4 API")
+
+    except Exception as exc:
+        traceback.print_exc()
+        return _fail(f"Fetch failure: {exc}")
+
+    # ── Match + write ───────────────────────────────────────────────────────
     stats = process_and_update_reviews(reviews, spreadsheet_id, sales_df)
 
+    # ── Persist a sync-log row (used by UI to show last-synced time) ────────
+    try:
+        client = _get_sheets_client()
+        _log_sync_run(client, spreadsheet_id, stats, triggered_by)
+    except Exception as exc:
+        print(f"  ⚠️  Sync-log write failed (non-fatal): {exc}")
+
     print(
-        f"[{ts()}] ✅ Done — Matched: {stats['matched']}  "
-        f"Unmatched: {stats['unmatched']}  Errors: {stats['errors']}"
+        f"[{ts()}] ✅ Done — Total: {stats.get('total_reviews', 0)}  "
+        f"Matched: {stats.get('matched', 0)}  "
+        f"Unmatched: {stats.get('unmatched', 0)}  "
+        f"Written: {stats.get('written', 0)}  "
+        f"Errors: {stats.get('errors', 0)}"
     )
     return stats
+
+
+def fetch_and_update_reviews_now() -> Dict:
+    """
+    Convenience wrapper for the Streamlit 'Fetch Now' button. Resolves
+    everything from secrets and the configured sheet, then runs the same
+    pipeline as the scheduler.
+    """
+    return fetch_and_update_reviews_4s(triggered_by="manual_streamlit")
