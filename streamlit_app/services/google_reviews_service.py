@@ -82,17 +82,29 @@ SHEET_CONFIG = {
     "UNMATCHED_SHEET":   "REVIEW_UNMATCHED",  # legacy — kept for back-compat
 }
 
-# Fuzzy name similarity threshold. 0.85 catches common abbreviations like
-# "Sushil Kr" → "Sushil Kumar" (~0.857) but still avoids false positives
-# on short, common Indian first names alone.
-NAME_SIMILARITY_THRESHOLD = 0.85
+# Fuzzy name similarity threshold. Loosened from 0.85 → 0.78 because typical
+# Indian customer-name variations (initial-only middle names, surname order
+# swaps, "Sushil Kumar Mohanty" vs "Sushil K Mohanty", location suffixes like
+# "Pritish Sahoo Patia") score in the 0.78–0.84 band. The token-overlap rule
+# below adds an extra safety net so a single first-name collision can never
+# alone produce a match.
+NAME_SIMILARITY_THRESHOLD = 0.78
 
-# Token-overlap threshold for first/last name swaps and middle-name drops.
-# Using "shorter-name-tokens ⊂ longer-name-tokens" semantics (intersection
-# divided by the SMALLER set), so "Pritish Sahoo" ⊂ "Pritish Kumar Sahoo"
-# matches at 1.0, while still rejecting single-name-only collisions.
-TOKEN_OVERLAP_THRESHOLD   = 1.00     # short name must be FULLY inside long
-TOKEN_MIN_SHORT_LEN       = 2        # but at least 2 tokens must overlap
+# Token-overlap threshold. Loosened to 0.66 ("at least 2 of 3 tokens overlap")
+# so a review from "Pritish Sahoo" still matches a CRM customer recorded as
+# "Pritish Kumar Sahoo, Patia". The TOKEN_MIN_SHORT_LEN guard below ensures
+# we never match on a single-token review name.
+TOKEN_OVERLAP_THRESHOLD   = 0.66
+TOKEN_MIN_SHORT_LEN       = 2        # both sides must have ≥ 2 name tokens
+
+# Stop-words / noise tokens that appear in CRM names but carry no signal
+# (showroom area names, salutations, customer-type tags). Stripped before
+# token-overlap so they don't dilute the score.
+NAME_NOISE_TOKENS = {
+    "bhubaneswar", "patia", "cuttack", "khordha", "puri", "bhubaneswari",
+    "interio", "godrej", "4s", "showroom", "store", "interiors",
+    "customer", "client", "sir", "madam", "ji",
+}
 
 # Star-rating enum from the GMB API (may also arrive as plain int)
 STAR_RATING_MAP = {"ONE": 1, "TWO": 2, "THREE": 3, "FOUR": 4, "FIVE": 5}
@@ -277,14 +289,16 @@ def _normalize_email(email: object) -> str:
 
 
 def _normalize_name(name: object) -> str:
-    """Lowercase, strip salutations, drop punctuation, collapse whitespace."""
+    """Lowercase, strip salutations, drop punctuation, collapse whitespace,
+    and remove low-signal noise tokens (location names, salutations etc.)
+    so the token-overlap matcher works on real name parts only."""
     if not name:
         return ""
     s = str(name).strip().lower()
     s = _NAME_PREFIX_RE.sub("", s)
     s = _NON_ALNUM_RE.sub(" ", s)
-    s = " ".join(s.split())
-    return s
+    tokens = [t for t in s.split() if t and t not in NAME_NOISE_TOKENS]
+    return " ".join(tokens)
 
 
 def _normalize_phone(phone: object) -> str:
@@ -435,23 +449,51 @@ def match_customer(
             best_score, best_idx, best_strategy = score, row_idx, "name_fuzzy"
 
     # 5. Token overlap — handles middle-name drops and first/last swaps.
-    #    Requires the shorter name to be FULLY inside the longer one
-    #    (overlap == 1.0) AND at least TOKEN_MIN_SHORT_LEN tokens to overlap,
-    #    so a one-word match like "Rakesh" doesn't accidentally pick the
-    #    wrong "Rakesh Singh" row.
+    #    Requires BOTH sides to have ≥ TOKEN_MIN_SHORT_LEN tokens (so a one-
+    #    word review name like "Rakesh" can't accidentally pick a "Rakesh
+    #    Singh" row) and at least TOKEN_OVERLAP_THRESHOLD of the smaller set
+    #    to overlap. With the loosened 0.66 threshold this catches "Pritish
+    #    Sahoo" ↔ "Pritish Kumar Sahoo Patia" (2/2 overlap after noise strip)
+    #    but still rejects pure single-name matches.
     rev_tokens = set(n.split())
     if len(rev_tokens) >= TOKEN_MIN_SHORT_LEN:
         for sales_name, row_idx in name_list:
             sales_tokens = set(sales_name.split())
-            if not sales_tokens:
+            if len(sales_tokens) < TOKEN_MIN_SHORT_LEN:
                 continue
             overlap_count = len(rev_tokens & sales_tokens)
-            min_size      = min(len(rev_tokens), len(sales_tokens))
-            if min_size < TOKEN_MIN_SHORT_LEN:
+            if overlap_count < TOKEN_MIN_SHORT_LEN:
+                # At least 2 name tokens must actually overlap — protects
+                # against false positives from single-first-name collisions.
                 continue
+            min_size = min(len(rev_tokens), len(sales_tokens))
             score = overlap_count / min_size
             if score >= TOKEN_OVERLAP_THRESHOLD and score > best_score:
                 best_score, best_idx, best_strategy = score, row_idx, "name_tokens"
+
+    # 6. Initial-tolerant match — last resort for Indian-style abbreviations
+    #    like "S K Mohanty" ↔ "Sushil Kumar Mohanty". We check that every
+    #    single-character review token matches the FIRST LETTER of some
+    #    sales token AND that all multi-char review tokens are exactly
+    #    present in the sales name. This is conservative: needs ≥2 review
+    #    tokens AND a multi-character anchor to fire.
+    if rev_tokens and best_idx is None:
+        rev_full   = [t for t in n.split() if len(t) > 1]
+        rev_init   = [t for t in n.split() if len(t) == 1]
+        if rev_full and (len(rev_full) + len(rev_init)) >= 2:
+            for sales_name, row_idx in name_list:
+                stoks = sales_name.split()
+                if len(stoks) < 2:
+                    continue
+                if not all(t in stoks for t in rev_full):
+                    continue
+                sales_initials = {st[0] for st in stoks}
+                if not all(ri in sales_initials for ri in rev_init):
+                    continue
+                # Confidence scaled by how complete the multi-char match is
+                cscore = 0.80 + 0.05 * min(len(rev_full), 3)
+                if cscore > best_score:
+                    best_score, best_idx, best_strategy = cscore, row_idx, "name_initials"
 
     if best_idx is not None:
         return (best_idx, best_strategy, round(best_score, 2))

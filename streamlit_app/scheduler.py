@@ -1,19 +1,54 @@
 """
 scheduler.py — Run this alongside your Streamlit app.
 
-Schedule:
-  10:00 AM  →  Email 1: Pending Delivery Report
-  11:00 AM  →  Email 2: Update Delivery Status Reminder
-   5:00 PM  →  Email 1: Pending Delivery Report (evening repeat)
+Schedule (LOCAL SERVER TIME — make sure the host is configured to IST):
+  10:00 AM IST  →  Email 1: Pending Delivery Report
+  11:00 AM IST  →  Email 2: Update Delivery Status Reminder
+  11:00 AM IST  →  MIS Daily Import (backup to GitHub Actions)
+   5:00 PM IST  →  Email 1: Pending Delivery Report (evening repeat)
+
+⚠️  IMPORTANT: The `schedule` library uses LOCAL time, not UTC. If the server
+    runs in UTC (typical for Linux cloud hosts), '11:00' fires at 11:00 UTC =
+    16:30 IST — which is NOT what you want.
+
+    Production-reliable scheduling is via GitHub Actions
+    (.github/workflows/*.yaml). This in-process scheduler is a local-dev
+    fallback only — set the host TZ to Asia/Kolkata, e.g.
+        Linux  :  sudo timedatectl set-timezone Asia/Kolkata
+        Windows:  Control Panel → Date and Time → Asia/Kolkata
+    Or run on a Windows desktop already in IST.
 
 Usage:
     python scheduler.py
 """
 
+import os
 import schedule
 import time
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _ist_now():
+    return datetime.now(IST)
+
+
+def _print_tz_banner():
+    """Warn loudly if the local host TZ is not roughly IST."""
+    local = datetime.now()
+    ist   = _ist_now().replace(tzinfo=None)
+    drift = abs((local - ist).total_seconds())
+    if drift > 60:
+        print("=" * 60)
+        print("  ⚠️  WARNING: server local time is NOT IST!")
+        print(f"     Local time : {local.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"     IST   time : {ist.strftime('%Y-%m-%d %H:%M:%S')}")
+        print("  scheduler.py will fire jobs in LOCAL time, not IST.")
+        print("  Set host TZ to Asia/Kolkata or rely on GitHub Actions.")
+        print("=" * 60)
 
 # Reuse your existing services — no duplication
 from services.sheets import get_df
@@ -139,22 +174,34 @@ def job_mis_daily_import():
 
 schedule.every().day.at("10:00").do(job_email1)             # Email 1 — Morning
 schedule.every().day.at("11:00").do(job_email2)             # Email 2 — once daily
-schedule.every().day.at("11:00").do(job_mis_daily_import)   # MIS Daily Import
+# MIS daily import: fire at 11:00 AND 11:15 as a drift cushion.
+# fetch_and_cache_mis() simply overwrites the MIS_Daily sheet, so duplicate
+# triggers within the same day are idempotent.
+schedule.every().day.at("11:00").do(job_mis_daily_import)
+schedule.every().day.at("11:15").do(job_mis_daily_import)
 schedule.every().day.at("17:00").do(job_email1)             # Email 1 — Evening
 
-print("=" * 55)
+_print_tz_banner()
+print("=" * 60)
 print("  Godrej CRM Email Scheduler Started")
-print("=" * 55)
-print("  10:00 AM → Email 1: Pending Delivery Report")
-print("  11:00 AM → Email 2: Update Delivery Status Reminder")
-print("  11:00 AM → MIS Daily Import (cache to 'MIS_Daily' sheet)")
-print("   5:00 PM → Email 1: Pending Delivery Report (Evening)")
-print("=" * 55)
+print("=" * 60)
+print(f"  Local time now : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+print(f"  IST time now   : {_ist_now().strftime('%Y-%m-%d %H:%M:%S')}")
+print("-" * 60)
+print("  10:00 AM (local) → Email 1: Pending Delivery Report")
+print("  11:00 AM (local) → Email 2: Update Delivery Status Reminder")
+print("  11:00 AM (local) → MIS Daily Import (primary)")
+print("  11:15 AM (local) → MIS Daily Import (drift backup)")
+print("   5:00 PM (local) → Email 1: Pending Delivery Report (Evening)")
+print("=" * 60)
 print("  Press Ctrl+C to stop.\n")
 
 # Run Email 1 immediately on startup so you can verify it works
 print("Running startup test (Email 1)...")
-job_email1()
+try:
+    job_email1()
+except Exception as _startup_err:
+    print(f"  ⚠️  Startup test failed: {_startup_err}")
 
 while True:
     schedule.run_pending()

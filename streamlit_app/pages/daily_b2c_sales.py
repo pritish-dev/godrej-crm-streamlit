@@ -495,7 +495,23 @@ if not df_display.empty and all_execs:
                 rev_totals[col] = int(df_reviews[col].sum())
         df_reviews = pd.concat([df_reviews, pd.DataFrame([rev_totals])], ignore_index=True)
 
-    st.success(f"### 💰 Grand Total B2C Sales ({selected_source}): ₹{grand_total:,.2f}")
+    # Render whole-rupee totals with no trailing decimals when the amount is
+    # an integer; show up to 2 dp otherwise (per CRM-wide number-format spec).
+    def _fmt_money(v) -> str:
+        try:
+            f = float(v)
+        except Exception:
+            return str(v)
+        if pd.isna(f):
+            return ""
+        if float(f).is_integer():
+            return f"{int(round(f)):,}"
+        s = f"{f:,.2f}"
+        if "." in s:
+            s = s.rstrip("0").rstrip(".")
+        return s
+
+    st.success(f"### 💰 Grand Total B2C Sales ({selected_source}): ₹{_fmt_money(grand_total)}")
 
     # ── Scrollable styled table ───────────────────────────────────────────────
     st.markdown("""
@@ -531,7 +547,24 @@ if not df_display.empty and all_execs:
     </style>
     """, unsafe_allow_html=True)
 
-    format_cols = {col: "{:,.2f}" for col in df_display.columns if col != "Date"}
+    # Per CRM-wide formatting spec: integers render without decimals,
+    # non-integer floats render with up to 2 decimal places (trailing zeros
+    # trimmed). Apply as a callable so the per-cell decision is data-driven.
+    def _fmt_cell(v):
+        try:
+            f = float(v)
+        except Exception:
+            return str(v) if v is not None else ""
+        if pd.isna(f):
+            return ""
+        if float(f).is_integer():
+            return f"{int(round(f)):,}"
+        s = f"{f:,.2f}"
+        if "." in s:
+            s = s.rstrip("0").rstrip(".")
+        return s
+
+    format_cols = {col: _fmt_cell for col in df_display.columns if col != "Date"}
 
     _sp_cols = [c for c in df_display.columns if c not in ("Date", "Store Total")]
 
@@ -860,15 +893,15 @@ if not df_display.empty and all_execs:
     _w1, _w2, _w3 = st.columns(3)
     _w1.metric(
         f"This Week ({_this_mon.strftime('%d %b')} – {_today_d.strftime('%d %b')})",
-        f"₹{_this_week_total:,.0f}",
+        f"₹{_fmt_money(_this_week_total)}",
     )
     _w2.metric(
         f"Last Week ({_last_mon.strftime('%d %b')} – {_last_sun.strftime('%d %b')})",
-        f"₹{_last_week_total:,.0f}",
+        f"₹{_fmt_money(_last_week_total)}",
     )
     _w3.metric(
         "Change",
-        f"₹{abs(_wow_delta):,.0f}",
+        f"₹{_fmt_money(abs(_wow_delta))}",
         delta=f"{_wow_pct:+.1f}%",
         delta_color="normal",
     )
@@ -1128,10 +1161,10 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
             </div>
             """, unsafe_allow_html=True)
 
-            # KPI metrics
+            # KPI metrics (whole-rupee integers render without decimals)
             _sk1, _sk2, _sk3, _sk4 = st.columns(4)
-            _sk1.metric("🎯 Total Target",      f"₹{result_df['Target (₹)'].sum():,.0f}")
-            _sk2.metric("💰 Total Achievement", f"₹{result_df['Achievement (₹)'].sum():,.0f}")
+            _sk1.metric("🎯 Total Target",      f"₹{_fmt_money(result_df['Target (₹)'].sum())}")
+            _sk2.metric("💰 Total Achievement", f"₹{_fmt_money(result_df['Achievement (₹)'].sum())}")
             _sk3.metric("📈 Overall %",         f"{_overall_pct:.1f}%")
             _sk4.metric("🏅 Targets Hit",       f"{_achieved_count} / {_total_sp_months}")
 
@@ -1149,14 +1182,30 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                     return ["background-color:#fff3e0"] * len(row)
                 return ["background-color:#ffcdd2"] * len(row)
 
+            # Whole-rupee formatter — no decimals for integer amounts,
+            # up to 2 dp for fractions, trailing zeros trimmed.
+            def _fmt_money_rs(v) -> str:
+                try:
+                    f = float(v)
+                except Exception:
+                    return str(v) if v is not None else ""
+                if pd.isna(f):
+                    return ""
+                if float(f).is_integer():
+                    return f"₹{int(round(f)):,}"
+                s = f"{f:,.2f}"
+                if "." in s:
+                    s = s.rstrip("0").rstrip(".")
+                return f"₹{s}"
+
             styled_df = (
                 result_df[["Month", "Sales Person", "Target (₹)", "Achievement (₹)", "Achieved %"]]
                 .copy()
                 .style
                 .apply(_row_style, axis=1)
                 .format({
-                    "Target (₹)":      "₹{:,.0f}",
-                    "Achievement (₹)": "₹{:,.0f}",
+                    "Target (₹)":      _fmt_money_rs,
+                    "Achievement (₹)": _fmt_money_rs,
                     "Achieved %":      lambda v: f"{v:.1f}% ✅" if v >= 100 else f"{v:.1f}%",
                 })
             )

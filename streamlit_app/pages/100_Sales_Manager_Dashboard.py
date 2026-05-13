@@ -626,12 +626,28 @@ if not person_choice:
 
 results = [compute_person_block(p) for p in person_choice]
 
+# Per CRM-wide formatting spec: whole numbers no decimals,
+# fractions max 2 dp with trailing zeros trimmed.
+def _fmt_int_or_2dp(v) -> str:
+    try:
+        f = float(v)
+    except Exception:
+        return str(v) if v is not None else ""
+    if pd.isna(f):
+        return ""
+    if float(f).is_integer():
+        return f"{int(round(f)):,}"
+    s = f"{f:,.2f}"
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    return s
+
 st.divider()
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Sales people in view", len(results))
-m2.metric("Team Q-target (Lakh)", "{:,.2f}".format(sum(r["qtarget_lakh"] for r in results)))
-m3.metric("Team actual BS (Lakh)", "{:,.2f}".format(sum(r["q_bs_lakh"] for r in results)))
-m4.metric("Team final incentive (Rs)", "{:,.0f}".format(sum(r["final"] for r in results)))
+m2.metric("Team Q-target (Lakh)", _fmt_int_or_2dp(sum(r["qtarget_lakh"] for r in results)))
+m3.metric("Team actual BS (Lakh)", _fmt_int_or_2dp(sum(r["q_bs_lakh"] for r in results)))
+m4.metric("Team final incentive (Rs)", _fmt_int_or_2dp(sum(r["final"] for r in results)))
 
 st.subheader("Scorecard")
 score_rows = []
@@ -693,7 +709,7 @@ st.subheader("Per-person breakdown")
 for r in results:
     header = (r["person"] + "  -  Achv " + "{:.1f}".format(r["achv_pct"] * 100) + "%"
               + "  *  Stars " + str(r["total_stars"])
-              + "  *  Final Rs " + "{:,.0f}".format(r["final"]))
+              + "  *  Final Rs " + _fmt_int_or_2dp(r["final"]))
     with st.expander(header):
         c1, c2 = st.columns(2)
         with c1:
@@ -708,17 +724,17 @@ for r in results:
                     "Tangible x 70% (Rs)",
                 ],
                 "Value": [
-                    "{:.2f}".format(r["qtarget_lakh"]),
-                    "{:.2f}".format(r["q_bs_lakh"]),
+                    _fmt_int_or_2dp(r["qtarget_lakh"]),
+                    _fmt_int_or_2dp(r["q_bs_lakh"]),
                     "{:.1f}%".format(r["achv_pct"] * 100),
                     "{:.2f}%".format(r["rate"] * 100),
-                    "{:,.0f}".format(r["achievement_inc"]),
-                    "{:,}".format(r["bonus"]),
-                    "{:,.0f}".format(r["q_b2b_amt"]),
-                    "{:,.0f}".format(r["b2b_inc"]),
-                    "{:,}".format(r["locker_inc"]),
-                    "{:,.0f}".format(r["tangible"]),
-                    "{:,.0f}".format(r["tangible"] * TANGIBLE_WEIGHT),
+                    _fmt_int_or_2dp(r["achievement_inc"]),
+                    _fmt_int_or_2dp(r["bonus"]),
+                    _fmt_int_or_2dp(r["q_b2b_amt"]),
+                    _fmt_int_or_2dp(r["b2b_inc"]),
+                    _fmt_int_or_2dp(r["locker_inc"]),
+                    _fmt_int_or_2dp(r["tangible"]),
+                    _fmt_int_or_2dp(r["tangible"] * TANGIBLE_WEIGHT),
                 ],
             })
             st.dataframe(t_rows, hide_index=True, use_container_width=True)
@@ -744,9 +760,9 @@ for r in results:
         st.dataframe(mdf, hide_index=True, use_container_width=True)
 
         info_msg = ("Final = Tangible x 70% + Stars x Rs 20  =  Rs "
-                    + "{:,.0f}".format(r["tangible"] * TANGIBLE_WEIGHT)
-                    + "  +  Rs " + "{:,}".format(r["star_value"])
-                    + "  =  Rs " + "{:,.0f}".format(r["final"]))
+                    + _fmt_int_or_2dp(r["tangible"] * TANGIBLE_WEIGHT)
+                    + "  +  Rs " + _fmt_int_or_2dp(r["star_value"])
+                    + "  =  Rs " + _fmt_int_or_2dp(r["final"]))
         st.info(info_msg)
 
 

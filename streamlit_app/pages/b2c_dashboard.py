@@ -892,6 +892,14 @@ def _render_schedule_editor(grouped_df: pd.DataFrame,
     ready_flags: aligned to grouped_df.reset_index — bool per row
     key_prefix : 'pend' or 'ov' (unique editor key)
     base_color : 'orange' (pending) or 'red' (overdue) used to style non-ready rows
+
+    Two views are rendered:
+      1. A STYLED READ-ONLY dataframe at the top — the entire row is painted
+         GREEN when ready_flags is True, ORANGE for pending-not-ready, RED for
+         overdue-not-ready. (st.data_editor cannot apply Styler row colours,
+         which is why we add this separate visual view.)
+      2. A data_editor below with the two checkboxes for selecting orders to
+         schedule for delivery.
     """
     pend_cols = [c for c in PENDING_DISPLAY_COLS if c in grouped_df.columns]
     base = grouped_df[pend_cols].copy().reset_index(drop=True)
@@ -902,8 +910,50 @@ def _render_schedule_editor(grouped_df: pd.DataFrame,
     if "DELIVERY DATE" in base.columns:
         base["DELIVERY DATE"] = fmt_date(base["DELIVERY DATE"])
     base = apply_amount_fmt(base, ["ORDER VALUE", "ADV RECEIVED", "PENDING DUE"])
+    # QTY is integer-typed — force whole-number rendering
+    if "QTY" in base.columns:
+        base["QTY"] = base["QTY"].apply(fmt_number)
 
-    # Insert traffic-light marker + checkbox columns
+    # ── 1. Styled read-only view (full-row green/orange/red) ─────────────────
+    styled_view = base.copy()
+    styled_view.insert(
+        0, "🚦",
+        ready_flags.map(lambda v: "🟢 READY" if v
+                        else ("🟠 NOT READY" if base_color == "orange" else "🔴 NOT READY")),
+    )
+    # Apply user-friendly column names for the read-only view
+    styled_view = styled_view.rename(
+        columns={k: v for k, v in COL_RENAME_DISPLAY.items() if k in styled_view.columns}
+    )
+
+    flags_arr = ready_flags.reset_index(drop=True).tolist()
+
+    def _row_style(row):
+        try:
+            i = row.name
+            ready = bool(flags_arr[i]) if i < len(flags_arr) else False
+        except Exception:
+            ready = False
+        if ready:
+            return ["background-color:#c8e6c9;font-weight:600"] * len(row)
+        if base_color == "orange":
+            return ["background-color:#ffe0b2"] * len(row)
+        if base_color == "red":
+            return ["background-color:#ffcccc"] * len(row)
+        return [""] * len(row)
+
+    st.markdown("**Delivery readiness view:**")
+    st.dataframe(
+        styled_view.style.apply(_row_style, axis=1),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.caption(
+        "🟢 Green row = Ready for delivery (every line item in MIS is fully committed).  "
+        "🟠/🔴 = Not yet ready.  Use the editor below to schedule green rows."
+    )
+
+    # ── 2. Editor with checkboxes (st.data_editor cannot apply row colour) ──
     base.insert(0, "🚦", ready_flags.map(lambda v: "🟢" if v else ("🟠" if base_color == "orange" else "🔴")))
     base["Schedule for Delivery"] = False
     base["Same day Delivery and Installation"] = False
@@ -1294,18 +1344,21 @@ else:
 st.divider()
 st.subheader("💰 Payment Due")
 
-payment_due = crm[crm["PENDING DUE"] > 0].copy().sort_values(
+# ── BUGFIX: Group FIRST, then filter on group-level PENDING DUE > 0 ──────────
+# Filtering line-level rows before grouping silently dropped any line whose
+# own ADV ≥ ORDER VALUE (PENDING DUE clipped to 0). That under-reported the
+# advance and order value for multi-line orders. We must aggregate at the
+# ORDER NO level first so the sums cover every line of the order, then keep
+# only orders that still have an outstanding balance.
+payment_grouped = group_by_order_no(crm.copy())
+payment_grouped = payment_grouped[payment_grouped["PENDING DUE"] > 0].copy()
+payment_grouped = payment_grouped.sort_values(
     "DELIVERY DATE", ascending=False
 ).reset_index(drop=True)
 
-if not payment_due.empty:
-    total_outstanding = payment_due["PENDING DUE"].sum()
+if not payment_grouped.empty:
+    total_outstanding = payment_grouped["PENDING DUE"].sum()
     st.warning(f"💸 Total Outstanding Balance: {fmt_amount(total_outstanding)}")
-
-    # Group by ORDER NO first — used for BOTH emails and display
-    payment_grouped = group_by_order_no(payment_due).sort_values(
-        "DELIVERY DATE", ascending=False
-    ).reset_index(drop=True)
 
     pb1, pb2, pb3, pb4 = st.columns(4)
 

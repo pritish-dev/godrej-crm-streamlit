@@ -183,20 +183,35 @@ fy_orders  = (crm["ORDER NO"].nunique()
 total_cust = crm["CUSTOMER NAME"].nunique() if "CUSTOMER NAME" in crm.columns else 0
 avg_basket = crm["ORDER VALUE"].mean() if len(crm) > 0 else 0
 
+# CRM-wide number formatter — integers no decimals, floats up to 2 dp.
+def _fmt_num(v) -> str:
+    try:
+        f = float(v)
+    except Exception:
+        return str(v) if v is not None else ""
+    if pd.isna(f):
+        return ""
+    if float(f).is_integer():
+        return f"{int(round(f)):,}"
+    s = f"{f:,.2f}"
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    return s
+
 k1, k2, k3, k4, k5 = st.columns(5)
 k1.metric(
-    f"📅 {_this_month_lbl}", f"₹{m_sales:,.0f}", f"{m_orders} orders",
+    f"📅 {_this_month_lbl}", f"₹{_fmt_num(m_sales)}", f"{m_orders} orders",
     help=f"Total sales value and unique order count for {_this_month_lbl}. "
          f"Counts only orders with ORDER DATE in {_this_month_lbl}."
 )
 k2.metric(
-    "📈 FY Apr–Today", f"₹{fy_sales:,.0f}", f"{fy_orders} orders",
+    "📈 FY Apr–Today", f"₹{_fmt_num(fy_sales)}", f"{fy_orders} orders",
     help=f"Cumulative sales for FY 2026-27. "
          f"Includes all orders from {FY_START.strftime('%d %b %Y')} "
          f"to {today_dt.strftime('%d %b %Y')}."
 )
 k3.metric(
-    "💰 FY Gross Revenue", f"₹{fy_sales:,.0f}",
+    "💰 FY Gross Revenue", f"₹{_fmt_num(fy_sales)}",
     help=f"Total order value (gross) for FY 2026-27 "
          f"({FY_START.strftime('%d %b %Y')} to {today_dt.strftime('%d %b %Y')}). "
          "Excludes orders with ₹0 value."
@@ -206,7 +221,7 @@ k4.metric(
     help="Count of unique CUSTOMER NAME entries across all FY 2026-27 orders."
 )
 k5.metric(
-    "🧾 Avg. Order Value", f"₹{avg_basket:,.0f}",
+    "🧾 Avg. Order Value", f"₹{_fmt_num(avg_basket)}",
     help=f"Mean order value for FY 2026-27 "
          f"({FY_START.strftime('%d %b %Y')} to {today_dt.strftime('%d %b %Y')}). "
          "= FY Gross Revenue ÷ Total Orders."
@@ -264,11 +279,11 @@ last_day = (now.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(
 days_left = max((last_day.date() - today_dt).days + 1, 1)
 
 with t2:
-    st.markdown(f"**Achievement:** ₹{m_sales:,.0f}  ·  **{ach_pct:.1f}%**")
+    st.markdown(f"**Achievement:** ₹{_fmt_num(m_sales)}  ·  **{ach_pct:.1f}%**")
     st.progress(min(ach_pct / 100, 1.0))
     if remain > 0:
         st.warning(
-            f"🚩 Gap: **₹{remain:,.0f}**  ·  Need ~₹{remain / days_left:,.0f}/day "
+            f"🚩 Gap: **₹{_fmt_num(remain)}**  ·  Need ~₹{_fmt_num(remain / days_left)}/day "
             f"for the next {days_left} day(s)."
         )
     else:
@@ -363,7 +378,7 @@ if "SALES PERSON" in crm.columns:
             f"FY 2026-27 · {FY_START.strftime('%d %b %Y')} to {today_dt.strftime('%d %b %Y')}"
         )
         _display_sp = sp_df.copy()
-        _display_sp["REVENUE"] = _display_sp["REVENUE"].apply(lambda v: f"₹{v:,.0f}")
+        _display_sp["REVENUE"] = _display_sp["REVENUE"].apply(lambda v: f"₹{_fmt_num(v)}")
         st.dataframe(
             _display_sp.rename(columns={"SP": "Sales Person",
                                         "REVENUE": "Revenue (₹)",

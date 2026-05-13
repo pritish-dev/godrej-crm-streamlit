@@ -618,9 +618,24 @@ atrisk_n  = int((summary["cohort"] == "AT_RISK").sum())
 new_n     = int((summary["cohort"] == "NEW").sum())
 total_ltv = summary["total_value"].sum()
 
+# CRM-wide number formatter — integers no decimals, floats up to 2 dp.
+def _fmt_num(v) -> str:
+    try:
+        f = float(v)
+    except Exception:
+        return str(v) if v is not None else ""
+    if pd.isna(f):
+        return ""
+    if float(f).is_integer():
+        return f"{int(round(f)):,}"
+    s = f"{f:,.2f}"
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    return s
+
 k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
 k1.metric("👥 Total Customers",   total_customers)
-k2.metric("💰 Total Lifetime Rev", f"₹{total_ltv:,.0f}")
+k2.metric("💰 Total Lifetime Rev", f"₹{_fmt_num(total_ltv)}")
 k3.metric("💎 High-Value",         hv_n,      help="Lifetime spend ≥ ₹5,00,000")
 k4.metric("🔁 Loyal",              loyal_n,   help="Placed 2+ orders across any year")
 k5.metric("⚠️ At-Risk",            atrisk_n,  help="Last order was 90–180 days ago")

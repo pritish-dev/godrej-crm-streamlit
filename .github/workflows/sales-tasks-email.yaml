@@ -3,9 +3,23 @@ name: Sales Team Tasks Email (Morning)
 on:
   schedule:
     # All times UTC. IST = UTC+5:30
-    - cron: '30 3 * * *'    # 09:00 AM IST → Sales Tasks Email (grouped by type)
+    # GitHub Actions crons are best-effort — runs are routinely delayed by
+    # 5–30 min and very occasionally skipped. Fire three times in a tight
+    # window to make sure the morning briefing always lands. The job is
+    # idempotent — send_sales_team_tasks_email just composes today's task
+    # snapshot from SALES_TEAM_TASK + TASK_LOGS, so duplicate emails would
+    # carry the same content. To prevent that, we add a sentinel below
+    # (see the "Skip if already sent today" step).
+    - cron: '25 3 * * *'    # 03:25 UTC = 08:55 IST  (primary, early)
+    - cron: '30 3 * * *'    # 03:30 UTC = 09:00 IST  (primary, on-time)
+    - cron: '50 3 * * *'    # 03:50 UTC = 09:20 IST  (drift backup)
 
   workflow_dispatch:
+
+# Cancel any in-flight run from an earlier cron in the same window
+concurrency:
+  group: sales-tasks-email-morning
+  cancel-in-progress: false
 
 jobs:
   sales-tasks-email:

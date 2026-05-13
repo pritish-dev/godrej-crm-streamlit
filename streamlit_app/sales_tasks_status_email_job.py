@@ -18,7 +18,7 @@ from datetime import datetime, timezone, timedelta
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pandas as pd
-from services.sheets import get_df
+from services.sheets import get_df, append_email_log, was_email_sent_today
 from services.email_sender_sales_tasks import send_sales_team_task_status_email
 from services.sales_task_expander import expand_with_status, get_missed_tasks
 
@@ -29,7 +29,16 @@ now_ist = datetime.now(IST)
 today_str = now_ist.strftime("%d-%m-%Y")
 today_date = now_ist.date()
 
+JOB_NAME = "Sales Team Task Status Email (Evening)"
+
 print(f"[Sales Task Status Email Job] Running at IST: {now_ist.strftime('%Y-%m-%d %H:%M')}")
+
+# ── Idempotency guard ────────────────────────────────────────────────────────
+# This workflow fires 3 times in the 17:55–18:20 IST window to absorb cron
+# drift. Only the first successful run actually sends; later triggers exit.
+if was_email_sent_today(JOB_NAME):
+    print(f"  → Already sent {JOB_NAME} today. Skipping duplicate trigger.")
+    sys.exit(0)
 
 
 # ── Load tasks ───────────────────────────────────────────────────────────────
@@ -74,6 +83,22 @@ except Exception as _missed_err:
     missed_df = None
 
 # Send email (even if empty)
-send_sales_team_task_status_email(today_tasks, missed_df=missed_df)
-
-print("✅ Sales Team Task Status Email (8 PM) job completed")
+try:
+    send_sales_team_task_status_email(today_tasks, missed_df=missed_df)
+    append_email_log(
+        job_name      = JOB_NAME,
+        records_count = int(len(today_tasks)),
+        recipients    = [],
+        status        = "success",
+    )
+    print("✅ Sales Team Task Status Email (Evening) job completed")
+except Exception as send_err:
+    append_email_log(
+        job_name      = JOB_NAME,
+        records_count = 0,
+        recipients    = [],
+        status        = "error",
+        error         = str(send_err),
+    )
+    print(f"❌ Sales Team Task Status Email send failed: {send_err}")
+    raise

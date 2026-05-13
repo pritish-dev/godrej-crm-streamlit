@@ -3,10 +3,19 @@ name: Sales Team Task Status Email (Evening)
 on:
   schedule:
     # All times in UTC. IST = UTC + 5:30
-    - cron: '30 12 * * *'   # 6:00 PM IST → Sales Task Status Email
+    # Triple-fire window to absorb GitHub Actions cron drift; the script
+    # itself is idempotent via was_email_sent_today() — only the first
+    # successful run actually sends.
+    - cron: '25 12 * * *'   # 12:25 UTC = 17:55 IST  (primary, early)
+    - cron: '30 12 * * *'   # 12:30 UTC = 18:00 IST  (primary, on-time)
+    - cron: '50 12 * * *'   # 12:50 UTC = 18:20 IST  (drift backup)
 
   # Allow manual trigger from GitHub Actions UI for testing
   workflow_dispatch:
+
+concurrency:
+  group: sales-task-status-email-evening
+  cancel-in-progress: false
 
 jobs:
   # ── SALES TEAM TASK STATUS EMAIL ───────────────────────────────────────────

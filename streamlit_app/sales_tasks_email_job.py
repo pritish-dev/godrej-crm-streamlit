@@ -19,7 +19,7 @@ from datetime import datetime, timezone, timedelta
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pandas as pd
-from services.sheets import get_df
+from services.sheets import get_df, append_email_log, was_email_sent_today
 from services.email_sender_sales_tasks import send_sales_team_tasks_email
 from services.sales_task_expander import get_today_and_overdue
 
@@ -28,7 +28,17 @@ IST        = timezone(timedelta(hours=5, minutes=30))
 now_ist    = datetime.now(IST)
 today_date = now_ist.date()
 
+JOB_NAME = "Sales Team Tasks Email (Morning)"
+
 print(f"[Sales Tasks Email] Running at IST: {now_ist.strftime('%Y-%m-%d %H:%M')}")
+
+# ── Idempotency guard ────────────────────────────────────────────────────────
+# This workflow now fires 3 times in the 8:55–9:20 IST window to absorb
+# GitHub Actions cron drift. The guard makes sure only the first successful
+# run actually sends the email; subsequent triggers exit cleanly.
+if was_email_sent_today(JOB_NAME):
+    print(f"  → Already sent {JOB_NAME} today. Skipping duplicate trigger.")
+    sys.exit(0)
 
 
 # ── Load + expand tasks ───────────────────────────────────────────────────────
@@ -58,5 +68,22 @@ def load_and_process_tasks():
 
 
 today_tasks, overdue_pending = load_and_process_tasks()
-send_sales_team_tasks_email(today_tasks, overdue_pending)
-print("✅ Sales Team Tasks Email (11 AM) job completed.")
+try:
+    send_sales_team_tasks_email(today_tasks, overdue_pending)
+    append_email_log(
+        job_name      = JOB_NAME,
+        records_count = int(len(today_tasks) + len(overdue_pending)),
+        recipients    = [],  # the email sender already logs recipients in detail
+        status        = "success",
+    )
+    print("✅ Sales Team Tasks Email (Morning) job completed.")
+except Exception as send_err:
+    append_email_log(
+        job_name      = JOB_NAME,
+        records_count = 0,
+        recipients    = [],
+        status        = "error",
+        error         = str(send_err),
+    )
+    print(f"❌ Sales Team Tasks Email send failed: {send_err}")
+    raise

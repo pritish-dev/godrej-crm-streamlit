@@ -351,9 +351,25 @@ total_revenue  = float(analysis_df["WORK_VALUE"].sum())
 unique_orders  = analysis_df[order_col].nunique() if order_col else len(analysis_df)
 unique_skus    = analysis_df["WORK_PROD"].nunique()
 
+# Local number formatter aligned with CRM-wide spec
+# (integers no decimals, floats max 2 dp with trailing zeros trimmed).
+def _fmt_num(v) -> str:
+    try:
+        f = float(v)
+    except Exception:
+        return str(v) if v is not None else ""
+    if pd.isna(f):
+        return ""
+    if float(f).is_integer():
+        return f"{int(round(f)):,}"
+    s = f"{f:,.2f}"
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    return s
+
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("📦 Total Units",     total_units)
-m2.metric("💰 Total Revenue",   f"₹{total_revenue:,.0f}")
+m2.metric("💰 Total Revenue",   f"₹{_fmt_num(total_revenue)}")
 m3.metric("🧾 Unique Orders",   unique_orders)
 m4.metric("🛋️ Distinct SKUs",   unique_skus)
 
@@ -402,7 +418,7 @@ if not prod_summary.empty:
     top_row = prod_summary.iloc[0]
     st.success(
         f"🏅 Highest sold: **{top_row['Product Name']}** "
-        f"({int(top_row['Units Sold'])} units, ₹{top_row['Revenue (₹)']:,.0f})"
+        f"({int(top_row['Units Sold'])} units, ₹{_fmt_num(top_row['Revenue (₹)'])})"
     )
 
     st.download_button(

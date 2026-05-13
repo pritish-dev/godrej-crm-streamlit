@@ -473,6 +473,47 @@ def append_email_log(job_name: str, records_count: int, recipients: list,
         print(f"[EMAIL_LOG] Warning — could not write log entry: {exc}")
 
 
+def was_email_sent_today(job_name: str) -> bool:
+    """
+    Return True if the EMAIL_LOG contains a SUCCESSFUL row for `job_name`
+    timestamped today (IST). Used by scheduled email jobs to make the
+    workflow idempotent — multiple crons in the same morning window
+    can fire safely without double-sending the same email.
+
+    Returns False on any error (we'd rather send a duplicate than skip).
+    """
+    from datetime import timezone, timedelta
+    IST = timezone(timedelta(hours=5, minutes=30))
+    today_str = datetime.now(IST).strftime("%Y-%m-%d")
+
+    try:
+        sh = _get_spreadsheet()
+        try:
+            ws = sh.worksheet("EMAIL_LOG")
+        except Exception:
+            return False
+
+        rows = ws.get_all_values()
+        if len(rows) < 2:
+            return False
+
+        # Header row: TIMESTAMP (IST) | JOB NAME | RECORDS COUNT | RECIPIENTS | STATUS | ERROR
+        for row in rows[1:]:
+            if len(row) < 5:
+                continue
+            ts        = (row[0] or "").strip()
+            job       = (row[1] or "").strip()
+            status    = (row[4] or "").strip().lower()
+            if not ts or not job:
+                continue
+            if job == job_name and ts.startswith(today_str) and status == "success":
+                return True
+        return False
+    except Exception as exc:
+        print(f"[EMAIL_LOG] was_email_sent_today probe failed (will not skip): {exc}")
+        return False
+
+
 def update_followup(customer_name, date):
     df = get_df("FOLLOWUP_LOG")
 
