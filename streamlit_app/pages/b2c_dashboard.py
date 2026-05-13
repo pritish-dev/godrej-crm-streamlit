@@ -41,6 +41,17 @@ from services.email_sender_delivery_schedule import (
 )
 import streamlit.components.v1 as components
 
+# AgGrid powers the single-table editor that lets us paint full rows green
+# (ready), orange (pending-not-ready) or red (overdue-not-ready) while still
+# accepting checkbox / date / text edits in the same grid.  st.data_editor
+# cannot apply Styler row colours, which is why we need AgGrid here.
+try:
+    from st_aggrid import AgGrid, GridOptionsBuilder, JsCode, GridUpdateMode, DataReturnMode
+    _AGGRID_OK = True
+except Exception as _aggrid_err:        # pragma: no cover — defensive
+    _AGGRID_OK = False
+    _AGGRID_IMPORT_ERR = str(_aggrid_err)
+
 FY_START = date(2026, 4, 1)
 
 # ── Column display mapping: working name → friendly display name ──────────────
