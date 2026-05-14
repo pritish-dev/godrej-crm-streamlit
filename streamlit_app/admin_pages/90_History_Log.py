@@ -6,7 +6,7 @@ from services.sheets import get_df
 st.set_page_config(layout="wide", page_title="Admin | Change History")
 
 # 2. 🔐 ADMIN RESTRICTION CHECK
-# This looks at the session state we set in app.py
+# This looks at the session state we set in app.py .
 if "admin_logged_in" not in st.session_state or not st.session_state.admin_logged_in:
     st.title("📝 Change History")
     st.error("🚫 **Access Denied.** This page is restricted to Administrators only.")
