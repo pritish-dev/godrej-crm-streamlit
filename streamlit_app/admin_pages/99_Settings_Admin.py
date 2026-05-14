@@ -59,7 +59,7 @@ st.subheader("📋 Registered Users (Read-Only)")
 try:
     users_df = get_users_df()
     if users_df is not None and not users_df.empty:
-        # Hide the actual hash column for better UI, or keep it if you need to see it
+        # Hide the actual hash column for better UI, or keep it if you need to see it.
         st.dataframe(users_df, use_container_width=True)
     else:
         st.info("No user records found in the database.")
