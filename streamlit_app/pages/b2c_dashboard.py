@@ -41,17 +41,6 @@ from services.email_sender_delivery_schedule import (
 )
 import streamlit.components.v1 as components
 
-# AgGrid powers the single-table editor that lets us paint full rows green
-# (ready), orange (pending-not-ready) or red (overdue-not-ready) while still
-# accepting checkbox / date / text edits in the same grid.  st.data_editor
-# cannot apply Styler row colours, which is why we need AgGrid here.
-try:
-    from st_aggrid import AgGrid, GridOptionsBuilder, JsCode, GridUpdateMode, DataReturnMode
-    _AGGRID_OK = True
-except Exception as _aggrid_err:        # pragma: no cover — defensive
-    _AGGRID_OK = False
-    _AGGRID_IMPORT_ERR = str(_aggrid_err)
-
 FY_START = date(2026, 4, 1)
 
 # ── Column display mapping: working name → friendly display name ──────────────
@@ -929,24 +918,32 @@ def _render_schedule_editor(grouped_df: pd.DataFrame,
                             base_color: str,
                             include_overdue_columns: bool = False):
     """
-    Single-table editor (AgGrid) that paints each row with its readiness
-    colour AND accepts the editable cells below — no second table needed.
+    Single-table editor (st.data_editor) — preserves the dashboard's
+    original full-container width and auto-sized columns, with a 🚦
+    traffic-light indicator column driven off the MIS-readiness flag.
 
-    Colours:
-      🟢 GREEN  = Ready for delivery (MIS qty fully committed)
-      🟠 ORANGE = Pending, not ready  (used when base_color == "orange")
-      🔴 RED    = Overdue, not ready  (used when base_color == "red")
+    Traffic-light column:
+      🟢  = Ready for delivery   (MIS Sales Order Qty == Committed Qty for every
+                                  line in this order — i.e. the SO is fully
+                                  committed in the MIS Update)
+      🟠  = Pending, not ready    (used when base_color == "orange")
+      🔴  = Overdue, not ready    (used when base_color == "red")
 
-    Editable cells:
+    Editable cells (in the same single table):
       • Schedule for Delivery                  (checkbox, ready rows only)
       • Same day Delivery and Installation     (checkbox)
-      • Updated Delivery Date                  (date,  only when include_overdue_columns=True)
-      • Remarks                                (text,  only when include_overdue_columns=True)
-      • Updated Customer ✓                     (check, only when include_overdue_columns=True)
+      • Updated Delivery Date                  (text DD-MM-YYYY, only when
+                                                include_overdue_columns=True)
+      • Remarks                                (text, only when include_overdue_columns=True)
+      • Updated Customer ✓                     (checkbox, only when include_overdue_columns=True)
 
-    Returns the edited DataFrame and the list of "illegal" ORDER NOs that
-    were ticked for Schedule despite not being ready (so the caller can
-    show a warning and disable the send button).
+    Returns:
+        (edited_df, illegal_order_nos)
+        — `edited_df` carries every column INCLUDING the hidden readiness flag
+          `_READY_FLAG_` so downstream callers can re-check it.
+        — `illegal_order_nos` is the list of ORDER NOs that were ticked for
+          Schedule despite the row not being ready (so the caller can warn
+          the user and disable the send button).
     """
     pend_cols = [c for c in PENDING_DISPLAY_COLS if c in grouped_df.columns]
     base = grouped_df[pend_cols].copy().reset_index(drop=True)
@@ -961,11 +958,17 @@ def _render_schedule_editor(grouped_df: pd.DataFrame,
     if "QTY" in base.columns:
         base["QTY"] = base["QTY"].apply(_fmt_qty_int)
 
-    # ── Readiness flag (kept as a hidden helper column for row styling) ────
+    # ── Readiness flag (kept as a hidden helper column for the validator) ──
     ready_arr = ready_flags.reset_index(drop=True).astype(bool).tolist()
     while len(ready_arr) < len(base):
         ready_arr.append(False)
-    base["_READY_FLAG_"] = ready_arr
+
+    # ── 🚦 Traffic-light indicator column — the first column the user sees ──
+    # 🟢 = ready per MIS Update, 🟠/🔴 = not yet ready.
+    base.insert(
+        0, "🚦",
+        ["🟢" if r else ("🟠" if base_color == "orange" else "🔴") for r in ready_arr],
+    )
 
     # ── Insert editable columns ────────────────────────────────────────────
     base["Schedule for Delivery"] = False
@@ -975,186 +978,60 @@ def _render_schedule_editor(grouped_df: pd.DataFrame,
         base["Remarks"]                = ""
         base["Updated Customer"]       = False
 
-    # Keep column KEYS as the original uppercase names so downstream code
-    # (_selected_rows_for_email etc.) can still index "CUSTOMER NAME" etc.
-    # We push the friendly labels via AgGrid's per-column `header_name`.
-    display_df = base.copy()
-
-    # ── AgGrid fallback when the package is unavailable ─────────────────────
-    if not _AGGRID_OK:
-        st.warning(
-            "⚠️ streamlit-aggrid is not installed — falling back to the "
-            "two-table layout. Run `pip install streamlit-aggrid` to enable "
-            "single-table row colouring."
-        )
-        return _render_schedule_editor_fallback(
-            base, ready_arr, key_prefix, base_color, include_overdue_columns,
-        )
-
-    # ── Build AgGrid options ────────────────────────────────────────────────
-    gb = GridOptionsBuilder.from_dataframe(display_df)
-    gb.configure_default_column(
-        editable=False, resizable=True, sortable=True, filter=False,
-        wrapText=True, autoHeight=True,
-    )
-
-    # Apply user-friendly column headers WITHOUT renaming the actual data
-    # keys (callers like _selected_rows_for_email still need "CUSTOMER NAME").
-    for raw_col, friendly in COL_RENAME_DISPLAY.items():
-        if raw_col in display_df.columns:
-            gb.configure_column(raw_col, header_name=friendly)
-
-    # Editable columns
-    gb.configure_column(
-        "Schedule for Delivery",
-        editable=True,
-        cellEditor="agCheckboxCellEditor",
-        cellRenderer="agCheckboxCellRenderer",
-        width=140,
-    )
-    gb.configure_column(
-        "Same day Delivery and Installation",
-        editable=True,
-        cellEditor="agCheckboxCellEditor",
-        cellRenderer="agCheckboxCellRenderer",
-        width=160,
-    )
-    if include_overdue_columns:
-        gb.configure_column(
-            "Updated Delivery Date",
-            editable=True,
-            width=160,
-            cellEditor="agTextCellEditor",
-            cellEditorParams={"placeholder": "DD-MM-YYYY"},
-            headerTooltip="Enter new delivery date as DD-MM-YYYY",
-        )
-        gb.configure_column(
-            "Remarks", editable=True, width=200,
-            cellEditor="agLargeTextCellEditor",
-        )
-        gb.configure_column(
-            "Updated Customer",
-            editable=True,
-            cellEditor="agCheckboxCellEditor",
-            cellRenderer="agCheckboxCellRenderer",
-            width=140,
-            headerTooltip="Tick after the customer has been informed of the new date",
-        )
-
-    # Hide the readiness helper column from the user
-    gb.configure_column("_READY_FLAG_", hide=True)
-
-    # Full-row colouring — drives entirely off the hidden _READY_FLAG_ column.
-    # Returns a CSS-style dict that AgGrid applies to the row's <div>.
-    nonready_bg = "#ffe0b2" if base_color == "orange" else "#ffcccc"
-    row_style_js = JsCode(f"""
-        function(params) {{
-            try {{
-                if (params.data && params.data._READY_FLAG_ === true) {{
-                    return {{
-                        'background-color': '#c8e6c9',
-                        'font-weight': '600',
-                    }};
-                }}
-                return {{ 'background-color': '{nonready_bg}' }};
-            }} catch (e) {{
-                return {{}};
-            }}
-        }}
-    """)
-    grid_options = gb.build()
-    grid_options["getRowStyle"] = row_style_js
-    grid_options["domLayout"]   = "autoHeight"
-    grid_options["suppressMovableColumns"] = True
-
-    grid_response = AgGrid(
-        display_df,
-        gridOptions=grid_options,
-        update_mode=GridUpdateMode.MODEL_CHANGED,
-        data_return_mode=DataReturnMode.AS_INPUT,
-        allow_unsafe_jscode=True,                # required for JsCode row styling
-        fit_columns_on_grid_load=True,
-        height=min(60 + 38 * max(len(display_df), 1), 600),
-        key=f"{key_prefix}_aggrid_editor",
-        reload_data=False,
-    )
-
-    edited = pd.DataFrame(grid_response["data"])
-
-    # Coerce checkbox columns back to bool (AgGrid sometimes returns strings)
-    def _as_bool(v):
-        if isinstance(v, bool):
-            return v
-        if isinstance(v, (int, float)):
-            return bool(v)
-        return str(v).strip().lower() in ("true", "1", "yes", "y", "✓")
-
-    for cb_col in ("Schedule for Delivery",
-                   "Same day Delivery and Installation",
-                   "Updated Customer"):
-        if cb_col in edited.columns:
-            edited[cb_col] = edited[cb_col].apply(_as_bool)
-
-    if "_READY_FLAG_" in edited.columns:
-        edited["_READY_FLAG_"] = edited["_READY_FLAG_"].apply(_as_bool)
-
-    # Enforce: only ready (green) rows may be ticked for "Schedule for Delivery"
-    illegal_rows = []
-    for i, row in edited.iterrows():
-        if bool(row.get("Schedule for Delivery")) and not bool(row.get("_READY_FLAG_", False)):
-            illegal_rows.append(str(row.get("ORDER NO", "")))
-
-    return edited, illegal_rows
-
-
-def _render_schedule_editor_fallback(base: pd.DataFrame,
-                                     ready_arr: list,
-                                     key_prefix: str,
-                                     base_color: str,
-                                     include_overdue_columns: bool):
-    """Vanilla st.data_editor fallback used only when AgGrid is unavailable.
-    Single-table — no row colours (Streamlit limitation) but at least keeps
-    the dashboard functional."""
-    # Insert visual marker as the first column
-    base = base.copy()
-    base.insert(
-        0, "🚦",
-        ["🟢" if r else ("🟠" if base_color == "orange" else "🔴") for r in ready_arr],
-    )
-
+    # ── Build column-config: every original column is read-only;
+    #    the editable widgets are configured per-column.
     col_cfg = {}
     for c in base.columns:
-        if c == "Schedule for Delivery":
-            col_cfg[c] = st.column_config.CheckboxColumn(c, default=False)
+        if c == "🚦":
+            col_cfg[c] = st.column_config.TextColumn(
+                "🚦",
+                help=("🟢 Ready for delivery (every line in MIS is fully "
+                      "committed)  ·  🟠 Pending, not yet ready  ·  🔴 Overdue, "
+                      "not yet ready"),
+                disabled=True,
+                width="small",
+            )
+        elif c == "Schedule for Delivery":
+            col_cfg[c] = st.column_config.CheckboxColumn(
+                c, default=False,
+                help="Tick only on 🟢 rows — those are ready per MIS.",
+            )
         elif c == "Same day Delivery and Installation":
             col_cfg[c] = st.column_config.CheckboxColumn(c, default=False)
         elif c == "Updated Customer":
-            col_cfg[c] = st.column_config.CheckboxColumn("Updated Customer ✓", default=False)
+            col_cfg[c] = st.column_config.CheckboxColumn(
+                "Updated Customer ✓", default=False,
+                help="Tick ONLY after the customer has been informed of the new date.",
+            )
         elif c == "Updated Delivery Date":
             col_cfg[c] = st.column_config.TextColumn(
-                c, help="Enter new delivery date as DD-MM-YYYY", max_chars=10
+                c, help="Enter new delivery date as DD-MM-YYYY",
+                max_chars=10,
             )
         elif c == "Remarks":
-            col_cfg[c] = st.column_config.TextColumn(c, max_chars=500)
-        elif c == "_READY_FLAG_":
-            col_cfg[c] = None
+            col_cfg[c] = st.column_config.TextColumn(
+                c, help="Optional note (max 500 chars)", max_chars=500,
+            )
         else:
-            col_cfg[c] = st.column_config.TextColumn(c, disabled=True)
-
-    # Drop the helper column from the editor but keep it in `edited`
-    editor_df = base.drop(columns=["_READY_FLAG_"], errors="ignore")
+            # Apply friendly display name where one exists, keep raw column key
+            friendly = COL_RENAME_DISPLAY.get(c, c)
+            col_cfg[c] = st.column_config.TextColumn(friendly, disabled=True)
 
     edited = st.data_editor(
-        editor_df,
-        column_config={k: v for k, v in col_cfg.items() if v is not None},
+        base,
+        column_config=col_cfg,
         use_container_width=True,
         hide_index=True,
         num_rows="fixed",
-        key=f"{key_prefix}_fallback_editor",
+        key=f"{key_prefix}_schedule_editor",
     )
-    # Re-attach readiness for the caller
+
+    # Re-attach the readiness flag so the caller can re-validate (the editor
+    # itself doesn't carry _READY_FLAG_ as a visible column).
+    edited = edited.copy()
     edited["_READY_FLAG_"] = ready_arr[: len(edited)]
 
+    # Enforce: only ready (green) rows may be ticked for "Schedule for Delivery"
     illegal_rows = []
     for i, row in edited.iterrows():
         if bool(row.get("Schedule for Delivery")) and not bool(row.get("_READY_FLAG_", False)):
