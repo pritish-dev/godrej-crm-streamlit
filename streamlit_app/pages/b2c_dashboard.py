@@ -1017,8 +1017,27 @@ def _render_schedule_editor(grouped_df: pd.DataFrame,
             friendly = COL_RENAME_DISPLAY.get(c, c)
             col_cfg[c] = st.column_config.TextColumn(friendly, disabled=True)
 
+    # ── Row-level colouring ──────────────────────────────────────────────
+    # Ready-for-delivery rows are painted GREEN so the entire row stands
+    # out at a glance; not-ready rows are left at the default background.
+    # (Streamlit ≥ 1.31 honours pandas.Styler.apply background-color on
+    #  st.data_editor; on older versions the Styler is silently downgraded
+    #  but the 🚦 column still indicates readiness, so nothing breaks.)
+    def _ready_row_color(row):
+        try:
+            idx = int(row.name)
+        except Exception:
+            return [""] * len(row)
+        is_ready = ready_arr[idx] if 0 <= idx < len(ready_arr) else False
+        if is_ready:
+            # Light green background + bold dark-green text
+            return ["background-color:#c8e6c9;color:#1b5e20;font-weight:600"] * len(row)
+        return [""] * len(row)
+
+    styled_base = base.style.apply(_ready_row_color, axis=1)
+
     edited = st.data_editor(
-        base,
+        styled_base,
         column_config=col_cfg,
         use_container_width=True,
         hide_index=True,

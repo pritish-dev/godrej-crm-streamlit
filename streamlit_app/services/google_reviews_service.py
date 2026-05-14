@@ -907,12 +907,16 @@ def process_and_update_reviews(
     Returns {total_reviews, matched, unmatched, errors, written, status}.
     """
     stats = {
-        "total_reviews": len(reviews),
-        "matched":       0,
-        "unmatched":     0,
-        "errors":        0,
-        "written":       0,
-        "status":        "ok",
+        "total_reviews":  len(reviews),
+        "matched":        0,
+        "unmatched":      0,
+        "errors":         0,
+        "written":        0,
+        "status":         "ok",
+        # Per-sheet breakdown so the UI can prove BOTH 4S and Franchise
+        # sheets are being scanned and updated on every fetch.
+        "sheets_scanned": [],
+        "by_sheet":       {},   # { sheet_name: {"matched": n, "written": n} }
     }
     if not reviews:
         return stats
@@ -923,6 +927,9 @@ def process_and_update_reviews(
 
         # ── Discover every sales sheet from SHEET_DETAILS ────────────────────
         sheet_names = _discover_sales_sheets(client, spreadsheet_id)
+        stats["sheets_scanned"] = list(sheet_names)
+        for _sn in sheet_names:
+            stats["by_sheet"][_sn] = {"matched": 0, "written": 0}
         print(f"  → Will scan {len(sheet_names)} sales sheet(s): {sheet_names}")
 
         # Per-sheet context (worksheet, header, REVIEW column idx, dataframe,
@@ -1033,6 +1040,9 @@ def process_and_update_reviews(
                 review["_sheet_name"] = sheet_name
                 matched_rows_log.append(review)
                 stats["matched"] += 1
+                # Per-sheet match counter (proves both 4S + Franchise are scanned)
+                if sheet_name in stats["by_sheet"]:
+                    stats["by_sheet"][sheet_name]["matched"] += 1
 
                 # Idempotency: only queue a write if the rating differs
                 if ctx["existing"].get(sheet_row, "") != str(rating):
@@ -1060,8 +1070,11 @@ def process_and_update_reviews(
             if not ctx or not ctx["pending_cells"]:
                 continue
             ctx["ws"].update_cells(ctx["pending_cells"], value_input_option="RAW")
-            stats["written"] += len(ctx["pending_cells"])
-            print(f"  → Wrote {len(ctx['pending_cells'])} rating(s) to '{sheet_name}'.")
+            _n_written = len(ctx["pending_cells"])
+            stats["written"] += _n_written
+            if sheet_name in stats["by_sheet"]:
+                stats["by_sheet"][sheet_name]["written"] += _n_written
+            print(f"  → Wrote {_n_written} rating(s) to '{sheet_name}'.")
         if stats["written"] == 0:
             print("  → No new ratings to write (already up-to-date or no matches).")
 

@@ -591,7 +591,7 @@ if not df_display.empty and all_execs:
         else:
             row_styles = [""] * len(row)
 
-        # Individual SP cell: red if zero, red if > 5 lakh
+        # Individual SP cell: red if zero, GREEN if > 5 lakh (high-performer cell)
         for sp in _sp_cols:
             if sp in col_list:
                 idx = col_list.index(sp)
@@ -602,7 +602,19 @@ if not df_display.empty and all_execs:
                 if val == 0:
                     row_styles[idx] = "background-color:#ffcccc"
                 elif val > 500_000:
-                    row_styles[idx] = "background-color:#ffcccc;font-weight:bold"
+                    row_styles[idx] = "background-color:#c8e6c9;font-weight:bold;color:#1b5e20"
+
+        # Also highlight the Store Total cell green when it exceeds ₹5L,
+        # even if the row-wide green wasn't applied for some reason — the
+        # column's own value should reflect the threshold rule on its own.
+        if "Store Total" in col_list:
+            st_idx = col_list.index("Store Total")
+            try:
+                st_val = float(row["Store Total"])
+            except Exception:
+                st_val = 0.0
+            if st_val > 500_000:
+                row_styles[st_idx] = "background-color:#c8e6c9;font-weight:bold;color:#1b5e20"
 
         return row_styles
 
@@ -615,7 +627,7 @@ if not df_display.empty and all_execs:
         .to_html()
     )
     st.write(f'<div class="table-scroll-container">{styled_html}</div>', unsafe_allow_html=True)
-    st.caption("🔴 Red row = Zero store sales | 🟢 Green row = Store > ₹5L | 🔴 Red cell = SP zero or > ₹5L individual")
+    st.caption("🔴 Red row = Zero store sales | 🟢 Green row = Store > ₹5L | 🔴 Red cell = SP zero | 🟢 Green cell = SP > ₹5L individual day")
 
     # ═════════════════════════════════════════════════════════════════════════
     # ⭐ GMB Review Section — Fetch button + Daily table + Salesperson summary
@@ -631,6 +643,79 @@ if not df_display.empty and all_execs:
 
     st.divider()
     st.subheader("⭐ Google My Business — Reviews Collected by Sales Executive")
+
+    # ── Secrets diagnostic (✅ found / ❌ missing — never prints the value) ──
+    # The user has reported uncertainty about whether the secrets are wired
+    # up. This expander reads them through the same `_load_secret()` helper
+    # the fetcher uses, so a ✅ here means the fetcher WILL see them too.
+    if _GMB_AVAILABLE:
+        try:
+            from services.google_reviews_service import _load_secret as _gmb_load_secret
+        except Exception:
+            _gmb_load_secret = None
+
+        if _gmb_load_secret is not None:
+            with st.expander("🔐 Diagnose GMB secrets (read-only, values hidden)", expanded=False):
+                def _present(name: str) -> bool:
+                    try:
+                        return bool(_gmb_load_secret(name))
+                    except Exception:
+                        return False
+
+                _places_ok = _present("GOOGLE_PLACES_API_KEY") and _present("GOOGLE_PLACE_ID")
+                _gmb_v4_ok = (
+                    _present("GMB_REFRESH_TOKEN")
+                    and _present("GMB_CLIENT_ID")
+                    and _present("GMB_CLIENT_SECRET")
+                    and (
+                        _present("GMB_LOCATION_PATH")
+                        or (_present("GMB_ACCOUNT_ID")
+                            and (_present("GMB_LOCATION_ID") or _present("GOOGLE_LOCATION_ID")))
+                    )
+                )
+                _sheets_ok = _present("GOOGLE_CREDENTIALS")
+                try:
+                    import streamlit as _stchk
+                    _sheets_ok = _sheets_ok or bool(_stchk.secrets.get("google", None))
+                except Exception:
+                    pass
+
+                _check = lambda b: "✅ Found" if b else "❌ Missing"
+
+                st.markdown(
+                    "**Path A — Google Places API (recommended, free):**  \n"
+                    f"- `GOOGLE_PLACES_API_KEY` — {_check(_present('GOOGLE_PLACES_API_KEY'))}  \n"
+                    f"- `GOOGLE_PLACE_ID` — {_check(_present('GOOGLE_PLACE_ID'))}  \n"
+                    f"  → **Path A usable:** {_check(_places_ok)}"
+                )
+                st.markdown(
+                    "**Path B — GMB v4 API (only if Google has allow-listed your project):**  \n"
+                    f"- `GMB_CLIENT_ID` — {_check(_present('GMB_CLIENT_ID'))}  \n"
+                    f"- `GMB_CLIENT_SECRET` — {_check(_present('GMB_CLIENT_SECRET'))}  \n"
+                    f"- `GMB_REFRESH_TOKEN` — {_check(_present('GMB_REFRESH_TOKEN'))}  \n"
+                    f"- `GMB_LOCATION_PATH` *or* `GMB_ACCOUNT_ID` + `GMB_LOCATION_ID` — "
+                    f"{_check(_present('GMB_LOCATION_PATH') or (_present('GMB_ACCOUNT_ID') and (_present('GMB_LOCATION_ID') or _present('GOOGLE_LOCATION_ID'))))}  \n"
+                    f"  → **Path B usable:** {_check(_gmb_v4_ok)}"
+                )
+                st.markdown(
+                    "**Sheets service-account (required for writing ratings back):**  \n"
+                    f"- `GOOGLE_CREDENTIALS` JSON  *or*  `st.secrets['google']` table — "
+                    f"{_check(_sheets_ok)}"
+                )
+
+                if _places_ok or _gmb_v4_ok:
+                    st.success(
+                        "Review source ready: "
+                        + ("Places API" if _places_ok else "GMB v4 API")
+                        + ". The fetch button will work."
+                    )
+                else:
+                    st.error(
+                        "No review source configured. Add GOOGLE_PLACES_API_KEY + "
+                        "GOOGLE_PLACE_ID to Streamlit secrets (recommended) or the "
+                        "full GMB v4 credentials set. Secrets can live at the top "
+                        "level **or** under a `[gmb]` section in `secrets.toml`."
+                    )
 
     # ── Fetch Now button + last sync info ─────────────────────────────────────
     btn_col, info_col = st.columns([1, 3])
@@ -699,8 +784,40 @@ if not df_display.empty and all_execs:
                 f"Matched **{_last_fetch.get('matched', 0)}**, "
                 f"unmatched **{_last_fetch.get('unmatched', 0)}**, "
                 f"wrote **{_last_fetch.get('written', 0)}** rating cell(s) "
-                f"to the 4S Sales sheet."
+                f"across the **4S Interiors AND Franchise** sales sheets "
+                f"(every sheet listed in SHEET_DETAILS is scanned)."
             )
+
+            # Per-sheet breakdown — proves the fetch is hitting BOTH the
+            # 4S and Franchise sheets, not only 4S.
+            _by_sheet = _last_fetch.get("by_sheet") or {}
+            _scanned  = _last_fetch.get("sheets_scanned") or list(_by_sheet.keys())
+            if _scanned:
+                with st.expander(
+                    f"📋 Sheets scanned this run ({len(_scanned)}): "
+                    + ", ".join(_scanned),
+                    expanded=False,
+                ):
+                    _br_rows = []
+                    for _sn in _scanned:
+                        _s = _by_sheet.get(_sn, {})
+                        _br_rows.append({
+                            "Sales Sheet": _sn,
+                            "Matched":     int(_s.get("matched", 0)),
+                            "Written":     int(_s.get("written", 0)),
+                        })
+                    if _br_rows:
+                        st.dataframe(
+                            pd.DataFrame(_br_rows),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+                    st.caption(
+                        "If a sheet shows **0 matched**, the reviewer's Google "
+                        "display name didn't match any customer in that sheet. "
+                        "Check the **REVIEW_DETAILS** sheet for the exact name "
+                        "Google returned and fix the customer-name column."
+                    )
             if int(_last_fetch.get("unmatched", 0)) > 0:
                 st.info(
                     "ℹ️  Unmatched reviews are logged in the **REVIEW_DETAILS** "
