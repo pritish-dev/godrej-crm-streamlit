@@ -1,195 +1,224 @@
+#!/usr/bin/env python3
 """
-streamlit_app/generate_gmb_refresh_token.py
+Generate a GMB OAuth 2.0 Refresh Token
+═════════════════════════════════════════════════════════════════════════════
 
-One-off helper script — run it ONCE on your local machine to generate the
-GMB_REFRESH_TOKEN that the production scheduler needs.
+This script helps you generate a refresh token for the Google My Business v4 API.
 
-Why this exists
-───────────────
-The Google My Business (Business Profile) v4 reviews API only accepts user
-OAuth — it does NOT accept service accounts. Refresh tokens issued via the
-"installed app" OAuth flow are long-lived (don't expire unless revoked),
-so we generate one ONCE here and then store it in GitHub Actions secrets
-(or Streamlit secrets) for the scheduler to use.
+PREREQUISITES:
+1. Your GCP project must be allow-listed by Google for GMB API access
+   (Request via Google My Business settings → API Settings)
+2. You must have created OAuth 2.0 credentials (type: "Desktop app")
+   in Google Cloud Console → Credentials
 
-Prerequisites
-─────────────
-1. In Google Cloud Console for your project:
-     a. Enable the API:  "My Business Account Management API"
-                         "My Business Business Information API"
-                         (and request Reviews API access from Google if
-                         you haven't been allow-listed yet — they require
-                         a one-time form: https://developers.google.com/my-business/content/prereqs )
-     b. Create OAuth credentials:
-            APIs & Services → Credentials → Create credentials → OAuth client ID
-            Application type:  Desktop app
-            Name:              "GMB Reviews CLI"
-        Copy the resulting client_id and client_secret.
-
-     c. Add yourself as a Test User on the OAuth consent screen
-        (until the app is verified) — the email you use here must own the
-        GMB location whose reviews you're fetching.
-
-2. pip install: requests, google-auth-oauthlib
-
-How to run
-──────────
-    cd streamlit_app
+USAGE:
     python generate_gmb_refresh_token.py
-    # paste your client_id and client_secret when prompted
-    # browser opens → sign in with the email that manages your GMB
-    # the script prints:
-    #     GMB_REFRESH_TOKEN: ...
-    #     GMB_ACCOUNT_ID:    ...
-    #     GMB_LOCATION_ID:   ...
-    # copy each value into GitHub → Settings → Secrets → Actions
-"""
 
-from __future__ import annotations
+This will:
+1. Open a browser window asking you to sign in with your Google account
+2. Ask you to grant the app permission to manage your Google Business Profile
+3. Display your refresh token (save this securely!)
+4. Print the values to add to .streamlit/secrets.toml
+"""
 
 import json
 import sys
-import textwrap
-
-try:
-    from google_auth_oauthlib.flow import InstalledAppFlow
-except ImportError:
-    print("Missing dependency. Install with:\n    pip install google-auth-oauthlib")
-    sys.exit(1)
-
+import os
+import time
+import webbrowser
+from pathlib import Path
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
 import requests
 
+# ─────────────────────────────────────────────────────────────────────────────
+
+# IMPORTANT: You must create OAuth 2.0 credentials first!
+# 1. Go to Google Cloud Console → Your project (crm4sinteriors)
+# 2. Credentials → Create Credentials → OAuth 2.0 Client IDs
+# 3. Choose "Desktop application"
+# 4. Download the JSON file
+# 5. Paste the values below (or load from the JSON file)
+
+# YOU MUST FILL THESE IN:
+CLIENT_ID = "YOUR_CLIENT_ID.apps.googleusercontent.com"
+CLIENT_SECRET = "YOUR_CLIENT_SECRET"
+REDIRECT_URI = "http://localhost:8080/"
+
+# ─────────────────────────────────────────────────────────────────────────────
+
 SCOPES = ["https://www.googleapis.com/auth/business.manage"]
+TOKEN_URL = "https://oauth2.googleapis.com/token"
+AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+
+auth_code = None
+server = None
 
 
-def prompt(label: str) -> str:
-    val = input(f"{label}: ").strip()
-    if not val:
-        print(f"  ✗ {label} cannot be blank.")
-        sys.exit(1)
-    return val
+class AuthHandler(BaseHTTPRequestHandler):
+    """Handle OAuth redirect."""
+
+    def do_GET(self):
+        global auth_code
+        query = urlparse(self.path).query
+        params = parse_qs(query)
+        auth_code = params.get("code", [None])[0]
+
+        if auth_code:
+            self.send_response(200)
+            self.send_header("Content-type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"""
+            <html>
+                <body style="font-family: Arial; text-align: center; padding: 50px;">
+                    <h1>Success!</h1>
+                    <p>You can now close this window and return to the terminal.</p>
+                </body>
+            </html>
+            """)
+        else:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(b"<html><body><h1>Error</h1><p>No auth code received.</p></body></html>")
+
+    def log_message(self, format, *args):
+        pass  # Suppress logging
 
 
-def main() -> None:
-    print(textwrap.dedent("""\
-        ─────────────────────────────────────────────────────────────────
-         GMB OAuth Refresh-Token Generator
-        ─────────────────────────────────────────────────────────────────
-        You'll be asked for the OAuth client_id and client_secret you
-        created in Google Cloud Console (Desktop app type).
+def start_callback_server():
+    """Start a local server to receive the OAuth callback."""
+    global server
+    server = HTTPServer(("localhost", 8080), AuthHandler)
+    print("  Waiting for OAuth callback on http://localhost:8080/...")
+    server.handle_request()
+    server.server_close()
 
-        After you authorise, this script prints three values that need
-        to go into GitHub Actions Secrets:
-            • GMB_REFRESH_TOKEN
-            • GMB_ACCOUNT_ID
-            • GMB_LOCATION_ID
-        ─────────────────────────────────────────────────────────────────
-    """))
 
-    client_id     = prompt("OAuth client_id")
-    client_secret = prompt("OAuth client_secret")
-
-    client_config = {
-        "installed": {
-            "client_id":                 client_id,
-            "client_secret":             client_secret,
-            "auth_uri":                  "https://accounts.google.com/o/oauth2/auth",
-            "token_uri":                 "https://oauth2.googleapis.com/token",
-            "auth_provider_x509_cert_url":
-                "https://www.googleapis.com/oauth2/v1/certs",
-            "redirect_uris":             ["http://localhost"],
-        }
+def get_refresh_token(auth_code: str) -> str:
+    """Exchange auth code for refresh token."""
+    data = {
+        "code": auth_code,
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "redirect_uri": REDIRECT_URI,
+        "grant_type": "authorization_code",
     }
 
-    flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
-    creds = flow.run_local_server(
-        port=0,
-        prompt="consent",         # always issue a refresh_token
-        access_type="offline",
+    resp = requests.post(TOKEN_URL, data=data)
+    resp.raise_for_status()
+    return resp.json().get("refresh_token", "")
+
+
+def load_oauth_from_json(filepath: str) -> tuple:
+    """Load OAuth credentials from a Google Cloud downloaded JSON file."""
+    with open(filepath) as f:
+        data = json.load(f)
+    return (
+        data.get("client_id", ""),
+        data.get("client_secret", ""),
     )
 
-    refresh_token = creds.refresh_token
-    access_token  = creds.token
 
-    if not refresh_token:
-        print(
-            "❌ No refresh token returned. Re-run with prompt='consent' "
-            "and make sure the consent screen has been shown."
-        )
+def main():
+    global CLIENT_ID, CLIENT_SECRET
+
+    print("\n" + "=" * 80)
+    print("Google My Business API — OAuth Refresh Token Generator")
+    print("=" * 80 + "\n")
+
+    print("STEP 1: Load OAuth Credentials")
+    print("─" * 80)
+    print("Option A: Enter credentials manually")
+    print("Option B: Load from Google Cloud credentials JSON file")
+    print()
+
+    choice = input("Choose A or B (default: A): ").strip().upper() or "A"
+
+    if choice == "B":
+        filepath = input("Enter path to OAuth JSON file: ").strip()
+        if os.path.exists(filepath):
+            try:
+                CLIENT_ID, CLIENT_SECRET = load_oauth_from_json(filepath)
+                print(f"  ✓ Loaded OAuth credentials from {filepath}")
+            except Exception as e:
+                print(f"  ✗ Failed to load JSON: {e}")
+                sys.exit(1)
+        else:
+            print(f"  ✗ File not found: {filepath}")
+            sys.exit(1)
+    else:
+        print()
+        print("Get these values from Google Cloud Console:")
+        print("  1. Go to https://console.cloud.google.com/")
+        print("  2. Select project 'crm4sinteriors'")
+        print("  3. Credentials → OAuth 2.0 Client IDs (Desktop app)")
+        print("  4. Download JSON → Open with text editor")
+        print()
+        CLIENT_ID = input("Enter CLIENT_ID: ").strip()
+        CLIENT_SECRET = input("Enter CLIENT_SECRET: ").strip()
+
+    if not CLIENT_ID or not CLIENT_SECRET:
+        print("  ✗ Missing credentials")
         sys.exit(1)
 
-    print("\n✅ Got tokens. Now looking up your GMB account & location IDs...\n")
+    print()
+    print("STEP 2: Grant Permission in Browser")
+    print("─" * 80)
+    print("  A browser window will open asking you to sign in.")
+    print("  Sign in with the Google account that owns your business.")
+    print("  Grant the app permission to manage your Google Business Profile.")
+    print()
 
-    # ── List accounts the user can access ───────────────────────────────────
-    headers = {"Authorization": f"Bearer {access_token}"}
-    accounts_resp = requests.get(
-        "https://mybusinessaccountmanagement.googleapis.com/v1/accounts",
-        headers=headers, timeout=30,
+    auth_url = (
+        f"{AUTH_URL}?client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}"
+        f"&response_type=code&scope={'+'.join(SCOPES)}&access_type=offline"
     )
-    if accounts_resp.status_code != 200:
-        print(f"⚠️  Could not list accounts (HTTP {accounts_resp.status_code}): "
-              f"{accounts_resp.text[:300]}")
-        print("Use refresh_token below and look up account/location IDs manually.")
-        accounts = []
-    else:
-        accounts = accounts_resp.json().get("accounts", [])
 
-    chosen_account_id  = ""
-    chosen_location_id = ""
+    print(f"  Opening: {auth_url}")
+    webbrowser.open(auth_url)
 
-    if accounts:
-        print("Found these GMB accounts:")
-        for i, acc in enumerate(accounts):
-            name  = acc.get("accountName", acc.get("name", ""))
-            print(f"   [{i}] {name}  (resource: {acc.get('name')})")
-        idx = input("\nPick an account index (default 0): ").strip() or "0"
-        try:
-            chosen = accounts[int(idx)]
-        except Exception:
-            chosen = accounts[0]
-        chosen_account_id = chosen.get("name", "").replace("accounts/", "")
+    print()
+    start_callback_server()
 
-        # List locations under this account
-        loc_url = (
-            "https://mybusinessbusinessinformation.googleapis.com/v1/"
-            f"accounts/{chosen_account_id}/locations"
-            "?readMask=name,title,storefrontAddress"
-        )
-        loc_resp = requests.get(loc_url, headers=headers, timeout=30)
-        if loc_resp.status_code == 200:
-            locs = loc_resp.json().get("locations", [])
-            if locs:
-                print("\nFound these locations:")
-                for i, loc in enumerate(locs):
-                    addr = loc.get("storefrontAddress", {}) or {}
-                    addr_line = ", ".join(addr.get("addressLines", []) or [])
-                    print(f"   [{i}] {loc.get('title', '?')}  "
-                          f"({addr_line})  resource: {loc.get('name')}")
-                lidx = input("\nPick a location index (default 0): ").strip() or "0"
-                try:
-                    chosen_loc = locs[int(lidx)]
-                except Exception:
-                    chosen_loc = locs[0]
-                chosen_location_id = chosen_loc.get("name", "").replace("locations/", "")
-            else:
-                print("⚠️  No locations found under that account.")
-        else:
-            print(f"⚠️  Could not list locations (HTTP {loc_resp.status_code}): "
-                  f"{loc_resp.text[:200]}")
+    if not auth_code:
+        print("  ✗ No auth code received")
+        sys.exit(1)
 
-    print("\n══════════════════════════════════════════════════════════════")
-    print(" Add these as GitHub Actions / Streamlit secrets:")
-    print("══════════════════════════════════════════════════════════════")
-    print(f"GMB_CLIENT_ID         = {client_id}")
-    print(f"GMB_CLIENT_SECRET     = {client_secret}")
-    print(f"GMB_REFRESH_TOKEN     = {refresh_token}")
-    if chosen_account_id:
-        print(f"GMB_ACCOUNT_ID        = {chosen_account_id}")
-    if chosen_location_id:
-        print(f"GMB_LOCATION_ID       = {chosen_location_id}")
-    print("══════════════════════════════════════════════════════════════\n")
-    print("⚠️  Treat the refresh token like a password — anyone with it can "
-          "read your GMB reviews. Never commit it to git.")
+    print("  ✓ Auth code received")
+
+    print()
+    print("STEP 3: Exchange Code for Refresh Token")
+    print("─" * 80)
+    try:
+        refresh_token = get_refresh_token(auth_code)
+        if not refresh_token:
+            print("  ✗ No refresh token in response")
+            sys.exit(1)
+        print("  ✓ Refresh token obtained")
+    except Exception as e:
+        print(f"  ✗ Failed to get refresh token: {e}")
+        sys.exit(1)
+
+    print()
+    print("STEP 4: Save to secrets.toml")
+    print("─" * 80)
+    print("Add these lines to .streamlit/secrets.toml:")
+    print()
+    print(f'GMB_CLIENT_ID = "{CLIENT_ID}"')
+    print(f'GMB_CLIENT_SECRET = "{CLIENT_SECRET}"')
+    print(f'GMB_REFRESH_TOKEN = "{refresh_token}"')
+    print()
+    print("Then find your account/location IDs:")
+    print("  1. Go to https://www.google.com/business/")
+    print("  2. Open your business location")
+    print("  3. Settings → Look for Account ID and Location ID")
+    print("  4. Add to secrets.toml:")
+    print("     GMB_ACCOUNT_ID = \"123456789\"")
+    print("     GMB_LOCATION_ID = \"987654321\"")
+    print()
+    print("Finally, restart the Streamlit app for changes to take effect.")
+    print()
+    print("=" * 80)
 
 
 if __name__ == "__main__":

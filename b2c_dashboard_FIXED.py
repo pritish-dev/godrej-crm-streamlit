@@ -754,26 +754,53 @@ def _render_overdue_editor(grouped_df: pd.DataFrame):
     editor_df["Updated Customer"]      = False
     editor_df["Updated Date"]          = ""
 
+    # Define width mappings
+    width_map = {
+        "DELIVERY DATE": "medium",
+        "ORDER DATE": "medium",
+        "ORDER NO": "medium",
+        "GODREJ SO NO": "medium",
+        "CUSTOMER NAME": "large",
+        "CONTACT NUMBER": "medium",
+        "PRODUCT NAME": "large",
+        "QTY": "small",
+        "ORDER VALUE": "medium",
+        "ADV RECEIVED": "medium",
+        "PENDING DUE": "medium",
+        "SALES PERSON": "medium",
+        "DELIVERY STATUS": "medium",
+        "REMARKS": "large",
+        "SOURCE": "small",
+        "Updated Delivery Date": "medium",
+        "Updated Customer": "small",
+        "Updated Date": "medium",
+    }
+
     editor_cfg = {
         "Updated Delivery Date": st.column_config.DateColumn(
             "Updated Delivery Date",
             help="Enter the new delivery date agreed with the customer.",
             format="DD-MMM-YYYY",
+            width=width_map.get("Updated Delivery Date", "medium"),
         ),
         "Remarks": st.column_config.TextColumn(
-            "Remarks", help="Optional note (max 500 chars)", max_chars=500
+            "Remarks", help="Optional note (max 500 chars)", max_chars=500,
+            width=width_map.get("Remarks", "large"),
         ),
         "Updated Customer": st.column_config.CheckboxColumn(
             "Updated Customer ✓",
             help="Tick ONLY after the customer has been informed of the new date.",
             default=False,
+            width=width_map.get("Updated Customer", "small"),
         ),
         "Updated Date": st.column_config.TextColumn(
-            "Updated Date", disabled=True, help="Auto-stamped when saved."
+            "Updated Date", disabled=True, help="Auto-stamped when saved.",
+            width=width_map.get("Updated Date", "medium"),
         ),
     }
     for col in pend_display.columns:
-        editor_cfg[col] = st.column_config.TextColumn(disabled=True)
+        col_width = width_map.get(col, "medium")
+        editor_cfg[col] = st.column_config.TextColumn(disabled=True, width=col_width)
 
     edited = st.data_editor(
         editor_df,
@@ -895,11 +922,35 @@ def _render_schedule_editor(grouped_df: pd.DataFrame,
     # Build column-config: every original column is read-only;
     # the two checkbox columns are editable.
     col_cfg = {}
+
+    # Define width mappings for specific columns
+    width_map = {
+        "🚦": "small",
+        "DELIVERY DATE": "medium",
+        "ORDER DATE": "medium",
+        "ORDER NO": "medium",
+        "GODREJ SO NO": "medium",
+        "CUSTOMER NAME": "large",
+        "CONTACT NUMBER": "medium",
+        "PRODUCT NAME": "large",
+        "QTY": "small",
+        "ORDER VALUE": "medium",
+        "ADV RECEIVED": "medium",
+        "PENDING DUE": "medium",
+        "SALES PERSON": "medium",
+        "DELIVERY STATUS": "medium",
+        "REMARKS": "large",
+        "SOURCE": "small",
+        "Schedule for Delivery": "small",
+        "Same day Delivery and Installation": "small",
+    }
+
     for c in base.columns:
+        col_width = width_map.get(c, "medium")
         if c in ("Schedule for Delivery", "Same day Delivery and Installation"):
-            col_cfg[c] = st.column_config.CheckboxColumn(c, default=False)
+            col_cfg[c] = st.column_config.CheckboxColumn(c, default=False, width=col_width)
         else:
-            col_cfg[c] = st.column_config.TextColumn(c, disabled=True)
+            col_cfg[c] = st.column_config.TextColumn(c, disabled=True, width=col_width)
 
     edited = st.data_editor(
         base,
