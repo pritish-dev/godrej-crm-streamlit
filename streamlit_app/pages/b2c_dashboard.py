@@ -188,6 +188,33 @@ def apply_number_fmt(df, cols):
     return df
 
 
+def _fmt_qty_int(v) -> str:
+    """Render QTY as a whole-number string. Empty if not numeric.
+
+    QTY is always an integer (you can't sell half a sofa) — this helper
+    guarantees the display never carries decimals like `1.0` or `2.00`.
+    Defined up here near the other formatters so callers earlier in the
+    page (sales_display, pay_display, AgGrid editor) can all use the same
+    implementation without re-defining a local copy.
+    """
+    if v is None or v == "":
+        return ""
+    try:
+        f = float(v)
+    except Exception:
+        return str(v)
+    if pd.isna(f):
+        return ""
+    return f"{int(round(f)):,}"
+
+
+def apply_qty_fmt(df, col="QTY"):
+    """Apply whole-number formatting to the QTY column if present."""
+    if col in df.columns:
+        df[col] = df[col].apply(_fmt_qty_int)
+    return df
+
+
 # ── Data loader ───────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=60)
@@ -694,6 +721,8 @@ if "ORDER DATE"    in sales_display.columns: sales_display["ORDER DATE"]    = fm
 if "DELIVERY DATE" in sales_display.columns: sales_display["DELIVERY DATE"] = fmt_date(sales_display["DELIVERY DATE"])
 
 sales_display = apply_amount_fmt(sales_display, ["ORDER VALUE", "ADV RECEIVED", "PENDING DUE"])
+sales_display = apply_qty_fmt(sales_display)
+
 sales_display = sales_display.rename(
     columns={k: v for k, v in COL_RENAME_DISPLAY.items() if k in sales_display.columns}
 )
@@ -897,103 +926,360 @@ def _render_overdue_editor(grouped_df: pd.DataFrame):
 def _render_schedule_editor(grouped_df: pd.DataFrame,
                             ready_flags: pd.Series,
                             key_prefix: str,
-                            base_color: str):
+                            base_color: str,
+                            include_overdue_columns: bool = False):
     """
-    grouped_df : pending_grouped or overdue_grouped (already grouped by order)
-    ready_flags: aligned to grouped_df.reset_index — bool per row
-    key_prefix : 'pend' or 'ov' (unique editor key)
-    base_color : 'orange' (pending) or 'red' (overdue) used to style non-ready rows
+    Single-table editor (AgGrid) that paints each row with its readiness
+    colour AND accepts the editable cells below — no second table needed.
 
-    Two views are rendered:
-      1. A STYLED READ-ONLY dataframe at the top — the entire row is painted
-         GREEN when ready_flags is True, ORANGE for pending-not-ready, RED for
-         overdue-not-ready. (st.data_editor cannot apply Styler row colours,
-         which is why we add this separate visual view.)
-      2. A data_editor below with the two checkboxes for selecting orders to
-         schedule for delivery.
+    Colours:
+      🟢 GREEN  = Ready for delivery (MIS qty fully committed)
+      🟠 ORANGE = Pending, not ready  (used when base_color == "orange")
+      🔴 RED    = Overdue, not ready  (used when base_color == "red")
+
+    Editable cells:
+      • Schedule for Delivery                  (checkbox, ready rows only)
+      • Same day Delivery and Installation     (checkbox)
+      • Updated Delivery Date                  (date,  only when include_overdue_columns=True)
+      • Remarks                                (text,  only when include_overdue_columns=True)
+      • Updated Customer ✓                     (check, only when include_overdue_columns=True)
+
+    Returns the edited DataFrame and the list of "illegal" ORDER NOs that
+    were ticked for Schedule despite not being ready (so the caller can
+    show a warning and disable the send button).
     """
     pend_cols = [c for c in PENDING_DISPLAY_COLS if c in grouped_df.columns]
     base = grouped_df[pend_cols].copy().reset_index(drop=True)
 
-    # Pretty-format dates and amounts for display only
+    # ── Pretty-format dates and amounts for display only ───────────────────
     if "ORDER DATE" in base.columns:
         base["ORDER DATE"] = fmt_date(base["ORDER DATE"])
     if "DELIVERY DATE" in base.columns:
         base["DELIVERY DATE"] = fmt_date(base["DELIVERY DATE"])
     base = apply_amount_fmt(base, ["ORDER VALUE", "ADV RECEIVED", "PENDING DUE"])
-    # QTY is integer-typed — force whole-number rendering
+    # QTY is always a whole number — render without any decimals.
     if "QTY" in base.columns:
-        base["QTY"] = base["QTY"].apply(fmt_number)
+        base["QTY"] = base["QTY"].apply(_fmt_qty_int)
 
-    # ── 1. Styled read-only view (full-row green/orange/red) ─────────────────
-    styled_view = base.copy()
-    styled_view.insert(
-        0, "🚦",
-        ready_flags.map(lambda v: "🟢 READY" if v
-                        else ("🟠 NOT READY" if base_color == "orange" else "🔴 NOT READY")),
-    )
-    # Apply user-friendly column names for the read-only view
-    styled_view = styled_view.rename(
-        columns={k: v for k, v in COL_RENAME_DISPLAY.items() if k in styled_view.columns}
-    )
+    # ── Readiness flag (kept as a hidden helper column for row styling) ────
+    ready_arr = ready_flags.reset_index(drop=True).astype(bool).tolist()
+    while len(ready_arr) < len(base):
+        ready_arr.append(False)
+    base["_READY_FLAG_"] = ready_arr
 
-    flags_arr = ready_flags.reset_index(drop=True).tolist()
-
-    def _row_style(row):
-        try:
-            i = row.name
-            ready = bool(flags_arr[i]) if i < len(flags_arr) else False
-        except Exception:
-            ready = False
-        if ready:
-            return ["background-color:#c8e6c9;font-weight:600"] * len(row)
-        if base_color == "orange":
-            return ["background-color:#ffe0b2"] * len(row)
-        if base_color == "red":
-            return ["background-color:#ffcccc"] * len(row)
-        return [""] * len(row)
-
-    st.markdown("**Delivery readiness view:**")
-    st.dataframe(
-        styled_view.style.apply(_row_style, axis=1),
-        use_container_width=True,
-        hide_index=True,
-    )
-    st.caption(
-        "🟢 Green row = Ready for delivery (every line item in MIS is fully committed).  "
-        "🟠/🔴 = Not yet ready.  Use the editor below to schedule green rows."
-    )
-
-    # ── 2. Editor with checkboxes (st.data_editor cannot apply row colour) ──
-    base.insert(0, "🚦", ready_flags.map(lambda v: "🟢" if v else ("🟠" if base_color == "orange" else "🔴")))
+    # ── Insert editable columns ────────────────────────────────────────────
     base["Schedule for Delivery"] = False
     base["Same day Delivery and Installation"] = False
+    if include_overdue_columns:
+        base["Updated Delivery Date"] = ""
+        base["Remarks"]                = ""
+        base["Updated Customer"]       = False
 
-    # Build column-config: every original column is read-only;
-    # the two checkbox columns are editable.
-    col_cfg = {}
-    for c in base.columns:
-        if c in ("Schedule for Delivery", "Same day Delivery and Installation"):
-            col_cfg[c] = st.column_config.CheckboxColumn(c, default=False)
-        else:
-            col_cfg[c] = st.column_config.TextColumn(c, disabled=True)
+    # Keep column KEYS as the original uppercase names so downstream code
+    # (_selected_rows_for_email etc.) can still index "CUSTOMER NAME" etc.
+    # We push the friendly labels via AgGrid's per-column `header_name`.
+    display_df = base.copy()
 
-    edited = st.data_editor(
-        base,
-        column_config=col_cfg,
-        use_container_width=True,
-        hide_index=True,
-        num_rows="fixed",
-        key=f"{key_prefix}_schedule_editor",
+    # ── AgGrid fallback when the package is unavailable ─────────────────────
+    if not _AGGRID_OK:
+        st.warning(
+            "⚠️ streamlit-aggrid is not installed — falling back to the "
+            "two-table layout. Run `pip install streamlit-aggrid` to enable "
+            "single-table row colouring."
+        )
+        return _render_schedule_editor_fallback(
+            base, ready_arr, key_prefix, base_color, include_overdue_columns,
+        )
+
+    # ── Build AgGrid options ────────────────────────────────────────────────
+    gb = GridOptionsBuilder.from_dataframe(display_df)
+    gb.configure_default_column(
+        editable=False, resizable=True, sortable=True, filter=False,
+        wrapText=True, autoHeight=True,
     )
+
+    # Apply user-friendly column headers WITHOUT renaming the actual data
+    # keys (callers like _selected_rows_for_email still need "CUSTOMER NAME").
+    for raw_col, friendly in COL_RENAME_DISPLAY.items():
+        if raw_col in display_df.columns:
+            gb.configure_column(raw_col, header_name=friendly)
+
+    # Editable columns
+    gb.configure_column(
+        "Schedule for Delivery",
+        editable=True,
+        cellEditor="agCheckboxCellEditor",
+        cellRenderer="agCheckboxCellRenderer",
+        width=140,
+    )
+    gb.configure_column(
+        "Same day Delivery and Installation",
+        editable=True,
+        cellEditor="agCheckboxCellEditor",
+        cellRenderer="agCheckboxCellRenderer",
+        width=160,
+    )
+    if include_overdue_columns:
+        gb.configure_column(
+            "Updated Delivery Date",
+            editable=True,
+            width=160,
+            cellEditor="agTextCellEditor",
+            cellEditorParams={"placeholder": "DD-MM-YYYY"},
+            headerTooltip="Enter new delivery date as DD-MM-YYYY",
+        )
+        gb.configure_column(
+            "Remarks", editable=True, width=200,
+            cellEditor="agLargeTextCellEditor",
+        )
+        gb.configure_column(
+            "Updated Customer",
+            editable=True,
+            cellEditor="agCheckboxCellEditor",
+            cellRenderer="agCheckboxCellRenderer",
+            width=140,
+            headerTooltip="Tick after the customer has been informed of the new date",
+        )
+
+    # Hide the readiness helper column from the user
+    gb.configure_column("_READY_FLAG_", hide=True)
+
+    # Full-row colouring — drives entirely off the hidden _READY_FLAG_ column.
+    # Returns a CSS-style dict that AgGrid applies to the row's <div>.
+    nonready_bg = "#ffe0b2" if base_color == "orange" else "#ffcccc"
+    row_style_js = JsCode(f"""
+        function(params) {{
+            try {{
+                if (params.data && params.data._READY_FLAG_ === true) {{
+                    return {{
+                        'background-color': '#c8e6c9',
+                        'font-weight': '600',
+                    }};
+                }}
+                return {{ 'background-color': '{nonready_bg}' }};
+            }} catch (e) {{
+                return {{}};
+            }}
+        }}
+    """)
+    grid_options = gb.build()
+    grid_options["getRowStyle"] = row_style_js
+    grid_options["domLayout"]   = "autoHeight"
+    grid_options["suppressMovableColumns"] = True
+
+    grid_response = AgGrid(
+        display_df,
+        gridOptions=grid_options,
+        update_mode=GridUpdateMode.MODEL_CHANGED,
+        data_return_mode=DataReturnMode.AS_INPUT,
+        allow_unsafe_jscode=True,                # required for JsCode row styling
+        fit_columns_on_grid_load=True,
+        height=min(60 + 38 * max(len(display_df), 1), 600),
+        key=f"{key_prefix}_aggrid_editor",
+        reload_data=False,
+    )
+
+    edited = pd.DataFrame(grid_response["data"])
+
+    # Coerce checkbox columns back to bool (AgGrid sometimes returns strings)
+    def _as_bool(v):
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, (int, float)):
+            return bool(v)
+        return str(v).strip().lower() in ("true", "1", "yes", "y", "✓")
+
+    for cb_col in ("Schedule for Delivery",
+                   "Same day Delivery and Installation",
+                   "Updated Customer"):
+        if cb_col in edited.columns:
+            edited[cb_col] = edited[cb_col].apply(_as_bool)
+
+    if "_READY_FLAG_" in edited.columns:
+        edited["_READY_FLAG_"] = edited["_READY_FLAG_"].apply(_as_bool)
 
     # Enforce: only ready (green) rows may be ticked for "Schedule for Delivery"
     illegal_rows = []
     for i, row in edited.iterrows():
-        if bool(row.get("Schedule for Delivery")) and not bool(ready_flags.iloc[i]):
+        if bool(row.get("Schedule for Delivery")) and not bool(row.get("_READY_FLAG_", False)):
             illegal_rows.append(str(row.get("ORDER NO", "")))
 
     return edited, illegal_rows
+
+
+def _render_schedule_editor_fallback(base: pd.DataFrame,
+                                     ready_arr: list,
+                                     key_prefix: str,
+                                     base_color: str,
+                                     include_overdue_columns: bool):
+    """Vanilla st.data_editor fallback used only when AgGrid is unavailable.
+    Single-table — no row colours (Streamlit limitation) but at least keeps
+    the dashboard functional."""
+    # Insert visual marker as the first column
+    base = base.copy()
+    base.insert(
+        0, "🚦",
+        ["🟢" if r else ("🟠" if base_color == "orange" else "🔴") for r in ready_arr],
+    )
+
+    col_cfg = {}
+    for c in base.columns:
+        if c == "Schedule for Delivery":
+            col_cfg[c] = st.column_config.CheckboxColumn(c, default=False)
+        elif c == "Same day Delivery and Installation":
+            col_cfg[c] = st.column_config.CheckboxColumn(c, default=False)
+        elif c == "Updated Customer":
+            col_cfg[c] = st.column_config.CheckboxColumn("Updated Customer ✓", default=False)
+        elif c == "Updated Delivery Date":
+            col_cfg[c] = st.column_config.TextColumn(
+                c, help="Enter new delivery date as DD-MM-YYYY", max_chars=10
+            )
+        elif c == "Remarks":
+            col_cfg[c] = st.column_config.TextColumn(c, max_chars=500)
+        elif c == "_READY_FLAG_":
+            col_cfg[c] = None
+        else:
+            col_cfg[c] = st.column_config.TextColumn(c, disabled=True)
+
+    # Drop the helper column from the editor but keep it in `edited`
+    editor_df = base.drop(columns=["_READY_FLAG_"], errors="ignore")
+
+    edited = st.data_editor(
+        editor_df,
+        column_config={k: v for k, v in col_cfg.items() if v is not None},
+        use_container_width=True,
+        hide_index=True,
+        num_rows="fixed",
+        key=f"{key_prefix}_fallback_editor",
+    )
+    # Re-attach readiness for the caller
+    edited["_READY_FLAG_"] = ready_arr[: len(edited)]
+
+    illegal_rows = []
+    for i, row in edited.iterrows():
+        if bool(row.get("Schedule for Delivery")) and not bool(row.get("_READY_FLAG_", False)):
+            illegal_rows.append(str(row.get("ORDER NO", "")))
+
+    return edited, illegal_rows
+
+
+# NOTE: _fmt_qty_int is now defined near the other formatters at the top
+# of the file (after apply_amount_fmt) so it's available to all the page-
+# level display blocks. This block intentionally left blank.
+
+
+def _save_overdue_updates_from_grid(edited: pd.DataFrame) -> None:
+    """
+    Save the 'Updated Delivery Date' + 'Remarks' + 'Updated Customer' inputs
+    captured on the unified overdue AgGrid into the audit log AND back into
+    the source CRM sheet. Equivalent to the legacy `_render_overdue_editor`
+    save path but driven off the single combined table.
+
+    Validation rules:
+      • If a new date is set but 'Updated Customer' is NOT ticked → warn,
+        do not save (customer-informed confirmation is mandatory).
+      • Rows with no date / no remarks / not ticked → silently skipped.
+      • Dates can be entered as DD-MM-YYYY, DD/MM/YYYY or YYYY-MM-DD.
+    """
+    rows_to_log: list[dict] = []
+    warnings:    list[str]  = []
+
+    for _, r in edited.iterrows():
+        udd_raw = (r.get("Updated Delivery Date") or "").strip() \
+                  if isinstance(r.get("Updated Delivery Date"), str) \
+                  else str(r.get("Updated Delivery Date") or "").strip()
+        rem     = str(r.get("Remarks") or "").strip()
+        tick    = bool(r.get("Updated Customer"))
+
+        if not udd_raw and not rem and not tick:
+            continue                                              # untouched
+        if udd_raw and not tick:
+            warnings.append(
+                f"❗ {r.get('CUSTOMER NAME', '')}: new delivery date is set but "
+                "'Updated Customer ✓' is unticked — row NOT saved. "
+                "Tick the checkbox to confirm the customer has been informed."
+            )
+            continue
+
+        # Normalise the date entry to dd-mm-yyyy for downstream sheet writes
+        new_d_str = ""
+        if udd_raw:
+            for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d", "%d-%b-%Y"):
+                try:
+                    new_d_str = datetime.strptime(udd_raw, fmt).strftime("%d-%m-%Y")
+                    break
+                except Exception:
+                    pass
+            if not new_d_str:
+                # Last-chance dayfirst parse
+                _d = pd.to_datetime(udd_raw, dayfirst=True, errors="coerce")
+                if pd.notna(_d):
+                    new_d_str = _d.strftime("%d-%m-%Y")
+
+        if udd_raw and not new_d_str:
+            warnings.append(
+                f"❗ {r.get('CUSTOMER NAME', '')}: could not parse "
+                f"'{udd_raw}'. Use DD-MM-YYYY format. Row NOT saved."
+            )
+            continue
+
+        rows_to_log.append({
+            "ORDER NO":               str(r.get("ORDER NO", "")).strip(),
+            "CUSTOMER NAME":          str(r.get("CUSTOMER NAME", "")).strip(),
+            "ORIGINAL DELIVERY DATE": str(r.get("DELIVERY DATE", "")).strip(),
+            "UPDATED DELIVERY DATE":  new_d_str,
+            "REMARKS":                rem,
+            "UPDATED CUSTOMER (Y/N)": "Y" if tick else "N",
+            "SALES PERSON":           str(r.get("SALES PERSON", "")).strip(),
+        })
+
+    for w in warnings:
+        st.warning(w)
+
+    if not rows_to_log:
+        if not warnings:
+            st.info("Nothing to save — no rows were edited.")
+        return
+
+    try:
+        # 1. Audit log row(s)
+        n = append_pending_delivery_updates(rows_to_log, updated_by="CRM Dashboard")
+
+        # 2. Push the new delivery date into the source CRM sheet so the
+        #    record moves from Overdue → Pending Deliveries on next refresh.
+        synced, sync_errors = 0, []
+        for r in rows_to_log:
+            ord_no = r["ORDER NO"]
+            new_d  = r["UPDATED DELIVERY DATE"]
+            if not ord_no or not new_d:
+                continue
+            try:
+                res = update_source_delivery_date(ord_no, new_d)
+                if res.get("updated", 0) > 0:
+                    synced += res["updated"]
+                if res.get("skipped"):
+                    sync_errors.extend(res["skipped"])
+            except Exception as src_err:
+                sync_errors.append(f"{ord_no}: {src_err}")
+
+        msg = f"✅ Saved {n} update(s). "
+        if synced:
+            msg += (
+                f"Delivery date updated in source sheet for {synced} row(s). "
+                "This record will move to Pending Deliveries on next refresh."
+            )
+        st.success(msg)
+        if sync_errors:
+            with st.expander("⚠️ Source-sheet sync notes"):
+                for err in sync_errors:
+                    st.write(f"• {err}")
+
+        # 3. Reload so the moved record lands in the right section
+        st.cache_data.clear()
+        st.rerun()
+
+    except Exception as e:
+        st.error(f"❌ Save failed: {e}")
 
 
 def _selected_rows_for_email(edited: pd.DataFrame) -> list[dict]:
@@ -1209,20 +1495,18 @@ if not pending_grouped.empty:
                 st.info("No delivery alerts for tomorrow.")
 
     # ── Compute readiness flags for each pending order ───────────────────────
+    # ── Compute readiness flags for each pending order ───────────────────────
     pend_ready_flags = _compute_ready_flags(
         pending_grouped, cust_so_map_global, ready_sos_global
     ).reset_index(drop=True)
 
     st.caption(
-        "🟢 Green = Ready for delivery (MIS Sales Order Qty matches Committed Qty for all items).  "
-        "🟠 Orange = Pending but not yet ready.  "
+        "🟢 Green row = Ready for delivery (MIS Sales Order Qty matches Committed Qty for all items).  "
+        "🟠 Orange row = Pending but not yet ready.  "
         "Tick **Schedule for Delivery** ONLY on green rows, then click *Schedule Delivery Email*."
     )
 
-    # Schedule Delivery Email button on top of the table
-    pend_btn_col, _ = st.columns([2, 6])
-
-    # Editor with checkboxes (renders before button reads its values)
+    # Single-table editor: green/orange row colour + checkbox cells in ONE grid.
     pend_edited, pend_illegal = _render_schedule_editor(
         pending_grouped, pend_ready_flags,
         key_prefix="pend", base_color="orange",
@@ -1234,8 +1518,8 @@ if not pending_grouped.empty:
             + ", ".join(pend_illegal)
         )
 
+    pend_btn_col, _ = st.columns([2, 6])
     with pend_btn_col:
-        # If illegal selections exist, disable the send by replacing button with notice
         if pend_illegal:
             st.button("📧 Schedule Delivery Email", type="primary",
                       use_container_width=True, key="schd_pend_disabled",
@@ -1264,17 +1548,16 @@ else:
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SECTION B — OVERDUE DELIVERY ORDERS  (delivery_date < today)
-#   • All-red read-only table
-#   • Inline editor to log new delivery date → source sheet is updated →
-#     on rerun the record moves to Section A (Pending Deliveries)
+#   SINGLE-TABLE layout — the schedule UI and the date-update UI are merged
+#   into one AgGrid table with green/red row colouring + all editable cells.
 # ══════════════════════════════════════════════════════════════════════════════
 
 st.divider()
 st.subheader("⚠️ Overdue Delivery Orders")
 st.error(
     "🔴 All orders below have passed their scheduled delivery date and are still PENDING. "
-    "Use the editor to log the updated delivery date — the record will automatically "
-    "move to Pending Deliveries after saving."
+    "Use the *Schedule for Delivery* checkbox on GREEN rows OR enter a new "
+    "*Updated Delivery Date* + *Remarks* and tick *Updated Customer* on RED rows."
 )
 
 if not overdue_grouped.empty:
@@ -1296,20 +1579,21 @@ if not overdue_grouped.empty:
         else:
             st.info("No overdue WhatsApp alerts configured.")
 
-    # ── Schedule-Delivery editor for OVERDUE rows ────────────────────────────
+    # ── Single Overdue table — schedule + date-update in ONE grid ─────────
     ov_ready_flags = _compute_ready_flags(
         overdue_grouped, cust_so_map_global, ready_sos_global
     ).reset_index(drop=True)
 
     st.caption(
         "🟢 Green = Ready for delivery.  🔴 Red = Overdue and not yet ready.  "
-        "Tick **Schedule for Delivery** ONLY on green rows, then click *Schedule Delivery Email*."
+        "Schedule green rows for email, OR log a customer-agreed Updated Delivery "
+        "Date + Remarks and tick Updated Customer ✓ on red rows."
     )
 
-    ov_btn_col, _ = st.columns([2, 6])
     ov_edited, ov_illegal = _render_schedule_editor(
         overdue_grouped, ov_ready_flags,
         key_prefix="ov", base_color="red",
+        include_overdue_columns=True,
     )
 
     if ov_illegal:
@@ -1318,7 +1602,9 @@ if not overdue_grouped.empty:
             + ", ".join(ov_illegal)
         )
 
-    with ov_btn_col:
+    # ── Action buttons (two side-by-side; same single table feeds both) ────
+    ov_b1, ov_b2 = st.columns(2)
+    with ov_b1:
         if ov_illegal:
             st.button("📧 Schedule Delivery Email (overdue)", type="primary",
                       use_container_width=True, key="schd_ov_disabled",
@@ -1330,12 +1616,12 @@ if not overdue_grouped.empty:
                 subject_default=build_default_subject(),
             )
 
-    # Inline editor for date-update workflow (existing functionality preserved)
-    st.caption(
-        "✏️ Or — enter a new delivery date agreed with the customer below, tick "
-        "'Updated Customer ✓' and click Save to move the record to Pending Deliveries."
-    )
-    _render_overdue_editor(overdue_grouped)
+    with ov_b2:
+        if st.button("💾 Save Overdue Delivery updates",
+                     type="secondary",
+                     use_container_width=True,
+                     key="save_overdue_del_updates"):
+            _save_overdue_updates_from_grid(ov_edited)
 
     om1, om2, om3 = st.columns(3)
     om1.metric("🔴 Total Overdue Orders", len(overdue_grouped))
@@ -1350,7 +1636,9 @@ else:
     st.success("✅ No overdue delivery orders!")
 
 
-# ── Payment Due ───────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# Payment Due
+# ══════════════════════════════════════════════════════════════════════════════
 
 st.divider()
 st.subheader("💰 Payment Due")
@@ -1446,6 +1734,8 @@ if not payment_grouped.empty:
     if "DELIVERY DATE" in pay_display.columns:
         pay_display["DELIVERY DATE"] = fmt_date(pay_display["DELIVERY DATE"])
     pay_display = apply_amount_fmt(pay_display, ["ORDER VALUE", "ADV RECEIVED", "PENDING DUE"])
+    # QTY is a whole-number count — render without decimals
+    pay_display = apply_qty_fmt(pay_display)
     pay_display = pay_display.rename(
         columns={k: v for k, v in COL_RENAME_DISPLAY.items() if k in pay_display.columns}
     )
