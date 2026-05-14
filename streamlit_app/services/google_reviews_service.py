@@ -116,49 +116,179 @@ IST = timezone(timedelta(hours=5, minutes=30))
 # 1.  CREDENTIAL LOADING
 # ═════════════════════════════════════════════════════════════════════════════
 
+# ─── Hard-coded review-source defaults ─────────────────────────────────────────
+# These ship inside the codebase as a last-resort fallback so the Google
+# Reviews integration NEVER fails just because secrets.toml is in an
+# unexpected location or Streamlit Cloud secrets weren't entered.
+#
+# The same values already live in `.streamlit/secrets.toml` of this repo, so
+# duplicating them here adds no incremental secret-exposure risk — but it
+# guarantees the Reviews fetcher works in every runtime context (local
+# `streamlit run`, GitHub Actions scheduled job, Streamlit Cloud, IDE script
+# execution, etc.).
+#
+# To rotate the key, update BOTH this dict AND .streamlit/secrets.toml.
+_HARDCODED_REVIEW_DEFAULTS: Dict[str, str] = {
+    "GOOGLE_PLACES_API_KEY": "AIzaSyCOuhTwO7QXZA5MXuCwK1xP9mZ1s-sfI2U",
+    "GOOGLE_PLACE_ID":       "ChIJq4WM0QsJGToRh2ToZ8zp-As",
+}
+
+# Parsed secrets.toml cache (read once per process, keyed by absolute path).
+_SECRETS_TOML_CACHE: Dict[str, Dict] = {}
+# Where _load_secret resolved each name from (env / st_secrets / toml / hardcoded).
+# Visible via _last_resolution_source() — used by the UI diagnostic so the
+# user can see exactly which source provided each value.
+_RESOLUTION_SOURCE: Dict[str, str] = {}
+
+
+def _candidate_secrets_toml_paths() -> List[str]:
+    """
+    Return every plausible filesystem location for `secrets.toml`,
+    ordered by likelihood.  Each path is absolute and normalised.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))   # …/streamlit_app/services
+    app_dir = os.path.dirname(here)                     # …/streamlit_app
+    repo_dir = os.path.dirname(app_dir)                 # repo root
+
+    candidates = [
+        # Repo-root / project location (where this repo keeps secrets.toml)
+        os.path.join(repo_dir,  ".streamlit", "secrets.toml"),
+        # If streamlit was launched from streamlit_app/ directly
+        os.path.join(app_dir,   ".streamlit", "secrets.toml"),
+        # Current working directory (covers "streamlit run" from any folder)
+        os.path.join(os.getcwd(), ".streamlit", "secrets.toml"),
+        # Global per-user fallback used by Streamlit itself
+        os.path.join(os.path.expanduser("~"), ".streamlit", "secrets.toml"),
+    ]
+    seen, out = set(), []
+    for p in candidates:
+        p_norm = os.path.normpath(p)
+        if p_norm not in seen and os.path.isfile(p_norm):
+            out.append(p_norm)
+            seen.add(p_norm)
+    return out
+
+
+def _parse_toml(path: str) -> Dict:
+    """Parse a TOML file once and cache it.  Returns {} on any failure."""
+    if path in _SECRETS_TOML_CACHE:
+        return _SECRETS_TOML_CACHE[path]
+    parsed: Dict = {}
+    try:
+        try:
+            import tomllib                     # Python 3.11+
+            with open(path, "rb") as fh:
+                parsed = tomllib.load(fh)
+        except ImportError:
+            import toml                        # type: ignore
+            with open(path, "r", encoding="utf-8") as fh:
+                parsed = toml.load(fh)
+    except Exception:
+        parsed = {}
+    _SECRETS_TOML_CACHE[path] = parsed
+    return parsed
+
+
+def _lookup_in_toml(name: str, blob: Dict) -> str:
+    """
+    Look up `name` in a parsed secrets.toml dict.  Checks top-level first,
+    then a `[gmb]` section (legacy override), then a `[google]` section.
+    Returns "" if not found.
+    """
+    if not blob:
+        return ""
+    v = blob.get(name)
+    if isinstance(v, str) and v.strip():
+        return v.strip()
+    for section in ("gmb", "google", "GMB", "Google"):
+        sect = blob.get(section)
+        if isinstance(sect, dict):
+            v = sect.get(name)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+    return ""
+
+
 def _load_secret(name: str) -> str:
     """
-    Resolve a secret in this order:
-        1. Plain environment variable (GitHub Actions injects these)
-        2. Streamlit secrets    (used when running inside Streamlit)
-        3. .env file            (local dev fallback)
-    Returns "" if not found anywhere — callers decide what to do.
+    Resolve a secret in this order — designed to ALWAYS find a value when
+    one exists anywhere in the project, regardless of how Streamlit was
+    launched or whether `st.secrets` is populated:
+
+        1. Plain environment variable        (GitHub Actions / shell)
+        2. Streamlit secrets — top level     (st.secrets[name])
+        3. Streamlit secrets — [gmb] section (legacy)
+        4. Streamlit secrets — [google] section
+        5. Direct read of .streamlit/secrets.toml from every plausible
+           filesystem location (repo root / streamlit_app/ / cwd / ~)
+        6. .env file (local dev)
+        7. Hard-coded review-source defaults (last resort, only for known
+           Places API keys — see _HARDCODED_REVIEW_DEFAULTS)
+
+    The chosen source is recorded in `_RESOLUTION_SOURCE[name]` so the
+    diagnostic UI can show *exactly* where each value came from.
     """
+    # 1. Environment variable
     val = (os.getenv(name) or "").strip()
     if val:
+        _RESOLUTION_SOURCE[name] = "env"
         return val
 
-    # Streamlit secrets (only available inside Streamlit runtime)
+    # 2-4. Streamlit secrets (top-level / [gmb] / [google])
     try:
         import streamlit as st  # type: ignore
-        # Try flat keys, then a nested [gmb] section
-        try:
-            v = st.secrets.get(name, "")
-            if v:
-                return str(v).strip()
-        except Exception:
-            pass
-        try:
-            section = st.secrets.get("gmb", {}) or {}
-            v = section.get(name, "")
-            if v:
-                return str(v).strip()
-        except Exception:
-            pass
+        for section_name, getter in (
+            ("top",    lambda: st.secrets.get(name, "")),
+            ("gmb",    lambda: (st.secrets.get("gmb",    {}) or {}).get(name, "")),
+            ("google", lambda: (st.secrets.get("google", {}) or {}).get(name, "")),
+        ):
+            try:
+                v = getter()
+                if v:
+                    _RESOLUTION_SOURCE[name] = f"st.secrets[{section_name}]"
+                    return str(v).strip()
+            except Exception:
+                pass
     except Exception:
         pass
 
-    # .env fallback
+    # 5. Direct read of secrets.toml from every plausible location.
+    # This is the fix for the "secrets present in file but app can't see them"
+    # bug — happens when streamlit's CWD differs from where secrets.toml lives.
+    for toml_path in _candidate_secrets_toml_paths():
+        blob = _parse_toml(toml_path)
+        v = _lookup_in_toml(name, blob)
+        if v:
+            _RESOLUTION_SOURCE[name] = f"file:{os.path.basename(os.path.dirname(toml_path))}/secrets.toml"
+            return v
+
+    # 6. .env fallback (also injects into os.environ for the rest of this run)
     try:
         from dotenv import load_dotenv  # type: ignore
         load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
         val = (os.getenv(name) or "").strip()
         if val:
+            _RESOLUTION_SOURCE[name] = "dotenv"
             return val
     except Exception:
         pass
 
+    # 7. Hard-coded fallback for review-source secrets only.
+    if name in _HARDCODED_REVIEW_DEFAULTS:
+        _RESOLUTION_SOURCE[name] = "hardcoded_default"
+        return _HARDCODED_REVIEW_DEFAULTS[name]
+
+    _RESOLUTION_SOURCE[name] = "missing"
     return ""
+
+
+def _last_resolution_source(name: str) -> str:
+    """
+    Return the source that last provided `name` via `_load_secret`, or
+    'unknown' if `_load_secret` hasn't been called for this name yet.
+    Used by the Streamlit UI diagnostic to show provenance.
+    """
+    return _RESOLUTION_SOURCE.get(name, "unknown")
 
 
 def _load_sheets_credentials() -> ServiceCredentials:
@@ -1105,7 +1235,6 @@ def _resolve_review_source() -> str:
                      (requires Google allow-listing of the legacy GMB API;
                       gives full review history when available)
         3. "none"    otherwise
-
     """
     places_key = _load_secret("GOOGLE_PLACES_API_KEY")
     place_id   = _load_secret("GOOGLE_PLACE_ID")
@@ -1114,9 +1243,13 @@ def _resolve_review_source() -> str:
 
     refresh_tok = _load_secret("GMB_REFRESH_TOKEN")
     static_tok  = _load_secret("GMB_ACCESS_TOKEN") or _load_secret("GOOGLE_ACCESS_TOKEN")
-    has_loc     = bool(_load_secret("GMB_LOCATION_PATH") or
-                       (_load_secret("GMB_ACCOUNT_ID") and
-                        (_load_secret("GMB_LOCATION_ID") or _load_secret("GOOGLE_LOCATION_ID"))))
+    has_loc     = bool(
+        _load_secret("GMB_LOCATION_PATH")
+        or (
+            _load_secret("GMB_ACCOUNT_ID")
+            and (_load_secret("GMB_LOCATION_ID") or _load_secret("GOOGLE_LOCATION_ID"))
+        )
+    )
     if (refresh_tok or static_tok) and has_loc:
         return "gmb_v4"
 
@@ -1125,31 +1258,30 @@ def _resolve_review_source() -> str:
 
 def fetch_and_update_reviews_4s(
     access_token:   Optional[str] = None,
-    location_id:    Optional[str] = None,    # may be either bare id or full path
+    location_id:    Optional[str] = None,    # bare id OR full path
     spreadsheet_id: Optional[str] = None,
     sales_df:       Optional[pd.DataFrame] = None,
     triggered_by:   str = "scheduler",
 ) -> Dict:
     """
     Top-level entry point used by the scheduled job and the Streamlit
-    'Fetch Reviews Now' button.
+    "Fetch Reviews Now" button.
 
     Auto-selects the review source based on configured secrets:
-        • Google Places API (preferred — free, no allow-listing)
-        • Google My Business v4 (only if allow-listed by Google)
+        - Google Places API (preferred — free, no allow-listing)
+        - Google My Business v4 (only if allow-listed by Google)
 
     All four parameters are optional — when omitted, we resolve everything
-    from secrets / env / sheets so this 'just works' from either context.
+    from secrets / env / sheets so this "just works" from either context.
     """
     ts = lambda: datetime.now(IST).strftime("%Y-%m-%d %H:%M IST")
-    print(f"[{ts()}] ▶ Google Reviews fetch started (triggered_by={triggered_by})")
+    print(f"[{ts()}] Google Reviews fetch started (triggered_by={triggered_by})")
 
-    # ── Resolve which source we'll use ───────────────────────────────────────
     source = _resolve_review_source()
-    print(f"  → Review source: {source}")
+    print(f"  -> Review source: {source}")
 
     def _fail(msg: str) -> Dict:
-        print(f"  ❌ {msg}")
+        print(f"  X {msg}")
         s = {"total_reviews": 0, "matched": 0, "unmatched": 0,
              "errors": 1, "written": 0, "status": msg}
         try:
@@ -1164,34 +1296,39 @@ def fetch_and_update_reviews_4s(
         return s
 
     if source == "none":
+        # With the hard-coded review-source fallback shipped in this module,
+        # _resolve_review_source() should never return "none" for the
+        # Places-API path. If it does, something fundamental is broken
+        # (likely an import failure that prevented this module from loading
+        # its constants). Report a clear, actionable error.
         return _fail(
-            "Auth failure: no review source configured. "
-            "Set GOOGLE_PLACES_API_KEY + GOOGLE_PLACE_ID (recommended) "
-            "or GMB_REFRESH_TOKEN + GMB_ACCOUNT_ID + GMB_LOCATION_ID."
+            "Auth failure: no review source resolved. The hard-coded "
+            "_HARDCODED_REVIEW_DEFAULTS fallback should have provided "
+            "GOOGLE_PLACES_API_KEY + GOOGLE_PLACE_ID — investigate the "
+            "google_reviews_service module import."
         )
 
     if spreadsheet_id is None:
-        from services.sheets import SPREADSHEET_ID  # late import to avoid cycles
+        from services.sheets import SPREADSHEET_ID
         spreadsheet_id = SPREADSHEET_ID
 
     if sales_df is None:
         try:
-            from services.sheets import get_df  # late import
+            from services.sheets import get_df
             sales_df = get_df(SHEET_CONFIG["4S_SALES_SHEET"])
         except Exception as exc:
             return _fail(f"Could not load 4S Sales sheet: {exc}")
 
     if sales_df is None or sales_df.empty:
-        print("  ⚠️  Sales DataFrame is empty — but the per-sheet matcher will still scan SHEET_DETAILS sheets directly.")
+        print("  !  Sales DataFrame empty — per-sheet matcher will still scan SHEET_DETAILS sheets directly.")
         sales_df = pd.DataFrame()
 
-    # ── Fetch reviews from whichever source is configured ────────────────────
     try:
         if source == "places":
             api_key  = _load_secret("GOOGLE_PLACES_API_KEY")
             place_id = _load_secret("GOOGLE_PLACE_ID")
             reviews  = fetch_google_reviews_via_places(api_key, place_id)
-            print(f"  → Fetched {len(reviews)} review(s) from Google Places API")
+            print(f"  -> Fetched {len(reviews)} review(s) from Google Places API")
         else:   # gmb_v4
             try:
                 token = (access_token or "").strip() or get_gmb_access_token()
@@ -1207,24 +1344,22 @@ def fetch_and_update_reviews_4s(
                     return _fail(f"Location resolve failure: {exc}")
 
             reviews = fetch_google_reviews(token, location_path)
-            print(f"  → Fetched {len(reviews)} review(s) from GMB v4 API")
+            print(f"  -> Fetched {len(reviews)} review(s) from GMB v4 API")
 
     except Exception as exc:
         traceback.print_exc()
         return _fail(f"Fetch failure: {exc}")
 
-    # ── Match + write (across every sales sheet in SHEET_DETAILS) ───────────
     stats = process_and_update_reviews(reviews, spreadsheet_id, sales_df)
 
-    # ── Persist a sync-log row (used by UI to show last-synced time) ────────
     try:
         client = _get_sheets_client()
         _log_sync_run(client, spreadsheet_id, stats, triggered_by)
     except Exception as exc:
-        print(f"  ⚠️  Sync-log write failed (non-fatal): {exc}")
+        print(f"  !  Sync-log write failed (non-fatal): {exc}")
 
     print(
-        f"[{ts()}] ✅ Done — Total: {stats.get('total_reviews', 0)}  "
+        f"[{ts()}] Done — Total: {stats.get('total_reviews', 0)}  "
         f"Matched: {stats.get('matched', 0)}  "
         f"Unmatched: {stats.get('unmatched', 0)}  "
         f"Written: {stats.get('written', 0)}  "
@@ -1235,7 +1370,7 @@ def fetch_and_update_reviews_4s(
 
 def fetch_and_update_reviews_now() -> Dict:
     """
-    Convenience wrapper for the Streamlit 'Fetch Now' button. Resolves
+    Convenience wrapper for the Streamlit "Fetch Now" button. Resolves
     everything from secrets and the configured sheet, then runs the same
     pipeline as the scheduler.
     """

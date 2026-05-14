@@ -568,6 +568,25 @@ if not df_display.empty and all_execs:
 
     _sp_cols = [c for c in df_display.columns if c not in ("Date", "Store Total")]
 
+    # ── Colour rules ────────────────────────────────────────────────────────
+    # Per the latest spec:
+    #   • Any individual SP cell whose Sale is 0 → light-red background.
+    #   • If the WHOLE row is zero (every SP has 0 for the day) → the entire
+    #     row turns red AND every value is rendered in BOLD DARK-BLACK so the
+    #     zeroes remain clearly legible against the red background.
+    #   • Otherwise the existing "store total > ₹5L → green" reward styling
+    #     continues to apply unchanged.
+    #
+    # Note: We test "row is fully zero" against the salesperson columns only
+    # (not Store Total) — although when all SPs are 0 the Store Total is also
+    # mathematically 0, this makes the intent of the rule explicit and lets
+    # us reuse the same flag to also colour the Store Total cell consistently.
+    ZERO_ROW_BG   = "#ff6b6b"              # stronger red for full-zero rows
+    ZERO_ROW_TEXT = "color:#000000;font-weight:900"   # dark-black, bold
+    ZERO_CELL_BG  = "#ffcccc"              # softer red for individual zero cells
+    GOOD_ROW_BG   = "background-color:#c8e6c9;font-weight:bold"
+    GOOD_CELL     = "background-color:#c8e6c9;font-weight:bold;color:#1b5e20"
+
     def _daily_sales_style(row):
         styles = [""] * len(row)
         col_list = list(row.index)
@@ -579,19 +598,33 @@ if not df_display.empty and all_execs:
             store_total = 0.0
 
         if is_total_row:
-            return styles  # leave totals row unstyled
+            return styles  # leave the grand-totals row unstyled
 
-        if store_total == 0:
-            # Entire row red when store has zero sales
-            return ["background-color:#ffcccc"] * len(row)
+        # Detect "all salespersons are zero for the day" — this is the
+        # condition that flips the row into the high-visibility zero-row mode.
+        all_sp_zero = True
+        for sp in _sp_cols:
+            if sp not in col_list:
+                continue
+            try:
+                if float(row[sp]) != 0:
+                    all_sp_zero = False
+                    break
+            except Exception:
+                all_sp_zero = False
+                break
 
+        if all_sp_zero:
+            # Entire row red with bold dark-black values so the 0s pop.
+            return [f"background-color:{ZERO_ROW_BG};{ZERO_ROW_TEXT}"] * len(row)
+
+        # Reward styling (unchanged) — row-wide green for high-volume days.
         if store_total > 500_000:
-            # Entire row green when store total > 5 lakh
-            row_styles = ["background-color:#c8e6c9;font-weight:bold"] * len(row)
+            row_styles = [GOOD_ROW_BG] * len(row)
         else:
             row_styles = [""] * len(row)
 
-        # Individual SP cell: red if zero, GREEN if > 5 lakh (high-performer cell)
+        # Per-SP cell shading: red on zero, green on ≥5L individual day.
         for sp in _sp_cols:
             if sp in col_list:
                 idx = col_list.index(sp)
@@ -600,13 +633,12 @@ if not df_display.empty and all_execs:
                 except Exception:
                     val = 0.0
                 if val == 0:
-                    row_styles[idx] = "background-color:#ffcccc"
+                    row_styles[idx] = f"background-color:{ZERO_CELL_BG}"
                 elif val > 500_000:
-                    row_styles[idx] = "background-color:#c8e6c9;font-weight:bold;color:#1b5e20"
+                    row_styles[idx] = GOOD_CELL
 
-        # Also highlight the Store Total cell green when it exceeds ₹5L,
-        # even if the row-wide green wasn't applied for some reason — the
-        # column's own value should reflect the threshold rule on its own.
+        # Also highlight the Store Total cell green when it exceeds ₹5L —
+        # the column's own threshold rule applies independently of the row's.
         if "Store Total" in col_list:
             st_idx = col_list.index("Store Total")
             try:
@@ -614,7 +646,7 @@ if not df_display.empty and all_execs:
             except Exception:
                 st_val = 0.0
             if st_val > 500_000:
-                row_styles[st_idx] = "background-color:#c8e6c9;font-weight:bold;color:#1b5e20"
+                row_styles[st_idx] = GOOD_CELL
 
         return row_styles
 
@@ -627,7 +659,13 @@ if not df_display.empty and all_execs:
         .to_html()
     )
     st.write(f'<div class="table-scroll-container">{styled_html}</div>', unsafe_allow_html=True)
-    st.caption("🔴 Red row = Zero store sales | 🟢 Green row = Store > ₹5L | 🔴 Red cell = SP zero | 🟢 Green cell = SP > ₹5L individual day")
+    st.caption(
+        "🟥 **Bold-red row** = ALL salespersons recorded ₹0 that day "
+        "(values shown in dark-black for clear visibility) | "
+        "🟩 Green row = Store > ₹5L | "
+        "🟥 Red cell = SP scored ₹0 | "
+        "🟩 Green cell = SP > ₹5L individual day"
+    )
 
     # ═════════════════════════════════════════════════════════════════════════
     # ⭐ GMB Review Section — Fetch button + Daily table + Salesperson summary
@@ -653,6 +691,13 @@ if not df_display.empty and all_execs:
             from services.google_reviews_service import _load_secret as _gmb_load_secret
         except Exception:
             _gmb_load_secret = None
+
+        # Pull provenance helper too so we can show the user *where* each
+        # value came from (env / st.secrets / file / hardcoded).
+        try:
+            from services.google_reviews_service import _last_resolution_source as _gmb_src
+        except Exception:
+            _gmb_src = lambda _n: "unknown"
 
         if _gmb_load_secret is not None:
             with st.expander("🔐 Diagnose GMB secrets (read-only, values hidden)", expanded=False):
@@ -681,11 +726,13 @@ if not df_display.empty and all_execs:
                     pass
 
                 _check = lambda b: "✅ Found" if b else "❌ Missing"
+                # `(via env)` / `(via file:.streamlit/secrets.toml)` etc.
+                _src = lambda n: f"  *(via `{_gmb_src(n)}`)*" if _present(n) else ""
 
                 st.markdown(
                     "**Path A — Google Places API (recommended, free):**  \n"
-                    f"- `GOOGLE_PLACES_API_KEY` — {_check(_present('GOOGLE_PLACES_API_KEY'))}  \n"
-                    f"- `GOOGLE_PLACE_ID` — {_check(_present('GOOGLE_PLACE_ID'))}  \n"
+                    f"- `GOOGLE_PLACES_API_KEY` — {_check(_present('GOOGLE_PLACES_API_KEY'))}{_src('GOOGLE_PLACES_API_KEY')}  \n"
+                    f"- `GOOGLE_PLACE_ID` — {_check(_present('GOOGLE_PLACE_ID'))}{_src('GOOGLE_PLACE_ID')}  \n"
                     f"  → **Path A usable:** {_check(_places_ok)}"
                 )
                 st.markdown(
@@ -711,10 +758,10 @@ if not df_display.empty and all_execs:
                     )
                 else:
                     st.error(
-                        "No review source configured. Add GOOGLE_PLACES_API_KEY + "
-                        "GOOGLE_PLACE_ID to Streamlit secrets (recommended) or the "
-                        "full GMB v4 credentials set. Secrets can live at the top "
-                        "level **or** under a `[gmb]` section in `secrets.toml`."
+                        "No review source configured — this should never happen now "
+                        "that hard-coded defaults ship with the codebase. If you see "
+                        "this, the `google_reviews_service.py` module failed to import. "
+                        "Check the app logs for the import error."
                     )
 
     # ── Fetch Now button + last sync info ─────────────────────────────────────
@@ -1331,6 +1378,56 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
             st.caption(
                 "🟢 Green = Target achieved (≥100%)  ·  "
                 "🟠 Orange = Close (80–99%)  ·  "
+                "🔴 Red = Needs attention (<80%)"
+            )
+
+            # Bar chart — current month snapshot
+            # Only render if at least one person has actual achievement; a
+            # target-only chart is misleading and adds no value.
+            _cur_m, _cur_y = _today.month, _today.year
+            _chart_df = result_df[
+                (result_df["_month"] == _cur_m) & (result_df["_year"] == _cur_y)
+            ].copy()
+
+            if not _chart_df.empty:
+                _has_achievement = _chart_df["Achievement (₹)"].sum() > 0
+                st.subheader(f"📊 {calendar.month_name[_cur_m]} {_cur_y} — Team Snapshot")
+                if _has_achievement:
+                    _fig2 = go.Figure()
+                    _fig2.add_trace(go.Bar(
+                        name="Target",
+                        x=_chart_df["Sales Person"],
+                        y=_chart_df["Target (₹)"],
+                        marker_color="#90caf9",
+                        opacity=0.85,
+                    ))
+                    _fig2.add_trace(go.Bar(
+                        name="Achievement",
+                        x=_chart_df["Sales Person"],
+                        y=_chart_df["Achievement (₹)"],
+                        marker_color=[
+                            "#2e7d32" if v >= t else ("#e65100" if v >= 0.8 * t else "#c62828")
+                            for v, t in zip(_chart_df["Achievement (₹)"], _chart_df["Target (₹)"])
+                        ],
+                        opacity=0.9,
+                    ))
+                    _fig2.update_layout(
+                        barmode="group",
+                        height=350,
+                        yaxis_title="Amount (₹)",
+                        margin=dict(t=20, b=40),
+                        legend=dict(
+                            orientation="h", yanchor="bottom", y=1.02,
+                            xanchor="right", x=1,
+                        ),
+                    )
+                    _fig2.update_yaxes(tickprefix="₹", tickformat=",.0f")
+                    st.plotly_chart(_fig2, use_container_width=True)
+                else:
+                    st.info(
+                        f"No sales recorded yet for {calendar.month_name[_cur_m]} {_cur_y}. "
+                        "The chart will appear once achievement data is available."
+                    )
                 "🔴 Red = Needs attention (<80%)"
             )
 
