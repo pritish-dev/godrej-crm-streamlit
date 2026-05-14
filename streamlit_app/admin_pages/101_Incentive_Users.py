@@ -10,7 +10,7 @@ Roles:   ADMIN | MANAGER | OWNER | PROPRIETOR
          (only these can access the Incentive Dashboard).
 
 This page itself is gated behind `st.session_state.admin_logged_in`,
-matching the convention of `99_Settings_Admin.py`.
+matching the convention  of `99_Settings_Admin.py`.
 """
 import os
 import sys
