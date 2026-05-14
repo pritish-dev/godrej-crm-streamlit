@@ -116,21 +116,25 @@ IST = timezone(timedelta(hours=5, minutes=30))
 # 1.  CREDENTIAL LOADING
 # ═════════════════════════════════════════════════════════════════════════════
 
-# ─── Hard-coded review-source defaults ─────────────────────────────────────────
-# These ship inside the codebase as a last-resort fallback so the Google
-# Reviews integration NEVER fails just because secrets.toml is in an
-# unexpected location or Streamlit Cloud secrets weren't entered.
+# ─── Non-secret review-source defaults ────────────────────────────────────────
+# IMPORTANT: NEVER hard-code API keys, OAuth secrets, refresh tokens, or any
+# other credential in this dict. Anything placed here ends up checked into
+# version control and is treated as compromised the moment the commit is
+# pushed (see incident: Google API Key exposure, commit 5cb10fdf).
 #
-# The same values already live in `.streamlit/secrets.toml` of this repo, so
-# duplicating them here adds no incremental secret-exposure risk — but it
-# guarantees the Reviews fetcher works in every runtime context (local
-# `streamlit run`, GitHub Actions scheduled job, Streamlit Cloud, IDE script
-# execution, etc.).
+# Only values that are PUBLIC by nature may live here as convenience
+# defaults — for example a Google `Place ID`, which is openly visible on
+# Google Maps and is not a credential.
 #
-# To rotate the key, update BOTH this dict AND .streamlit/secrets.toml.
+# All real secrets (GOOGLE_PLACES_API_KEY, GMB_* tokens, GOOGLE_CREDENTIALS,
+# etc.) MUST be supplied via one of:
+#     • environment variables           (preferred for GitHub Actions)
+#     • Streamlit secrets               (st.secrets / Streamlit Cloud UI)
+#     • .streamlit/secrets.toml         (gitignored, local-dev only)
+#     • .env                            (gitignored, local-dev only)
 _HARDCODED_REVIEW_DEFAULTS: Dict[str, str] = {
-    "GOOGLE_PLACES_API_KEY": "AIzaSyCOuhTwO7QXZA5MXuCwK1xP9mZ1s-sfI2U",
-    "GOOGLE_PLACE_ID":       "ChIJq4WM0QsJGToRh2ToZ8zp-As",
+    # Public, non-secret identifier of the showroom's Google Maps listing.
+    "GOOGLE_PLACE_ID": "ChIJq4WM0QsJGToRh2ToZ8zp-As",
 }
 
 # Parsed secrets.toml cache (read once per process, keyed by absolute path).
@@ -1296,16 +1300,16 @@ def fetch_and_update_reviews_4s(
         return s
 
     if source == "none":
-        # With the hard-coded review-source fallback shipped in this module,
-        # _resolve_review_source() should never return "none" for the
-        # Places-API path. If it does, something fundamental is broken
-        # (likely an import failure that prevented this module from loading
-        # its constants). Report a clear, actionable error.
+        # No review source could be resolved. The Places-API path needs
+        # GOOGLE_PLACES_API_KEY + GOOGLE_PLACE_ID; the legacy v4 path needs
+        # GMB_REFRESH_TOKEN + GMB_ACCOUNT_ID + GMB_LOCATION_ID (or
+        # GMB_LOCATION_PATH). Configure one of those bundles via environment
+        # variables, Streamlit secrets, or .streamlit/secrets.toml.
         return _fail(
-            "Auth failure: no review source resolved. The hard-coded "
-            "_HARDCODED_REVIEW_DEFAULTS fallback should have provided "
-            "GOOGLE_PLACES_API_KEY + GOOGLE_PLACE_ID — investigate the "
-            "google_reviews_service module import."
+            "Auth failure: no review source resolved. Set "
+            "GOOGLE_PLACES_API_KEY (and GOOGLE_PLACE_ID) in environment "
+            "variables or .streamlit/secrets.toml, or configure the GMB "
+            "OAuth credentials. See GOOGLE_REVIEWS_SETUP.md."
         )
 
     if spreadsheet_id is None:
