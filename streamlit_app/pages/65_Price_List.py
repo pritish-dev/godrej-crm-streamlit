@@ -32,7 +32,6 @@ sys.path.insert(0, BASE_DIR)
 import streamlit as st
 import pandas as pd
 from services.price_list_service import (
-    fetch_price_list_from_drive,
     load_price_list_from_sheet,
     load_mattress_list_from_sheet,
     load_price_list_meta,
@@ -75,10 +74,9 @@ with col_toggle:
 with col_help:
     if refresh_from_pdf:
         st.info(
-            "All PDFs in your **PRICE_LIST** Drive folder will be downloaded "
-            "and parsed. Furniture rows -> **Price_List** sheet. Mattress rows "
-            "-> **Price_List_Mattress** sheet. The deepest section heading in "
-            "each PDF becomes **Category**; the product family becomes **Item**."
+            "PDF refresh is currently disabled. Price list is being maintained "
+            "manually in the Google Sheets. Toggle has no effect — data will "
+            "always be loaded from the cached sheets."
         )
 
 # Session state
@@ -105,25 +103,14 @@ with reload_col:
 needs_load = not st.session_state.price_loaded or toggle_changed or manual_reload
 
 if needs_load:
-    if refresh_from_pdf:
-        with st.spinner("Scanning Drive folder - downloading and parsing PDFs..."):
-            f_df, m_df, status = fetch_price_list_from_drive()
-        st.session_state.price_df        = f_df
-        st.session_state.mattress_df     = m_df
-        st.session_state.price_status    = status
-        st.session_state.mattress_status = status
-        if status.startswith("✅"):
-            st.session_state.price_refresh_mode = False
-    else:
-        with st.spinner("Loading cached price-list sheets..."):
-            f_df, f_status = load_price_list_from_sheet()
-            m_df, m_status = load_mattress_list_from_sheet()
-        st.session_state.price_df        = f_df
-        st.session_state.mattress_df     = m_df
-        st.session_state.price_status    = f_status
-        st.session_state.mattress_status = m_status
-
-    st.session_state.price_loaded = True
+    with st.spinner("Loading cached price-list sheets..."):
+        f_df, f_status = load_price_list_from_sheet()
+        m_df, m_status = load_mattress_list_from_sheet()
+    st.session_state.price_df        = f_df
+    st.session_state.mattress_df     = m_df
+    st.session_state.price_status    = f_status
+    st.session_state.mattress_status = m_status
+    st.session_state.price_loaded    = True
 
 # Status (summary - full log in expander)
 status = st.session_state.price_status
@@ -146,7 +133,7 @@ elif status.startswith("❌"):
 def _render_price_tab(df, columns, status_msg, download_stem, show_thickness=False):
     if status_msg.startswith("⚠️") and df.empty:
         st.warning(status_msg)
-        st.info("Enable **Refresh from Google Drive PDFs** to populate this sheet.")
+        st.info("Please populate the Google Sheet manually and then click **🔁 Reload**.")
         return
     if status_msg.startswith("❌"):
         st.error(status_msg)
@@ -229,8 +216,8 @@ def _render_price_tab(df, columns, status_msg, download_stem, show_thickness=Fal
         "PRICE"            : st.column_config.TextColumn("MRP (₹)",          width="small"),
     }
     if show_thickness:
-        col_cfg["THICKNESS (INCH)"] = st.column_config.TextColumn("Thickness (in)", width="small")
-        col_cfg["THICKNESS (CM)"]   = st.column_config.TextColumn("Thickness (cm)", width="small")
+        col_cfg["THICKNESS IN INCH"] = st.column_config.TextColumn("Thickness (in)", width="small")
+        col_cfg["THICKNESS IN CM"]   = st.column_config.TextColumn("Thickness (cm)", width="small")
 
     st.dataframe(
         filtered.reset_index(drop=True),
