@@ -206,14 +206,16 @@ if search_text:
 st.markdown(f"### 📋 Price List — {len(filtered):,} rows")
 
 col_cfg = {
-    "CATEGORY"        : st.column_config.TextColumn("Category",        width="medium"),
-    "SUB CATEGORY"    : st.column_config.TextColumn("Sub Category",    width="medium"),
-    "ITEM"            : st.column_config.TextColumn("Item",            width="medium"),
-    "ITEM CODE"       : st.column_config.TextColumn("Item Code",       width="medium"),
-    "ITEM DESCRIPTION": st.column_config.TextColumn("Item Description",width="large"),
-    "CPL"             : st.column_config.TextColumn("CPL (₹)",         width="small"),
-    "GST"             : st.column_config.TextColumn("GST",             width="small"),
-    "PRICE"           : st.column_config.TextColumn("MRP (₹)",         width="small"),
+    "CATEGORY"         : st.column_config.TextColumn("Category",         width="medium"),
+    "SUB CATEGORY"     : st.column_config.TextColumn("Sub Category",     width="medium"),
+    "ITEM"             : st.column_config.TextColumn("Item",             width="medium"),
+    "ITEM CODE"        : st.column_config.TextColumn("Item Code",        width="medium"),
+    "ITEM DESCRIPTION" : st.column_config.TextColumn("Item Description", width="large"),
+    "CPL"              : st.column_config.TextColumn("CPL (₹)",          width="small"),
+    "GST"              : st.column_config.TextColumn("GST",              width="small"),
+    "PRICE"            : st.column_config.TextColumn("MRP (₹)",          width="small"),
+    "THICKNESS (INCH)" : st.column_config.TextColumn("Thickness (in)",   width="small"),
+    "THICKNESS (CM)"   : st.column_config.TextColumn("Thickness (cm)",   width="small"),
 }
 
 st.dataframe(
