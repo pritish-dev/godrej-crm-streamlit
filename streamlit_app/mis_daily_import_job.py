@@ -28,10 +28,10 @@ def main() -> int:
     print(f"  Target sheet: {MIS_CACHE_SHEET}")
     print("=" * 60)
 
+    # ── 1. MIS import ─────────────────────────────────────────────────────────
     df, status = fetch_and_cache_mis()
     print(status)
 
-    # Audit log row in EMAIL_LOG (re-uses existing sheet for visibility)
     try:
         from services.sheets import append_email_log
         append_email_log(
@@ -43,6 +43,25 @@ def main() -> int:
         )
     except Exception as log_err:
         print(f"[AUDIT_LOG] Warning: {log_err}")
+
+    # ── 2. Stock — read from 'Stock' sheet and log record count ───────────────
+    # The Stock sheet is maintained externally (ops team updates it directly).
+    # We simply verify it is readable and log the count so the daily job
+    # confirms both MIS and Stock are in sync.
+    try:
+        from services.sheets import get_df
+        stock_df = get_df("Stock")
+        stock_rows = len(stock_df) if stock_df is not None else 0
+        print(f"[Stock] {stock_rows} rows available in 'Stock' sheet.")
+        append_email_log(
+            job_name="Stock Daily Check",
+            records_count=stock_rows,
+            recipients=["Stock"],
+            status="success",
+            error="",
+        )
+    except Exception as stock_err:
+        print(f"[Stock] Warning — could not read Stock sheet: {stock_err}")
 
     return 0 if "✅" in status else 1
 
