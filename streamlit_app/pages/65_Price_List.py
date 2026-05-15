@@ -10,7 +10,7 @@ Two tabs:
                             (cached in the 'Price_List' Google Sheet)
 
   - Mattress             -> 9 columns: CATEGORY | ITEM | ITEM CODE |
-                            ITEM DESCRIPTION | THICKNESS (INCH) |
+                            ITEM DESCRIPTION | THICKNESS (IN) |
                             THICKNESS (CM) | CPL | GST | PRICE
                             (cached in the 'Price_List_Mattress' Google Sheet)
 
@@ -216,8 +216,8 @@ def _render_price_tab(df, columns, status_msg, download_stem, show_thickness=Fal
         "PRICE"            : st.column_config.TextColumn("MRP (₹)",          width="small"),
     }
     if show_thickness:
-        col_cfg["THICKNESS IN INCH"] = st.column_config.TextColumn("Thickness (in)", width="small")
-        col_cfg["THICKNESS IN CM"]   = st.column_config.TextColumn("Thickness (cm)", width="small")
+        col_cfg["THICKNESS (IN)"] = st.column_config.TextColumn("Thickness (in)", width="small")
+        col_cfg["THICKNESS (CM)"] = st.column_config.TextColumn("Thickness (cm)", width="small")
 
     st.dataframe(
         filtered.reset_index(drop=True),

@@ -66,7 +66,7 @@ FURNITURE_COLUMNS = [
 MATTRESS_COLUMNS = [
     "CATEGORY", "ITEM",
     "ITEM CODE", "ITEM DESCRIPTION",
-    "THICKNESS IN INCH", "THICKNESS IN CM",
+    "THICKNESS (IN)", "THICKNESS (CM)",
     "CPL", "GST", "PRICE",
 ]
 
@@ -325,7 +325,7 @@ def _process_mattress_table(raw_table, current_category):
             "ITEM"            : model,
             "ITEM CODE"       : ic,
             "ITEM DESCRIPTION": id_,
-            "THICKNESS (INCH)": _cell(cells, inch_idx),
+            "THICKNESS (IN)"  : _cell(cells, inch_idx),
             "THICKNESS (CM)"  : _cell(cells, cm_idx),
             "CPL"             : _clean_num(_cell(cells, cpl_idx)),
             "GST"             : _clean_num(_cell(cells, gst_idx)),
