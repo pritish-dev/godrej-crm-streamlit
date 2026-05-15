@@ -1,21 +1,16 @@
-name: MIS Daily Import (11 AM IST)
+name: MIS + Stock Daily Import (11 AM IST)
 
 # Runs once per day at ~11:00 AM IST.
 # IST = UTC + 5:30, so 11:00 IST = 05:30 UTC.
 #
-# WHY MULTIPLE CRONS?
-# GitHub Actions free-tier crons are *best-effort* — runs are routinely
-# delayed 5–30 minutes during peak load and can occasionally be skipped
-# entirely. To guarantee the 11 AM MIS update lands every day we fire the
-# workflow three times in a tight window (10:55, 11:00 and 11:15 IST).
-# The job is idempotent — `fetch_and_cache_mis()` short-circuits if today's
-# attachment has already been processed, so duplicate triggers are safe.
+# This single job handles BOTH imports from the same BR_MIS Excel attachment:
+#   Step 1 — reads the 'PO'    sheet tab → writes to 'MIS_Daily' Google Sheet
+#   Step 2 — reads the 'STOCK' sheet tab → writes to 'Stock'    Google Sheet
 #
-# The schedule.py in-process loop only fires when the long-running Python
-# process happens to be alive, which is unreliable on a Streamlit-Cloud
-# style deployment (the app sleeps when idle).  Driving the daily MIS
-# import from GitHub Actions instead guarantees the 11 AM IST run executes
-# regardless of whether the Streamlit app is awake.
+# WHY MULTIPLE CRONS?
+# GitHub Actions free-tier crons are *best-effort* — runs can be delayed
+# 5–30 minutes. We fire three times in a tight window so at least one lands
+# near 11 AM IST. Both steps are idempotent — safe to re-run any time.
 
 on:
   schedule:
@@ -33,7 +28,7 @@ concurrency:
 
 jobs:
   mis-daily-import:
-    name: Fetch BR_MIS Excel attachment and cache to MIS_Daily sheet
+    name: Fetch BR_MIS Excel — import MIS (PO sheet) + Stock (STOCK sheet)
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -56,7 +51,7 @@ jobs:
             pip install -r requirements.txt
           fi
 
-      - name: Run MIS Daily Import
+      - name: Run MIS + Stock Daily Import
         env:
           # Gmail IMAP — same credentials used by the lead-email-import job
           EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
