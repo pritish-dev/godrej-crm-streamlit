@@ -71,6 +71,16 @@ _COL_ALIASES: dict[str, str] = {
 
 _REQUIRED_OUTPUT = {"ITEM CODE", "ITEM DESCRIPTION", "CPL", "GST", "PRICE"}
 
+# Lines matching this pattern are NOT categories — they are effective-date notices.
+# Captured text is displayed as an info banner on the Price List page.
+_EFFECTIVE_DATE_RE = re.compile(
+    r"(consumer\s+basic\s+prices?\s+effective|prices?\s+effective\s+from|"
+    r"effective\s+from|price\s+list\s+effective|w\.?e\.?f\.?)",
+    re.IGNORECASE,
+)
+
+PRICE_LIST_META_SHEET = "Price_List_Meta"
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CREDENTIAL + DRIVE HELPERS  (unchanged from previous version)
@@ -243,7 +253,7 @@ def _classify_font_sizes(size_text_pairs: list[tuple[float, str]]) -> dict[str, 
     return {"category_min": category_min, "item_min": item_min}
 
 
-def _parse_godrej_price_list(pdf_bytes: bytes) -> pd.DataFrame:
+def _parse_godrej_price_list(pdf_bytes: bytes) -> tuple[pd.DataFrame, str]:
     """
     Core parser for the Godrej hierarchical price-list PDF format.
 
@@ -251,11 +261,16 @@ def _parse_godrej_price_list(pdf_bytes: bytes) -> pd.DataFrame:
     1. Scan every page top-to-bottom using char-level font sizes.
     2. Large bold text → CATEGORY (e.g. "HOME STORAGE")
        Medium bold text → ITEM or SUB CATEGORY (e.g. "CENTURION")
-    3. When a recognised table-header row is found (contains LN Code etc.),
+    3. Lines matching _EFFECTIVE_DATE_RE (e.g. "Consumer Basic Prices effective
+       from 14th April 2026") are captured as metadata and SKIPPED — they are
+       never mistaken for a category or item.
+    4. When a recognised table-header row is found (contains LN Code etc.),
        build a column mapping for the rows that follow.
-    4. Data rows are tagged with the current CATEGORY / SUB CATEGORY / ITEM.
-    5. Column rename: LN Code→ITEM CODE, LN Description→ITEM DESCRIPTION,
+    5. Data rows are tagged with the current CATEGORY / SUB CATEGORY / ITEM.
+    6. Column rename: LN Code→ITEM CODE, LN Description→ITEM DESCRIPTION,
        Unit Consumer Basic→CPL, GST→GST, MRP→PRICE.
+
+    Returns (df, effective_date_str).
     """
     import pdfplumber
 
@@ -264,6 +279,7 @@ def _parse_godrej_price_list(pdf_bytes: bytes) -> pd.DataFrame:
     current_sub_cat     = ""
     current_item        = ""
     col_map: dict[int, str] = {}   # active column mapping from last header row
+    effective_date_str  = ""       # captured from "prices effective from …" lines
 
     # ── Pass 1: collect all (font_size, text) to calibrate thresholds ────────
     all_size_text: list[tuple[float, str]] = []
@@ -348,6 +364,12 @@ def _parse_godrej_price_list(pdf_bytes: bytes) -> pd.DataFrame:
                 if clean.lower() in table_header_texts:
                     continue
 
+                # ── Effective-date notice — capture and skip entirely ─────────
+                if _EFFECTIVE_DATE_RE.search(clean):
+                    if not effective_date_str:   # keep the first occurrence
+                        effective_date_str = clean
+                    continue
+
                 # ── Classify by font size ─────────────────────────────────────
                 if font_size >= cat_min and _is_all_caps_label(clean):
                     current_category = clean
@@ -383,7 +405,7 @@ def _parse_godrej_price_list(pdf_bytes: bytes) -> pd.DataFrame:
                     continue
 
     if not all_rows:
-        return pd.DataFrame(columns=OUTPUT_COLUMNS)
+        return pd.DataFrame(columns=OUTPUT_COLUMNS), effective_date_str
 
     df = pd.DataFrame(all_rows)
 
@@ -408,7 +430,7 @@ def _parse_godrej_price_list(pdf_bytes: bytes) -> pd.DataFrame:
     data_cols = ["ITEM CODE", "ITEM DESCRIPTION", "CPL", "GST", "PRICE"]
     df = df[df[data_cols].apply(lambda r: r.str.strip().ne("")).any(axis=1)]
 
-    return df
+    return df, effective_date_str
 
 
 def _filename_to_category(filename: str) -> str:
@@ -445,6 +467,7 @@ def fetch_price_list_from_drive() -> tuple[pd.DataFrame, str]:
         )
 
     all_dfs: list[pd.DataFrame] = []
+    effective_dates: list[str]  = []
     parse_log: list[str] = []
 
     for file_info in pdf_files:
@@ -458,7 +481,7 @@ def fetch_price_list_from_drive() -> tuple[pd.DataFrame, str]:
             continue
 
         try:
-            df = _parse_godrej_price_list(pdf_bytes)
+            df, eff_date = _parse_godrej_price_list(pdf_bytes)
         except Exception as exc:
             parse_log.append(f"  ⚠️ {file_name} — parse failed: {exc}")
             continue
@@ -472,12 +495,16 @@ def fetch_price_list_from_drive() -> tuple[pd.DataFrame, str]:
         file_category = _filename_to_category(file_name)
         df["CATEGORY"] = df["CATEGORY"].replace("", pd.NA).fillna(file_category)
 
+        if eff_date and eff_date not in effective_dates:
+            effective_dates.append(eff_date)
+
         all_dfs.append(df)
         cat_count  = df["CATEGORY"].nunique()
         item_count = df["ITEM"].nunique()
+        eff_note   = f" · 📅 {eff_date}" if eff_date else ""
         parse_log.append(
             f"  ✅ {file_name} — {len(df):,} rows "
-            f"({cat_count} categories, {item_count} items)"
+            f"({cat_count} categories, {item_count} items){eff_note}"
         )
 
     if not all_dfs:
@@ -496,11 +523,37 @@ def fetch_price_list_from_drive() -> tuple[pd.DataFrame, str]:
             f"but failed to write to sheet: {exc}\n{detail}"
         )
 
+    # Persist effective-date notices to a tiny meta sheet so the page can
+    # display them even when reading from cache (not re-parsing the PDF).
+    if effective_dates:
+        try:
+            from services.sheets import write_df
+            meta_df = pd.DataFrame({"EFFECTIVE_DATE": effective_dates})
+            write_df(PRICE_LIST_META_SHEET, meta_df)
+        except Exception:
+            pass   # non-critical — page will still show data without the banner
+
     detail = "\n".join(parse_log)
     return merged, (
         f"✅ Price list refreshed — {len(merged):,} rows from "
         f"{len(all_dfs)} of {len(pdf_files)} PDF(s).\n" + detail
     )
+
+
+def load_price_list_meta() -> list[str]:
+    """
+    Read the effective-date notices stored in the Price_List_Meta sheet.
+    Returns a list of date strings (may be empty if not yet populated).
+    Silently returns [] on any error so the page degrades gracefully.
+    """
+    try:
+        from services.sheets import get_df
+        df = get_df(PRICE_LIST_META_SHEET)
+        if df is None or df.empty or "EFFECTIVE_DATE" not in df.columns:
+            return []
+        return df["EFFECTIVE_DATE"].dropna().tolist()
+    except Exception:
+        return []
 
 
 def load_price_list_from_sheet() -> tuple[pd.DataFrame, str]:

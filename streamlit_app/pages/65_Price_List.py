@@ -27,6 +27,7 @@ import pandas as pd
 from services.price_list_service import (
     fetch_price_list_from_drive,
     load_price_list_from_sheet,
+    load_price_list_meta,
     PRICE_LIST_SHEET,
     OUTPUT_COLUMNS,
 )
@@ -38,6 +39,12 @@ st.caption(
     f"Structured price list parsed from Godrej PDFs → cached in **'{PRICE_LIST_SHEET}'** sheet. "
     "Columns: Category · Sub Category · Item · Item Code · Item Description · CPL · GST · Price."
 )
+
+# ─── Effective-date banner (persisted from last PDF refresh) ──────────────────
+_eff_dates = load_price_list_meta()
+if _eff_dates:
+    for _d in _eff_dates:
+        st.info(f"📅 {_d}", icon="ℹ️")
 
 # ─── Refresh toggle ───────────────────────────────────────────────────────────
 st.markdown("---")
