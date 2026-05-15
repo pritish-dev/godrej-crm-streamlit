@@ -1,9 +1,9 @@
 """
 pages/60_Stock.py
 
-STOCK — Daily stock levels from the 'Stock' Google Sheet.
-The sheet is maintained by the operations team and read here for display.
-Data refreshes automatically alongside the daily MIS import cycle.
+STOCK — Daily stock levels from the 'STOCK' tab inside the BR_MIS Excel.
+Reads the cached 'Stock' Google Sheet (populated at 11 AM by the daily job).
+Force-fetch pulls the latest BR_MIS email from Gmail on demand.
 """
 
 import sys
@@ -14,14 +14,24 @@ sys.path.insert(0, BASE_DIR)
 
 import streamlit as st
 import pandas as pd
-from services.stock_service import load_stock
+from services.stock_email_import import (
+    MIS_SUBJECT,
+    STOCK_CACHE_SHEET,
+    STOCK_SHEET_TAB,
+    load_cached_stock,
+    fetch_and_cache_stock,
+)
 
 st.set_page_config(layout="wide", page_title="Stock", page_icon="🏭")
 
 st.title("🏭 Stock")
-st.caption("Live view of current stock levels — sourced from the 'Stock' Google Sheet tab.")
+st.caption(
+    f"Source: **'{STOCK_SHEET_TAB}'** tab in the daily BR_MIS Excel  "
+    f"·  Email subject: **{MIS_SUBJECT}**  "
+    f"·  Cached daily at 11 AM into the **{STOCK_CACHE_SHEET}** Google Sheet tab."
+)
 
-# ─── Load / Reload ────────────────────────────────────────────────────────────
+# ─── Session state ────────────────────────────────────────────────────────────
 if "stock_df" not in st.session_state:
     st.session_state.stock_df = pd.DataFrame()
 if "stock_status" not in st.session_state:
@@ -29,20 +39,46 @@ if "stock_status" not in st.session_state:
 if "stock_loaded" not in st.session_state:
     st.session_state.stock_loaded = False
 
-col_reload, col_spacer = st.columns([2, 8])
-with col_reload:
-    reload = st.button("🔁 Reload Stock", use_container_width=True)
+# ─── Fetch controls ───────────────────────────────────────────────────────────
+col_btn, col_force, col_spacer = st.columns([1.7, 1.7, 5])
 
-if not st.session_state.stock_loaded or reload:
-    with st.spinner("Loading stock data…"):
-        if reload:
-            load_stock.clear()
-        df, status = load_stock()
-        st.session_state.stock_df = df
+with col_btn:
+    reload_clicked = st.button("🔁 Reload Cached Stock", use_container_width=True)
+
+with col_force:
+    force_fetch = st.button(
+        "⚡ Force Fetch Now (Gmail)",
+        type="primary",
+        use_container_width=True,
+        help=(
+            "Manually re-pull today's BR_MIS email, read the STOCK tab, "
+            "and overwrite the Stock sheet."
+        ),
+    )
+
+# Auto-load on first visit or manual reload
+if not st.session_state.stock_loaded or reload_clicked:
+    with st.spinner(f"Reading cached stock data from '{STOCK_CACHE_SHEET}'…"):
+        df, status = load_cached_stock()
+        st.session_state.stock_df     = df
         st.session_state.stock_status = status
         st.session_state.stock_loaded = True
 
-# ─── Status ───────────────────────────────────────────────────────────────────
+if force_fetch:
+    with st.spinner("Fetching today's BR_MIS email, reading STOCK tab and updating cache…"):
+        df, status = fetch_and_cache_stock()
+        if not df.empty:
+            df, load_status = load_cached_stock()
+            status = f"{status}\n{load_status}"
+        st.session_state.stock_df     = df
+        st.session_state.stock_status = status
+        st.session_state.stock_loaded = True
+        try:
+            st.cache_data.clear()
+        except Exception:
+            pass
+
+# ─── Status banner ────────────────────────────────────────────────────────────
 status = st.session_state.stock_status
 if status.startswith("✅"):
     st.success(status)
@@ -52,7 +88,7 @@ elif status.startswith("❌"):
     st.error(status)
     st.stop()
 else:
-    st.info(status or "Click **Reload Stock** to load.")
+    st.info(status or "Click **Reload Cached Stock** to load.")
 
 df: pd.DataFrame = st.session_state.stock_df
 
@@ -64,35 +100,33 @@ st.markdown("---")
 cols = df.columns.tolist()
 
 m1, m2, m3, m4 = st.columns(4)
-m1.metric("Total SKUs", len(df))
+m1.metric("Total SKUs", f"{len(df):,}")
 
-# Try to find quantity-like column for totals
-qty_col = next((c for c in cols if "qty" in c.lower() or "quantity" in c.lower() or "stock" in c.lower()), None)
+qty_col = next(
+    (c for c in cols if any(kw in c.lower() for kw in ("qty", "quantity", "stock", "available"))),
+    None,
+)
 if qty_col:
     try:
-        total_qty = pd.to_numeric(df[qty_col], errors="coerce").sum()
-        m2.metric("Total Stock Qty", f"{int(total_qty):,}")
+        qty_series = pd.to_numeric(df[qty_col], errors="coerce")
+        m2.metric("Total Stock Qty", f"{int(qty_series.sum()):,}")
+        zero_count = int((qty_series.fillna(0) == 0).sum())
+        m4.metric("Zero Stock Items", zero_count)
     except Exception:
         m2.metric("Total Stock Qty", "—")
+        m4.metric("Zero Stock Items", "—")
 else:
-    m2.metric("Total Stock Qty", "—")
+    m2.metric("Columns", len(cols))
+    m4.metric("Rows", len(df))
 
-# Category count if column exists
-cat_col = next((c for c in cols if "category" in c.lower() or "cat" in c.lower()), None)
+cat_col = next(
+    (c for c in cols if any(kw in c.lower() for kw in ("category", "cat", "group", "type", "product"))),
+    None,
+)
 if cat_col:
     m3.metric("Categories", df[cat_col].nunique())
 else:
-    m3.metric("Columns", len(cols))
-
-# Zero-stock items if qty col found
-if qty_col:
-    try:
-        zero_stock = (pd.to_numeric(df[qty_col], errors="coerce").fillna(0) == 0).sum()
-        m4.metric("Zero Stock Items", int(zero_stock))
-    except Exception:
-        m4.metric("Zero Stock Items", "—")
-else:
-    m4.metric("Rows", len(df))
+    m3.metric("Unique SKUs", len(df))
 
 # ─── Filters ──────────────────────────────────────────────────────────────────
 st.markdown("### 🔍 Search & Filter")
@@ -108,22 +142,25 @@ with f2:
     else:
         selected_cat = "All"
 
-filtered = df.copy()
+filtered     = df.copy()
+filtered_msk = pd.Series([True] * len(df))
 
 if search_text:
     mask = filtered.apply(
         lambda col: col.astype(str).str.contains(search_text, case=False, na=False)
     ).any(axis=1)
-    filtered = filtered[mask]
+    filtered     = filtered[mask]
+    filtered_msk = filtered_msk.loc[filtered.index]
 
 if selected_cat != "All" and cat_col:
     filtered = filtered[filtered[cat_col] == selected_cat]
 
-# ─── Table ────────────────────────────────────────────────────────────────────
-st.markdown(f"### 📋 Stock Records — {len(filtered):,} rows")
+# ─── Table — red highlight for zero-stock rows ────────────────────────────────
+st.markdown(f"### 📋 Stock Data — {len(filtered):,} rows  ·  🔴 Red = Zero Stock")
 
-# Highlight zero-stock rows in red
-def _style_zero_stock(row):
+display_df = filtered.reset_index(drop=True)
+
+def _row_style(row):
     if qty_col and qty_col in row.index:
         try:
             if pd.to_numeric(row[qty_col], errors="coerce") == 0:
@@ -132,11 +169,9 @@ def _style_zero_stock(row):
             pass
     return [""] * len(row)
 
-display_df = filtered.reset_index(drop=True)
-
 if qty_col:
     st.dataframe(
-        display_df.style.apply(_style_zero_stock, axis=1),
+        display_df.style.apply(_row_style, axis=1),
         use_container_width=True,
         height=550,
     )
@@ -146,7 +181,7 @@ else:
 # ─── Download ─────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.download_button(
-    label="⬇️ Download Stock as CSV",
+    label="⬇️ Download Filtered Stock as CSV",
     data=filtered.to_csv(index=False).encode("utf-8"),
     file_name="Stock_Data.csv",
     mime="text/csv",
