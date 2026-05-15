@@ -15,5 +15,6 @@ selenium
 webdriver-manager
 schedule
 PyMuPDF
+pdfplumber
 openpyxl
 xlsxwriter
