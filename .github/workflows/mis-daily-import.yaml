@@ -1,22 +1,27 @@
-name: MIS + Stock Daily Import (11 AM IST)
+name: MIS + Stock Daily Import (Mon–Sat, 11 AM + 2 PM IST)
 
-# Runs once per day at ~11:00 AM IST.
-# IST = UTC + 5:30, so 11:00 IST = 05:30 UTC.
+# Runs Mon–Sat only (skips Sunday). Two windows per day:
+#   • Morning  ~11 AM IST — catches emails that arrive before noon
+#   • Afternoon ~2 PM IST — catches emails delivered mid-afternoon
+# IST = UTC + 5:30  →  11:00 IST = 05:30 UTC,  14:00 IST = 08:30 UTC
+#
+# Both steps are idempotent — safe to re-run. The afternoon run simply
+# overwrites the sheet with the same data if the email hasn't changed.
 #
 # This single job handles BOTH imports from the same BR_MIS Excel attachment:
 #   Step 1 — reads the 'PO'    sheet tab → writes to 'MIS_Daily' Google Sheet
 #   Step 2 — reads the 'STOCK' sheet tab → writes to 'Stock'    Google Sheet
 #
-# WHY MULTIPLE CRONS?
+# WHY MULTIPLE CRONS PER WINDOW?
 # GitHub Actions free-tier crons are *best-effort* — runs can be delayed
-# 5–30 minutes. We fire three times in a tight window so at least one lands
-# near 11 AM IST. Both steps are idempotent — safe to re-run any time.
+# 5–30 minutes. Two crons per window ensure at least one fires near the target.
 
 on:
   schedule:
-    - cron: '25 5 * * *'        # 05:25 UTC = 10:55 IST  (primary, early)
-    - cron: '30 5 * * *'        # 05:30 UTC = 11:00 IST  (primary, on-time)
-    - cron: '45 5 * * *'        # 05:45 UTC = 11:15 IST  (drift backup)
+    - cron: '25 5 * * 1-6'      # 05:25 UTC = 10:55 IST  Mon–Sat (morning, early)
+    - cron: '45 5 * * 1-6'      # 05:45 UTC = 11:15 IST  Mon–Sat (morning, backup)
+    - cron: '00 9 * * 1-6'      # 09:00 UTC = 14:30 IST  Mon–Sat (afternoon, primary)
+    - cron: '30 9 * * 1-6'      # 09:30 UTC = 15:00 IST  Mon–Sat (afternoon, backup)
 
   # Manual trigger from the Actions UI for backfill / debugging
   workflow_dispatch:
