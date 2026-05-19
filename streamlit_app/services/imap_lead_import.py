@@ -218,6 +218,7 @@ def import_lead_to_sheet(lead_data: dict):
             next_id = 1
         else:
             df.columns = [str(c).strip().upper() for c in df.columns]
+            df = df.loc[:, ~df.columns.duplicated()]
 
             # ═══════════════════════════════════════════════════════════════════
             # DUPLICATE CHECK: Skip if Salesforce URL already exists
