@@ -148,6 +148,7 @@ def create_new_lead(lead_data: dict):
         next_id = 1
     else:
         df.columns = [str(c).strip().upper() for c in df.columns]
+        df = df.loc[:, ~df.columns.duplicated()]
         # Get maximum existing ID and increment (handles deleted records)
         if "LEAD ID" in df.columns:
             try:
