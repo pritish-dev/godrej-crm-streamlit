@@ -95,8 +95,8 @@ def load_leads():
         return pd.DataFrame()
 
     df.columns = [str(c).strip().upper() for c in df.columns]
+    df = df.loc[:, ~df.columns.duplicated()]
 
-    # Parse date columns
     date_columns = ["CREATED DATE", "LAST CONTACT", "FOLLOW UP DATE", "CONVERSION DATE"]
     for col in date_columns:
         if col in df.columns:
@@ -152,9 +152,11 @@ def create_new_lead(lead_data: dict):
         # Get maximum existing ID and increment (handles deleted records)
         if "LEAD ID" in df.columns:
             try:
-                max_id = df["LEAD ID"].astype(str).str.strip().astype(int).max()
+                ids = pd.to_numeric(df["LEAD ID"].astype(str).str.strip(), errors='coerce')
+                valid_ids = ids.dropna()
+                max_id = int(valid_ids.max()) if not valid_ids.empty else 0
                 next_id = max_id + 1
-            except:
+            except Exception:
                 next_id = len(df) + 1
         else:
             next_id = len(df) + 1
@@ -193,12 +195,20 @@ def create_new_lead(lead_data: dict):
 # =========================================================
 def update_lead(lead_id: str, updates: dict):
     df = get_df("LEADS")
+    if df is None or df.empty:
+        return
     df.columns = [str(c).strip().upper() for c in df.columns]
+    df = df.loc[:, ~df.columns.duplicated()]
 
-    idx = df[df["LEAD ID"].astype(str) == str(lead_id)].index
+    if "LEAD ID" not in df.columns:
+        return
+
+    idx = df[df["LEAD ID"].astype(str).str.strip() == str(lead_id).strip()].index
     if not idx.empty:
         for key, value in updates.items():
-            df.loc[idx[0], key.upper()] = value
+            col = key.upper()
+            if col in df.columns:
+                df.loc[idx[0], col] = value
 
     write_df("LEADS", df)
     st.cache_data.clear()
@@ -662,18 +672,16 @@ if not df_leads.empty:
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        status_filter = st.multiselect(
-            "Filter by Status",
-            df_leads["STATUS"].unique().tolist() if "STATUS" in df_leads.columns else [],
-            default=df_leads["STATUS"].unique().tolist() if "STATUS" in df_leads.columns else []
-        )
+        _status_opts = [x for x in df_leads["STATUS"].unique().tolist()
+                        if pd.notna(x) and str(x).strip() not in ("", "nan")] \
+                        if "STATUS" in df_leads.columns else []
+        status_filter = st.multiselect("Filter by Status", _status_opts, default=_status_opts)
 
     with col2:
-        priority_filter = st.multiselect(
-            "Filter by Priority",
-            df_leads["PRIORITY"].unique().tolist() if "PRIORITY" in df_leads.columns else [],
-            default=df_leads["PRIORITY"].unique().tolist() if "PRIORITY" in df_leads.columns else []
-        )
+        _priority_opts = [x for x in df_leads["PRIORITY"].unique().tolist()
+                          if pd.notna(x) and str(x).strip() not in ("", "nan")] \
+                          if "PRIORITY" in df_leads.columns else []
+        priority_filter = st.multiselect("Filter by Priority", _priority_opts, default=_priority_opts)
 
     with col3:
         assigned_filter = st.multiselect(
@@ -826,13 +834,17 @@ if not df_leads.empty:
                         # SAFE DATE HANDLING - Validate the date value
                         # ═══════════════════════════════════════════════════════════
                         try:
-                            follow_up_str = str(selected_row.get("FOLLOW UP DATE", "")).strip()
-                            if follow_up_str and follow_up_str != "N/A":
-                                follow_up_date = pd.to_datetime(follow_up_str)
+                            raw_follow_up = selected_row.get("FOLLOW UP DATE", "")
+                            _is_nat = pd.isna(raw_follow_up) if not isinstance(raw_follow_up, str) else False
+                            follow_up_str = str(raw_follow_up).strip() if not _is_nat else ""
+                            _bad = ("", "N/A", "NaT", "nat", "NAN", "nan", "None", "none")
+                            if not _is_nat and follow_up_str not in _bad:
+                                _parsed = pd.to_datetime(follow_up_str, errors='coerce')
+                                follow_up_date = _parsed.date() if not pd.isna(_parsed) else (datetime.now() + timedelta(days=1)).date()
                             else:
-                                follow_up_date = datetime.now() + timedelta(days=1)
-                        except:
-                            follow_up_date = datetime.now() + timedelta(days=1)
+                                follow_up_date = (datetime.now() + timedelta(days=1)).date()
+                        except Exception:
+                            follow_up_date = (datetime.now() + timedelta(days=1)).date()
 
                         new_follow_up = st.date_input(
                             "Follow Up Date",
