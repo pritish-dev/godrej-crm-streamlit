@@ -9,15 +9,17 @@ Sheet layout: one tab per calendar month  ("34s Stock Register- May 2026")
                … repeated for each day in the month …
 
 Features:
-  • Month selector  → pulls available month tabs from Google Sheets
-  • Date selector   → dates that have column data in the selected month
+  • Always shows current month (previous months are archived)
+  • Date filter (current month only, up to today) above the table
   • Summary metrics : Total SKUs / Cl Stock total / In Ward / Out Ward / Zero-stock items
-  • Search + Category filter
+  • Search + Category filter in sidebar
   • Styled table (red row = zero Cl Stock)
   • CSV download
   • Setup Sheet button   → create current month tab + last 7 days headers
-  • Update Today button  → run daily update for today
-  • Catch-up button      → fill every day from last-updated+1 through today
+  • Update Sheet button  → fill every day from last-updated+1 through today
+  • Force Re-run Today   → overwrite today's columns only
+  • Send Monthly Report  → email full-month Excel + last-day table (no archive)
+  • Send Today's Report  → email today's stock table (body only, no attachment)
 """
 
 import sys
@@ -31,7 +33,6 @@ import pandas as pd
 from datetime import datetime, timezone, timedelta, date
 
 from services.stock_34s_service import (
-    get_available_months,
     load_month_df,
     load_stock_for_date,
     dates_in_df,
@@ -40,164 +41,58 @@ from services.stock_34s_service import (
     run_daily_update,
     run_update_range,
     sheet_name_for,
+    send_monthly_stock_email,
+    send_daily_stock_email,
     FIXED_COLS,
     DATE_SUB_COLS,
-    SHEET_PREFIX,
 )
 
-IST   = timezone(timedelta(hours=5, minutes=30))
-TODAY = datetime.now(IST).date()
+IST            = timezone(timedelta(hours=5, minutes=30))
+TODAY          = datetime.now(IST).date()
+sel_year       = TODAY.year
+sel_month      = TODAY.month
+sel_month_label = TODAY.strftime("%B %Y")
+MONTH_START    = date(sel_year, sel_month, 1)
 
 st.set_page_config(layout="wide", page_title="34S Stock Details", page_icon="📦")
 
 # ─── Header ───────────────────────────────────────────────────────────────────
 st.title("📦 34S Physical Stock Register")
 st.caption(
-    "Sheet: **one tab per month** (e.g. *'34s Stock Register- May 2026'*) · "
+    f"Sheet: **{sheet_name_for(TODAY)}** · "
     "Updated daily at **8 PM IST** · Use the buttons below to refresh or back-fill."
 )
 
 # ─── Session state ─────────────────────────────────────────────────────────────
 for key, default in [
-    ("s34_months",       []),
-    ("s34_month_idx",    None),
-    ("s34_month_df",     pd.DataFrame()),
-    ("s34_date",         None),
-    ("s34_display_df",   pd.DataFrame()),
-    ("s34_status",       ""),
-    ("s34_loaded",       False),
+    ("s34_month_df",   pd.DataFrame()),
+    ("s34_display_df", pd.DataFrame()),
+    ("s34_status",     ""),
+    ("s34_loaded",     False),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
 
 # ─── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("### 📅 Select Month & Date")
-
-    # Refresh month list on first load or when explicitly requested
-    if not st.session_state.s34_months:
-        st.session_state.s34_months = get_available_months()
-
-    months = st.session_state.s34_months   # [(year, month, sheet_name), …]
-
-    if not months:
-        st.warning(
-            "No stock register sheets found.  \n"
-            "Use **⚙️ Setup Sheet** (below) to create the current month's tab."
-        )
-        month_labels = [TODAY.strftime("%B %Y")]
-        sel_year, sel_month = TODAY.year, TODAY.month
-        month_disabled = True
-    else:
-        month_labels   = [m[2][len(SHEET_PREFIX):] for m in months]  # "May 2026"
-        # Default to current month if present, else latest
-        cur_label = TODAY.strftime("%B %Y")
-        default_mi = (
-            month_labels.index(cur_label)
-            if cur_label in month_labels
-            else len(month_labels) - 1
-        )
-        month_disabled = False
-
-    sel_month_label = st.selectbox(
-        "Month",
-        options=month_labels,
-        index=default_mi if not month_disabled else 0,
-        disabled=month_disabled,
-        key="s34_month_select",
-    )
-
-    if not month_disabled:
-        sel_entry = months[month_labels.index(sel_month_label)]
-        sel_year, sel_month, _ = sel_entry
-    else:
-        sel_year, sel_month = TODAY.year, TODAY.month
-
-    # ── Date selector (populated after loading month DataFrame) ──────────────
-    date_placeholder = st.empty()
-
-    st.markdown("---")
     st.markdown("### 🔍 Filters")
-    search_text  = st.text_input("Search (any column)", placeholder="e.g. Wardrobe, ZBF…")
-    cat_slot     = st.empty()   # populated below after load
+    search_text = st.text_input("Search (any column)", placeholder="e.g. Wardrobe, ZBF…")
+    cat_slot    = st.empty()   # populated after data load
 
     st.markdown("---")
     reload_btn = st.button("🔁 Reload Month Data", use_container_width=True)
 
 # ─── Load month data ──────────────────────────────────────────────────────────
-month_key = (sel_year, sel_month)
-prev_key  = (
-    st.session_state.get("_s34_prev_month_key"),
-)
-need_reload = (
-    not st.session_state.s34_loaded
-    or reload_btn
-    or st.session_state.get("_s34_prev_month_key") != month_key
-)
+need_reload = not st.session_state.s34_loaded or reload_btn
 
 if need_reload:
     with st.spinner(f"Loading {sel_month_label}…"):
         df_month, load_msg = load_month_df(sel_year, sel_month)
-        st.session_state.s34_month_df  = df_month
-        st.session_state.s34_status    = load_msg
-        st.session_state.s34_loaded    = True
-        st.session_state["_s34_prev_month_key"] = month_key
+        st.session_state.s34_month_df = df_month
+        st.session_state.s34_status   = load_msg
+        st.session_state.s34_loaded   = True
 
 df_month: pd.DataFrame = st.session_state.s34_month_df
-
-# ─── Date selector (filled now that we have the month df) ─────────────────────
-available_dates = dates_in_df(df_month, sel_year, sel_month) if not df_month.empty else []
-
-if not available_dates:
-    date_options  = [TODAY.strftime("%d/%m/%Y")]
-    default_di    = 0
-    dates_present = False
-else:
-    date_options  = [d.strftime("%d/%m/%Y") for d in available_dates]
-    today_str     = TODAY.strftime("%d/%m/%Y")
-    default_di    = (
-        date_options.index(today_str)
-        if today_str in date_options
-        else len(date_options) - 1
-    )
-    dates_present = True
-
-with date_placeholder:
-    sel_date_str = st.selectbox(
-        "Date",
-        options=date_options,
-        index=default_di,
-        key="s34_date_select",
-        disabled=not dates_present,
-    )
-
-# Parse selected date
-try:
-    sel_date = datetime.strptime(sel_date_str, "%d/%m/%Y").date()
-except Exception:
-    sel_date = TODAY
-
-# ─── Load per-date display data ───────────────────────────────────────────────
-date_key = (sel_year, sel_month, sel_date)
-need_date_reload = (
-    st.session_state.get("_s34_prev_date_key") != date_key
-    or need_reload
-)
-
-if need_date_reload:
-    if df_month.empty:
-        st.session_state.s34_display_df = pd.DataFrame()
-    else:
-        if dates_present and sel_date in available_dates:
-            flat_df, date_msg = load_stock_for_date(sel_year, sel_month, sel_date)
-            st.session_state.s34_display_df = flat_df
-            # Append date load status to existing status
-            st.session_state.s34_status += f"  ·  {date_msg}"
-        else:
-            st.session_state.s34_display_df = pd.DataFrame()
-    st.session_state["_s34_prev_date_key"] = date_key
-
-df_display: pd.DataFrame = st.session_state.s34_display_df
 
 # ─── Status banner ────────────────────────────────────────────────────────────
 status = st.session_state.s34_status
@@ -210,17 +105,14 @@ elif status.startswith("❌"):
 elif status:
     st.info(status)
 
-# ─── Action buttons ───────────────────────────────────────────────────────────
-# Determine the correct start date for the update/catch-up range ONCE so both
-# buttons use the same value.  Only dates with actual Cl Stock data count —
-# empty column headers (added by Setup Sheet) are ignored.
+# ─── Action buttons row 1: Sheet operations ───────────────────────────────────
 _last_upd = get_last_updated_date(sel_year, sel_month)
 if _last_upd is None:
-    _update_start = date(sel_year, sel_month, 1)        # no data at all
+    _update_start = MONTH_START
 elif _last_upd >= TODAY:
-    _update_start = TODAY                               # already current — re-run today
+    _update_start = TODAY
 else:
-    _update_start = _last_upd + timedelta(days=1)       # fill from day after last update
+    _update_start = _last_upd + timedelta(days=1)
 
 _range_label = (
     f"{_update_start.strftime('%d/%m')} → {TODAY.strftime('%d/%m')}"
@@ -234,12 +126,13 @@ with col_setup:
     if st.button(
         "⚙️ Setup Sheet",
         use_container_width=True,
-        help=f"Create '{sheet_name_for(date(sel_year, sel_month, 1))}' with last 7 days of column headers. "
-             "Item rows are auto-copied from the previous month if available.",
+        help=(
+            f"Create '{sheet_name_for(TODAY)}' with last 7 days of column headers. "
+            "Item rows are auto-copied from the previous month if available."
+        ),
     ):
         with st.spinner("Setting up month sheet…"):
             msg = ensure_month_sheet(sel_year, sel_month, seed_days=7)
-        st.session_state.s34_months = get_available_months()
         df_month, load_msg = load_month_df(sel_year, sel_month)
         st.session_state.s34_month_df = df_month
         st.session_state.s34_loaded   = True
@@ -250,8 +143,6 @@ with col_setup:
         st.rerun()
 
 with col_update:
-    # PRIMARY update button — always starts from the day AFTER the last date
-    # that has actual data, so gaps are never skipped.
     if st.button(
         f"⚡ Update Sheet  ({_range_label})",
         type="primary",
@@ -264,7 +155,7 @@ with col_update:
         ),
     ):
         total_days = max((TODAY - _update_start).days + 1, 1)
-        prog = st.progress(0, text=f"Updating {total_days} day(s): {_range_label}…")
+        prog    = st.progress(0, text=f"Updating {total_days} day(s): {_range_label}…")
         details = st.empty()
 
         with st.spinner("Fetching data and writing to sheet…"):
@@ -281,9 +172,9 @@ with col_update:
                     st.warning(line)
 
         df_month, _ = load_month_df(sel_year, sel_month)
-        st.session_state.s34_month_df  = df_month
-        st.session_state.s34_status    = summary
-        st.session_state.s34_loaded    = True
+        st.session_state.s34_month_df          = df_month
+        st.session_state.s34_status            = summary
+        st.session_state.s34_loaded            = True
         st.session_state["_s34_prev_date_key"] = None
         if summary and "error" not in summary.lower():
             st.success(summary)
@@ -292,7 +183,6 @@ with col_update:
         st.rerun()
 
 with col_rerun:
-    # FORCE RE-RUN — always overwrites TODAY only, regardless of last update.
     if st.button(
         f"🔄 Force Re-run Today  ({TODAY.strftime('%d/%m')})",
         use_container_width=True,
@@ -302,15 +192,60 @@ with col_rerun:
         with st.spinner(f"Re-running update for {TODAY.strftime('%d %b')}…"):
             _, upd_msg = run_daily_update(TODAY)
         df_month, _ = load_month_df(sel_year, sel_month)
-        st.session_state.s34_month_df  = df_month
-        st.session_state.s34_status    = upd_msg
-        st.session_state.s34_loaded    = True
+        st.session_state.s34_month_df          = df_month
+        st.session_state.s34_status            = upd_msg
+        st.session_state.s34_loaded            = True
         st.session_state["_s34_prev_date_key"] = None
         if upd_msg.startswith("✅"):
             st.success(upd_msg)
         else:
             st.error(upd_msg)
         st.rerun()
+
+# ─── Action buttons row 2: Email ──────────────────────────────────────────────
+st.markdown("")
+col_email_monthly, col_email_daily, _ = st.columns([1, 1, 1])
+
+with col_email_monthly:
+    if st.button(
+        "📧 Send Monthly Report",
+        use_container_width=True,
+        help=(
+            f"Email the full **{sel_month_label}** stock as an Excel attachment, "
+            "with the last recorded day's table in the email body. "
+            "Does NOT archive the sheet."
+        ),
+    ):
+        with st.spinner(f"Sending monthly stock report for {sel_month_label}…"):
+            result = send_monthly_stock_email(sel_year, sel_month, archive=False)
+        if result.get("sent"):
+            st.success(
+                f"✅ Monthly report sent!  \n"
+                f"**Subject:** {result['subject']}  \n"
+                f"**To:** {', '.join(result['recipients'])}"
+            )
+        else:
+            st.error(f"❌ Failed to send monthly report: {result.get('error', 'Unknown error')}")
+
+with col_email_daily:
+    if st.button(
+        "📧 Send Today's Report",
+        use_container_width=True,
+        help=(
+            f"Email today's ({TODAY.strftime('%d %b %Y')}) stock snapshot "
+            "as an HTML table in the email body. No attachment."
+        ),
+    ):
+        with st.spinner(f"Sending today's stock report ({TODAY.strftime('%d %b %Y')})…"):
+            result = send_daily_stock_email(TODAY)
+        if result.get("sent"):
+            st.success(
+                f"✅ Today's report sent!  \n"
+                f"**Subject:** {result['subject']}  \n"
+                f"**To:** {', '.join(result['recipients'])}"
+            )
+        else:
+            st.error(f"❌ Failed to send today's report: {result.get('error', 'Unknown error')}")
 
 # ─── No data guard ────────────────────────────────────────────────────────────
 if df_month.empty:
@@ -319,31 +254,70 @@ if df_month.empty:
         f"📭 **No data found for {sel_month_label}.**  \n"
         "Possible reasons:\n"
         "- The sheet tab doesn't exist yet → click **⚙️ Setup Sheet**\n"
-        "- The sheet tab exists but is empty → add item rows manually or run **⚡ Update Today**\n"
-        "- The month was archived after the monthly email → select a different month"
+        "- The sheet tab exists but is empty → add item rows manually or run **⚡ Update Sheet**\n"
+        "- The month was archived after the monthly email was sent"
     )
     st.stop()
 
+# ─── Date filter (current month only, up to today) ────────────────────────────
+st.markdown("---")
+
+available_dates = dates_in_df(df_month, sel_year, sel_month) if not df_month.empty else []
+
+# Default to the most recent date that has data, or TODAY if none
+if available_dates:
+    default_date = max(d for d in available_dates if d <= TODAY) if any(d <= TODAY for d in available_dates) else available_dates[-1]
+else:
+    default_date = TODAY
+
+sel_date: date = st.date_input(
+    "📅 View date",
+    value=default_date,
+    min_value=MONTH_START,
+    max_value=TODAY,
+    format="DD/MM/YYYY",
+    help=f"Select any date in {sel_month_label} (up to today). Previous months are archived.",
+)
+
+# ─── Load per-date display data ───────────────────────────────────────────────
+date_key      = (sel_year, sel_month, sel_date)
+need_date_reload = (
+    st.session_state.get("_s34_prev_date_key") != date_key
+    or need_reload
+)
+
+if need_date_reload:
+    if df_month.empty:
+        st.session_state.s34_display_df = pd.DataFrame()
+    elif sel_date in available_dates:
+        flat_df, date_msg = load_stock_for_date(sel_year, sel_month, sel_date)
+        st.session_state.s34_display_df = flat_df
+    else:
+        st.session_state.s34_display_df = pd.DataFrame()
+    st.session_state["_s34_prev_date_key"] = date_key
+
+df_display: pd.DataFrame = st.session_state.s34_display_df
+
+# ─── No data for selected date ────────────────────────────────────────────────
+dates_present = bool(available_dates)
+
 if df_display.empty and dates_present:
-    st.markdown("---")
     st.warning(
-        f"⚠️ **No data columns found for {sel_date_str}.**  \n"
-        "Select a different date from the sidebar, or use **⚡ Update Today** / **🔄 Catch-up** to populate the data."
+        f"⚠️ **No data found for {sel_date.strftime('%d %b %Y')}.**  \n"
+        "This date may not have been updated yet. "
+        "Use **⚡ Update Sheet** to populate it, or select a different date above."
     )
-    # Still show the month summary expander below
 elif df_display.empty and not dates_present:
-    st.markdown("---")
     st.info(
-        f"📭 **The sheet for {sel_month_label} exists but has no date columns yet.**  \n"
-        "Use **⚡ Update Today** to add today's data, or **⚙️ Setup Sheet** to add 7 days of blank column headers."
+        f"📭 **{sel_month_label} sheet exists but has no date columns yet.**  \n"
+        "Use **⚡ Update Sheet** to add today's data, or **⚙️ Setup Sheet** to "
+        "add 7 days of blank column headers."
     )
     st.stop()
 
 # ─── Summary metrics ──────────────────────────────────────────────────────────
 if not df_display.empty:
-    st.markdown("---")
     m1, m2, m3, m4, m5 = st.columns(5)
-
     try:
         cl_s  = pd.to_numeric(df_display.get("Cl Stock",  pd.Series(dtype=float)), errors="coerce")
         in_s  = pd.to_numeric(df_display.get("In Ward",   pd.Series(dtype=float)), errors="coerce")
@@ -357,7 +331,7 @@ if not df_display.empty:
     except Exception:
         m1.metric("Total SKUs", f"{len(df_display):,}")
 
-# ─── Filters ──────────────────────────────────────────────────────────────────
+# ─── Category filter (sidebar) ────────────────────────────────────────────────
 if not df_display.empty:
     cat_col = "Product Category" if "Product Category" in df_display.columns else None
     if cat_col:
@@ -379,7 +353,9 @@ if not df_display.empty:
         filtered = filtered[filtered[cat_col].astype(str).str.strip() == sel_cat]
 
     # ─── Data table ───────────────────────────────────────────────────────────
-    st.markdown(f"### 📋 Stock — {sel_date_str}  ·  {len(filtered):,} items")
+    st.markdown(
+        f"### 📋 Stock — {sel_date.strftime('%d %b %Y')}  ·  {len(filtered):,} items"
+    )
     st.caption("🔴 Red rows = zero closing stock")
 
     disp = filtered.reset_index(drop=True)
@@ -412,29 +388,28 @@ if not df_display.empty:
         st.download_button(
             label="⬇️ Download as CSV",
             data=filtered.to_csv(index=False).encode("utf-8"),
-            file_name=f"34S_Stock_{sel_date_str.replace('/', '-')}.csv",
+            file_name=f"34S_Stock_{sel_date.strftime('%d-%m-%Y')}.csv",
             mime="text/csv",
             use_container_width=True,
         )
 
-# ─── Movement expanders (always show if month data available) ─────────────────
+# ─── Movement expanders ───────────────────────────────────────────────────────
 st.markdown("---")
 
 with st.expander("📊 Movement Summary by Category"):
     cat_col_m = "Product Category" if "Product Category" in df_month.columns else None
-    # Build a flat today-view from month df for summary
     if not df_display.empty and cat_col_m:
         grp = df_display.copy()
         for c in ["Op Stock", "In Ward", "Out Ward", "Cl Stock"]:
             grp[c] = pd.to_numeric(grp.get(c, 0), errors="coerce").fillna(0)
-        summary = grp.groupby(cat_col_m, as_index=False).agg(
+        summary_grp = grp.groupby(cat_col_m, as_index=False).agg(
             Items=("Item Code", "count"),
             **{"Op Stock":  ("Op Stock",  "sum")},
             **{"In Ward":   ("In Ward",   "sum")},
             **{"Out Ward":  ("Out Ward",  "sum")},
             **{"Cl Stock":  ("Cl Stock",  "sum")},
         )
-        st.dataframe(summary, use_container_width=True, hide_index=True)
+        st.dataframe(summary_grp, use_container_width=True, hide_index=True)
     elif df_display.empty:
         st.info("No data loaded for the selected date — summary unavailable.")
     else:
@@ -466,10 +441,14 @@ with st.expander("📤 Items with Outward Today"):
             show_cols = [c for c in ["Item Code", "Item Description", "Out Ward"] if c in out_df.columns]
             st.dataframe(out_df[show_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
 
-with st.expander("📆 All dates available in this month"):
+with st.expander(f"📆 All dates available in {sel_month_label}"):
     if available_dates:
         date_rows = [
-            {"Date": d.strftime("%d %b %Y"), "Day": d.strftime("%A"), "Columns present": "✅"}
+            {
+                "Date":             d.strftime("%d %b %Y"),
+                "Day":              d.strftime("%A"),
+                "Has data":         "✅" if d <= TODAY else "—",
+            }
             for d in available_dates
         ]
         st.dataframe(pd.DataFrame(date_rows), use_container_width=True, hide_index=True)

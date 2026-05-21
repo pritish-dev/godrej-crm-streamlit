@@ -997,51 +997,61 @@ def _build_monthly_excel(year: int, month: int) -> bytes:
     return buf.getvalue()
 
 
-def build_last_day_html_table(year: int, month: int) -> tuple[str, date | None]:
+def _build_stock_html_table(flat: pd.DataFrame) -> str:
     """
-    Return (html_table_string, last_date) for the last recorded day of the month.
+    Build a styled HTML table from a flat daily stock DataFrame
+    (columns: FIXED_COLS + DATE_SUB_COLS).
+    Shared by both the monthly and daily email functions.
     """
-    df, _ = load_month_df(year, month)
-    if df.empty:
-        return "<p>No data found for this month.</p>", None
-
-    available = dates_in_df(df, year, month)
-    if not available:
-        return "<p>No date columns found in the sheet.</p>", None
-
-    last_day = max(available)
-    flat, _  = load_stock_for_date(year, month, last_day)
-
-    if flat.empty:
-        return f"<p>No data for {last_day}.</p>", last_day
-
+    th_style = "padding:8px 10px;background:#1F4E79;color:#fff;border:1px solid #ccc;white-space:nowrap;"
+    td_style = "padding:6px 10px;border:1px solid #ddd;"
+    cols     = [c for c in FIXED_COLS + DATE_SUB_COLS if c in flat.columns]
+    ths      = "".join(f"<th style='{th_style}'>{c}</th>" for c in cols)
     rows_html = ""
     for _, r in flat.iterrows():
+        # Highlight zero-stock rows
+        try:
+            cl_val = float(str(r.get("Cl Stock", 1)).replace(",", "") or 1)
+            row_bg = "background:#FFEBEE;" if cl_val == 0 else ""
+        except (ValueError, TypeError):
+            row_bg = ""
         cells = "".join(
-            f"<td style='padding:6px 10px;border:1px solid #ddd'>{r.get(c, '')}</td>"
-            for c in FIXED_COLS + DATE_SUB_COLS
+            f"<td style='{td_style}{row_bg}'>{r.get(c, '')}</td>" for c in cols
         )
         rows_html += f"<tr>{cells}</tr>"
-
-    th_style = "padding:8px 10px;background:#1F4E79;color:#fff;border:1px solid #ccc;"
-    ths = "".join(f"<th style='{th_style}'>{c}</th>" for c in FIXED_COLS + DATE_SUB_COLS)
-
-    html = (
+    return (
         f"<table style='border-collapse:collapse;font-family:Arial,sans-serif;"
         f"font-size:12px;width:100%'>"
         f"<thead><tr>{ths}</tr></thead>"
         f"<tbody>{rows_html}</tbody></table>"
     )
-    return html, last_day
 
 
-def send_monthly_stock_email(year: int, month: int) -> dict:
+def build_last_day_html_table(year: int, month: int) -> tuple[str, date | None]:
+    """Return (html_table_string, last_date) for the last recorded day of the month."""
+    df, _ = load_month_df(year, month)
+    if df.empty:
+        return "<p>No data found for this month.</p>", None
+    available = dates_in_df(df, year, month)
+    if not available:
+        return "<p>No date columns found in the sheet.</p>", None
+    last_day = max(available)
+    flat, _  = load_stock_for_date(year, month, last_day)
+    if flat.empty:
+        return f"<p>No data for {last_day}.</p>", last_day
+    return _build_stock_html_table(flat), last_day
+
+
+def send_monthly_stock_email(year: int, month: int, archive: bool = True) -> dict:
     """
     Send the monthly stock email:
       - Subject : "Monthly 34S Stock Details- {Month} {Year}"
-      - Body    : last day's stock as an HTML table
+      - Body    : last recorded day's stock as an HTML table
       - Attach  : full month's data as a styled Excel file
-    Also renames the sheet to "ARCHIVED 34S Stock {Month} {Year}".
+
+    archive=True  (default, used by the scheduled job) also renames the sheet to
+                  "ARCHIVED 34S Stock {Month} {Year}" after sending.
+    archive=False (used by the manual UI button) sends the email only.
     """
     import smtplib
     from email.message import EmailMessage
@@ -1097,21 +1107,112 @@ def send_monthly_stock_email(year: int, month: int) -> dict:
     except Exception as e:
         return {"sent": False, "error": str(e)}
 
-    # Archive the sheet by renaming it
-    try:
-        sh = _get_spreadsheet()
-        old_name = sheet_name_for(date(year, month, 1))
-        ws = sh.worksheet(old_name)
-        ws.update_title(f"ARCHIVED 34S Stock {month_label}")
-        print(f"[STOCK 34S] Sheet archived as 'ARCHIVED 34S Stock {month_label}'.")
-    except Exception as e:
-        print(f"[STOCK 34S] Archive rename failed (non-fatal): {e}")
+    if archive:
+        try:
+            sh = _get_spreadsheet()
+            old_name = sheet_name_for(date(year, month, 1))
+            ws = sh.worksheet(old_name)
+            ws.update_title(f"ARCHIVED 34S Stock {month_label}")
+            print(f"[STOCK 34S] Sheet archived as 'ARCHIVED 34S Stock {month_label}'.")
+        except Exception as e:
+            print(f"[STOCK 34S] Archive rename failed (non-fatal): {e}")
 
     try:
         from services.sheets import append_email_log
         append_email_log(
             f"Monthly 34S Stock Email ({month_label})",
             0, recipients, "success",
+        )
+    except Exception:
+        pass
+
+    return {"sent": True, "subject": subject, "recipients": recipients}
+
+
+def send_daily_stock_email(target_date: date) -> dict:
+    """
+    Send a daily stock snapshot email for target_date:
+      - Subject : "34S Stock Report — {DD Month YYYY}"
+      - Body    : that day's full stock table as HTML (no attachment)
+      - Recipients: same EMAIL_RECIPIENTS secret used for all other CRM emails
+
+    This is triggered manually from the dashboard; it is NOT scheduled.
+    """
+    import smtplib
+    from email.message import EmailMessage
+
+    year, month = target_date.year, target_date.month
+    date_label  = target_date.strftime("%d %B %Y")
+    day_name    = target_date.strftime("%A")
+    subject     = f"34S Stock Report — {date_label}"
+
+    flat, load_status = load_stock_for_date(year, month, target_date)
+    if flat.empty:
+        return {
+            "sent": False,
+            "error": (
+                f"No stock data found for {date_label}. "
+                "Run ⚡ Update Sheet first to populate this date."
+            ),
+        }
+
+    recipients = _email_recipients()
+    if not recipients:
+        return {"sent": False, "error": "No email recipients configured (EMAIL_RECIPIENTS secret)."}
+
+    email_addr, password = _imap_creds()
+    if not email_addr or not password:
+        return {"sent": False, "error": "Email credentials not configured."}
+
+    html_table = _build_stock_html_table(flat)
+
+    # Summary line
+    try:
+        cl_total  = int(pd.to_numeric(flat.get("Cl Stock",  pd.Series()), errors="coerce").fillna(0).sum())
+        in_total  = int(pd.to_numeric(flat.get("In Ward",   pd.Series()), errors="coerce").fillna(0).sum())
+        out_total = int(pd.to_numeric(flat.get("Out Ward",  pd.Series()), errors="coerce").fillna(0).sum())
+        summary_line = (
+            f"Total items: <b>{len(flat):,}</b> &nbsp;|&nbsp; "
+            f"Cl Stock: <b>{cl_total:,}</b> &nbsp;|&nbsp; "
+            f"In Ward: <b>{in_total:,}</b> &nbsp;|&nbsp; "
+            f"Out Ward: <b>{out_total:,}</b>"
+        )
+    except Exception:
+        summary_line = f"Total items: <b>{len(flat):,}</b>"
+
+    html_body = (
+        f"<html><body style='font-family:Arial,sans-serif;color:#222'>"
+        f"<div style='background:#1F4E79;padding:16px 24px;border-radius:6px 6px 0 0'>"
+        f"<h2 style='color:#fff;margin:0'>📦 34S Stock Report — {date_label} ({day_name})</h2>"
+        f"</div>"
+        f"<div style='padding:16px 24px 8px'>"
+        f"<p style='font-size:13px;color:#555;margin:0 0 12px'>{summary_line}</p>"
+        f"{html_table}"
+        f"</div>"
+        f"<div style='padding:10px 24px;background:#eee;font-size:11px;color:#888;"
+        f"border-radius:0 0 6px 6px'>Daily snapshot · 34S Interiors CRM</div>"
+        f"</body></html>"
+    )
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"]    = email_addr
+    msg["To"]      = ", ".join(recipients)
+    msg.set_content("Please view this email in HTML format.")
+    msg.add_alternative(html_body, subtype="html")
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(email_addr, password)
+            server.send_message(msg)
+    except Exception as e:
+        return {"sent": False, "error": str(e)}
+
+    try:
+        from services.sheets import append_email_log
+        append_email_log(
+            f"Daily 34S Stock Email ({date_label})",
+            len(flat), recipients, "success",
         )
     except Exception:
         pass
