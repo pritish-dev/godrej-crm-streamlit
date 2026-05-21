@@ -1,34 +1,33 @@
 """
 services/stock_34s_service.py
 
-34S Physical Stock Register — daily update service.
+34S Physical Stock Register — horizontal pivot, one Google Sheet tab per month.
 
-REQUIRED SETUP
---------------
-1. GOOGLE_DRIVE_INVOICES_FOLDER_ID must be set in secrets.toml / GitHub
-   secrets — the same value already used by the delivery schedule email.
-2. The "34s Stock Register" sheet must use the flat-table format:
-     DATE | Sl No | Item Code | Item Description | Product Category |
-     Op Stock | In Ward | Out Ward | Cl Stock | Delivery Challan No
-   (One row per item per day — the daily job appends/updates for today.)
-4. On first use, manually add one day of data (even with all zeros) so the
-   script has an item master list to work from.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SHEET DESIGN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Tab name : "34s Stock Register- May 2026"
+           "34s Stock Register- Jun 2026"   (auto-created each month)
 
-DAILY FLOW (8 PM IST)
----------------------
-  1. Load master item list from the most recent date in the sheet.
-  2. Previous day's Cl Stock → today's Op Stock per item.
-  3. Inward from emails  : IMAP, subject "Delivery Challan Information" (PDF).
-  4. Inward from Drive   : invoice PDFs under warehouse code ZBF34S.
-  5. Outward             : "34S PHYSICAL DELIVERY CHALLAN" + "34S RETURN RPL".
-  6. Cl Stock = Op Stock + In Ward - Out Ward.
-  7. Write/update today's rows (idempotent — safe to re-run).
+Layout (grows RIGHT by 5 columns each day):
 
-MONTHLY EMAIL (last day of month)
----------------------------------
-  Subject : "Monthly 34S Stock Details- <Month Name>"
-  Body    : HTML table of last day's stock.
-  Attach  : Excel file with all data for the month.
+  Sl No │ Item Code │ Item Description │ Product Category │ 01/05 Op Stock │ 01/05 In Ward │ 01/05 Out Ward │ 01/05 Cl Stock │ 01/05 DC No │ 02/05 Op Stock │ …
+
+  • 1 row per item — never changes
+  • 5 columns per day — appended each evening at 8 PM
+  • ~1,000 items × (4 + 5 × 31) = ~159 K cells/month  ✅
+
+DAILY JOB (8 PM IST):
+  1. Ensure month tab exists (auto-copies item list from previous month if new)
+  2. _get_prev_cl_stock()  →  most recent previous day's Cl Stock (crosses months)
+  3. Fetch In Ward  (email "Delivery Challan Information" + Drive PDFs, ZBF34S only)
+  4. Fetch Out Ward (34S PHYSICAL DELIVERY CHALLAN + 34S RETURN RPL sheets)
+  5. Build 5 new columns, drop existing ones for that date (idempotent)
+  6. Write the combined DataFrame back to the tab
+
+CATCH-UP:
+  run_update_range(start, end) updates every missing date in sequence,
+  clearing the gspread cache between days so each day reads fresh data.
 """
 
 from __future__ import annotations
@@ -38,59 +37,89 @@ import os
 import re
 import sys
 import imaplib
-import email as _email
-import calendar
-from datetime import datetime, date, timezone, timedelta
-from email.header import decode_header
+import email as _email_lib
+from calendar import monthrange
+from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
+# ─── Constants ────────────────────────────────────────────────────────────────
 
-# ─── Constants (configure these) ─────────────────────────────────────────────
+IST             = timezone(timedelta(hours=5, minutes=30))
+SHEET_PREFIX    = "34s Stock Register- "          # + "May 2026"
+FIXED_COLS      = ["Sl No", "Item Code", "Item Description", "Product Category"]
+DATE_SUB_COLS   = ["Op Stock", "In Ward", "Out Ward", "Cl Stock", "DC No"]
+WAREHOUSE_CODE  = "ZBF34S"
+CHALLAN_SUBJECT = "Delivery Challan Information"
+DELIVERY_SHEET  = "34S PHYSICAL DELIVERY CHALLAN"
+RETURN_SHEET    = "34S RETURN RPL"
 
-STOCK_34S_SHEET        = "34s Stock Register"
-DELIVERY_CHALLAN_SHEET = "34S PHYSICAL DELIVERY CHALLAN"
-RETURN_RPL_SHEET       = "34S RETURN RPL"
-CHALLAN_EMAIL_SUBJECT  = "Delivery Challan Information"
-WAREHOUSE_CODE_34S     = "ZBF34S"
-# Drive root folder ID is read from GOOGLE_DRIVE_INVOICES_FOLDER_ID (secrets/env)
-# — same secret already used by email_sender_delivery_schedule.py.
+# ─── Sheet naming ─────────────────────────────────────────────────────────────
 
-STOCK_COLUMNS = [
-    "DATE", "Sl No", "Item Code", "Item Description", "Product Category",
-    "Op Stock", "In Ward", "Out Ward", "Cl Stock", "Delivery Challan No",
-]
-
-IST = timezone(timedelta(hours=5, minutes=30))
-
-# Godrej item code pattern: 8 digits + 2 uppercase letters + 5 digits
-_ITEM_CODE_RE = re.compile(r'\b(\d{8}[A-Z]{2}\d{5})\b')
+def sheet_name_for(d: date) -> str:
+    """e.g. '34s Stock Register- May 2026'"""
+    return f"{SHEET_PREFIX}{d.strftime('%B %Y')}"
 
 
-# ─── Reuse Drive helpers already defined in email_sender_delivery_schedule ────
-# _get_drive_folder_id() reads GOOGLE_DRIVE_INVOICES_FOLDER_ID from env /
-# secrets.toml / GitHub secrets — the same folder that holds the monthly
-# invoice sub-folders (e.g. "2 May-2026" / "for 20.05.2026").
-from services.email_sender_delivery_schedule import (
-    _get_drive_folder_id,
-    _get_drive_service,
-    _list_drive_folders,
-    _list_drive_pdfs,
-    _download_drive_file,
+def current_sheet_name() -> str:
+    return sheet_name_for(datetime.now(IST).date())
+
+
+# ─── Column naming helpers ────────────────────────────────────────────────────
+
+def _col_tag(d: date) -> str:
+    """Short date prefix for column names: '21/05'"""
+    return f"{d.day:02d}/{d.month:02d}"
+
+
+def _col(d: date, sub: str) -> str:
+    """Full column name: '21/05 Op Stock'"""
+    return f"{_col_tag(d)} {sub}"
+
+
+_COL_RE = re.compile(
+    r"^(\d{2})/(\d{2})\s+(Op Stock|In Ward|Out Ward|Cl Stock|DC No)$"
 )
 
 
-# ─── Credential helpers ───────────────────────────────────────────────────────
+def _parse_col(col_name: str) -> tuple[int, int, str] | None:
+    """
+    Parse '21/05 Op Stock' → (day=21, month=5, sub='Op Stock').
+    Returns None if the name doesn't match.
+    """
+    m = _COL_RE.match(col_name.strip())
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2)), m.group(3)
 
-def _get_imap_creds() -> tuple[str, str]:
-    """Return (email, password) for IMAP access."""
-    ev = os.getenv("EMAIL_SENDER", "").strip()
-    ep = os.getenv("EMAIL_PASSWORD", "").strip()
-    if ev and ep:
-        return ev, ep
+
+def dates_in_df(df: pd.DataFrame, year: int, month: int) -> list[date]:
+    """Return sorted list of dates that have at least one column group in df."""
+    seen: set[date] = set()
+    for col in df.columns:
+        parsed = _parse_col(col)
+        if not parsed:
+            continue
+        day, mon, _ = parsed
+        if mon != month:
+            continue
+        try:
+            seen.add(date(year, month, day))
+        except ValueError:
+            pass
+    return sorted(seen)
+
+
+# ─── Credentials ──────────────────────────────────────────────────────────────
+
+def _imap_creds() -> tuple[str, str]:
+    e = os.getenv("EMAIL_SENDER", "").strip()
+    p = os.getenv("EMAIL_PASSWORD", "").strip()
+    if e and p:
+        return e, p
     try:
         import streamlit as st
         try:
@@ -101,215 +130,427 @@ def _get_imap_creds() -> tuple[str, str]:
         return "", ""
 
 
-def _get_email_recipients() -> list[str]:
-    """Return list of email recipients for the monthly stock email."""
-    raw = os.getenv("STOCK_34S_EMAIL_RECIPIENTS", "").strip()
-    if not raw:
-        raw = os.getenv("EMAIL_RECIPIENTS", "").strip()
+def _email_recipients() -> list[str]:
+    raw = (
+        os.getenv("STOCK_34S_EMAIL_RECIPIENTS", "")
+        or os.getenv("EMAIL_RECIPIENTS", "")
+    )
     if raw:
         return [r.strip() for r in raw.split(",") if r.strip()]
     try:
         import streamlit as st
         try:
-            raw = st.secrets["admin"].get("STOCK_34S_EMAIL_RECIPIENTS") or st.secrets["admin"]["EMAIL_RECIPIENTS"]
+            raw = (
+                st.secrets["admin"].get("STOCK_34S_EMAIL_RECIPIENTS")
+                or st.secrets["admin"]["EMAIL_RECIPIENTS"]
+            )
         except Exception:
-            raw = st.secrets.get("STOCK_34S_EMAIL_RECIPIENTS") or st.secrets["EMAIL_RECIPIENTS"]
+            raw = (
+                st.secrets.get("STOCK_34S_EMAIL_RECIPIENTS")
+                or st.secrets["EMAIL_RECIPIENTS"]
+            )
         return [r.strip() for r in raw.split(",") if r.strip()]
     except Exception:
         return []
 
 
-# ─── Drive folder navigation (financial-year naming convention) ───────────────
+# ─── Spreadsheet helpers ───────────────────────────────────────────────────────
 
-def _financial_month_num(d: date) -> int:
-    """April=1, May=2, …, March=12 (financial year starting April)."""
-    return (d.month - 4) % 12 + 1
+def _get_spreadsheet():
+    """Return authenticated gspread Spreadsheet object."""
+    try:
+        from services.sheets import _get_spreadsheet as _gs
+        return _gs()
+    except Exception:
+        pass
+    import json
+    from google.oauth2.service_account import Credentials
+    import gspread
+    SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+    raw = os.getenv("GOOGLE_CREDENTIALS", "").strip()
+    if raw:
+        creds = Credentials.from_service_account_info(json.loads(raw), scopes=SCOPES)
+    else:
+        try:
+            import streamlit as st
+            creds = Credentials.from_service_account_info(st.secrets["google"], scopes=SCOPES)
+        except Exception:
+            raise RuntimeError("Google credentials not found")
+    from services.sheets import SPREADSHEET_ID
+    return gspread.authorize(creds).open_by_key(SPREADSHEET_ID)
 
 
-def _month_folder_name(d: date) -> str:
-    """e.g. '2 May-2026'"""
-    return f"{_financial_month_num(d)} {d.strftime('%B')}-{d.year}"
+def _read_sheet_direct(sheet_name: str) -> pd.DataFrame:
+    """
+    Read a worksheet directly via gspread, bypassing the st.cache_data cache.
+    Used inside catch-up loops where consecutive writes must be visible immediately.
+    """
+    try:
+        sh = _get_spreadsheet()
+        ws = sh.worksheet(sheet_name)
+        data = ws.get_all_values()
+        if not data:
+            return pd.DataFrame()
+        df = pd.DataFrame(data[1:], columns=data[0])
+        df.columns = [str(c).strip() for c in df.columns]
+        return df.replace("", pd.NA).dropna(how="all").fillna("").reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame()
 
 
-def _date_folder_name(d: date) -> str:
-    """e.g. 'for 20.05.2026'"""
-    return f"for {d.day:02d}.{d.month:02d}.{d.year}"
+def _write_sheet_direct(sheet_name: str, df: pd.DataFrame) -> None:
+    """Write a DataFrame to a worksheet directly via gspread."""
+    from services.sheets import _serialize_for_sheets
+    sh = _get_spreadsheet()
+    try:
+        ws = sh.worksheet(sheet_name)
+    except Exception:
+        ws = sh.add_worksheet(title=sheet_name, rows=1200, cols=220)
+    data = _serialize_for_sheets(df.fillna("").astype(str))
+    ws.clear()
+    ws.update("A1", data)
 
 
-def _find_folder_by_name(service, parent_id: str, name: str) -> str | None:
-    """Find a sub-folder by exact name inside parent_id. Returns ID or None."""
-    for f in _list_drive_folders(service, parent_id):
-        if f.get("name", "") == name:
-            return f["id"]
-    return None
+# ─── Month sheet discovery ─────────────────────────────────────────────────────
+
+def get_available_months() -> list[tuple[int, int, str]]:
+    """
+    Return [(year, month, sheet_name), …] for all existing stock register tabs,
+    sorted chronologically.
+    """
+    try:
+        sh = _get_spreadsheet()
+        result = []
+        for ws in sh.worksheets():
+            title = ws.title
+            if not title.startswith(SHEET_PREFIX):
+                continue
+            suffix = title[len(SHEET_PREFIX):].strip()   # "May 2026"
+            try:
+                d = datetime.strptime(suffix, "%B %Y")
+                result.append((d.year, d.month, title))
+            except ValueError:
+                pass
+        result.sort()
+        return result
+    except Exception as e:
+        print(f"[STOCK 34S] get_available_months error: {e}")
+        return []
 
 
-# ─── PDF parsing (Godrej Delivery Challan / Invoice) ─────────────────────────
+# ─── Load helpers ─────────────────────────────────────────────────────────────
+
+def load_month_df(year: int, month: int, direct: bool = False) -> tuple[pd.DataFrame, str]:
+    """
+    Load the full horizontal DataFrame for a month tab.
+    direct=True bypasses the st.cache_data cache (used in catch-up loops).
+    """
+    name = sheet_name_for(date(year, month, 1))
+    if direct:
+        df = _read_sheet_direct(name)
+        if df.empty:
+            return df, f"⚠️ Sheet '{name}' is empty or does not exist."
+        return df, f"✅ {len(df)} items loaded (direct read)."
+
+    from services.sheets import get_df
+    try:
+        df = get_df(name)
+    except Exception as e:
+        return pd.DataFrame(), f"❌ Could not read '{name}': {e}"
+    if df is None or df.empty:
+        return pd.DataFrame(), f"⚠️ Sheet '{name}' is empty or does not exist yet."
+    df.columns = [str(c).strip() for c in df.columns]
+    df = df.replace("", pd.NA).dropna(how="all").fillna("").reset_index(drop=True)
+    return df, f"✅ {len(df)} items loaded from '{name}'."
+
+
+def load_stock_for_date(year: int, month: int, d: date) -> tuple[pd.DataFrame, str]:
+    """
+    Extract a flat display table (FIXED_COLS + DATE_SUB_COLS) for a single date.
+    Returns (df, status_message).
+    """
+    df, status = load_month_df(year, month)
+    if df.empty:
+        return df, status
+
+    available = dates_in_df(df, year, month)
+    if d not in available:
+        avail_str = ", ".join(x.strftime("%d/%m") for x in available) or "none"
+        return pd.DataFrame(), (
+            f"⚠️ No data for **{d.strftime('%d %b %Y')}** in this sheet.  \n"
+            f"Dates with data: {avail_str}.  \n"
+            "Add data manually or use **Force Update** to fetch automatically."
+        )
+
+    result = pd.DataFrame()
+    for fc in FIXED_COLS:
+        result[fc] = df.get(fc, pd.Series([""] * len(df))).values
+    for sub in DATE_SUB_COLS:
+        result[sub] = df.get(_col(d, sub), pd.Series([""] * len(df))).values
+
+    return result.reset_index(drop=True), f"✅ {len(result)} items for {d.strftime('%d %b %Y')}."
+
+
+def get_last_updated_date(year: int, month: int) -> date | None:
+    """Return the most recent date that has columns in the month sheet."""
+    df, _ = load_month_df(year, month)
+    if df.empty:
+        return None
+    available = dates_in_df(df, year, month)
+    return max(available) if available else None
+
+
+# ─── Sheet setup ──────────────────────────────────────────────────────────────
+
+def ensure_month_sheet(year: int, month: int, seed_days: int = 0) -> str:
+    """
+    Create the month worksheet if it doesn't exist.
+
+    - If the previous month's sheet exists, copies its item rows (FIXED_COLS)
+      into the new sheet automatically so items don't need to be re-entered.
+    - seed_days > 0: pre-adds column headers for the last `seed_days` days
+      (up to today) so the user can fill in historical data manually.
+
+    Returns a status message.
+    """
+    name = sheet_name_for(date(year, month, 1))
+    try:
+        sh = _get_spreadsheet()
+    except Exception as e:
+        return f"❌ Spreadsheet connection failed: {e}"
+
+    # Check if it already exists
+    try:
+        ws = sh.worksheet(name)
+        existing_headers = ws.row_values(1)
+        if existing_headers:
+            return f"ℹ️ Sheet '{name}' already exists ({len(existing_headers)} columns)."
+        created = False
+    except Exception:
+        ws = sh.add_worksheet(title=name, rows=1200, cols=220)
+        created = True
+
+    # Build header row
+    headers = list(FIXED_COLS)
+    today = datetime.now(IST).date()
+    if seed_days > 0:
+        for i in range(seed_days - 1, -1, -1):   # oldest → newest
+            day_d = today - timedelta(days=i)
+            if day_d.month == month and day_d.year == year:
+                for sub in DATE_SUB_COLS:
+                    headers.append(_col(day_d, sub))
+
+    # Try to seed item rows from previous month
+    prev_items_data = []
+    first = date(year, month, 1)
+    prev_last = first - timedelta(days=1)
+    prev_df, _ = load_month_df(prev_last.year, prev_last.month)
+    if not prev_df.empty:
+        keep = [c for c in FIXED_COLS if c in prev_df.columns]
+        items = prev_df[keep].copy()
+        items = items[items.get("Item Code", pd.Series()).astype(str).str.strip() != ""]
+        items = items.drop_duplicates(subset=["Item Code"])
+        # Pad to match header length
+        for col in FIXED_COLS:
+            if col not in items.columns:
+                items[col] = ""
+        for h in headers:
+            if h not in FIXED_COLS:
+                items[h] = ""
+        prev_items_data = items[headers].fillna("").astype(str).values.tolist()
+
+    # Write header + item rows
+    data = [headers] + prev_items_data
+    ws.update("A1", data)
+
+    item_note = f" + {len(prev_items_data)} items copied from {prev_last.strftime('%B %Y')}." if prev_items_data else " (no items yet — add item rows manually)."
+    col_note  = f" + {seed_days} days of date columns ({len(headers)} columns total)" if seed_days else ""
+    return f"✅ Sheet '{name}' created{col_note}{item_note}"
+
+
+# ─── Previous Cl Stock look-up ────────────────────────────────────────────────
+
+def _get_prev_cl_stock(
+    target_date: date,
+    df_override: pd.DataFrame | None = None,
+) -> dict[str, float]:
+    """
+    Return {item_code_upper: cl_stock_float} from the most recent date
+    STRICTLY BEFORE target_date that has Cl Stock data.
+
+    Searches the current month first; if target_date is the 1st of the month
+    (or current month has no earlier dates), falls back to the previous month tab.
+
+    df_override: pass an already-loaded month DataFrame to skip a sheet read
+                 (used inside catch-up loops for performance).
+    """
+
+    def _extract(df: pd.DataFrame, d: date) -> dict[str, float]:
+        col = _col(d, "Cl Stock")
+        if col not in df.columns:
+            return {}
+        result: dict[str, float] = {}
+        for _, row in df.iterrows():
+            code = str(row.get("Item Code", "")).strip().upper()
+            if not code:
+                continue
+            try:
+                result[code] = float(str(row.get(col, 0)).replace(",", "") or 0)
+            except (ValueError, TypeError):
+                result[code] = 0.0
+        return result
+
+    # 1. Current month
+    if df_override is not None:
+        df = df_override
+    else:
+        df, _ = load_month_df(target_date.year, target_date.month)
+
+    if not df.empty:
+        available = dates_in_df(df, target_date.year, target_date.month)
+        past = [d for d in available if d < target_date]
+        if past:
+            prev = max(past)
+            cl = _extract(df, prev)
+            if cl:
+                print(f"[STOCK 34S] Prev Cl from {prev} (current month)")
+                return cl
+
+    # 2. Previous month fallback (handles 1st of month or empty current month)
+    first      = target_date.replace(day=1)
+    prev_last  = first - timedelta(days=1)
+    df2, _     = load_month_df(prev_last.year, prev_last.month)
+    if not df2.empty:
+        available2 = dates_in_df(df2, prev_last.year, prev_last.month)
+        if available2:
+            prev2 = max(available2)
+            cl2 = _extract(df2, prev2)
+            if cl2:
+                print(f"[STOCK 34S] Prev Cl from {prev2} (previous month tab)")
+                return cl2
+
+    print("[STOCK 34S] No previous Cl Stock found — Op Stock = 0 (first run).")
+    return {}
+
+
+# ─── Master item list ──────────────────────────────────────────────────────────
+
+def _get_master_items(year: int, month: int, df: pd.DataFrame | None = None) -> pd.DataFrame:
+    """
+    Return the item master (FIXED_COLS) from the month's sheet.
+    Pass df directly to skip a re-read.
+    """
+    if df is None:
+        df, _ = load_month_df(year, month)
+    if df.empty:
+        return pd.DataFrame()
+    keep = [c for c in FIXED_COLS if c in df.columns]
+    if "Item Code" not in keep:
+        return pd.DataFrame()
+    items = df[keep].copy()
+    items = items[items["Item Code"].astype(str).str.strip() != ""]
+    return items.drop_duplicates(subset=["Item Code"]).reset_index(drop=True)
+
+
+# ─── PDF parsing (Delivery Challan) ───────────────────────────────────────────
 
 def _parse_challan_pdf(pdf_bytes: bytes) -> dict:
     """
-    Parse a Godrej Delivery Challan or Invoice PDF.
-    Returns:
-        {
-          'warehouse_code': str,   e.g. 'ZBF34S / 4S INTERIORS'
-          'challan_no'    : str,   e.g. 'C67040400'
-          'items'         : {      item_code → {'qty': float, 'description': str}
-              '56101522SD02120': {'qty': 6.0, 'description': 'Terrene Plus ...'},
-              ...
-          }
-        }
+    Parse a Delivery Challan PDF.
+    Returns {"warehouse_code": str, "challan_no": str,
+             "items": {item_code: {"qty": float, "description": str}}}
     """
-    import pdfplumber
-
     result: dict = {"warehouse_code": "", "challan_no": "", "items": {}}
-
+    text = ""
     try:
+        import pdfplumber
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-            full_text = "\n".join(p.extract_text() or "" for p in pdf.pages)
-    except Exception as e:
-        print(f"[PDF] Error reading PDF: {e}")
-        return result
+            text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+    except Exception:
+        try:
+            import fitz
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            text = "\n".join(page.get_text() for page in doc)
+        except Exception:
+            return result
 
-    # ── Warehouse code ──
-    wh_m = re.search(r"Warehouse\s*Code\s*[:\-]\s*(.+?)(?:\n|$)", full_text, re.IGNORECASE)
-    if wh_m:
-        result["warehouse_code"] = wh_m.group(1).strip()
+    wc = re.search(r"Warehouse\s*Code\s*[:\-]?\s*(ZB\w+)", text, re.IGNORECASE)
+    if wc:
+        result["warehouse_code"] = wc.group(1).strip()
 
-    # ── Challan / Invoice number ──
-    cn_m = re.search(
-        r"(?:Delivery\s*Challan\s*No|Invoice\s*No\.?|Challan\s*No\.?)\s*[:\-]\s*([\w\-/]+)",
-        full_text, re.IGNORECASE,
-    )
-    if cn_m:
-        result["challan_no"] = cn_m.group(1).strip()
+    dc = re.search(r"Delivery\s+Challan\s+No\s*[:\-]?\s*([A-Z0-9]+)", text, re.IGNORECASE)
+    if dc:
+        result["challan_no"] = dc.group(1).strip()
 
-    # ── Item rows ──
-    # Strategy: find all item-code occurrences, then extract qty from same line
-    lines = full_text.splitlines()
-    for line in lines:
-        codes = _ITEM_CODE_RE.findall(line)
+    item_re = re.compile(r"(\d{8}[A-Z]{2}\d{5})")
+    qty_re  = re.compile(r"\b(\d+(?:\.\d+)?)\s*(?:ECH|NOS|PCS|EACH|EA)?\b")
+    for line in text.split("\n"):
+        codes = item_re.findall(line)
         if not codes:
             continue
-
-        qty = _extract_qty_from_line(line)
-        desc = _extract_desc_from_line(line)
-
+        qty_m = qty_re.search(line)
+        qty   = float(qty_m.group(1)) if qty_m else 1.0
         for code in codes:
-            code = code.upper()
             if code in result["items"]:
                 result["items"][code]["qty"] += qty
             else:
-                result["items"][code] = {"qty": qty, "description": desc}
-
+                result["items"][code] = {"qty": qty, "description": line.strip()[:80]}
     return result
 
 
-def _extract_qty_from_line(line: str) -> float:
-    """
-    Heuristic: find the first 'small' number (1–9999) that is NOT an 8-digit
-    HSN code and NOT clearly a price / amount (too large).
-    Falls back to 0.0 if nothing found.
-    """
-    # Remove item codes so their digit-groups don't confuse the search
-    clean = _ITEM_CODE_RE.sub("", line)
-    # Remove 8-digit HSN codes
-    clean = re.sub(r'\b\d{8}\b', "", clean)
-
-    candidates = re.findall(r'\b(\d{1,4}(?:\.\d{1,2})?)\b', clean)
-    for c in candidates:
-        v = float(c)
-        if 1 <= v <= 9999:
-            return v
-    return 0.0
-
-
-def _extract_desc_from_line(line: str) -> str:
-    """
-    Remove codes, numbers, and short tokens; what remains is likely the
-    item description.
-    """
-    s = _ITEM_CODE_RE.sub("", line)
-    s = re.sub(r'\b\d+(?:\.\d+)?\b', "", s)
-    s = re.sub(r'\b(ECH|NOS|PCS|EA|UNI|ZB\w+|HSN|SR|NO|Rs|UOM)\b', "", s, flags=re.IGNORECASE)
-    s = re.sub(r'[/:|()\-]', " ", s)
-    s = " ".join(s.split())
-    return s if len(s) > 4 else ""
-
-
-# ─── Inward — IMAP emails ─────────────────────────────────────────────────────
+# ─── Inward — email ───────────────────────────────────────────────────────────
 
 def _fetch_inward_from_email(target_date: date) -> dict[str, dict]:
-    """
-    Search Gmail for 'Delivery Challan Information' emails on target_date.
-    Parse PDF attachments; only process those with warehouse code ZBF34S.
-    Returns {item_code: {'qty': float, 'challan_no': str, 'description': str}}
-    """
-    imap_email, imap_pwd = _get_imap_creds()
-    if not imap_email or not imap_pwd:
-        print("[STOCK 34S] IMAP credentials not set — skipping email inward.")
+    """Search for 'Delivery Challan Information' emails on target_date and parse PDFs."""
+    email_addr, password = _imap_creds()
+    if not email_addr or not password:
+        print("[STOCK 34S] IMAP credentials not configured — skipping email inward.")
         return {}
-
     try:
         mail = imaplib.IMAP4_SSL("imap.gmail.com")
-        mail.login(imap_email, imap_pwd)
+        mail.login(email_addr, password)
         mail.select("inbox")
     except Exception as e:
         print(f"[STOCK 34S] IMAP login failed: {e}")
         return {}
 
-    since_s    = target_date.strftime("%d-%b-%Y")
-    before_s   = (target_date + timedelta(days=1)).strftime("%d-%b-%Y")
-    query      = f'(SUBJECT "{CHALLAN_EMAIL_SUBJECT}" SINCE {since_s} BEFORE {before_s})'
-
+    since = target_date.strftime("%d-%b-%Y")
+    until = (target_date + timedelta(days=1)).strftime("%d-%b-%Y")
+    query = f'(SUBJECT "{CHALLAN_SUBJECT}" SINCE {since} BEFORE {until})'
     try:
         _, data = mail.search(None, query)
     except Exception as e:
         mail.logout()
-        print(f"[STOCK 34S] IMAP search error: {e}")
+        print(f"[STOCK 34S] IMAP search failed: {e}")
         return {}
 
-    email_ids = data[0].split() if data and data[0] else []
-    if not email_ids:
-        mail.logout()
-        print(f"[STOCK 34S] No Delivery Challan emails for {target_date}.")
-        return {}
-
+    ids = data[0].split() if data and data[0] else []
     combined: dict[str, dict] = {}
-    for eid in email_ids:
+
+    for eid in ids:
         try:
             _, msg_data = mail.fetch(eid, "(RFC822)")
-            msg = _email.message_from_bytes(msg_data[0][1])
-        except Exception as e:
-            print(f"[STOCK 34S] Failed to fetch email {eid}: {e}")
+            msg = _email_lib.message_from_bytes(msg_data[0][1])
+        except Exception:
             continue
-
         for part in msg.walk():
-            if part.get_content_maintype() == "multipart":
+            if part.get_content_type() != "application/pdf":
                 continue
-            if part.get("Content-Disposition") is None:
+            pdf_bytes = part.get_payload(decode=True)
+            if not pdf_bytes:
                 continue
-            fname = part.get_filename() or ""
-            if not fname.lower().endswith(".pdf"):
+            parsed = _parse_challan_pdf(pdf_bytes)
+            if WAREHOUSE_CODE not in parsed["warehouse_code"].upper():
                 continue
-            payload = part.get_payload(decode=True)
-            if not payload:
-                continue
-
-            parsed = _parse_challan_pdf(payload)
-            if WAREHOUSE_CODE_34S not in parsed["warehouse_code"].upper():
-                continue
-
-            challan = parsed["challan_no"]
             for code, info in parsed["items"].items():
                 if code in combined:
                     combined[code]["qty"] += info["qty"]
                 else:
                     combined[code] = {
                         "qty": info["qty"],
-                        "challan_no": challan,
                         "description": info["description"],
+                        "challan_no": parsed["challan_no"],
                     }
-
     mail.logout()
     print(f"[STOCK 34S] Email inward: {len(combined)} items for {target_date}")
     return combined
@@ -320,47 +561,49 @@ def _fetch_inward_from_email(target_date: date) -> dict[str, dict]:
 def _fetch_inward_from_drive(target_date: date) -> dict[str, dict]:
     """
     Read invoice PDFs from Google Drive for target_date.
-    Uses the same GOOGLE_DRIVE_INVOICES_FOLDER_ID secret as the delivery
-    schedule email, and the same Drive helpers from email_sender_delivery_schedule.
-
-    Folder structure:
-      <root>/
-        "{N} {MonthName}-{YYYY}"/    e.g. "2 May-2026"
-          "for {DD}.{MM}.{YYYY}"/    e.g. "for 20.05.2026"
-            *.pdf
-
-    Only PDFs with warehouse code ZBF34S are counted.
-    Returns {item_code: {'qty': float, 'description': str}}
+    Reuses GOOGLE_DRIVE_INVOICES_FOLDER_ID and helpers from
+    email_sender_delivery_schedule.py.
+    Folder structure: <root> / "{N} {Month}-{YYYY}" / "for {DD}.{MM}.{YYYY}" / *.pdf
     """
+    try:
+        from services.email_sender_delivery_schedule import (
+            _get_drive_folder_id, _get_drive_service,
+            _list_drive_folders, _list_drive_pdfs, _download_drive_file,
+        )
+    except Exception as e:
+        print(f"[STOCK 34S] Drive import error: {e}")
+        return {}
+
     root_id = _get_drive_folder_id()
     if not root_id:
         print("[STOCK 34S] GOOGLE_DRIVE_INVOICES_FOLDER_ID not set — skipping Drive inward.")
         return {}
-
     try:
         svc = _get_drive_service()
     except Exception as e:
         print(f"[STOCK 34S] Drive service error: {e}")
         return {}
 
-    mf_name = _month_folder_name(target_date)
-    df_name = _date_folder_name(target_date)
+    fin_month = (target_date.month - 4) % 12 + 1
+    mf_name   = f"{fin_month} {target_date.strftime('%B')}-{target_date.year}"
+    df_name   = f"for {target_date.day:02d}.{target_date.month:02d}.{target_date.year}"
 
-    mf_id = _find_folder_by_name(svc, root_id, mf_name)
+    def _find_folder(parent_id, name):
+        for f in _list_drive_folders(svc, parent_id):
+            if f.get("name") == name:
+                return f["id"]
+        return None
+
+    mf_id = _find_folder(root_id, mf_name)
     if not mf_id:
-        print(f"[STOCK 34S] Drive: month folder '{mf_name}' not found.")
+        print(f"[STOCK 34S] Drive: '{mf_name}' not found.")
         return {}
-
-    df_id = _find_folder_by_name(svc, mf_id, df_name)
+    df_id = _find_folder(mf_id, df_name)
     if not df_id:
-        print(f"[STOCK 34S] Drive: date folder '{df_name}' not found.")
+        print(f"[STOCK 34S] Drive: '{df_name}' not found.")
         return {}
 
     pdfs = _list_drive_pdfs(svc, df_id)
-    if not pdfs:
-        print(f"[STOCK 34S] Drive: no PDFs in '{df_name}'.")
-        return {}
-
     combined: dict[str, dict] = {}
     for f in pdfs:
         content = _download_drive_file(svc, f["id"])
@@ -369,54 +612,49 @@ def _fetch_inward_from_drive(target_date: date) -> dict[str, dict]:
         try:
             parsed = _parse_challan_pdf(content)
         except Exception as e:
-            print(f"[STOCK 34S] Drive: failed to parse {f['name']}: {e}")
+            print(f"[STOCK 34S] Drive parse error '{f['name']}': {e}")
             continue
-
-        if WAREHOUSE_CODE_34S not in parsed["warehouse_code"].upper():
+        if WAREHOUSE_CODE not in parsed["warehouse_code"].upper():
             continue
-
         for code, info in parsed["items"].items():
             if code in combined:
                 combined[code]["qty"] += info["qty"]
             else:
-                combined[code] = {"qty": info["qty"], "description": info["description"]}
-
+                combined[code] = {
+                    "qty": info["qty"],
+                    "description": info["description"],
+                    "challan_no": parsed["challan_no"],
+                }
     print(f"[STOCK 34S] Drive inward: {len(combined)} items for {target_date}")
     return combined
 
 
-# ─── Outward — Google Sheets ──────────────────────────────────────────────────
+# ─── Outward from sheets ───────────────────────────────────────────────────────
 
 def _fetch_outward(target_date: date) -> dict[str, float]:
     """
-    Read outward quantities from DELIVERY_CHALLAN_SHEET + RETURN_RPL_SHEET.
-    Both sheets have: DATE | ITEM CODE | ITEM DESCRIPTION | QUANTITY
-    Returns {item_code_upper: total_qty}
+    Sum outward quantities from DELIVERY_SHEET + RETURN_SHEET for target_date.
+    Returns {item_code_upper: total_qty}.
     """
     from services.sheets import get_df
-
     combined: dict[str, float] = {}
+    target_str = target_date.strftime("%d/%m/%Y")
+    # Also try without leading zeros in case the sheet uses that format
+    alt_str    = f"{target_date.day}/{target_date.month}/{target_date.year}"
 
-    for sheet_name in [DELIVERY_CHALLAN_SHEET, RETURN_RPL_SHEET]:
+    for sheet_name in [DELIVERY_SHEET, RETURN_SHEET]:
         try:
             df = get_df(sheet_name)
-        except Exception as e:
-            print(f"[STOCK 34S] Could not read '{sheet_name}': {e}")
+        except Exception:
             continue
-
         if df is None or df.empty:
             continue
-
-        df.columns = [c.strip().upper() for c in df.columns]
-        if "DATE" not in df.columns or "ITEM CODE" not in df.columns:
-            print(f"[STOCK 34S] '{sheet_name}' missing DATE or ITEM CODE column — skipping.")
+        df.columns = [str(c).strip().upper() for c in df.columns]
+        if "DATE" not in df.columns:
             continue
-
-        df["_DT"] = pd.to_datetime(df["DATE"], dayfirst=True, errors="coerce")
-        tgt_ts    = pd.Timestamp(target_date)
-        day_df    = df[df["_DT"].dt.normalize() == tgt_ts.normalize()]
-
-        for _, row in day_df.iterrows():
+        date_col = df["DATE"].astype(str).str.strip()
+        mask = date_col.isin([target_str, alt_str])
+        for _, row in df[mask].iterrows():
             code = str(row.get("ITEM CODE", "")).strip().upper()
             if not code:
                 continue
@@ -430,465 +668,385 @@ def _fetch_outward(target_date: date) -> dict[str, float]:
     return combined
 
 
-# ─── Sheet helpers ────────────────────────────────────────────────────────────
+# ─── Core: build columns for one date ─────────────────────────────────────────
 
-def load_stock_data(date_str: str | None = None) -> tuple[pd.DataFrame, str]:
+def _build_date_columns(
+    items: pd.DataFrame,
+    target_date: date,
+    prev_cl: dict[str, float],
+    inward: dict[str, dict],
+    outward: dict[str, float],
+) -> dict[str, list]:
     """
-    Load rows from the "34s Stock Register" sheet.
-    date_str: "DD/MM/YYYY"  — if given, return only that date's rows.
+    Given item list + inward/outward maps, return a dict of
+    {column_name: [value, value, …]} for the 5 date sub-columns.
+    One value per row of `items`.
     """
-    from services.sheets import get_df
-
-    try:
-        df = get_df(STOCK_34S_SHEET)
-    except Exception as e:
-        return pd.DataFrame(), f"❌ Could not read '{STOCK_34S_SHEET}': {e}"
-
-    if df is None or df.empty:
-        return pd.DataFrame(), f"⚠️ Sheet '{STOCK_34S_SHEET}' is empty. Add data manually or run the daily job."
-
-    # Normalise column names so minor case/space differences don't break things
-    df.columns = [str(c).strip() for c in df.columns]
-
-    if "DATE" not in df.columns:
-        found = ", ".join(df.columns.tolist()[:6])
-        return pd.DataFrame(), (
-            f"⚠️ Sheet '{STOCK_34S_SHEET}' is not in the expected flat-table format. "
-            f"A **DATE** column (DD/MM/YYYY) is required as the first column but was not found. "
-            f"Columns detected: {found}…  "
-            "Please restructure the sheet with headers: "
-            "DATE | Sl No | Item Code | Item Description | Product Category | "
-            "Op Stock | In Ward | Out Ward | Cl Stock | Delivery Challan No"
-        )
-
-    if date_str:
-        mask = df["DATE"].astype(str).str.strip() == date_str.strip()
-        df   = df[mask].copy()
-        if df.empty:
-            return pd.DataFrame(), f"⚠️ No data found for {date_str} in the sheet."
-
-    # Ensure all display columns are present (add blank ones if missing)
-    for col in STOCK_COLUMNS:
-        if col not in df.columns:
-            df[col] = ""
-    df = df[STOCK_COLUMNS]
-    return df.reset_index(drop=True), f"✅ {len(df):,} rows loaded."
+    cols: dict[str, list] = {_col(target_date, sub): [] for sub in DATE_SUB_COLS}
+    for _, item in items.iterrows():
+        code = str(item.get("Item Code", "")).strip().upper()
+        op   = prev_cl.get(code, 0.0)
+        iw   = inward.get(code, {}).get("qty", 0.0)
+        ow   = outward.get(code, 0.0)
+        cl   = op + iw - ow
+        dc   = inward.get(code, {}).get("challan_no", "")
+        cols[_col(target_date, "Op Stock")].append(int(round(op)))
+        cols[_col(target_date, "In Ward")].append(int(round(iw)) if iw else "")
+        cols[_col(target_date, "Out Ward")].append(int(round(ow)) if ow else "")
+        cols[_col(target_date, "Cl Stock")].append(int(round(cl)))
+        cols[_col(target_date, "DC No")].append(dc)
+    return cols
 
 
-def get_all_dates() -> list[str]:
-    """Return all unique dates (DD/MM/YYYY) sorted ascending."""
-    from services.sheets import get_df
-    try:
-        df = get_df(STOCK_34S_SHEET)
-    except Exception:
-        return []
-    if df is None or df.empty:
-        return []
-    df.columns = [str(c).strip() for c in df.columns]
-    if "DATE" not in df.columns:
-        return []
-    raw = df["DATE"].dropna().astype(str).str.strip().unique().tolist()
-    try:
-        raw.sort(key=lambda x: pd.to_datetime(x, dayfirst=True, errors="coerce"))
-    except Exception:
-        raw.sort()
-    return raw
+# ─── Daily update (single date) ───────────────────────────────────────────────
 
-
-def _get_master_items() -> pd.DataFrame:
+def run_daily_update(
+    target_date: date | None = None,
+    df_in: pd.DataFrame | None = None,
+    direct: bool = False,
+) -> tuple[pd.DataFrame, str]:
     """
-    Return the item master list (Sl No, Item Code, Item Description, Product Category)
-    derived from the most recent date in the sheet.
+    Update the horizontal month sheet for target_date (default: today IST).
+    Idempotent — replaces today's columns if already present.
+
+    df_in   : pass an existing in-memory DataFrame to avoid a re-read
+              (used inside run_update_range for performance).
+    direct  : if True, use direct gspread reads/writes (bypasses cache).
+
+    Returns (flat_df_for_date, status_message).
     """
-    from services.sheets import get_df
-    try:
-        df = get_df(STOCK_34S_SHEET)
-    except Exception as e:
-        print(f"[STOCK 34S] Master items error: {e}")
-        return pd.DataFrame()
-
-    if df is None or df.empty:
-        return pd.DataFrame()
-
-    df.columns = [str(c).strip() for c in df.columns]
-    df["_DT"] = pd.to_datetime(df.get("DATE", ""), dayfirst=True, errors="coerce")
-    latest    = df["_DT"].max()
-    if pd.isna(latest):
-        sub = df
-    else:
-        sub = df[df["_DT"] == latest]
-
-    keep = [c for c in ["Sl No", "Item Code", "Item Description", "Product Category"]
-            if c in sub.columns]
-    return sub[keep].drop_duplicates(subset=["Item Code"]).reset_index(drop=True)
-
-
-def _get_prev_cl_stock(before_date: date) -> dict[str, float]:
-    """
-    Return {item_code_upper: cl_stock_float} from the most recent date
-    that is STRICTLY BEFORE before_date and has data in the sheet.
-
-    Using "most recent date before today" instead of hardcoded "yesterday"
-    ensures weekends, public holidays, and missed days are handled correctly —
-    Monday's Op Stock will equal Friday's Cl Stock even when Saturday and
-    Sunday have no entries.
-    """
-    from services.sheets import get_df
-    try:
-        df = get_df(STOCK_34S_SHEET)
-    except Exception:
-        return {}
-    if df is None or df.empty:
-        return {}
-
-    df.columns = [str(c).strip() for c in df.columns]
-    if "DATE" not in df.columns:
-        return {}
-
-    df["_DT"] = pd.to_datetime(df["DATE"], dayfirst=True, errors="coerce")
-    cutoff    = pd.Timestamp(before_date).normalize()
-
-    # All dates in the sheet that are strictly before today
-    past_dates = (
-        df.loc[df["_DT"].dt.normalize() < cutoff, "_DT"]
-        .dt.normalize()
-        .dropna()
-        .unique()
-    )
-    if len(past_dates) == 0:
-        return {}   # First ever run — Op Stock = 0 for all items
-
-    prev_ts = max(past_dates)   # Most recent date that has data
-    sub     = df[df["_DT"].dt.normalize() == prev_ts]
-
-    result: dict[str, float] = {}
-    for _, row in sub.iterrows():
-        code = str(row.get("Item Code", "")).strip().upper()
-        if not code:
-            continue
-        try:
-            result[code] = float(str(row.get("Cl Stock", 0)).replace(",", "") or 0)
-        except (ValueError, TypeError):
-            result[code] = 0.0
-    return result
-
-
-# ─── Main daily update ────────────────────────────────────────────────────────
-
-def run_daily_update(target_date: date | None = None) -> tuple[pd.DataFrame, str]:
-    """
-    Full daily update for target_date (defaults to today IST).
-    Idempotent — overwrites today's rows if called multiple times.
-    """
-    from services.sheets import get_df, write_df
-
     if target_date is None:
         target_date = datetime.now(IST).date()
 
-    print(f"[STOCK 34S] === Daily update for {target_date} ===")
+    year, month = target_date.year, target_date.month
+    name = sheet_name_for(target_date)
+    print(f"[STOCK 34S] === Daily update for {target_date} ({name}) ===")
 
-    # 1. Master item list
-    items_df = _get_master_items()
-    if items_df.empty:
+    # 1. Ensure month sheet exists (creates it + copies previous month items if new)
+    setup_msg = ensure_month_sheet(year, month, seed_days=0)
+    print(f"[STOCK 34S] {setup_msg}")
+
+    # 2. Load the month DataFrame
+    if df_in is not None:
+        df = df_in
+    elif direct:
+        df = _read_sheet_direct(name)
+        if df.empty:
+            return pd.DataFrame(), f"⚠️ Sheet '{name}' is empty — add item rows first."
+    else:
+        df, load_msg = load_month_df(year, month)
+        if df.empty:
+            return pd.DataFrame(), load_msg
+
+    # 3. Item master
+    items = _get_master_items(year, month, df=df)
+    if items.empty:
         return pd.DataFrame(), (
-            "❌ No master items in sheet. "
-            "Add at least one day of data manually to seed the item list."
+            f"❌ No items found in '{name}'. "
+            "Add Sl No / Item Code / Item Description / Product Category rows first."
         )
 
-    # 2. Previous closing stock — uses most recent date before today so
-    #    weekends/holidays don't zero-out Op Stock.
-    prev_cl = _get_prev_cl_stock(target_date)
-    print(f"[STOCK 34S] Previous cl_stock: {len(prev_cl)} items")
+    # 4. Previous closing stock
+    prev_cl = _get_prev_cl_stock(target_date, df_override=df)
 
-    # 3 & 4. Inward from email + Drive
-    email_inward = _fetch_inward_from_email(target_date)
-    drive_inward = _fetch_inward_from_drive(target_date)
-
+    # 5. Inward
+    email_in = _fetch_inward_from_email(target_date)
+    drive_in = _fetch_inward_from_drive(target_date)
     inward: dict[str, dict] = {}
-    for code, info in {**email_inward, **drive_inward}.items():
+    for code, info in {**email_in, **drive_in}.items():
         code = code.upper()
         if code in inward:
-            inward[code]["qty"] += info["qty"]
-            if not inward[code].get("challan_no"):
-                inward[code]["challan_no"] = info.get("challan_no", "")
+            inward[code]["qty"] += info.get("qty", 0.0)
         else:
-            inward[code] = {
-                "qty":        info["qty"],
-                "challan_no": info.get("challan_no", ""),
-                "description": info.get("description", ""),
-            }
+            inward[code] = dict(info)
 
-    # 5. Outward
+    # 6. Outward
     outward = {k.upper(): v for k, v in _fetch_outward(target_date).items()}
 
-    # 6. Build rows
-    target_str = f"{target_date.day:02d}/{target_date.month:02d}/{target_date.year}"
-    rows = []
-    for _, item in items_df.iterrows():
-        code  = str(item.get("Item Code", "")).strip().upper()
-        desc  = str(item.get("Item Description", "")).strip()
-        cat   = str(item.get("Product Category", "")).strip()
-        sl    = item.get("Sl No", "")
+    # 7. Build the 5 new columns
+    new_cols = _build_date_columns(items, target_date, prev_cl, inward, outward)
 
-        op_stock = prev_cl.get(code, 0.0)
-        in_ward  = inward.get(code, {}).get("qty", 0.0)
-        out_ward = outward.get(code, 0.0)
-        cl_stock = op_stock + in_ward - out_ward
-        challan  = inward.get(code, {}).get("challan_no", "")
+    # 8. Remove existing columns for target_date (idempotent)
+    tag  = _col_tag(target_date)
+    drop = [c for c in df.columns if c.startswith(tag + " ")]
+    df   = df.drop(columns=drop, errors="ignore")
 
-        rows.append({
-            "DATE":                target_str,
-            "Sl No":               sl,
-            "Item Code":           code,
-            "Item Description":    desc,
-            "Product Category":    cat,
-            "Op Stock":            int(round(op_stock)),
-            "In Ward":             int(round(in_ward)) if in_ward else "",
-            "Out Ward":            int(round(out_ward)) if out_ward else "",
-            "Cl Stock":            int(round(cl_stock)),
-            "Delivery Challan No": challan,
-        })
+    # 9. Append new columns
+    for col_name, values in new_cols.items():
+        # Pad values to match df length if needed
+        while len(values) < len(df):
+            values.append("")
+        df[col_name] = values[:len(df)]
 
-    new_df = pd.DataFrame(rows, columns=STOCK_COLUMNS)
-    print(f"[STOCK 34S] Built {len(new_df)} rows.")
-
-    # 7. Merge with existing data (remove today's rows first for idempotency)
+    # 10. Write back
     try:
-        existing = get_df(STOCK_34S_SHEET)
-    except Exception:
-        existing = pd.DataFrame()
-
-    if existing is None or existing.empty:
-        combined = new_df
-    else:
-        existing.columns = [str(c).strip() for c in existing.columns]
-        if "DATE" in existing.columns:
-            existing["_DT"] = pd.to_datetime(existing["DATE"], dayfirst=True, errors="coerce")
-            tgt_ts           = pd.Timestamp(target_date)
-            # Drop any rows already written for today (idempotent re-run)
-            existing         = existing[
-                existing["_DT"].dt.normalize() != tgt_ts.normalize()
-            ].drop(columns=["_DT"], errors="ignore")
-        combined = pd.concat([existing, new_df], ignore_index=True)
-
-    for col in STOCK_COLUMNS:
-        if col not in combined.columns:
-            combined[col] = ""
-    combined = combined[STOCK_COLUMNS]
-
-    try:
-        write_df(STOCK_34S_SHEET, combined.fillna("").astype(str))
-        status = f"✅ Stock updated for {target_date}: {len(new_df)} items written."
+        if direct:
+            _write_sheet_direct(name, df)
+        else:
+            from services.sheets import write_df
+            write_df(name, df.fillna("").astype(str))
+        status = f"✅ '{name}' updated for {target_date} — {len(items)} items."
     except Exception as e:
-        status = f"❌ Failed to write: {e}"
+        status = f"❌ Write failed: {e}"
 
     print(f"[STOCK 34S] {status}")
-    return new_df, status
+    flat, _ = load_stock_for_date(year, month, target_date)
+    return flat, status
 
 
-# ─── Monthly email ────────────────────────────────────────────────────────────
+# ─── Catch-up: update a range of dates ────────────────────────────────────────
 
-def _build_excel_bytes(month_df: pd.DataFrame, month_label: str) -> bytes:
-    """Build a styled Excel workbook and return as bytes."""
-    try:
-        import openpyxl
-        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-        from openpyxl.utils import get_column_letter
-    except ImportError:
-        import openpyxl
+def run_update_range(start_date: date, end_date: date) -> tuple[list[str], str]:
+    """
+    Update every date from start_date to end_date inclusive.
+    Maintains the DataFrame in memory between days (no cache issue) and writes
+    to the sheet after each day.  Handles month crossings automatically.
 
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "34S Stock Register"
+    Returns (list_of_per_day_status_lines, summary_message).
+    """
+    results: list[str] = []
+    d       = start_date
+    # Cache the current month DataFrame across days for performance
+    cur_year  = d.year
+    cur_month = d.month
+    df_cache, _ = load_month_df(cur_year, cur_month, direct=True)
+    name_cache  = sheet_name_for(date(cur_year, cur_month, 1))
 
-    # Header row
+    while d <= end_date:
+        # Switch to new month if we've crossed a boundary
+        if d.year != cur_year or d.month != cur_month:
+            # Write current month before switching
+            if not df_cache.empty:
+                try:
+                    _write_sheet_direct(name_cache, df_cache)
+                except Exception as we:
+                    results.append(f"  ⚠️ Write error for {cur_year}/{cur_month}: {we}")
+            cur_year, cur_month = d.year, d.month
+            ensure_month_sheet(cur_year, cur_month, seed_days=0)
+            df_cache, _ = load_month_df(cur_year, cur_month, direct=True)
+            name_cache  = sheet_name_for(date(cur_year, cur_month, 1))
+
+        year, month = d.year, d.month
+        name = sheet_name_for(d)
+
+        items = _get_master_items(year, month, df=df_cache)
+        if items.empty:
+            results.append(f"{d.strftime('%d/%m/%Y')}: ❌ No items in sheet.")
+            d += timedelta(days=1)
+            continue
+
+        prev_cl  = _get_prev_cl_stock(d, df_override=df_cache)
+        email_in = _fetch_inward_from_email(d)
+        drive_in = _fetch_inward_from_drive(d)
+        inward: dict[str, dict] = {}
+        for code, info in {**email_in, **drive_in}.items():
+            code = code.upper()
+            if code in inward:
+                inward[code]["qty"] += info.get("qty", 0.0)
+            else:
+                inward[code] = dict(info)
+        outward = {k.upper(): v for k, v in _fetch_outward(d).items()}
+
+        new_cols = _build_date_columns(items, d, prev_cl, inward, outward)
+
+        tag  = _col_tag(d)
+        drop = [c for c in df_cache.columns if c.startswith(tag + " ")]
+        df_cache = df_cache.drop(columns=drop, errors="ignore")
+        for col_name, values in new_cols.items():
+            while len(values) < len(df_cache):
+                values.append("")
+            df_cache[col_name] = values[:len(df_cache)]
+
+        # Write after each day so the sheet is always up-to-date
+        try:
+            _write_sheet_direct(name, df_cache)
+            status = f"✅ {len(items)} items updated."
+        except Exception as e:
+            status = f"❌ Write failed: {e}"
+
+        results.append(f"{d.strftime('%d/%m/%Y')}: {status}")
+        d += timedelta(days=1)
+
+    total_ok  = sum(1 for r in results if "✅" in r)
+    total_err = sum(1 for r in results if "❌" in r)
+    summary = f"Catch-up complete: {total_ok} day(s) updated, {total_err} error(s)."
+    return results, summary
+
+
+# ─── Monthly email helpers ────────────────────────────────────────────────────
+
+def _build_monthly_excel(year: int, month: int) -> bytes:
+    """
+    Export the full horizontal sheet for a month as a styled Excel file.
+    Returns the raw .xlsx bytes.
+    """
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    df, _ = load_month_df(year, month)
+    wb    = openpyxl.Workbook()
+    ws    = wb.active
+    ws.title = sheet_name_for(date(year, month, 1))[len(SHEET_PREFIX):]
+
+    if df.empty:
+        ws.append(["No data found."])
+        buf = io.BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
+
+    # Header
     header_fill = PatternFill("solid", fgColor="1F4E79")
-    header_font = Font(color="FFFFFF", bold=True)
-    thin = Border(
-        left=Side(style="thin"),
-        right=Side(style="thin"),
-        top=Side(style="thin"),
-        bottom=Side(style="thin"),
-    )
+    header_font = Font(color="FFFFFF", bold=True, size=10)
+    date_fills  = [PatternFill("solid", fgColor=c) for c in
+                   ["2E75B6", "2F5496", "1F3864", "203864", "17375E"]]
 
-    for col_idx, col_name in enumerate(STOCK_COLUMNS, start=1):
-        cell = ws.cell(row=1, column=col_idx, value=col_name)
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-        cell.border = thin
-
-    ws.row_dimensions[1].height = 18
-    ws.freeze_panes = "A2"
+    headers = list(df.columns)
+    ws.append(headers)
+    for ci, h in enumerate(headers, 1):
+        cell = ws.cell(1, ci)
+        cell.font      = header_font
+        cell.alignment = Alignment(horizontal="center", wrap_text=True)
+        parsed = _parse_col(h)
+        if parsed:
+            sub_idx = DATE_SUB_COLS.index(parsed[2]) if parsed[2] in DATE_SUB_COLS else 0
+            cell.fill = date_fills[sub_idx % len(date_fills)]
+        else:
+            cell.fill = header_fill
 
     # Data rows
-    alt_fill = PatternFill("solid", fgColor="EBF3FB")
-    for row_idx, (_, row) in enumerate(month_df.iterrows(), start=2):
-        fill = alt_fill if row_idx % 2 == 0 else PatternFill()
-        for col_idx, col_name in enumerate(STOCK_COLUMNS, start=1):
-            val = row.get(col_name, "")
-            cell = ws.cell(row=row_idx, column=col_idx, value=val)
-            cell.fill = fill
-            cell.border = thin
-            cell.alignment = Alignment(vertical="center")
+    for _, row in df.iterrows():
+        ws.append(row.tolist())
 
-    # Auto column widths
-    for col_idx, col_name in enumerate(STOCK_COLUMNS, start=1):
-        max_len = max(
-            len(str(col_name)),
-            *[len(str(month_df.iloc[r].get(col_name, ""))) for r in range(min(len(month_df), 100))]
+    # Column widths
+    for ci, h in enumerate(headers, 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(ci)].width = (
+            22 if h in FIXED_COLS else 12
         )
-        ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 3, 40)
+    ws.row_dimensions[1].height = 30
+    ws.freeze_panes = "E2"
 
     buf = io.BytesIO()
     wb.save(buf)
-    buf.seek(0)
-    return buf.read()
+    return buf.getvalue()
 
 
-def _last_day_html_table(last_day_df: pd.DataFrame) -> str:
-    """Build an HTML table for the last day's data."""
-    th_style = (
-        "padding:8px 10px;background:#1F4E79;color:#fff;"
-        "border:1px solid #ccc;font-size:12px"
-    )
-    td_style = "padding:7px 10px;border:1px solid #ccc;font-size:12px"
+def build_last_day_html_table(year: int, month: int) -> tuple[str, date | None]:
+    """
+    Return (html_table_string, last_date) for the last recorded day of the month.
+    """
+    df, _ = load_month_df(year, month)
+    if df.empty:
+        return "<p>No data found for this month.</p>", None
 
-    headers = "".join(f"<th style='{th_style}'>{c}</th>" for c in STOCK_COLUMNS)
+    available = dates_in_df(df, year, month)
+    if not available:
+        return "<p>No date columns found in the sheet.</p>", None
+
+    last_day = max(available)
+    flat, _  = load_stock_for_date(year, month, last_day)
+
+    if flat.empty:
+        return f"<p>No data for {last_day}.</p>", last_day
+
     rows_html = ""
-    for _, row in last_day_df.iterrows():
+    for _, r in flat.iterrows():
         cells = "".join(
-            f"<td style='{td_style}'>{row.get(c, '')}</td>"
-            for c in STOCK_COLUMNS
+            f"<td style='padding:6px 10px;border:1px solid #ddd'>{r.get(c, '')}</td>"
+            for c in FIXED_COLS + DATE_SUB_COLS
         )
         rows_html += f"<tr>{cells}</tr>"
 
-    return (
-        f"<table style='border-collapse:collapse;width:100%;font-family:Arial,sans-serif'>"
-        f"<thead><tr>{headers}</tr></thead><tbody>{rows_html}</tbody></table>"
+    th_style = "padding:8px 10px;background:#1F4E79;color:#fff;border:1px solid #ccc;"
+    ths = "".join(f"<th style='{th_style}'>{c}</th>" for c in FIXED_COLS + DATE_SUB_COLS)
+
+    html = (
+        f"<table style='border-collapse:collapse;font-family:Arial,sans-serif;"
+        f"font-size:12px;width:100%'>"
+        f"<thead><tr>{ths}</tr></thead>"
+        f"<tbody>{rows_html}</tbody></table>"
     )
+    return html, last_day
 
 
-def send_monthly_stock_email(month_label: str, target_date: date | None = None) -> dict:
+def send_monthly_stock_email(year: int, month: int) -> dict:
     """
-    Send monthly 34S stock email on the last day of the month.
-    month_label: e.g. "May 2026"
+    Send the monthly stock email:
+      - Subject : "Monthly 34S Stock Details- {Month} {Year}"
+      - Body    : last day's stock as an HTML table
+      - Attach  : full month's data as a styled Excel file
+    Also renames the sheet to "ARCHIVED 34S Stock {Month} {Year}".
     """
     import smtplib
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
-    from email.mime.base import MIMEBase
-    from email import encoders
+    from email.message import EmailMessage
 
-    imap_email, imap_pwd = _get_imap_creds()
-    recipients = _get_email_recipients()
+    month_label = date(year, month, 1).strftime("%B %Y")
+    subject     = f"Monthly 34S Stock Details- {month_label}"
 
-    if not imap_email or not imap_pwd:
-        raise ValueError("EMAIL_SENDER / EMAIL_PASSWORD not configured.")
+    html_table, last_day = build_last_day_html_table(year, month)
+    last_day_str = last_day.strftime("%d %b %Y") if last_day else "—"
+
+    recipients = _email_recipients()
     if not recipients:
-        raise ValueError("STOCK_34S_EMAIL_RECIPIENTS or EMAIL_RECIPIENTS not configured.")
+        return {"sent": False, "error": "No email recipients configured."}
 
-    if target_date is None:
-        target_date = datetime.now(IST).date()
+    email_addr, password = _imap_creds()
+    if not email_addr or not password:
+        return {"sent": False, "error": "Email credentials not configured."}
 
-    # Get all data for this month
-    from services.sheets import get_df
-    try:
-        full_df = get_df(STOCK_34S_SHEET)
-    except Exception as e:
-        raise RuntimeError(f"Could not load stock data: {e}")
+    excel_bytes = _build_monthly_excel(year, month)
 
-    if full_df is None or full_df.empty:
-        raise RuntimeError("Stock sheet is empty.")
-
-    full_df["_DT"] = pd.to_datetime(full_df.get("DATE", ""), dayfirst=True, errors="coerce")
-    month_mask     = (
-        (full_df["_DT"].dt.month == target_date.month) &
-        (full_df["_DT"].dt.year  == target_date.year)
+    html_body = (
+        f"<html><body style='font-family:Arial,sans-serif;color:#222'>"
+        f"<div style='background:#1F4E79;padding:16px 24px;border-radius:6px 6px 0 0'>"
+        f"<h2 style='color:#fff;margin:0'>📦 34S Physical Stock Register — {month_label}</h2>"
+        f"<p style='color:#c5cae9;margin:6px 0 0;font-size:13px'>"
+        f"Last recorded day: {last_day_str}</p></div>"
+        f"<div style='padding:20px 24px'>"
+        f"<p>Please find the month-end stock summary below and the full month's data attached.</p>"
+        f"{html_table}"
+        f"</div>"
+        f"<div style='padding:10px 24px;background:#eee;font-size:11px;color:#888;"
+        f"border-radius:0 0 6px 6px'>Automated monthly report · 34S Interiors CRM</div>"
+        f"</body></html>"
     )
-    month_df = full_df[month_mask].drop(columns=["_DT"], errors="ignore")
 
-    if month_df.empty:
-        raise RuntimeError(f"No stock data found for {month_label}.")
-
-    # Last day's data for email body
-    last_date  = month_df["DATE"].iloc[-1] if "DATE" in month_df.columns else ""
-    last_mask  = month_df["DATE"].astype(str).str.strip() == str(last_date).strip()
-    last_df    = month_df[last_mask]
-
-    # Ensure columns
-    for col in STOCK_COLUMNS:
-        if col not in month_df.columns:
-            month_df[col] = ""
-    month_df = month_df[STOCK_COLUMNS]
-
-    excel_bytes  = _build_excel_bytes(month_df, month_label)
-    table_html   = _last_day_html_table(last_df)
-    filename     = f"34S_Stock_{month_label.replace(' ', '_')}.xlsx"
-
-    subject = f"Monthly 34S Stock Details- {month_label}"
-    body_html = f"""
-<html>
-<body style='font-family:Arial,sans-serif;color:#222'>
-  <div style='background:#1F4E79;padding:16px 24px;border-radius:6px 6px 0 0'>
-    <h2 style='color:#fff;margin:0'>📦 Monthly 34S Stock Register — {month_label}</h2>
-    <p style='color:#bcd4e6;margin:6px 0 0;font-size:13px'>
-      Last-day snapshot · Full month data attached as Excel
-    </p>
-  </div>
-  <div style='padding:20px 24px'>
-    <h3 style='color:#1F4E79;margin-top:0'>
-      Stock Position — {last_date} (Last Day)
-    </h3>
-    {table_html}
-    <p style='margin-top:16px;font-size:12px;color:#666'>
-      Full month data ({len(month_df)} rows) is attached as <strong>{filename}</strong>.
-    </p>
-  </div>
-  <div style='padding:10px 24px;background:#f0f0f0;font-size:11px;color:#888;
-              border-radius:0 0 6px 6px'>
-    Automated monthly report from 4SINTERIORS CRM. Do not reply.
-  </div>
-</body>
-</html>
-"""
-
-    msg = MIMEMultipart()
+    msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"]    = imap_email
+    msg["From"]    = email_addr
     msg["To"]      = ", ".join(recipients)
-    msg.attach(MIMEText(body_html, "html"))
+    msg.set_content("Please view this email in HTML format.")
+    msg.add_alternative(html_body, subtype="html")
+    msg.add_attachment(
+        excel_bytes,
+        maintype="application",
+        subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=f"34S_Stock_{month_label.replace(' ', '_')}.xlsx",
+    )
 
-    part = MIMEBase("application", "octet-stream")
-    part.set_payload(excel_bytes)
-    encoders.encode_base64(part)
-    part.add_header("Content-Disposition", f'attachment; filename="{filename}"')
-    msg.attach(part)
-
-    summary = {"sent": False, "recipients": recipients, "subject": subject, "error": ""}
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(imap_email, imap_pwd)
-            server.sendmail(imap_email, recipients, msg.as_string())
-        summary["sent"] = True
-        try:
-            from services.sheets import append_email_log
-            append_email_log(
-                f"Monthly 34S Stock Email ({month_label})",
-                len(month_df), recipients, "success",
-            )
-        except Exception:
-            pass
+            server.login(email_addr, password)
+            server.send_message(msg)
     except Exception as e:
-        summary["error"] = str(e)
-        try:
-            from services.sheets import append_email_log
-            append_email_log(
-                f"Monthly 34S Stock Email ({month_label})",
-                len(month_df), recipients, "error", str(e),
-            )
-        except Exception:
-            pass
-        raise
+        return {"sent": False, "error": str(e)}
 
-    return summary
+    # Archive the sheet by renaming it
+    try:
+        sh = _get_spreadsheet()
+        old_name = sheet_name_for(date(year, month, 1))
+        ws = sh.worksheet(old_name)
+        ws.update_title(f"ARCHIVED 34S Stock {month_label}")
+        print(f"[STOCK 34S] Sheet archived as 'ARCHIVED 34S Stock {month_label}'.")
+    except Exception as e:
+        print(f"[STOCK 34S] Archive rename failed (non-fatal): {e}")
+
+    try:
+        from services.sheets import append_email_log
+        append_email_log(
+            f"Monthly 34S Stock Email ({month_label})",
+            0, recipients, "success",
+        )
+    except Exception:
+        pass
+
+    return {"sent": True, "subject": subject, "recipients": recipients}
