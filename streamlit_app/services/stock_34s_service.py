@@ -36,6 +36,7 @@ import io
 import os
 import re
 import sys
+import gspread
 from calendar import monthrange
 from datetime import date, datetime, timedelta, timezone
 
@@ -202,7 +203,7 @@ def _write_sheet_direct(sheet_name: str, df: pd.DataFrame) -> None:
     sh = _get_spreadsheet()
     try:
         ws = sh.worksheet(sheet_name)
-    except Exception:
+    except gspread.exceptions.WorksheetNotFound:
         ws = sh.add_worksheet(title=sheet_name, rows=1200, cols=220)
     data = _serialize_for_sheets(df.fillna("").astype(str))
     ws.clear()
@@ -339,16 +340,19 @@ def ensure_month_sheet(year: int, month: int, seed_days: int = 0) -> str:
     except Exception as e:
         return f"❌ Spreadsheet connection failed: {e}"
 
-    # Check if it already exists
+    # Check if it already exists — only catch WorksheetNotFound, not API/auth errors
     try:
         ws = sh.worksheet(name)
-        existing_headers = ws.row_values(1)
+        # Sheet exists — check if it already has column headers
+        try:
+            existing_headers = ws.row_values(1)
+        except Exception:
+            existing_headers = []
         if existing_headers:
             return f"ℹ️ Sheet '{name}' already exists ({len(existing_headers)} columns)."
-        created = False
-    except Exception:
+        # Sheet exists but is empty — fall through to write headers
+    except gspread.exceptions.WorksheetNotFound:
         ws = sh.add_worksheet(title=name, rows=1200, cols=220)
-        created = True
 
     # Build header row
     headers = list(FIXED_COLS)
@@ -786,7 +790,10 @@ def run_daily_update(
     print(f"[STOCK 34S] === Daily update for {target_date} ({name}) ===")
 
     # 1. Ensure month sheet exists (creates it + copies previous month items if new)
-    setup_msg = ensure_month_sheet(year, month, seed_days=0)
+    try:
+        setup_msg = ensure_month_sheet(year, month, seed_days=0)
+    except Exception as setup_err:
+        return pd.DataFrame(), f"❌ Sheet setup failed: {setup_err}"
     print(f"[STOCK 34S] {setup_msg}")
 
     # 2. Load the month DataFrame
