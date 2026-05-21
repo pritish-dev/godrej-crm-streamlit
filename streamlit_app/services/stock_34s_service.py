@@ -461,6 +461,11 @@ def _get_master_items(year: int, month: int, df: pd.DataFrame | None = None) -> 
     """
     Return the item master (FIXED_COLS) from the month's sheet.
     Pass df directly to skip a re-read.
+
+    NOTE: intentionally does NOT drop duplicates.  All rows with a non-empty
+    Item Code are kept so that the row count always matches the full sheet.
+    Removing duplicates here would cause a positional mismatch when writing
+    new columns back to the sheet (e.g. 309 values for 319 rows).
     """
     if df is None:
         df, _ = load_month_df(year, month)
@@ -471,7 +476,14 @@ def _get_master_items(year: int, month: int, df: pd.DataFrame | None = None) -> 
         return pd.DataFrame()
     items = df[keep].copy()
     items = items[items["Item Code"].astype(str).str.strip() != ""]
-    return items.drop_duplicates(subset=["Item Code"]).reset_index(drop=True)
+    return items.reset_index(drop=True)
+
+
+def _count_items(df: pd.DataFrame) -> int:
+    """Count rows in df that have a non-empty Item Code."""
+    if df.empty or "Item Code" not in df.columns:
+        return 0
+    return int(df["Item Code"].astype(str).str.strip().ne("").sum())
 
 
 # ─── PDF parsing (Delivery Challan) ───────────────────────────────────────────
@@ -693,31 +705,59 @@ def _fetch_outward(target_date: date) -> dict[str, float]:
 # ─── Core: build columns for one date ─────────────────────────────────────────
 
 def _build_date_columns(
-    items: pd.DataFrame,
+    df: pd.DataFrame,
     target_date: date,
     prev_cl: dict[str, float],
     inward: dict[str, dict],
     outward: dict[str, float],
 ) -> dict[str, list]:
     """
-    Given item list + inward/outward maps, return a dict of
-    {column_name: [value, value, …]} for the 5 date sub-columns.
-    One value per row of `items`.
+    Build 5 new column lists (Op Stock / In Ward / Out Ward / Cl Stock / DC No)
+    aligned row-for-row with the FULL sheet DataFrame `df`.
+
+    Rows with an empty Item Code (blank rows, header rows, etc.) are preserved
+    as empty strings so the output length always equals len(df).  This prevents
+    the positional mismatch that caused some items to receive blank values.
+
+    Logic per item row:
+      Op Stock  = most recent Cl Stock for that item (from prev_cl lookup)
+      In Ward   = quantity received (from email/Drive challan PDFs), else 0
+      Out Ward  = quantity dispatched (from delivery/return sheets), else 0
+      Cl Stock  = Op Stock + In Ward − Out Ward
+      DC No     = Delivery Challan number if inward exists, else ""
     """
-    cols: dict[str, list] = {_col(target_date, sub): [] for sub in DATE_SUB_COLS}
-    for _, item in items.iterrows():
-        code = str(item.get("Item Code", "")).strip().upper()
-        op   = prev_cl.get(code, 0.0)
-        iw   = inward.get(code, {}).get("qty", 0.0)
-        ow   = outward.get(code, 0.0)
-        cl   = op + iw - ow
-        dc   = inward.get(code, {}).get("challan_no", "")
-        cols[_col(target_date, "Op Stock")].append(int(round(op)))
-        cols[_col(target_date, "In Ward")].append(int(round(iw)) if iw else 0)
-        cols[_col(target_date, "Out Ward")].append(int(round(ow)) if ow else 0)
-        cols[_col(target_date, "Cl Stock")].append(int(round(cl)))
-        cols[_col(target_date, "DC No")].append(dc)
-    return cols
+    op_vals, in_vals, out_vals, cl_vals, dc_vals = [], [], [], [], []
+
+    for _, row in df.iterrows():
+        code = str(row.get("Item Code", "")).strip().upper()
+        if not code:
+            # Blank / header / subtotal row — leave all 5 cells empty
+            op_vals.append("")
+            in_vals.append("")
+            out_vals.append("")
+            cl_vals.append("")
+            dc_vals.append("")
+            continue
+
+        op = prev_cl.get(code, 0.0)
+        iw = inward.get(code, {}).get("qty", 0.0)
+        ow = outward.get(code, 0.0)
+        cl = op + iw - ow
+        dc = inward.get(code, {}).get("challan_no", "")
+
+        op_vals.append(int(round(op)))
+        in_vals.append(int(round(iw)) if iw else 0)
+        out_vals.append(int(round(ow)) if ow else 0)
+        cl_vals.append(int(round(cl)))
+        dc_vals.append(dc)
+
+    return {
+        _col(target_date, "Op Stock"):  op_vals,
+        _col(target_date, "In Ward"):   in_vals,
+        _col(target_date, "Out Ward"):  out_vals,
+        _col(target_date, "Cl Stock"):  cl_vals,
+        _col(target_date, "DC No"):     dc_vals,
+    }
 
 
 # ─── Daily update (single date) ───────────────────────────────────────────────
@@ -760,9 +800,9 @@ def run_daily_update(
         if df.empty:
             return pd.DataFrame(), load_msg
 
-    # 3. Item master
-    items = _get_master_items(year, month, df=df)
-    if items.empty:
+    # 3. Validate item count (must have at least one row with Item Code)
+    item_count = _count_items(df)
+    if item_count == 0:
         return pd.DataFrame(), (
             f"❌ No items found in '{name}'. "
             "Add Sl No / Item Code / Item Description / Product Category rows first."
@@ -771,7 +811,7 @@ def run_daily_update(
     # 4. Previous closing stock
     prev_cl = _get_prev_cl_stock(target_date, df_override=df)
 
-    # 5. Inward
+    # 5. Inward — email challan PDFs + Google Drive invoice PDFs
     email_in = _fetch_inward_from_email(target_date)
     drive_in = _fetch_inward_from_drive(target_date)
     inward: dict[str, dict] = {}
@@ -782,23 +822,23 @@ def run_daily_update(
         else:
             inward[code] = dict(info)
 
-    # 6. Outward
+    # 6. Outward — 34S PHYSICAL DELIVERY CHALLAN + 34S RETURN RPL sheets
     outward = {k.upper(): v for k, v in _fetch_outward(target_date).items()}
 
-    # 7. Build the 5 new columns
-    new_cols = _build_date_columns(items, target_date, prev_cl, inward, outward)
+    print(f"[STOCK 34S] Inward items found : {len(inward)}  (email:{len(email_in)} + drive:{len(drive_in)})")
+    print(f"[STOCK 34S] Outward items found: {len(outward)}")
+
+    # 7. Build 5 new columns — iterates over ALL rows in df (no filtering/dedup)
+    new_cols = _build_date_columns(df, target_date, prev_cl, inward, outward)
 
     # 8. Remove existing columns for target_date (idempotent)
     tag  = _col_tag(target_date)
     drop = [c for c in df.columns if c.startswith(tag + " ")]
     df   = df.drop(columns=drop, errors="ignore")
 
-    # 9. Append new columns
+    # 9. Assign new columns — lengths are guaranteed to match len(df)
     for col_name, values in new_cols.items():
-        # Pad values to match df length if needed
-        while len(values) < len(df):
-            values.append("")
-        df[col_name] = values[:len(df)]
+        df[col_name] = values
 
     # 10. Write back
     try:
@@ -807,7 +847,10 @@ def run_daily_update(
         else:
             from services.sheets import write_df
             write_df(name, df.fillna("").astype(str))
-        status = f"✅ '{name}' updated for {target_date} — {len(items)} items."
+        status = (
+            f"✅ '{name}' updated for {target_date} — {item_count} items.  "
+            f"Inward: {len(inward)} item(s) | Outward: {len(outward)} item(s)."
+        )
     except Exception as e:
         status = f"❌ Write failed: {e}"
 
@@ -851,9 +894,9 @@ def run_update_range(start_date: date, end_date: date) -> tuple[list[str], str]:
         year, month = d.year, d.month
         name = sheet_name_for(d)
 
-        items = _get_master_items(year, month, df=df_cache)
-        if items.empty:
-            results.append(f"{d.strftime('%d/%m/%Y')}: ❌ No items in sheet.")
+        item_count = _count_items(df_cache)
+        if item_count == 0:
+            results.append(f"{d.strftime('%d/%m/%Y')}: ❌ No items with Item Code found in sheet.")
             d += timedelta(days=1)
             continue
 
@@ -869,20 +912,22 @@ def run_update_range(start_date: date, end_date: date) -> tuple[list[str], str]:
                 inward[code] = dict(info)
         outward = {k.upper(): v for k, v in _fetch_outward(d).items()}
 
-        new_cols = _build_date_columns(items, d, prev_cl, inward, outward)
+        # Build columns over full df — no item filtering, no positional mismatch
+        new_cols = _build_date_columns(df_cache, d, prev_cl, inward, outward)
 
         tag  = _col_tag(d)
         drop = [c for c in df_cache.columns if c.startswith(tag + " ")]
         df_cache = df_cache.drop(columns=drop, errors="ignore")
         for col_name, values in new_cols.items():
-            while len(values) < len(df_cache):
-                values.append("")
-            df_cache[col_name] = values[:len(df_cache)]
+            df_cache[col_name] = values   # lengths guaranteed equal
 
         # Write after each day so the sheet is always up-to-date
         try:
             _write_sheet_direct(name, df_cache)
-            status = f"✅ {len(items)} items updated."
+            status = (
+                f"✅ {item_count} items | "
+                f"Inward: {len(inward)} | Outward: {len(outward)}"
+            )
         except Exception as e:
             status = f"❌ Write failed: {e}"
 
