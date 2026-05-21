@@ -36,8 +36,6 @@ import io
 import os
 import re
 import sys
-import imaplib
-import email as _email_lib
 from calendar import monthrange
 from datetime import date, datetime, timedelta, timezone
 
@@ -536,6 +534,9 @@ def _parse_challan_pdf(pdf_bytes: bytes) -> dict:
 
 def _fetch_inward_from_email(target_date: date) -> dict[str, dict]:
     """Search for 'Delivery Challan Information' emails on target_date and parse PDFs."""
+    import imaplib
+    import email as _email_lib
+
     email_addr, password = _imap_creds()
     if not email_addr or not password:
         print("[STOCK 34S] IMAP credentials not configured — skipping email inward.")
