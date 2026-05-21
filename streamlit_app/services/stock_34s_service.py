@@ -292,12 +292,34 @@ def load_stock_for_date(year: int, month: int, d: date) -> tuple[pd.DataFrame, s
 
 
 def get_last_updated_date(year: int, month: int) -> date | None:
-    """Return the most recent date that has columns in the month sheet."""
+    """
+    Return the most recent date whose Cl Stock column contains at least one
+    non-empty value — i.e. the daily job actually ran for that date.
+
+    Dates that only have column *headers* (added by Setup Sheet / seed_days)
+    but no data values are NOT counted.  This prevents an empty seeded sheet
+    from appearing to be "up to date".
+    """
     df, _ = load_month_df(year, month)
     if df.empty:
         return None
     available = dates_in_df(df, year, month)
-    return max(available) if available else None
+    if not available:
+        return None
+
+    dates_with_data: list[date] = []
+    for d in available:
+        cl_col = _col(d, "Cl Stock")
+        if cl_col not in df.columns:
+            continue
+        # A cell is considered "written" if it is non-empty, non-NaN, and not
+        # literally the string "nan" / "None" that pandas may leave behind.
+        col_vals = df[cl_col].astype(str).str.strip()
+        has_data = col_vals[~col_vals.isin(["", "nan", "None"])].any()
+        if has_data:
+            dates_with_data.append(d)
+
+    return max(dates_with_data) if dates_with_data else None
 
 
 # ─── Sheet setup ──────────────────────────────────────────────────────────────

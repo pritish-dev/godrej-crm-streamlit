@@ -211,7 +211,24 @@ elif status:
     st.info(status)
 
 # ─── Action buttons ───────────────────────────────────────────────────────────
-col_setup, col_today, col_catchup = st.columns([1, 1, 1])
+# Determine the correct start date for the update/catch-up range ONCE so both
+# buttons use the same value.  Only dates with actual Cl Stock data count —
+# empty column headers (added by Setup Sheet) are ignored.
+_last_upd = get_last_updated_date(sel_year, sel_month)
+if _last_upd is None:
+    _update_start = date(sel_year, sel_month, 1)        # no data at all
+elif _last_upd >= TODAY:
+    _update_start = TODAY                               # already current — re-run today
+else:
+    _update_start = _last_upd + timedelta(days=1)       # fill from day after last update
+
+_range_label = (
+    f"{_update_start.strftime('%d/%m')} → {TODAY.strftime('%d/%m')}"
+    if _update_start != TODAY
+    else TODAY.strftime('%d/%m')
+)
+
+col_setup, col_update, col_rerun = st.columns([1, 1, 1])
 
 with col_setup:
     if st.button(
@@ -223,7 +240,6 @@ with col_setup:
         with st.spinner("Setting up month sheet…"):
             msg = ensure_month_sheet(sel_year, sel_month, seed_days=7)
         st.session_state.s34_months = get_available_months()
-        # Reload
         df_month, load_msg = load_month_df(sel_year, sel_month)
         st.session_state.s34_month_df = df_month
         st.session_state.s34_loaded   = True
@@ -233,60 +249,29 @@ with col_setup:
             st.error(msg)
         st.rerun()
 
-with col_today:
+with col_update:
+    # PRIMARY update button — always starts from the day AFTER the last date
+    # that has actual data, so gaps are never skipped.
     if st.button(
-        "⚡ Update Today",
+        f"⚡ Update Sheet  ({_range_label})",
         type="primary",
         use_container_width=True,
-        help="Run the daily stock update for today (fetches inward from email/Drive and outward from sheets).",
-    ):
-        with st.spinner(f"Updating stock for {TODAY}…"):
-            _, upd_msg = run_daily_update(TODAY)
-        # Reload
-        df_month, _ = load_month_df(sel_year, sel_month)
-        st.session_state.s34_month_df  = df_month
-        st.session_state.s34_status    = upd_msg
-        st.session_state.s34_loaded    = True
-        st.session_state["_s34_prev_date_key"] = None  # force date reload
-        if upd_msg.startswith("✅"):
-            st.success(upd_msg)
-        else:
-            st.error(upd_msg)
-        st.rerun()
-
-with col_catchup:
-    last_upd = get_last_updated_date(sel_year, sel_month)
-    if last_upd is None:
-        # No data at all — start from first of the month
-        catchup_start = date(sel_year, sel_month, 1)
-        catchup_label = f"🔄 Update ({catchup_start.strftime('%d/%m')} → {TODAY.strftime('%d/%m')})"
-    elif last_upd >= TODAY:
-        # Sheet is current — allow re-running today to refresh from latest sources
-        catchup_start = TODAY
-        catchup_label = f"🔄 Re-run Today ({TODAY.strftime('%d/%m')})"
-    else:
-        # Gap exists — fill missing days up to today
-        catchup_start = last_upd + timedelta(days=1)
-        catchup_label = f"🔄 Catch-up ({catchup_start.strftime('%d/%m')} → {TODAY.strftime('%d/%m')})"
-
-    if st.button(
-        catchup_label,
-        use_container_width=True,
         help=(
-            "Fill every missing day from the last-updated date through today.  \n"
-            "Op Stock carries forward from the previous day's Cl Stock; "
+            f"Update every day from **{_update_start.strftime('%d %b')}** through "
+            f"**{TODAY.strftime('%d %b')}**.  \n"
+            "Op Stock is carried forward from the previous day's Cl Stock; "
             "In Ward and Out Ward default to 0 when no movement is found."
         ),
     ):
-        total_days = max((TODAY - catchup_start).days + 1, 1)
-        prog_bar   = st.progress(0, text=f"Updating {total_days} day(s)…")
-        result_placeholder = st.empty()
+        total_days = max((TODAY - _update_start).days + 1, 1)
+        prog = st.progress(0, text=f"Updating {total_days} day(s): {_range_label}…")
+        details = st.empty()
 
-        with st.spinner("Running update… this may take a while."):
-            lines, summary = run_update_range(catchup_start, TODAY)
+        with st.spinner("Fetching data and writing to sheet…"):
+            lines, summary = run_update_range(_update_start, TODAY)
 
-        prog_bar.progress(1.0, text="Done!")
-        with result_placeholder.expander("Catch-up details", expanded=True):
+        prog.progress(1.0, text="Done!")
+        with details.expander("Day-by-day details", expanded=True):
             for line in lines:
                 if "✅" in line:
                     st.success(line)
@@ -295,13 +280,36 @@ with col_catchup:
                 else:
                     st.warning(line)
 
-        # Reload fresh data
-        df_month, load_msg = load_month_df(sel_year, sel_month)
+        df_month, _ = load_month_df(sel_year, sel_month)
         st.session_state.s34_month_df  = df_month
         st.session_state.s34_status    = summary
         st.session_state.s34_loaded    = True
         st.session_state["_s34_prev_date_key"] = None
-        st.info(summary)
+        if summary and "error" not in summary.lower():
+            st.success(summary)
+        else:
+            st.warning(summary)
+        st.rerun()
+
+with col_rerun:
+    # FORCE RE-RUN — always overwrites TODAY only, regardless of last update.
+    if st.button(
+        f"🔄 Force Re-run Today  ({TODAY.strftime('%d/%m')})",
+        use_container_width=True,
+        help="Re-fetch and overwrite **today's** columns only — useful when a delivery "
+             "challan or outward entry arrives late in the day.",
+    ):
+        with st.spinner(f"Re-running update for {TODAY.strftime('%d %b')}…"):
+            _, upd_msg = run_daily_update(TODAY)
+        df_month, _ = load_month_df(sel_year, sel_month)
+        st.session_state.s34_month_df  = df_month
+        st.session_state.s34_status    = upd_msg
+        st.session_state.s34_loaded    = True
+        st.session_state["_s34_prev_date_key"] = None
+        if upd_msg.startswith("✅"):
+            st.success(upd_msg)
+        else:
+            st.error(upd_msg)
         st.rerun()
 
 # ─── No data guard ────────────────────────────────────────────────────────────
