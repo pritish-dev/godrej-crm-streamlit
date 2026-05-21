@@ -1,0 +1,44 @@
+name: 34S Stock Daily Update (8 PM IST)
+
+# 8:00 PM IST = 14:30 UTC
+on:
+  schedule:
+    - cron: '30 14 * * *'   # Every day at 8:00 PM IST
+
+  workflow_dispatch:
+    inputs:
+      force_date:
+        description: 'Override date (DD/MM/YYYY, blank = today IST)'
+        required: false
+        default: ''
+
+jobs:
+  stock-34s-update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          if [ -f streamlit_app/requirements.txt ]; then
+            pip install -r streamlit_app/requirements.txt
+          else
+            pip install -r requirements.txt
+          fi
+
+      - name: Run 34S Stock daily update
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
+        run: |
+          cd streamlit_app
+          python stock_34s_daily_job.py

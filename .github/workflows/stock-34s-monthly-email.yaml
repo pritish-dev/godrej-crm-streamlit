@@ -1,0 +1,50 @@
+name: 34S Stock Monthly Email (Last Day 8 PM IST)
+
+# 8:00 PM IST = 14:30 UTC.
+# Run on days 28-31 every month; the Python script skips unless today is
+# the actual last day of the month (or FORCE_RUN=1 is set).
+on:
+  schedule:
+    - cron: '30 14 28-31 * *'
+
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Send even if today is not the last day of the month'
+        type: boolean
+        required: false
+        default: false
+
+jobs:
+  stock-34s-monthly-email:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          if [ -f streamlit_app/requirements.txt ]; then
+            pip install -r streamlit_app/requirements.txt
+          else
+            pip install -r requirements.txt
+          fi
+
+      - name: Run 34S Monthly Stock email job
+        env:
+          GOOGLE_CREDENTIALS:             ${{ secrets.GOOGLE_CREDENTIALS }}
+          EMAIL_SENDER:                   ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD:                 ${{ secrets.EMAIL_PASSWORD }}
+          STOCK_34S_EMAIL_RECIPIENTS:     ${{ secrets.STOCK_34S_EMAIL_RECIPIENTS }}
+          EMAIL_RECIPIENTS:               ${{ secrets.EMAIL_RECIPIENTS }}
+          FORCE_RUN:                      ${{ github.event.inputs.force }}
+        run: |
+          cd streamlit_app
+          python stock_34s_monthly_email_job.py
