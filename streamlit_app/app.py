@@ -31,6 +31,7 @@ sales_handbook_pages = [
     st.Page("pages/30_Sales_Reports_and_Strategy.py", title="Sales Reports and Strategy", icon="💡"),
     st.Page("pages/50_MIS_Update.py",                 title="MIS Update",                 icon="📦"),
     st.Page("pages/60_Stock.py",                      title="Stock",                      icon="🏭"),
+    st.Page("pages/62_34s_Stock.py",                  title="34s Stock Details",           icon="📦"),
     st.Page("pages/65_Price_List.py",                 title="Price List",                 icon="💰"),
     st.Page("pages/40_Products_catalog.py",           title="Product Catalogue",          icon="🪑"),
 ]
