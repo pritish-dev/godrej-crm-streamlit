@@ -691,8 +691,8 @@ def _build_date_columns(
         cl   = op + iw - ow
         dc   = inward.get(code, {}).get("challan_no", "")
         cols[_col(target_date, "Op Stock")].append(int(round(op)))
-        cols[_col(target_date, "In Ward")].append(int(round(iw)) if iw else "")
-        cols[_col(target_date, "Out Ward")].append(int(round(ow)) if ow else "")
+        cols[_col(target_date, "In Ward")].append(int(round(iw)) if iw else 0)
+        cols[_col(target_date, "Out Ward")].append(int(round(ow)) if ow else 0)
         cols[_col(target_date, "Cl Stock")].append(int(round(cl)))
         cols[_col(target_date, "DC No")].append(dc)
     return cols

@@ -257,28 +257,32 @@ with col_today:
 with col_catchup:
     last_upd = get_last_updated_date(sel_year, sel_month)
     if last_upd is None:
+        # No data at all — start from first of the month
         catchup_start = date(sel_year, sel_month, 1)
+        catchup_label = f"🔄 Update ({catchup_start.strftime('%d/%m')} → {TODAY.strftime('%d/%m')})"
+    elif last_upd >= TODAY:
+        # Sheet is current — allow re-running today to refresh from latest sources
+        catchup_start = TODAY
+        catchup_label = f"🔄 Re-run Today ({TODAY.strftime('%d/%m')})"
     else:
+        # Gap exists — fill missing days up to today
         catchup_start = last_upd + timedelta(days=1)
-
-    catchup_needed = catchup_start <= TODAY
-    catchup_label  = (
-        f"🔄 Catch-up ({catchup_start.strftime('%d/%m')} → {TODAY.strftime('%d/%m')})"
-        if catchup_needed
-        else "✔️ Sheet is up to date"
-    )
+        catchup_label = f"🔄 Catch-up ({catchup_start.strftime('%d/%m')} → {TODAY.strftime('%d/%m')})"
 
     if st.button(
         catchup_label,
         use_container_width=True,
-        disabled=not catchup_needed,
-        help="Update every missing day from the last-updated date through today.",
+        help=(
+            "Fill every missing day from the last-updated date through today.  \n"
+            "Op Stock carries forward from the previous day's Cl Stock; "
+            "In Ward and Out Ward default to 0 when no movement is found."
+        ),
     ):
-        total_days = (TODAY - catchup_start).days + 1
-        prog_bar   = st.progress(0, text=f"Catching up {total_days} day(s)…")
+        total_days = max((TODAY - catchup_start).days + 1, 1)
+        prog_bar   = st.progress(0, text=f"Updating {total_days} day(s)…")
         result_placeholder = st.empty()
 
-        with st.spinner("Running catch-up… this may take a while."):
+        with st.spinner("Running update… this may take a while."):
             lines, summary = run_update_range(catchup_start, TODAY)
 
         prog_bar.progress(1.0, text="Done!")
