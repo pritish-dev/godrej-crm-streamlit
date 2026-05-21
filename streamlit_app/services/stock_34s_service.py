@@ -523,23 +523,49 @@ def _get_master_items() -> pd.DataFrame:
     return sub[keep].drop_duplicates(subset=["Item Code"]).reset_index(drop=True)
 
 
-def _get_prev_cl_stock(prev_date: date) -> dict[str, float]:
-    """Return {item_code_upper: cl_stock_float} for prev_date."""
+def _get_prev_cl_stock(before_date: date) -> dict[str, float]:
+    """
+    Return {item_code_upper: cl_stock_float} from the most recent date
+    that is STRICTLY BEFORE before_date and has data in the sheet.
+
+    Using "most recent date before today" instead of hardcoded "yesterday"
+    ensures weekends, public holidays, and missed days are handled correctly —
+    Monday's Op Stock will equal Friday's Cl Stock even when Saturday and
+    Sunday have no entries.
+    """
     from services.sheets import get_df
     try:
         df = get_df(STOCK_34S_SHEET)
     except Exception:
         return {}
-    if df is None or df.empty or "DATE" not in df.columns:
+    if df is None or df.empty:
+        return {}
+
+    df.columns = [str(c).strip() for c in df.columns]
+    if "DATE" not in df.columns:
         return {}
 
     df["_DT"] = pd.to_datetime(df["DATE"], dayfirst=True, errors="coerce")
-    prev_ts   = pd.Timestamp(prev_date)
-    sub       = df[df["_DT"].dt.normalize() == prev_ts.normalize()]
+    cutoff    = pd.Timestamp(before_date).normalize()
+
+    # All dates in the sheet that are strictly before today
+    past_dates = (
+        df.loc[df["_DT"].dt.normalize() < cutoff, "_DT"]
+        .dt.normalize()
+        .dropna()
+        .unique()
+    )
+    if len(past_dates) == 0:
+        return {}   # First ever run — Op Stock = 0 for all items
+
+    prev_ts = max(past_dates)   # Most recent date that has data
+    sub     = df[df["_DT"].dt.normalize() == prev_ts]
 
     result: dict[str, float] = {}
     for _, row in sub.iterrows():
         code = str(row.get("Item Code", "")).strip().upper()
+        if not code:
+            continue
         try:
             result[code] = float(str(row.get("Cl Stock", 0)).replace(",", "") or 0)
         except (ValueError, TypeError):
@@ -569,8 +595,9 @@ def run_daily_update(target_date: date | None = None) -> tuple[pd.DataFrame, str
             "Add at least one day of data manually to seed the item list."
         )
 
-    # 2. Previous day's closing stock
-    prev_cl = _get_prev_cl_stock(target_date - timedelta(days=1))
+    # 2. Previous closing stock — uses most recent date before today so
+    #    weekends/holidays don't zero-out Op Stock.
+    prev_cl = _get_prev_cl_stock(target_date)
     print(f"[STOCK 34S] Previous cl_stock: {len(prev_cl)} items")
 
     # 3 & 4. Inward from email + Drive
@@ -634,11 +661,14 @@ def run_daily_update(target_date: date | None = None) -> tuple[pd.DataFrame, str
     if existing is None or existing.empty:
         combined = new_df
     else:
-        existing["_DT"] = pd.to_datetime(existing.get("DATE", ""), dayfirst=True, errors="coerce")
-        tgt_ts          = pd.Timestamp(target_date)
-        existing        = existing[
-            existing["_DT"].dt.normalize() != tgt_ts.normalize()
-        ].drop(columns=["_DT"], errors="ignore")
+        existing.columns = [str(c).strip() for c in existing.columns]
+        if "DATE" in existing.columns:
+            existing["_DT"] = pd.to_datetime(existing["DATE"], dayfirst=True, errors="coerce")
+            tgt_ts           = pd.Timestamp(target_date)
+            # Drop any rows already written for today (idempotent re-run)
+            existing         = existing[
+                existing["_DT"].dt.normalize() != tgt_ts.normalize()
+            ].drop(columns=["_DT"], errors="ignore")
         combined = pd.concat([existing, new_df], ignore_index=True)
 
     for col in STOCK_COLUMNS:
