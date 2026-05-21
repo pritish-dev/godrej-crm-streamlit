@@ -445,15 +445,29 @@ def load_stock_data(date_str: str | None = None) -> tuple[pd.DataFrame, str]:
         return pd.DataFrame(), f"❌ Could not read '{STOCK_34S_SHEET}': {e}"
 
     if df is None or df.empty:
-        return pd.DataFrame(), f"⚠️ Sheet '{STOCK_34S_SHEET}' is empty."
+        return pd.DataFrame(), f"⚠️ Sheet '{STOCK_34S_SHEET}' is empty. Add data manually or run the daily job."
+
+    # Normalise column names so minor case/space differences don't break things
+    df.columns = [str(c).strip() for c in df.columns]
+
+    if "DATE" not in df.columns:
+        found = ", ".join(df.columns.tolist()[:6])
+        return pd.DataFrame(), (
+            f"⚠️ Sheet '{STOCK_34S_SHEET}' is not in the expected flat-table format. "
+            f"A **DATE** column (DD/MM/YYYY) is required as the first column but was not found. "
+            f"Columns detected: {found}…  "
+            "Please restructure the sheet with headers: "
+            "DATE | Sl No | Item Code | Item Description | Product Category | "
+            "Op Stock | In Ward | Out Ward | Cl Stock | Delivery Challan No"
+        )
 
     if date_str:
         mask = df["DATE"].astype(str).str.strip() == date_str.strip()
         df   = df[mask].copy()
         if df.empty:
-            return pd.DataFrame(), f"⚠️ No data for {date_str}."
+            return pd.DataFrame(), f"⚠️ No data found for {date_str} in the sheet."
 
-    # Ensure display columns exist
+    # Ensure all display columns are present (add blank ones if missing)
     for col in STOCK_COLUMNS:
         if col not in df.columns:
             df[col] = ""
@@ -468,7 +482,10 @@ def get_all_dates() -> list[str]:
         df = get_df(STOCK_34S_SHEET)
     except Exception:
         return []
-    if df is None or df.empty or "DATE" not in df.columns:
+    if df is None or df.empty:
+        return []
+    df.columns = [str(c).strip() for c in df.columns]
+    if "DATE" not in df.columns:
         return []
     raw = df["DATE"].dropna().astype(str).str.strip().unique().tolist()
     try:
@@ -493,6 +510,7 @@ def _get_master_items() -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
 
+    df.columns = [str(c).strip() for c in df.columns]
     df["_DT"] = pd.to_datetime(df.get("DATE", ""), dayfirst=True, errors="coerce")
     latest    = df["_DT"].max()
     if pd.isna(latest):
