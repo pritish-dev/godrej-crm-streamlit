@@ -9,7 +9,9 @@ Default date filter: 1 April 2026 → today.
 """
 
 import os
+import re
 import sys
+import urllib.parse
 from datetime import datetime, date
 
 import pandas as pd
@@ -28,6 +30,59 @@ from services.happy_calling import (
     _row_key,
 )
 
+_GOOGLE_REVIEW_URL = "https://g.co/kgs/pB8HG8d"
+_WA_CHANNEL_URL    = "https://whatsapp.com/channel/0029Vb6e8A7K5cDHqIpZFI0Y"
+
+
+def _extract_phones(contact_str, max_count=2):
+    """Return up to max_count E.164-style phone strings (with 91 prefix) from a raw contact field."""
+    if not contact_str or pd.isna(contact_str):
+        return []
+    phones = []
+    for part in re.split(r"[,/\\\s]+", str(contact_str)):
+        digits = re.sub(r"\D", "", part)
+        if len(digits) == 10:
+            digits = "91" + digits
+        elif len(digits) == 11 and digits.startswith("0"):
+            digits = "91" + digits[1:]
+        elif len(digits) == 12 and digits.startswith("91"):
+            pass
+        else:
+            continue
+        phones.append(digits)
+        if len(phones) >= max_count:
+            break
+    return phones
+
+
+def _happy_calling_message(name, products, order_date):
+    """Build the personalised WhatsApp happy-calling message."""
+    first_name = str(name).strip().split()[0].title() if name else "Customer"
+    prod_str   = str(products).strip() or "your products"
+    date_str   = str(order_date).strip() or "recently"
+    return (
+        f"Hi {first_name}, Thank you for choosing Godrej Interio, Patia!\n\n"
+        f"We hope you're enjoying your new {prod_str}, purchased on {date_str}, "
+        f"and had a great experience with us.\n\n"
+        f"If you loved our products and service, we'd be truly grateful if you could "
+        f"leave a 5-star review on Google:\n"
+        f"{_GOOGLE_REVIEW_URL}\n\n"
+        f"You can also follow our WhatsApp channel \U0001f4e2 to get updates on New Product "
+        f"launches, Limited-time offers, and showroom events.\n"
+        f"\U0001f449 Click here to follow: {_WA_CHANNEL_URL}\n\n"
+        f"\U0001f60a Thank you!\n"
+        f"Team Godrej Interio, Patia"
+    )
+
+
+def _wa_link(phone, message, mode="web"):
+    """Return a WhatsApp link for a specific phone number."""
+    encoded = urllib.parse.quote(message)
+    if mode == "app":
+        return f"whatsapp://send?phone={phone}&text={encoded}"
+    return f"https://web.whatsapp.com/send?phone={phone}&text={encoded}"
+
+
 st.set_page_config(layout="wide", page_title="Happy Calling")
 
 st.title("📞 Happy Calling Dashboard")
@@ -42,7 +97,7 @@ st.caption(
 today = datetime.now().date()
 default_start = max(DATA_START_DATE, date(2026, 4, 1))
 
-c1, c2, c3 = st.columns([1, 1, 1])
+c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
 start_date = c1.date_input("From", default_start, key="hc_start")
 end_date   = c2.date_input("To",   today,         key="hc_end")
 view_mode  = c3.selectbox(
@@ -50,6 +105,13 @@ view_mode  = c3.selectbox(
     ["Pending Happy Calling (default)", "All Delivered (incl. already called)"],
     key="hc_view",
 )
+wa_mode_label = c4.radio(
+    "Send WhatsApp via",
+    ["🌐 Web (Browser)", "📱 App (Desktop/Mobile)"],
+    key="hc_wa_mode",
+    help="Web opens WhatsApp Web in a new browser tab. App uses the whatsapp:// scheme to launch the desktop or mobile app.",
+)
+wa_mode = "app" if "App" in wa_mode_label else "web"
 
 if start_date > end_date:
     st.error("Start date must be before end date.")
@@ -116,6 +178,17 @@ def _to_date(v):
 
 view_df["HAPPY CALLING DATE"] = view_df["HAPPY CALLING DATE"].apply(_to_date)
 
+# ── WhatsApp link columns (up to 2 numbers per customer) ─────────────────────
+wa1_links, wa2_links = [], []
+for _, r in view_df.iterrows():
+    msg    = _happy_calling_message(r.get("CUSTOMER NAME"), r.get("PRODUCTS"), r.get("ORDER DATE"))
+    phones = _extract_phones(r.get("CONTACT NUMBER"), max_count=2)
+    wa1_links.append(_wa_link(phones[0], msg, wa_mode) if len(phones) > 0 else "")
+    wa2_links.append(_wa_link(phones[1], msg, wa_mode) if len(phones) > 1 else "")
+
+view_df["WA_1"] = wa1_links
+view_df["WA_2"] = wa2_links
+
 # ── Metrics ──────────────────────────────────────────────────────────────────
 m1, m2, m3 = st.columns(3)
 total_delivered = int(len(delivered))
@@ -153,6 +226,20 @@ editor_cols_config = {
     "REMARKS":           st.column_config.TextColumn(
         "Remarks", help="Optional note about the call (max 500 chars)",
         max_chars=500,
+    ),
+    "WA_1": st.column_config.LinkColumn(
+        "WhatsApp 1 📱",
+        display_text="📲 Send",
+        disabled=True,
+        width="small",
+        help="Click to open WhatsApp with a pre-filled message for the primary number.",
+    ),
+    "WA_2": st.column_config.LinkColumn(
+        "WhatsApp 2 📱",
+        display_text="📲 Send",
+        disabled=True,
+        width="small",
+        help="Click to open WhatsApp with a pre-filled message for the secondary number.",
     ),
     "_key":              None,   # hide internal key
 }
