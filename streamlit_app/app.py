@@ -4,6 +4,7 @@ All page names in the sidebar are defined here via st.navigation().
 The first page listed is shown by default when the app loads.
 """
 import streamlit as st
+import streamlit.components.v1 as components
 
 st.set_page_config(
     layout="wide",
@@ -42,14 +43,19 @@ inventory_pages = [
     st.Page("pages/40_Products_catalog.py",    title="Product Catalogue",  icon="🪑"),
 ]
 
+# Streamlit always moves the "" (empty-string) section to the TOP of the sidebar,
+# regardless of dict insertion order. We use this for pages 1-2 (no header, at top).
+# Pages 5-8 use a zero-width-space key so they stay at the bottom in insertion order.
+# A small JS snippet (height=0, invisible) removes the blank separator Streamlit
+# renders for the zero-width-space key.
 nav_pages = {
-    "": [                   # Streamlit renders "" sections first — keeps pages 1-2 at top with no header
+    "": [
         st.Page("pages/b2c_dashboard.py",                   title="4sInteriors B2C Sales Dashboard", icon="🛋"),
         st.Page("pages/daily_b2c_sales.py",                 title="Daily B2C Sales",                 icon="📅"),
     ],
     "SALES HANDBOOK": sales_handbook_pages,
     "Inventory and Stocks": inventory_pages,
-    "​": [             # Zero-width space — unique key, renders as no visible header, stays at bottom
+    "​": [
         st.Page("pages/17_Customer_Intelligence_Engine.py", title="Customer Intelligence Engine",    icon="🧠"),
         st.Page("pages/20_Product_Sales_Analysis.py",       title="Product Sales Analysis",          icon="📊"),
         st.Page("pages/100_Sales_Manager_Dashboard.py",     title="Sales Manager Dashboard",         icon="🏆"),
@@ -64,3 +70,44 @@ if st.session_state.show_old_data_dashboard:
 
 pg = st.navigation(nav_pages)
 pg.run()
+
+# Inject JS (height=0, invisible) to remove the blank separator Streamlit
+# renders for the zero-width-space section key at the bottom of the nav.
+components.html(
+    """
+    <script>
+    (function () {
+        function removeBlankNavSeparator() {
+            var d = window.parent.document;
+
+            // Method A: target Streamlit's known test-id for nav section separators
+            d.querySelectorAll('[data-testid="stSidebarNavSeparator"]').forEach(function (el) {
+                if (!el.textContent.trim()) {
+                    el.style.cssText = 'display:none!important;height:0!important;margin:0!important;padding:0!important;';
+                }
+            });
+
+            // Method B: any <li> inside the sidebar nav that has no <a> link and no visible text
+            var containers = d.querySelectorAll(
+                '[data-testid="stSidebarNavItems"], [data-testid="stSidebarNav"] ul'
+            );
+            containers.forEach(function (ul) {
+                ul.querySelectorAll(':scope > li').forEach(function (li) {
+                    if (!li.querySelector('a') && !li.textContent.trim()) {
+                        li.style.cssText = 'display:none!important;height:0!important;margin:0!important;padding:0!important;';
+                    }
+                });
+            });
+        }
+
+        // Run immediately and at staggered delays to catch Streamlit's async rendering
+        removeBlankNavSeparator();
+        setTimeout(removeBlankNavSeparator, 200);
+        setTimeout(removeBlankNavSeparator, 600);
+        setTimeout(removeBlankNavSeparator, 1500);
+    })();
+    </script>
+    """,
+    height=0,
+    scrolling=False,
+)
