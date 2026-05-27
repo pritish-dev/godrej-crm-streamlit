@@ -35,7 +35,7 @@ jobs:
   mis-daily-import:
     name: Fetch BR_MIS Excel — import MIS (PO sheet) + Stock (STOCK sheet)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 35
 
     steps:
       - name: Checkout code
