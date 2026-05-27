@@ -42,7 +42,7 @@ from services.invoice_email_import import (
 )
 
 # ─── Page config ──────────────────────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="Monthend Sales Forecast", page_icon="📅")
+st.set_page_config(layout="wide", page_title="Monthly Sales Target vs Achievement", page_icon="📅")
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -275,6 +275,44 @@ def _get_sales_persons() -> list[str]:
         return sorted(names)
     except Exception:
         return []
+
+
+def _get_monthly_target(month: str) -> float:
+    """Sum of all sales person targets for the given month (converted to ₹) from Incentive_Quarterly_Targets."""
+    try:
+        from services.incentive_store import get_targets_df
+        df = get_targets_df()
+        if df is None or df.empty:
+            return 0.0
+        mask = df["MONTH"] == month.upper()
+        return float(df.loc[mask, "TARGET"].sum()) * 1_00_000
+    except Exception:
+        return 0.0
+
+
+def _get_month_sales_achievement(month: str) -> float:
+    """Total WFX invoice Taxable Value (without tax) for the given month."""
+    try:
+        inv_df = load_invoice_sheet(month)
+        if inv_df is None or inv_df.empty:
+            return 0.0
+        if "Customer Code Name" in inv_df.columns:
+            wfx_mask = (
+                inv_df["Customer Code Name"]
+                .fillna("").astype(str).str.strip().str.upper()
+                .str.startswith("WFX")
+            )
+            inv_df = inv_df[wfx_mask].copy()
+        if "Taxable Value" not in inv_df.columns:
+            return 0.0
+        def _parse(v):
+            try:
+                return float(str(v).replace(",", "").strip())
+            except (ValueError, TypeError):
+                return 0.0
+        return float(inv_df["Taxable Value"].apply(_parse).sum())
+    except Exception:
+        return 0.0
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -646,7 +684,7 @@ def render_forecast_html(df: pd.DataFrame) -> str:
 # PAGE — MAIN
 # ═══════════════════════════════════════════════════════════════════════════════
 
-st.title("📅 Monthend Sales Forecast")
+st.title("📅 Monthly Sales Target vs Achievement")
 
 today = datetime.now(IST).date()
 win_start, win_end, month_name = get_forecast_window(today)
@@ -657,6 +695,9 @@ st.caption(
     f"**{win_end.strftime('%d-%b-%Y')}**  ·  "
     f"State persisted in sheet **{sheet_name}**"
 )
+
+# Top-level KPI summary — filled once forecast data and invoice totals are ready
+kpi_placeholder = st.empty()
 
 # ─── Session-state init ───────────────────────────────────────────────────────
 if "mef_df" not in st.session_state:
@@ -729,10 +770,39 @@ for so, grp in df.groupby("SO_NO"):
 
 visible_df = df[~df["SO_NO"].isin(hidden_sos)].copy()
 
-# ─── Metrics ─────────────────────────────────────────────────────────────────
-st.markdown("---")
+# ─── Compute KPI values ───────────────────────────────────────────────────────
 green_mask = visible_df.apply(_is_committed, axis=1)
 total_net_basic_green = visible_df.loc[green_mask, "TOTAL_NET_BASIC"].apply(_to_num).sum()
+
+_monthly_target  = _get_monthly_target(month_name)
+_current_achieve = _get_month_sales_achievement(month_name)
+_pending_target  = _monthly_target - (_current_achieve + total_net_basic_green)
+
+with kpi_placeholder.container():
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric(
+        "🎯 Monthly Sales Target",
+        f"₹{_monthly_target:,.0f}",
+        help=f"Sum of all sales person targets for {month_name} from Incentive_Quarterly_Targets (values in lakh, converted to ₹).",
+    )
+    k2.metric(
+        "✅ Current Sales Achievement",
+        f"₹{_current_achieve:,.0f}",
+        help=f"Total Month Sales (without Tax) for {month_name} — WFX invoices only.",
+    )
+    k3.metric(
+        "📈 Sales Forecast",
+        f"₹{total_net_basic_green:,.0f}",
+        help=f"Monthend Forecast Sale Value ({month_name}) — sum of Total Net Basic for all committed (green) items.",
+    )
+    k4.metric(
+        "⏳ Pending Sales Target",
+        f"₹{_pending_target:,.0f}",
+        help="Monthly Sales Target − (Current Sales Achievement + Sales Forecast).",
+    )
+
+# ─── Metrics ─────────────────────────────────────────────────────────────────
+st.markdown("---")
 
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Forecast Window", f"{win_start.strftime('%d %b')} – {win_end.strftime('%d %b')}")
