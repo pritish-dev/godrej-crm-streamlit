@@ -3,8 +3,8 @@ services/invoice_email_import.py
 
 Fetches Sales Invoice emails from Gmail via IMAP.
 Subject searched: "invoice information"
-Reads attachment (Excel) for: Sales Invoice No, Date, Customer Code Name,
-                               Sales Order No, Taxable Value
+Attachment: PDF (primary) or Excel — reads:
+    Sales Invoice No, Date, Customer Code Name, Sales Order No, Taxable Value
 Looks up Sales Executive from Franchise/4S sheets via GODREJ SO NO
 Writes/merges into "SALE INVOICE- <Month>" Google Sheet
 """
@@ -16,6 +16,7 @@ import email
 import imaplib
 import io
 import os
+import re
 import sys
 from datetime import date, datetime, timedelta, timezone
 from email.header import decode_header
@@ -75,8 +76,8 @@ SHEET_COLS = [
     "Sales Executive",
 ]
 
-# Possible names in the attachment Excel (case-insensitive → canonical)
-_ATTACH_COL_ALIASES: dict[str, str] = {
+# Possible Excel column name aliases (case-insensitive → canonical)
+_EXCEL_COL_ALIASES: dict[str, str] = {
     "sales invoice no":      "Sales Invoice No",
     "invoice no":            "Sales Invoice No",
     "invoice number":        "Sales Invoice No",
@@ -92,6 +93,47 @@ _ATTACH_COL_ALIASES: dict[str, str] = {
     "taxable amount":        "Taxable Value",
     "amount without tax":    "Taxable Value",
     "basic amount":          "Taxable Value",
+}
+
+# ─── Regex patterns for each field in PDF text (tried in order) ──────────────
+_PDF_PATTERNS: dict[str, list[str]] = {
+    "Sales Invoice No": [
+        r"(?:Sales\s+)?Invoice\s+No\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9/\-]+)",
+        r"Invoice\s+Number\s*[:\-]?\s*([A-Z0-9][A-Z0-9/\-]+)",
+        r"Inv(?:oice)?\.?\s*No\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9/\-]+)",
+        r"Bill\s+No\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9/\-]+)",
+    ],
+    "Date": [
+        r"(?:Invoice\s+)?Date\s*[:\-]?\s*(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})",
+        r"(?:Invoice\s+)?Date\s*[:\-]?\s*(\d{1,2}[\s\-][A-Za-z]{3}[\s\-]\d{2,4})",
+        r"Dated?\s*[:\-]?\s*(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})",
+        r"Dated?\s*[:\-]?\s*(\d{1,2}[\s\-][A-Za-z]{3}[\s\-]\d{2,4})",
+        r"Date\s*[:\-]?\s*(\d{1,2}-[A-Za-z]+-\d{4})",
+    ],
+    "Customer Code Name": [
+        r"Customer\s+Code\s+(?:&\s*Name|Name)\s*[:\-]?\s*([^\n\r]{3,80})",
+        r"Bill\s+To\s*[:\-]?\s*\n\s*([^\n\r]{3,80})",
+        r"Consignee\s*[:\-]?\s*\n\s*([^\n\r]{3,80})",
+        r"Customer\s*[:\-]?\s*([^\n\r]{3,60})",
+        r"Buyer\s*[:\-]?\s*([^\n\r]{3,60})",
+        # Godrej format: 6-digit code followed by customer name
+        r"(\d{6,8}\s+[A-Z][A-Za-z\s&\.\-]+)",
+    ],
+    "Sales Order No": [
+        r"(?:Customer\s+)?(?:Sales\s+)?Order\s+No\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9/\-]+)",
+        r"S\.?O\.?\s*No\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9/\-]+)",
+        r"Cust(?:omer)?\.?\s*(?:P\.?O\.?|Ord(?:er)?)\s*No\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9/\-]+)",
+        r"Your\s+(?:Order|P\.?O\.?)\s*No\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9/\-]+)",
+        r"PO\s*No\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9/\-]+)",
+        r"Ref(?:erence)?\s*No\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9/\-]+)",
+    ],
+    "Taxable Value": [
+        r"Taxable\s+(?:Value|Amount)\s*[:\-]?\s*(?:Rs\.?|INR|₹)?\s*([\d,]+\.?\d*)",
+        r"(?:Sub[\s\-]?Total|Total\s+Taxable)\s*[:\-]?\s*(?:Rs\.?|INR|₹)?\s*([\d,]+\.?\d*)",
+        r"Basic\s+(?:Value|Amount|Price)\s*[:\-]?\s*(?:Rs\.?|INR|₹)?\s*([\d,]+\.?\d*)",
+        r"(?:Net\s+)?Amount\s+(?:Before\s+Tax|Excl\.?\s+Tax)\s*[:\-]?\s*([\d,]+\.?\d*)",
+        r"Total\s+(?:Basic|Net)\s*[:\-]?\s*(?:Rs\.?|INR|₹)?\s*([\d,]+\.?\d*)",
+    ],
 }
 
 
@@ -112,46 +154,140 @@ def _decode_str(value) -> str:
     return " ".join(decoded)
 
 
-def _get_attachment_bytes(msg) -> tuple[bytes | None, str]:
-    """Return (bytes, filename) for the first .xlsx/.xls attachment found."""
+def _get_attachments(msg) -> list[tuple[bytes, str]]:
+    """Return list of (bytes, filename) for all PDF and Excel attachments."""
+    found = []
     for part in msg.walk():
         filename = part.get_filename()
-        if filename:
-            fn = _decode_str(filename)
-            if fn.lower().endswith((".xlsx", ".xls")):
-                return part.get_payload(decode=True), fn
-    return None, ""
+        if not filename:
+            continue
+        fn = _decode_str(filename).strip()
+        if fn.lower().endswith((".pdf", ".xlsx", ".xls")):
+            data = part.get_payload(decode=True)
+            if data:
+                found.append((data, fn))
+    return found
 
 
-def _find_col(df_cols: list[str], alias_lower: str) -> str | None:
-    for col in df_cols:
-        if str(col).strip().lower() == alias_lower:
-            return col
-    return None
+def _regex_find(patterns: list[str], text: str) -> str:
+    """Try each pattern; return first non-empty group match, or ''."""
+    for pat in patterns:
+        try:
+            m = re.search(pat, text, re.IGNORECASE | re.MULTILINE)
+            if m:
+                val = m.group(1).strip()
+                # Skip obvious noise
+                if val and val.lower() not in ("nan", "none", "na", "-", ""):
+                    return val
+        except Exception:
+            continue
+    return ""
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ATTACHMENT PARSER
+# PDF PARSER
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def parse_invoice_attachment(attachment_bytes: bytes) -> tuple[pd.DataFrame, str]:
+def parse_invoice_pdf(pdf_bytes: bytes) -> tuple[pd.DataFrame, str]:
     """
-    Parse the Excel attachment.
-    Returns (DataFrame with SHEET_COLS minus Sales Executive, status_message).
+    Parse a Godrej invoice PDF.
+    Uses pdfplumber to extract text, then applies regex patterns.
+    Returns (single-row DataFrame, status_message).
     """
     try:
-        xl = pd.ExcelFile(io.BytesIO(attachment_bytes))
+        import pdfplumber
+    except ImportError:
+        return pd.DataFrame(), "❌ pdfplumber not installed — run: pip install pdfplumber"
+
+    # ── Extract text ──────────────────────────────────────────────────────────
+    try:
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            pages_text = []
+            for page in pdf.pages:
+                t = page.extract_text(x_tolerance=3, y_tolerance=3) or ""
+                pages_text.append(t)
+            full_text = "\n".join(pages_text)
+    except Exception as e:
+        return pd.DataFrame(), f"❌ PDF read error: {e}"
+
+    if not full_text.strip():
+        return pd.DataFrame(), "⚠️ PDF has no extractable text (may be a scanned image)"
+
+    # ── Apply field patterns ───────────────────────────────────────────────────
+    row: dict[str, str] = {}
+    for field, patterns in _PDF_PATTERNS.items():
+        row[field] = _regex_find(patterns, full_text)
+
+    # ── Also try table extraction for any still-missing fields ────────────────
+    if any(v == "" for v in row.values()):
+        try:
+            with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+                for page in pdf.pages:
+                    for table in (page.extract_tables() or []):
+                        for trow in table:
+                            if not trow:
+                                continue
+                            cells = [str(c or "").strip() for c in trow]
+                            for i, cell in enumerate(cells):
+                                cell_lower = cell.lower()
+                                # Try to pair label + value from adjacent cells
+                                for field, patterns in _PDF_PATTERNS.items():
+                                    if row[field]:
+                                        continue
+                                    for pat in patterns:
+                                        # Check if this cell IS the value (match against cell directly)
+                                        m = re.match(
+                                            pat.split(r"\s*[:\-]?\s*")[-1],
+                                            cell, re.IGNORECASE
+                                        )
+                                        if m:
+                                            row[field] = cell
+                                            break
+                                        # Check if preceding cell is the label
+                                        if i > 0:
+                                            label_pat = pat.rsplit(r"\s*[:\-]?\s*", 1)[0]
+                                            if re.search(label_pat, cells[i-1], re.IGNORECASE):
+                                                if cell and cell.lower() not in ("", "nan", "-"):
+                                                    row[field] = cell
+                                                    break
+        except Exception:
+            pass
+
+    filled = sum(1 for v in row.values() if v)
+    df = pd.DataFrame([row])
+
+    if filled == 0:
+        # Return debug info so we can see what text was extracted
+        preview = full_text[:400].replace("\n", " | ")
+        return pd.DataFrame(), f"⚠️ Could not extract any fields. PDF text preview: {preview}"
+
+    missing = [f for f, v in row.items() if not v]
+    status  = f"✅ PDF parsed — {filled}/5 fields found"
+    if missing:
+        status += f"  (missing: {', '.join(missing)})"
+
+    return df, status
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# EXCEL PARSER (kept for emails that send xlsx)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def parse_invoice_excel(excel_bytes: bytes) -> tuple[pd.DataFrame, str]:
+    """Parse an Excel invoice attachment. Returns (DataFrame, status)."""
+    try:
+        xl = pd.ExcelFile(io.BytesIO(excel_bytes))
     except Exception as e:
         return pd.DataFrame(), f"❌ Could not open Excel attachment: {e}"
 
-    # Find the sheet that has the most invoice-related columns
+    # Find the sheet with the most invoice-related columns
     target_sheet = xl.sheet_names[0]
     best_score = 0
     for sname in xl.sheet_names:
         try:
             sample = xl.parse(sname, nrows=3, dtype=str)
             cols_lower = {str(c).strip().lower() for c in sample.columns}
-            score = sum(1 for alias in _ATTACH_COL_ALIASES if alias in cols_lower)
+            score = sum(1 for alias in _EXCEL_COL_ALIASES if alias in cols_lower)
             if score > best_score:
                 best_score, target_sheet = score, sname
         except Exception:
@@ -160,46 +296,49 @@ def parse_invoice_attachment(attachment_bytes: bytes) -> tuple[pd.DataFrame, str
     try:
         df_raw = xl.parse(target_sheet, dtype=str)
     except Exception as e:
-        return pd.DataFrame(), f"❌ Failed to parse sheet '{target_sheet}': {e}"
+        return pd.DataFrame(), f"❌ Failed to parse Excel sheet '{target_sheet}': {e}"
 
     df_raw.columns = [str(c).strip() for c in df_raw.columns]
     df_raw.dropna(how="all", inplace=True)
 
-    raw_cols = df_raw.columns.tolist()
-
-    # Map raw columns → canonical names
+    # Rename columns to canonical names
     rename: dict[str, str] = {}
-    for col in raw_cols:
+    for col in df_raw.columns:
         alias = col.strip().lower()
-        if alias in _ATTACH_COL_ALIASES:
-            canonical = _ATTACH_COL_ALIASES[alias]
-            # first match wins
-            if canonical not in rename.values():
-                rename[col] = canonical
+        if alias in _EXCEL_COL_ALIASES and _EXCEL_COL_ALIASES[alias] not in rename.values():
+            rename[col] = _EXCEL_COL_ALIASES[alias]
 
     df_mapped = df_raw.rename(columns=rename)
 
-    # Build result with exactly the required columns (minus Sales Executive)
     required = ["Sales Invoice No", "Date", "Customer Code Name",
                 "Sales Order No", "Taxable Value"]
     result = pd.DataFrame()
     for col in required:
-        if col in df_mapped.columns:
-            result[col] = df_mapped[col].fillna("").astype(str).str.strip()
-        else:
-            result[col] = ""
+        result[col] = df_mapped[col].fillna("").astype(str).str.strip() if col in df_mapped.columns else ""
 
-    # Drop rows with no invoice number
     result = result[result["Sales Invoice No"].str.strip().ne("")]
     result.reset_index(drop=True, inplace=True)
 
-    found    = [c for c in required if c in df_mapped.columns]
-    missing  = [c for c in required if c not in df_mapped.columns]
-    status   = f"✅ Parsed {len(result)} invoice rows from '{target_sheet}'"
+    missing = [c for c in required if c not in df_mapped.columns]
+    status  = f"✅ Excel parsed — {len(result)} invoice rows from '{target_sheet}'"
     if missing:
         status += f"  ⚠️ Missing columns: {', '.join(missing)}"
 
     return result, status
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# UNIFIED ATTACHMENT PARSER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def parse_attachment(att_bytes: bytes, filename: str) -> tuple[pd.DataFrame, str]:
+    """Route to PDF or Excel parser based on file extension."""
+    fn_lower = filename.lower()
+    if fn_lower.endswith(".pdf"):
+        return parse_invoice_pdf(att_bytes)
+    elif fn_lower.endswith((".xlsx", ".xls")):
+        return parse_invoice_excel(att_bytes)
+    return pd.DataFrame(), f"⚠️ Unsupported attachment type: {filename}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -315,11 +454,12 @@ def fetch_invoice_emails(
         label = "today" if today_only else "the selected period"
         return pd.DataFrame(), (
             f"⚠️ No invoice emails found for {label}.\n"
-            f"Looking for subject containing: **{INVOICE_SUBJECT}**"
+            f"Subject searched: **{INVOICE_SUBJECT}**"
         )
 
     all_frames: list[pd.DataFrame] = []
-    errors: list[str] = []
+    parse_errors: list[str]        = []
+    no_attachment_count            = 0
 
     for eid in email_ids:
         try:
@@ -327,37 +467,73 @@ def fetch_invoice_emails(
             raw = msg_data[0][1]
             msg = email.message_from_bytes(raw)
 
-            att_bytes, att_name = _get_attachment_bytes(msg)
-            if att_bytes is None:
+            # Extract invoice number from subject as a fallback
+            # e.g. "Invoice Information - 1000-11I-11337898" → "1000-11I-11337898"
+            email_subject = _decode_str(msg.get("Subject", ""))
+            subject_inv_no = ""
+            m = re.search(r"invoice\s+information\s*[-–—]\s*([A-Z0-9][A-Z0-9/\-]+)",
+                          email_subject, re.IGNORECASE)
+            if m:
+                subject_inv_no = m.group(1).strip()
+
+            email_date_str = _decode_str(msg.get("Date", ""))
+
+            attachments = _get_attachments(msg)
+            if not attachments:
+                no_attachment_count += 1
                 continue
 
-            df_parsed, _ = parse_invoice_attachment(att_bytes)
-            if df_parsed is not None and not df_parsed.empty:
-                all_frames.append(df_parsed)
+            for att_bytes, att_name in attachments:
+                df_parsed, parse_msg = parse_attachment(att_bytes, att_name)
+                if df_parsed is not None and not df_parsed.empty:
+                    # Fill missing Invoice No from subject as fallback
+                    if subject_inv_no:
+                        mask = df_parsed["Sales Invoice No"].str.strip() == ""
+                        df_parsed.loc[mask, "Sales Invoice No"] = subject_inv_no
+                    all_frames.append(df_parsed)
+                elif "⚠️" in parse_msg or "❌" in parse_msg:
+                    # If we at least have an invoice number from subject, create a partial row
+                    if subject_inv_no:
+                        partial = pd.DataFrame([{
+                            "Sales Invoice No": subject_inv_no,
+                            "Date":             "",
+                            "Customer Code Name": "",
+                            "Sales Order No":   "",
+                            "Taxable Value":    "",
+                        }])
+                        all_frames.append(partial)
+                        parse_errors.append(f"{att_name}: partial row from subject (PDF parse: {parse_msg[:80]})")
+                    else:
+                        parse_errors.append(f"{att_name}: {parse_msg}")
         except Exception as ex:
-            errors.append(str(ex))
+            parse_errors.append(str(ex))
 
     mail.logout()
 
     if not all_frames:
-        err_detail = f"  Errors: {'; '.join(errors[:3])}" if errors else ""
+        detail_parts = []
+        if no_attachment_count:
+            detail_parts.append(f"{no_attachment_count} email(s) had no PDF/Excel attachment")
+        if parse_errors:
+            detail_parts.append(f"Parse errors: {'; '.join(parse_errors[:3])}")
+        detail = "  ".join(detail_parts) if detail_parts else ""
         return pd.DataFrame(), (
-            f"⚠️ No invoice data extracted from {len(email_ids)} email(s).{err_detail}"
+            f"⚠️ No invoice data extracted from {len(email_ids)} email(s). {detail}"
         )
 
     combined = pd.concat(all_frames, ignore_index=True)
+    # Deduplicate: keep last occurrence of each invoice number
+    combined = combined[combined["Sales Invoice No"].str.strip().ne("")]
     combined = combined.drop_duplicates(subset=["Sales Invoice No"], keep="last")
     combined.reset_index(drop=True, inplace=True)
 
-    # Enrich with Sales Executive
+    # Enrich with Sales Executive via GODREJ SO NO lookup
     exec_map = lookup_sales_executive(combined["Sales Order No"].tolist())
     combined["Sales Executive"] = combined["Sales Order No"].map(exec_map).fillna("")
 
-    status_msg = (
-        f"✅ {len(combined)} invoice rows from {len(email_ids)} email(s)"
-    )
-    if errors:
-        status_msg += f"  ⚠️ {len(errors)} email(s) had parse errors"
+    status_msg = f"✅ {len(combined)} invoice(s) extracted from {len(email_ids)} email(s)"
+    if parse_errors:
+        status_msg += f"  ⚠️ {len(parse_errors)} attachment(s) could not be parsed"
 
     return combined, status_msg
 
@@ -373,8 +549,7 @@ def invoice_sheet_name(month: str) -> str:
 def save_invoices_to_sheet(df: pd.DataFrame, month: str) -> str:
     """
     Merge new invoice rows into "SALE INVOICE- <Month>".
-    Existing rows (matched by Sales Invoice No) are updated in place;
-    new rows are appended.
+    Existing rows (matched by Sales Invoice No) are updated; new rows appended.
     """
     if df is None or df.empty:
         return "⚠️ Nothing to save — DataFrame is empty."
@@ -426,7 +601,7 @@ def save_invoices_to_sheet(df: pd.DataFrame, month: str) -> str:
 
     try:
         write_df(sheet, merged)
-        return f"✅ Saved {len(merged)} rows to sheet **{sheet}**."
+        return f"✅ Saved {len(merged)} row(s) to sheet **{sheet}**."
     except Exception as e:
         return f"❌ Save to sheet failed: {e}"
 
@@ -453,7 +628,7 @@ def fetch_and_save_today_invoices() -> tuple[pd.DataFrame, str]:
     df, status = fetch_invoice_emails(today_only=True)
     if df is None or df.empty:
         return df, status
-    month = datetime.now(IST).strftime("%B")
+    month    = datetime.now(IST).strftime("%B")
     save_msg = save_invoices_to_sheet(df, month)
     return df, f"{status}\n{save_msg}"
 
