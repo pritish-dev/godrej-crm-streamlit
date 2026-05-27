@@ -43,22 +43,22 @@ inventory_pages = [
 ]
 
 nav_pages = {
-    "Main": [
+    "": [                   # Streamlit renders "" sections first — keeps pages 1-2 at top with no header
         st.Page("pages/b2c_dashboard.py",                   title="4sInteriors B2C Sales Dashboard", icon="🛋"),
         st.Page("pages/daily_b2c_sales.py",                 title="Daily B2C Sales",                 icon="📅"),
     ],
     "SALES HANDBOOK": sales_handbook_pages,
     "Inventory and Stocks": inventory_pages,
-    "": [
+    "​": [             # Zero-width space — unique key, renders as no visible header, stays at bottom
         st.Page("pages/17_Customer_Intelligence_Engine.py", title="Customer Intelligence Engine",    icon="🧠"),
         st.Page("pages/20_Product_Sales_Analysis.py",       title="Product Sales Analysis",          icon="📊"),
         st.Page("pages/100_Sales_Manager_Dashboard.py",     title="Sales Manager Dashboard",         icon="🏆"),
-        st.Page("pages/01_CRM_Feature_Guide.py",             title="CRM FEATURE GUIDE",               icon="🗺️"),
+        st.Page("pages/01_CRM_Feature_Guide.py",            title="CRM FEATURE GUIDE",               icon="🗺️"),
     ],
 }
 
 if st.session_state.show_old_data_dashboard:
-    nav_pages["Main"].append(
+    nav_pages[""].append(
         st.Page("pages/old_data_dashboard.py", title="Old Data Dashboard", icon="📂")
     )
 
