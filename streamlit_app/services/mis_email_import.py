@@ -331,9 +331,10 @@ def load_cached_mis() -> tuple[pd.DataFrame, str]:
 def fetch_and_cache_mis() -> tuple[pd.DataFrame, str]:
     """
     Scheduler entry-point and manual trigger.
-    Searches the last 3 days so a late-arriving or weekend email is never missed.
+    Fetches today's MIS email only (today_only=True).
+    The scheduled job handles retrying if the email hasn't arrived yet.
     """
-    df, status = fetch_mis_data(days_back=3, today_only=False)
+    df, status = fetch_mis_data(days_back=1, today_only=True)
     if df is None or df.empty:
         return df, status
     save_msg = save_mis_to_sheet(df)

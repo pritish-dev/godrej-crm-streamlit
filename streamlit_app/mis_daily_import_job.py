@@ -17,6 +17,7 @@ Usage:
 
 import sys
 import os
+import time
 from datetime import datetime
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -41,6 +42,18 @@ def main() -> int:
     print("\n[1/2] Fetching MIS data (PO sheet)…")
     mis_df, mis_status = fetch_and_cache_mis()
     print(mis_status)
+
+    # If today's email hasn't arrived yet, wait 15 min and retry once.
+    # Any other failure (credentials, IMAP error, parse error) is not retried.
+    _MIS_NOT_RECEIVED = "No MIS email received today"
+    if (mis_df is None or mis_df.empty) and _MIS_NOT_RECEIVED in mis_status:
+        print("\n[1/2] MIS email not found — waiting 15 minutes before retry…")
+        time.sleep(15 * 60)
+        print("\n[1/2] Retrying MIS fetch…")
+        mis_df, mis_status = fetch_and_cache_mis()
+        print(mis_status)
+        if (mis_df is None or mis_df.empty) and _MIS_NOT_RECEIVED in mis_status:
+            print("\n[1/2] MIS email still not found. Use ⚡ Force Fetch in the app to pull manually.")
 
     try:
         append_email_log(
