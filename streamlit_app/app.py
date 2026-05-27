@@ -49,7 +49,7 @@ nav_pages = {
     ],
     "SALES HANDBOOK": sales_handbook_pages,
     "INVENTORY AND STOCKS": inventory_pages,
-    "Analytics & Management": [
+    "": [
         st.Page("pages/17_Customer_Intelligence_Engine.py", title="Customer Intelligence Engine",    icon="🧠"),
         st.Page("pages/20_Product_Sales_Analysis.py",       title="Product Sales Analysis",          icon="📊"),
         st.Page("pages/100_Sales_Manager_Dashboard.py",     title="Sales Manager Dashboard",         icon="🏆"),
