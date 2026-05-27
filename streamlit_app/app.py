@@ -30,6 +30,7 @@ with st.sidebar:
 sales_handbook_pages = [
     st.Page("pages/30_Sales_Reports_and_Strategy.py", title="Sales Reports and Strategy", icon="💡"),
     st.Page("pages/50_MIS_Update.py",                 title="MIS Update",                 icon="📦"),
+    st.Page("pages/55_Monthend_Sales_Forecast.py",    title="Monthend Sales Forecast",    icon="📅"),
     st.Page("pages/60_Stock.py",                      title="Stock",                      icon="🏭"),
     st.Page("pages/62_34s_Stock.py",                  title="34s Stock Details",           icon="📦"),
     st.Page("pages/65_Price_List.py",                 title="Price List",                 icon="💰"),
