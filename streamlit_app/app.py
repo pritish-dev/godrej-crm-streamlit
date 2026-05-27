@@ -71,40 +71,29 @@ if st.session_state.show_old_data_dashboard:
 pg = st.navigation(nav_pages)
 pg.run()
 
-# Inject JS (height=0, invisible) to remove the blank separator Streamlit
-# renders for the zero-width-space section key at the bottom of the nav.
+# Streamlit source (index.k-9rUdPI.js) confirms the section header element uses
+# data-testid="stNavSectionHeader" and is rendered only when the section key is
+# truthy. The "​" (zero-width space) key is truthy so it renders a blank
+# header. This script finds that header by its data-testid and hides it.
+# Note: "​" is NOT removed by JS .trim() in V8, so we strip it explicitly.
 components.html(
     """
     <script>
     (function () {
-        function removeBlankNavSeparator() {
+        function removeBlankNavSectionHeader() {
             var d = window.parent.document;
-
-            // Method A: target Streamlit's known test-id for nav section separators
-            d.querySelectorAll('[data-testid="stSidebarNavSeparator"]').forEach(function (el) {
-                if (!el.textContent.trim()) {
-                    el.style.cssText = 'display:none!important;height:0!important;margin:0!important;padding:0!important;';
+            d.querySelectorAll('[data-testid="stNavSectionHeader"]').forEach(function (el) {
+                // Strip zero-width space and all whitespace, then check if nothing visible remains
+                var visible = el.textContent.replace(/[​‌‍⁠﻿\s]/g, '');
+                if (visible === '') {
+                    el.style.cssText = 'display:none!important;height:0!important;min-height:0!important;margin:0!important;padding:0!important;overflow:hidden!important;';
                 }
             });
-
-            // Method B: any <li> inside the sidebar nav that has no <a> link and no visible text
-            var containers = d.querySelectorAll(
-                '[data-testid="stSidebarNavItems"], [data-testid="stSidebarNav"] ul'
-            );
-            containers.forEach(function (ul) {
-                ul.querySelectorAll(':scope > li').forEach(function (li) {
-                    if (!li.querySelector('a') && !li.textContent.trim()) {
-                        li.style.cssText = 'display:none!important;height:0!important;margin:0!important;padding:0!important;';
-                    }
-                });
-            });
         }
-
-        // Run immediately and at staggered delays to catch Streamlit's async rendering
-        removeBlankNavSeparator();
-        setTimeout(removeBlankNavSeparator, 200);
-        setTimeout(removeBlankNavSeparator, 600);
-        setTimeout(removeBlankNavSeparator, 1500);
+        removeBlankNavSectionHeader();
+        setTimeout(removeBlankNavSectionHeader, 150);
+        setTimeout(removeBlankNavSectionHeader, 500);
+        setTimeout(removeBlankNavSectionHeader, 1200);
     })();
     </script>
     """,
