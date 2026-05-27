@@ -1131,7 +1131,7 @@ else:
     render_section(main_mods, "Main Dashboards", "🛋️")
     render_section(handbook_mods, "Sales Handbook", "📚")
     render_section(inventory_mods, "Inventory and Stocks", "📦")
-    render_section(analytics_mods, "Analytics & Management", "📊")
+    render_section(analytics_mods, "Dashboards & Reports", "📊")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1153,7 +1153,7 @@ for m in MODULES:
     </tr>
     """
 
-st.markdown(f"""
+st.html(f"""
 <table class="ref-table">
   <thead>
     <tr>
@@ -1167,7 +1167,7 @@ st.markdown(f"""
     {table_rows}
   </tbody>
 </table>
-""", unsafe_allow_html=True)
+""")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
