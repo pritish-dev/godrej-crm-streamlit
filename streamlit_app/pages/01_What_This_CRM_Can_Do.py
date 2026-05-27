@@ -988,7 +988,7 @@ ROUTE_MAP = {m["id"]: m["route"] for m in MODULES}
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <div class="crm-hero">
-  <div class="hero-badge">✦ GODREJ INTERIO PATIA · CRM FEATURE GUIDE</div>
+  <div class="hero-badge">✦ INTERIO BY GODREJ PATIA · CRM FEATURE GUIDE</div>
   <div class="hero-title">What This CRM Can Do</div>
   <div class="hero-subtitle">
     Your complete guide to every tool in the system. Click on any module to go there directly,
@@ -1131,32 +1131,50 @@ else:
             </div>
             """, unsafe_allow_html=True)
 
-            # ── Module card ──
-            feature_cards_html = ""
-            for f in mod["features"]:
-                feature_cards_html += f"""
-                <div class="feature-card">
-                    <div class="feature-icon">{f['icon']}</div>
-                    <div class="feature-name">{f['name']}</div>
-                    <div class="feature-desc">{f['desc']}</div>
-                    <span class="feature-benefit">✓ {f['benefit']}</span>
-                </div>
-                """
+            # ── Module description + feature label ──
+            st.markdown(
+                f"""<div style="background:#fff; border:1px solid #e8edf5; border-top:none;
+                    border-radius:0 0 14px 14px; padding:1.2rem 1.4rem 0.6rem;">
+                  <p style="font-size:0.88rem; color:#475569; margin:0 0 0.8rem 0; line-height:1.65;">
+                      {mod['what_it_does']}
+                  </p>
+                  <div style="font-size:0.72rem; font-weight:700; color:{accent};
+                      text-transform:uppercase; letter-spacing:0.7px; margin-bottom:0.7rem;">
+                      ▸ FEATURES ON THIS PAGE
+                  </div>
+                </div>""",
+                unsafe_allow_html=True,
+            )
 
-            st.markdown(f"""
-            <div class="module-card">
-                <p style="font-size:0.88rem; color:#475569; margin:0 0 0.7rem 0; line-height:1.6;">
-                    {mod['what_it_does']}
-                </p>
-                <div style="font-size:0.78rem; font-weight:700; color:{accent}; text-transform:uppercase;
-                     letter-spacing:0.6px; margin-bottom:0.5rem;">
-                    FEATURES ON THIS PAGE
-                </div>
-                <div class="feature-grid">
-                    {feature_cards_html}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            # ── Feature cards via st.columns (3 per row) ──
+            features = mod["features"]
+            COLS = 3
+            for row_start in range(0, len(features), COLS):
+                batch = features[row_start : row_start + COLS]
+                cols = st.columns(COLS)
+                for col, feat in zip(cols, batch):
+                    with col:
+                        st.markdown(
+                            f"""<div style="background:linear-gradient(145deg,#fafbff,#f0f4ff);
+                                border:1.5px solid #e2e8f7; border-radius:12px;
+                                padding:1rem 1.1rem; margin-bottom:0.8rem; min-height:170px;">
+                              <div style="font-size:1.5rem; margin-bottom:0.35rem;">{feat['icon']}</div>
+                              <div style="font-size:0.88rem; font-weight:700; color:#1e293b;
+                                  margin-bottom:0.3rem;">{feat['name']}</div>
+                              <div style="font-size:0.78rem; color:#64748b; line-height:1.55;
+                                  margin-bottom:0.5rem;">{feat['desc']}</div>
+                              <div style="background:#eff6ff; color:#3b82f6; font-size:0.7rem;
+                                  font-weight:600; padding:2px 9px; border-radius:6px;
+                                  display:inline-block;">✓ {feat['benefit']}</div>
+                            </div>""",
+                            unsafe_allow_html=True,
+                        )
+                # fill empty columns in last row
+                for empty_col in cols[len(batch):]:
+                    with empty_col:
+                        st.empty()
+
+            st.markdown("<div style='margin-bottom:0.4rem;'></div>", unsafe_allow_html=True)
 
             # ── Navigate button ──
             btn_col, _ = st.columns([2, 5])
@@ -1298,7 +1316,7 @@ st.markdown("""
 <div class="guide-footer">
     <div style="font-size:1.6rem; margin-bottom:0.5rem;">🛋️</div>
     <div style="font-size:1rem; font-weight:700; color:#fff; margin-bottom:0.3rem;">
-        Godrej Interio Patia · CRM System
+        Interio by Godrej Patia · CRM System
     </div>
     <div>
         For support or to report an issue, contact your system administrator.<br>
