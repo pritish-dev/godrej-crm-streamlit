@@ -170,6 +170,19 @@ def job_stock_34s_update():
         print(f"  ❌ 34S Stock Update failed: {e}")
 
 
+# ─── Invoice email import (8 PM) ─────────────────────────────────────────────
+
+def job_invoice_email_import():
+    """8:00 PM — Read 'invoice information' emails and cache to SALE INVOICE sheet."""
+    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M')}] 🧾 Running Invoice Email Import")
+    try:
+        from services.invoice_email_import import fetch_and_save_today_invoices
+        df, status = fetch_and_save_today_invoices()
+        print(f"  → {status}")
+    except Exception as e:
+        print(f"  ❌ Invoice Email Import failed: {e}")
+
+
 # ─── MIS daily import (11 AM) ────────────────────────────────────────────────
 
 def job_mis_daily_import():
@@ -194,6 +207,8 @@ schedule.every().day.at("11:00").do(job_mis_daily_import)
 schedule.every().day.at("11:15").do(job_mis_daily_import)
 schedule.every().day.at("17:00").do(job_email1)             # Email 1 — Evening
 schedule.every().day.at("20:00").do(job_stock_34s_update)   # 34S Stock Update — 8 PM
+schedule.every().day.at("20:00").do(job_invoice_email_import)  # Invoice Import — 8 PM
+schedule.every().day.at("20:15").do(job_invoice_email_import)  # Invoice Import — drift backup
 
 _print_tz_banner()
 print("=" * 60)
@@ -208,6 +223,8 @@ print("  11:00 AM (local) → MIS Daily Import (primary)")
 print("  11:15 AM (local) → MIS Daily Import (drift backup)")
 print("   5:00 PM (local) → Email 1: Pending Delivery Report (Evening)")
 print("   8:00 PM (local) → 34S Stock Update")
+print("   8:00 PM (local) → Invoice Email Import (primary)")
+print("   8:15 PM (local) → Invoice Email Import (drift backup)")
 print("=" * 60)
 print("  Press Ctrl+C to stop.\n")
 
