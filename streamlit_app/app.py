@@ -39,6 +39,7 @@ sales_handbook_pages = [
 
 nav_pages = {
     "Main": [
+        st.Page("pages/01_What_This_CRM_Can_Do.py",         title="What This CRM Can Do",            icon="🗺️"),
         st.Page("pages/b2c_dashboard.py",                   title="4sInteriors B2C Sales Dashboard", icon="🛋"),
         st.Page("pages/daily_b2c_sales.py",                 title="Daily B2C Sales",                 icon="📅"),
         st.Page("pages/17_Customer_Intelligence_Engine.py", title="Customer Intelligence Engine",    icon="🧠"),
