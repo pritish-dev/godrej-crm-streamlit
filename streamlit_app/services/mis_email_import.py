@@ -69,25 +69,33 @@ if IMAP_EMAIL is None:
 IMAP_HOST    = "imap.gmail.com"
 MIS_SUBJECT  = "BR_MIS - Interio MIS (4S INTERIO)"
 
-# ─── Column mapping: original name → display name ────────────────────────────
+# ─── Column rename map: raw Excel name → friendly name ───────────────────────
+# Only columns whose names differ from the desired display name need an entry.
+# All other columns from the PO sheet are kept as-is.
 PO_COLUMNS = {
-    "Sales Order No."              : "Sales Order No.",
-    "Sales Order Position"         : "Sales Order Position",
-    "Item Code"                    : "Item Code",
-    "Item Description"             : "Item Description",
-    "Sales Order Qty"              : "Sales Order Qty",
-    "Sales Order Warehouse"        : "Sales Order Warehouse",
-    "Sales Order Committed Qty"    : "Sales Order Committed Qty",
-    "Freight Order No"             : "Freight Order No",
-    "FO Pos"                       : "FO Pos",
-    "FO Firm Commitment Qty"       : "FO Firm Commitment Qty",
-    "Order Line Booking DateTime"  : "Order Line Booking DateTime",
-    "Address Line 2(Ship To)"      : "Address Line 2(Ship To)",
-    "Address Line 3(Ship To)"      : "Address Line 3(Ship To)",
-    "Address Line 4(Ship To)"      : "Address Line 4(Ship To)",
-    "REFERENCE A 1"                : "Customer Name",
-    "REFERENCE B 1"                : "Contact No",
+    "REFERENCE A 1": "Customer Name",
+    "REFERENCE B 1": "Contact No",
 }
+
+# ─── Columns shown in the MIS Update page (subset of all sheet columns) ───────
+DISPLAY_COLUMNS = [
+    "Sales Order No.",
+    "Sales Order Position",
+    "Item Code",
+    "Item Description",
+    "Sales Order Qty",
+    "Sales Order Warehouse",
+    "Sales Order Committed Qty",
+    "Freight Order No",
+    "FO Pos",
+    "FO Firm Commitment Qty",
+    "Order Line Booking DateTime",
+    "Address Line 2(Ship To)",
+    "Address Line 3(Ship To)",
+    "Address Line 4(Ship To)",
+    "Customer Name",
+    "Contact No",
+]
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -231,33 +239,36 @@ def fetch_mis_data(days_back: int = 3, today_only: bool = False) -> tuple[pd.Dat
     # Strip whitespace from column names
     df_raw.columns = [str(c).strip() for c in df_raw.columns]
 
-    # Select & rename only the required columns (skip missing ones gracefully)
-    cols_present = {}
-    missing_cols = []
+    # Build rename map — apply known renames (e.g. REFERENCE A 1 → Customer Name)
+    # All other columns are kept unchanged so the full sheet is preserved.
+    rename_map = {}
     for orig, renamed in PO_COLUMNS.items():
-        # Try exact match first, then strip-based match
         if orig in df_raw.columns:
-            cols_present[orig] = renamed
+            rename_map[orig] = renamed
         else:
-            # fuzzy strip match
             matched = next(
                 (c for c in df_raw.columns if c.strip() == orig.strip()),
                 None
             )
             if matched:
-                cols_present[matched] = renamed
-            else:
-                missing_cols.append(orig)
+                rename_map[matched] = renamed
 
-    df = df_raw[list(cols_present.keys())].rename(columns=cols_present).copy()
+    # Keep ALL columns; only rename the known ones
+    df = df_raw.rename(columns=rename_map).copy()
 
     # Drop fully empty rows
     df.dropna(how="all", inplace=True)
     df.reset_index(drop=True, inplace=True)
 
-    status_msg = f"✅ MIS data loaded — {len(df)} rows | Email date: {email_date}"
+    # Warn if any DISPLAY_COLUMNS are missing after rename
+    missing_cols = [c for c in DISPLAY_COLUMNS if c not in df.columns]
+
+    status_msg = (
+        f"✅ MIS data loaded — {len(df)} rows | {len(df.columns)} columns "
+        f"| Email date: {email_date}"
+    )
     if missing_cols:
-        status_msg += f"\n⚠️ Columns not found in sheet (skipped): {', '.join(missing_cols)}"
+        status_msg += f"\n⚠️ Expected display columns not found: {', '.join(missing_cols)}"
 
     return df, status_msg
 
@@ -319,10 +330,10 @@ def load_cached_mis() -> tuple[pd.DataFrame, str]:
 
 def fetch_and_cache_mis() -> tuple[pd.DataFrame, str]:
     """
-    11 AM scheduler entry-point.
-    Pulls today's MIS email and writes it to the MIS_Daily sheet.
+    Scheduler entry-point and manual trigger.
+    Searches the last 3 days so a late-arriving or weekend email is never missed.
     """
-    df, status = fetch_mis_data(days_back=1, today_only=True)
+    df, status = fetch_mis_data(days_back=3, today_only=False)
     if df is None or df.empty:
         return df, status
     save_msg = save_mis_to_sheet(df)

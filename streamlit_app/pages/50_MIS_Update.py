@@ -21,6 +21,7 @@ import pandas as pd
 from services.mis_email_import import (
     MIS_SUBJECT,
     MIS_CACHE_SHEET,
+    DISPLAY_COLUMNS,
     load_cached_mis,
     fetch_and_cache_mis,
 )
@@ -193,7 +194,9 @@ if selected_wh != "All" and "Sales Order Warehouse" in filtered.columns:
 # ─── Data table ───────────────────────────────────────────────────────────────
 st.markdown(f"### 📋 PO Data — {len(filtered):,} rows  ·  🟢 Green = Ready for Delivery")
 
-display_df  = filtered.reset_index(drop=True)
+# Only show the 16 configured display columns (all columns are saved to the sheet)
+show_cols   = [c for c in DISPLAY_COLUMNS if c in filtered.columns]
+display_df  = filtered[show_cols].reset_index(drop=True)
 display_msk = filtered_msk.reset_index(drop=True) if not filtered_msk.empty else \
               pd.Series([False] * len(display_df))
 
