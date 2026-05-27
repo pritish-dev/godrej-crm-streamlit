@@ -33,6 +33,12 @@ sys.path.insert(0, BASE_DIR)
 
 from services.sheets import get_df, write_df
 from services.mis_email_import import load_cached_mis
+from services.invoice_email_import import (
+    fetch_and_save_today_invoices,
+    fetch_and_save_month_invoices,
+    load_invoice_sheet,
+    invoice_sheet_name,
+)
 
 # ─── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(layout="wide", page_title="Monthend Sales Forecast", page_icon="📅")
@@ -920,3 +926,215 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MONTHLY SALES FROM INVOICES (WITHOUT TAX)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+st.markdown("---")
+st.subheader("🧾 Monthly Sales from Invoices (without Tax)")
+
+# ─── Session state for invoice section ───────────────────────────────────────
+if "inv_status_msg" not in st.session_state:
+    st.session_state.inv_status_msg = ""
+if "inv_last_fetched_month" not in st.session_state:
+    st.session_state.inv_last_fetched_month = ""
+
+# ─── Month selector ───────────────────────────────────────────────────────────
+def _invoice_month_options(count: int = 12) -> list[str]:
+    """Return last `count` month names, most recent first."""
+    from calendar import month_name as _month_name
+    now   = datetime.now(IST)
+    names = []
+    yr, mo = now.year, now.month
+    for _ in range(count):
+        names.append(date(yr, mo, 1).strftime("%B"))
+        mo -= 1
+        if mo == 0:
+            mo, yr = 12, yr - 1
+    # Deduplicate while preserving order (same month name can't appear twice
+    # within 12 consecutive months, but guard defensively)
+    seen: set[str] = set()
+    unique = []
+    for n in names:
+        if n not in seen:
+            seen.add(n)
+            unique.append(n)
+    return unique
+
+_inv_month_options = _invoice_month_options()
+_inv_month_index   = 0  # default to current month (first in list)
+
+inv_selected_month = st.selectbox(
+    "Filter by Month",
+    options=_inv_month_options,
+    index=_inv_month_index,
+    key="inv_month_select",
+    help="Loads data from the corresponding 'SALE INVOICE- <Month>' sheet.",
+)
+
+# ─── Fetch buttons ────────────────────────────────────────────────────────────
+ib1, ib2, ib_spacer = st.columns([1.8, 2.2, 4])
+with ib1:
+    fetch_today_clicked = st.button(
+        "⚡ Fetch Today's Invoices",
+        key="inv_fetch_today",
+        help="Read today's 'invoice information' emails only and save to current month sheet.",
+        use_container_width=True,
+    )
+with ib2:
+    fetch_month_clicked = st.button(
+        "📅 Fetch This Month's Invoices",
+        key="inv_fetch_month",
+        help="Read all 'invoice information' emails for the current month and save.",
+        use_container_width=True,
+    )
+
+if fetch_today_clicked:
+    with st.spinner("Connecting to Gmail and reading today's invoice emails…"):
+        _, _msg = fetch_and_save_today_invoices()
+    st.session_state.inv_status_msg        = _msg
+    st.session_state.inv_last_fetched_month = datetime.now(IST).strftime("%B")
+    try:
+        get_df.clear()
+    except Exception:
+        pass
+    st.rerun()
+
+if fetch_month_clicked:
+    with st.spinner("Fetching all invoice emails for this month…"):
+        _, _msg = fetch_and_save_month_invoices()
+    st.session_state.inv_status_msg        = _msg
+    st.session_state.inv_last_fetched_month = datetime.now(IST).strftime("%B")
+    try:
+        get_df.clear()
+    except Exception:
+        pass
+    st.rerun()
+
+if st.session_state.inv_status_msg:
+    msg = st.session_state.inv_status_msg
+    if "✅" in msg:
+        st.success(msg)
+    elif "❌" in msg:
+        st.error(msg)
+    else:
+        st.warning(msg)
+
+# ─── Load invoice data for selected month ────────────────────────────────────
+@st.cache_data(ttl=120)
+def _load_invoice_data(month: str) -> pd.DataFrame:
+    return load_invoice_sheet(month)
+
+inv_df = _load_invoice_data(inv_selected_month)
+
+# ─── Invoice table ────────────────────────────────────────────────────────────
+st.markdown(
+    f"<h4 style='margin-top:16px;'>Monthly Sales from Invoices(without Tax) "
+    f"<span style='color:#1a5276;'>{inv_selected_month}</span></h4>",
+    unsafe_allow_html=True,
+)
+st.caption(
+    f"Source sheet: **{invoice_sheet_name(inv_selected_month)}**  ·  "
+    "Automatic fetch runs daily at 8:00 PM IST."
+)
+
+if inv_df.empty:
+    st.info(
+        f"No invoice data found for **{inv_selected_month}**. "
+        "Use the buttons above to fetch from email, or wait for the automatic 8 PM fetch."
+    )
+else:
+    # Map sheet column names → display column names
+    _inv_col_map = {
+        "Sales Invoice No":  "Purchase Invoice",
+        "Date":              "Dated",
+        "Customer Code Name": "Bill Code",
+        "Sales Order No":    "So No",
+        "Taxable Value":     "Amount without GST",
+        "Sales Executive":   "Sales Executive",
+    }
+
+    inv_display = pd.DataFrame()
+    for sheet_col, display_col in _inv_col_map.items():
+        if sheet_col in inv_df.columns:
+            inv_display[display_col] = inv_df[sheet_col].fillna("").astype(str)
+        else:
+            inv_display[display_col] = ""
+
+    # Compute total taxable value
+    def _to_float(v) -> float:
+        try:
+            return float(str(v).replace(",", "").strip())
+        except (ValueError, TypeError):
+            return 0.0
+
+    total_inv = inv_display["Amount without GST"].apply(_to_float).sum()
+
+    # Build HTML table
+    _inv_hdrs = list(_inv_col_map.values())
+    inv_header_html = "".join(
+        f'<th style="padding:6px 10px;background:#1a5276;color:#fff;'
+        f'font-size:12px;white-space:nowrap;">{h}</th>'
+        for h in _inv_hdrs
+    )
+
+    inv_rows_html = []
+    for i, row in inv_display.iterrows():
+        bg = "#f0f8ff" if i % 2 == 0 else "#ffffff"
+        cells = [
+            row.get("Purchase Invoice", ""),
+            row.get("Dated", ""),
+            row.get("Bill Code", ""),
+            row.get("So No", ""),
+            row.get("Amount without GST", ""),
+            row.get("Sales Executive", ""),
+        ]
+        td_style = "padding:5px 8px;font-size:12px;border-bottom:1px solid #ddd;"
+        inv_rows_html.append(
+            f'<tr style="background:{bg};">'
+            + "".join(f'<td style="{td_style}">{c}</td>' for c in cells)
+            + "</tr>"
+        )
+
+    # Total row
+    total_cols = len(_inv_hdrs)
+    inv_rows_html.append(
+        f'<tr style="background:#1a5276;color:#fff;font-weight:bold;">'
+        f'<td colspan="{total_cols - 1}" style="padding:6px 10px;font-size:13px;text-align:right;">'
+        f'Total Month Sales (without Tax)</td>'
+        f'<td style="padding:6px 10px;font-size:13px;">₹{total_inv:,.2f}</td>'
+        f"</tr>"
+    )
+
+    inv_table_html = f"""
+    <div style="overflow-x:auto;max-height:500px;overflow-y:auto;margin-top:8px;">
+    <table style="border-collapse:collapse;width:100%;min-width:900px;font-family:sans-serif;">
+      <thead style="position:sticky;top:0;z-index:1;">
+        <tr>{inv_header_html}</tr>
+      </thead>
+      <tbody>
+        {"".join(inv_rows_html)}
+      </tbody>
+    </table>
+    </div>
+    """
+    st.html(inv_table_html)
+
+    # Summary metric
+    st.markdown(
+        f"""
+        <div style="background:#eaf4fb;border:2px solid #1a5276;border-radius:8px;
+                    padding:14px;margin-top:12px;">
+            <h4 style="margin:0;color:#1a5276;">
+                🧾 Total Month Sales (without Tax) — {inv_selected_month}:
+                &nbsp;₹{total_inv:,.2f}
+            </h4>
+            <p style="margin:6px 0 0;color:#555;font-size:12px;">
+                Sum of <b>Taxable Value</b> for all {len(inv_display)} invoice(s) in {inv_selected_month}.
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
