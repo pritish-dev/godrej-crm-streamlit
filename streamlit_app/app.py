@@ -4,6 +4,7 @@ All page names in the sidebar are defined here via st.navigation().
 The first page listed is shown by default when the app loads.
 """
 import streamlit as st
+import streamlit.components.v1 as components
 
 st.set_page_config(
     layout="wide",
@@ -42,14 +43,19 @@ inventory_pages = [
     st.Page("pages/40_Products_catalog.py",    title="Product Catalogue",  icon="🪑"),
 ]
 
+# Streamlit always moves the "" (empty-string) section to the TOP of the sidebar,
+# regardless of dict insertion order. We use this for pages 1-2 (no header, at top).
+# Pages 5-8 use a zero-width-space key so they stay at the bottom in insertion order.
+# A small JS snippet (height=0, invisible) removes the blank separator Streamlit
+# renders for the zero-width-space key.
 nav_pages = {
-    "": [                   # Streamlit renders "" sections first — keeps pages 1-2 at top with no header
+    "": [
         st.Page("pages/b2c_dashboard.py",                   title="4sInteriors B2C Sales Dashboard", icon="🛋"),
         st.Page("pages/daily_b2c_sales.py",                 title="Daily B2C Sales",                 icon="📅"),
     ],
     "SALES HANDBOOK": sales_handbook_pages,
     "Inventory and Stocks": inventory_pages,
-    "​": [             # Zero-width space — unique key, renders as no visible header, stays at bottom
+    "​": [
         st.Page("pages/17_Customer_Intelligence_Engine.py", title="Customer Intelligence Engine",    icon="🧠"),
         st.Page("pages/20_Product_Sales_Analysis.py",       title="Product Sales Analysis",          icon="📊"),
         st.Page("pages/100_Sales_Manager_Dashboard.py",     title="Sales Manager Dashboard",         icon="🏆"),
@@ -64,3 +70,33 @@ if st.session_state.show_old_data_dashboard:
 
 pg = st.navigation(nav_pages)
 pg.run()
+
+# Streamlit source (index.k-9rUdPI.js) confirms the section header element uses
+# data-testid="stNavSectionHeader" and is rendered only when the section key is
+# truthy. The "​" (zero-width space) key is truthy so it renders a blank
+# header. This script finds that header by its data-testid and hides it.
+# Note: "​" is NOT removed by JS .trim() in V8, so we strip it explicitly.
+components.html(
+    """
+    <script>
+    (function () {
+        function removeBlankNavSectionHeader() {
+            var d = window.parent.document;
+            d.querySelectorAll('[data-testid="stNavSectionHeader"]').forEach(function (el) {
+                // Strip zero-width space and all whitespace, then check if nothing visible remains
+                var visible = el.textContent.replace(/[​‌‍⁠﻿\s]/g, '');
+                if (visible === '') {
+                    el.style.cssText = 'display:none!important;height:0!important;min-height:0!important;margin:0!important;padding:0!important;overflow:hidden!important;';
+                }
+            });
+        }
+        removeBlankNavSectionHeader();
+        setTimeout(removeBlankNavSectionHeader, 150);
+        setTimeout(removeBlankNavSectionHeader, 500);
+        setTimeout(removeBlankNavSectionHeader, 1200);
+    })();
+    </script>
+    """,
+    height=0,
+    scrolling=False,
+)
