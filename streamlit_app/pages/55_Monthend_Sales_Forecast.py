@@ -38,6 +38,7 @@ from services.invoice_email_import import (
     fetch_and_save_month_invoices,
     load_invoice_sheet,
     invoice_sheet_name,
+    save_invoices_to_sheet,
 )
 
 # ─── Page config ──────────────────────────────────────────────────────────────
@@ -1042,103 +1043,183 @@ st.caption(
     "Automatic fetch runs daily at 8:00 PM IST."
 )
 
+# ─── Load Sales persons from Sales Team sheet (role = Sales) ─────────────────
+@st.cache_data(ttl=300)
+def _load_sales_persons() -> list[str]:
+    """Return sorted list of active Sales-role staff names from 'Sales Team' sheet."""
+    try:
+        df = get_df("Sales Team")
+        if df is None or df.empty:
+            return []
+        df.columns = [str(c).strip().upper() for c in df.columns]
+        name_col = next((c for c in df.columns if c in ("NAME", "EMPLOYEE", "FULL NAME")), None)
+        role_col = next((c for c in df.columns if c in ("ROLE", "DESIGNATION")), None)
+        if not name_col:
+            return []
+        if role_col:
+            df = df[df[role_col].str.strip().str.upper() == "SALES"]
+        names = (
+            df[name_col]
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .pipe(lambda s: s[s.str.len() > 0])
+            .unique()
+            .tolist()
+        )
+        return sorted(names)
+    except Exception:
+        return []
+
+
+# ─── Save-message session state ───────────────────────────────────────────────
+if "inv_save_msg" not in st.session_state:
+    st.session_state.inv_save_msg = ""
+
+# ─── Filter: show only WFX customer-code records ─────────────────────────────
+_inv_col_map = {
+    "Sales Invoice No":   "Purchase Invoice",
+    "Date":               "Dated",
+    "Customer Code Name": "Bill Code",
+    "Sales Order No":     "So No",
+    "Taxable Value":      "Amount without GST",
+    "Sales Executive":    "Sales Executive",
+}
+
+def _to_inv_float(v) -> float:
+    try:
+        return float(str(v).replace(",", "").strip())
+    except (ValueError, TypeError):
+        return 0.0
+
 if inv_df.empty:
     st.info(
         f"No invoice data found for **{inv_selected_month}**. "
         "Use the buttons above to fetch from email, or wait for the automatic 8 PM fetch."
     )
 else:
-    # Map sheet column names → display column names
-    _inv_col_map = {
-        "Sales Invoice No":  "Purchase Invoice",
-        "Date":              "Dated",
-        "Customer Code Name": "Bill Code",
-        "Sales Order No":    "So No",
-        "Taxable Value":     "Amount without GST",
-        "Sales Executive":   "Sales Executive",
-    }
+    # Apply WFX filter — Customer Code Name must start with "WFX"
+    if "Customer Code Name" in inv_df.columns:
+        _wfx_mask = (
+            inv_df["Customer Code Name"]
+            .fillna("").astype(str).str.strip().str.upper()
+            .str.startswith("WFX")
+        )
+        inv_df_wfx = inv_df[_wfx_mask].copy().reset_index(drop=True)
+    else:
+        inv_df_wfx = inv_df.copy().reset_index(drop=True)
 
-    inv_display = pd.DataFrame()
-    for sheet_col, display_col in _inv_col_map.items():
-        if sheet_col in inv_df.columns:
-            inv_display[display_col] = inv_df[sheet_col].fillna("").astype(str)
-        else:
-            inv_display[display_col] = ""
-
-    # Compute total taxable value
-    def _to_float(v) -> float:
-        try:
-            return float(str(v).replace(",", "").strip())
-        except (ValueError, TypeError):
-            return 0.0
-
-    total_inv = inv_display["Amount without GST"].apply(_to_float).sum()
-
-    # Build HTML table
-    _inv_hdrs = list(_inv_col_map.values())
-    inv_header_html = "".join(
-        f'<th style="padding:6px 10px;background:#1a5276;color:#fff;'
-        f'font-size:12px;white-space:nowrap;">{h}</th>'
-        for h in _inv_hdrs
+    _total_records = len(inv_df)
+    _wfx_records   = len(inv_df_wfx)
+    st.caption(
+        f"Showing **{_wfx_records}** WFX record(s) "
+        f"(filtered from {_total_records} total invoice(s) in {inv_selected_month}). "
+        "Only rows whose Customer Code starts with **WFX** are displayed."
     )
 
-    import html as _html  # std-lib — safe HTML escaping for cell values
+    if inv_df_wfx.empty:
+        st.info(
+            f"No WFX customer records found for **{inv_selected_month}**. "
+            f"All {_total_records} invoice(s) have non-WFX customer codes."
+        )
+    else:
+        # ── Build display DataFrame (renamed columns) ────────────────────────
+        inv_display = pd.DataFrame()
+        for sheet_col, display_col in _inv_col_map.items():
+            if sheet_col in inv_df_wfx.columns:
+                inv_display[display_col] = inv_df_wfx[sheet_col].fillna("").astype(str)
+            else:
+                inv_display[display_col] = ""
 
-    inv_rows_html = []
-    for i, row in inv_display.iterrows():
-        bg = "#f0f8ff" if i % 2 == 0 else "#ffffff"
-        cells = [
-            _html.escape(str(row.get("Purchase Invoice", ""))),
-            _html.escape(str(row.get("Dated", ""))),
-            _html.escape(str(row.get("Bill Code", ""))),
-            _html.escape(str(row.get("So No", ""))),
-            _html.escape(str(row.get("Amount without GST", ""))),
-            _html.escape(str(row.get("Sales Executive", ""))),
-        ]
-        td_style = "padding:5px 8px;font-size:12px;border-bottom:1px solid #ddd;"
-        inv_rows_html.append(
-            f'<tr style="background:{bg};">'
-            + "".join(f'<td style="{td_style}">{c}</td>' for c in cells)
-            + "</tr>"
+        # ── Sales person list for the dropdown ───────────────────────────────
+        _sales_persons = _load_sales_persons()
+        _sp_options = [""] + _sales_persons   # blank = unassigned
+
+        # ── Editable data editor ─────────────────────────────────────────────
+        st.caption(
+            "✏️ **Sales Executive column is editable** — click a cell to pick a name from the dropdown, "
+            "then click **💾 Save Sales Executive** to write back to the sheet."
         )
 
-    # Total row
-    total_cols = len(_inv_hdrs)
-    inv_rows_html.append(
-        f'<tr style="background:#1a5276;color:#fff;font-weight:bold;">'
-        f'<td colspan="{total_cols - 1}" style="padding:6px 10px;font-size:13px;text-align:right;">'
-        f'Total Month Sales (without Tax)</td>'
-        f'<td style="padding:6px 10px;font-size:13px;">₹{total_inv:,.2f}</td>'
-        f"</tr>"
-    )
+        edited_inv = st.data_editor(
+            inv_display,
+            column_config={
+                "Purchase Invoice": st.column_config.TextColumn(
+                    "Purchase Invoice", disabled=True, width="medium"
+                ),
+                "Dated": st.column_config.TextColumn(
+                    "Dated", disabled=True, width="small"
+                ),
+                "Bill Code": st.column_config.TextColumn(
+                    "Bill Code", disabled=True, width="medium"
+                ),
+                "So No": st.column_config.TextColumn(
+                    "So No", disabled=True, width="small"
+                ),
+                "Amount without GST": st.column_config.TextColumn(
+                    "Amount without GST", disabled=True, width="small"
+                ),
+                "Sales Executive": st.column_config.SelectboxColumn(
+                    "Sales Executive",
+                    options=_sp_options,
+                    required=False,
+                    width="medium",
+                    help="Select the Sales Executive responsible for this invoice.",
+                ),
+            },
+            hide_index=True,
+            use_container_width=True,
+            num_rows="fixed",
+            key="inv_editor",
+        )
 
-    inv_table_html = f"""
-    <div style="overflow-x:auto;max-height:500px;overflow-y:auto;margin-top:8px;">
-    <table style="border-collapse:collapse;width:100%;min-width:900px;font-family:sans-serif;">
-      <thead style="position:sticky;top:0;z-index:1;">
-        <tr>{inv_header_html}</tr>
-      </thead>
-      <tbody>
-        {"".join(inv_rows_html)}
-      </tbody>
-    </table>
-    </div>
-    """
-    st.html(inv_table_html)
+        # ── Save button ──────────────────────────────────────────────────────
+        _save_col, _spacer = st.columns([1.5, 6])
+        with _save_col:
+            if st.button("💾 Save Sales Executive", type="primary", use_container_width=True):
+                # Map edited Sales Executive values back into the full inv_df
+                inv_updated = inv_df.copy()
+                _inv_no_col = "Sales Invoice No"
 
-    # Summary metric
-    st.markdown(
-        f"""
-        <div style="background:#eaf4fb;border:2px solid #1a5276;border-radius:8px;
-                    padding:14px;margin-top:12px;">
-            <h4 style="margin:0;color:#1a5276;">
-                🧾 Total Month Sales (without Tax) — {inv_selected_month}:
-                &nbsp;₹{total_inv:,.2f}
-            </h4>
-            <p style="margin:6px 0 0;color:#555;font-size:12px;">
-                Sum of <b>Taxable Value</b> for all {len(inv_display)} invoice(s) in {inv_selected_month}.
-            </p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+                for _, edited_row in edited_inv.iterrows():
+                    inv_no   = str(edited_row.get("Purchase Invoice", "")).strip()
+                    exec_val = str(edited_row.get("Sales Executive", "")).strip()
+                    if inv_no and _inv_no_col in inv_updated.columns:
+                        _mask = inv_updated[_inv_no_col].astype(str).str.strip() == inv_no
+                        inv_updated.loc[_mask, "Sales Executive"] = exec_val
+
+                _smsg = save_invoices_to_sheet(inv_updated, inv_selected_month)
+                st.session_state.inv_save_msg = _smsg
+                try:
+                    get_df.clear()
+                    _load_invoice_data.clear()
+                except Exception:
+                    pass
+                st.rerun()
+
+        if st.session_state.inv_save_msg:
+            _sm = st.session_state.inv_save_msg
+            if "✅" in _sm:
+                st.success(_sm)
+            else:
+                st.error(_sm)
+
+        # ── Total row (calculated from edited values so it stays live) ───────
+        _total_inv = edited_inv["Amount without GST"].apply(_to_inv_float).sum()
+
+        st.markdown(
+            f"""
+            <div style="background:#eaf4fb;border:2px solid #1a5276;border-radius:8px;
+                        padding:14px;margin-top:12px;">
+                <h4 style="margin:0;color:#1a5276;">
+                    🧾 Total Month Sales (without Tax) — {inv_selected_month}:
+                    &nbsp;₹{_total_inv:,.2f}
+                </h4>
+                <p style="margin:6px 0 0;color:#555;font-size:12px;">
+                    Sum of <b>Taxable Value (without GST)</b> for all
+                    <b>{_wfx_records}</b> WFX invoice(s) shown above.
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
