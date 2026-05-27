@@ -10,7 +10,7 @@ import streamlit as st
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
     layout="wide",
-    page_title="What This CRM Can Do",
+    page_title="CRM Feature Guide",
     page_icon="🗺️",
     initial_sidebar_state="expanded",
 )
@@ -330,6 +330,429 @@ MODULES = [
             },
         ],
     },
+    # ── MONTHLY SALES TARGET VS ACHIEVEMENT ──────────────────────────────────
+    {
+        "id": "monthend_forecast",
+        "emoji": "📅",
+        "title": "Monthly Sales Target vs Achievement",
+        "route": "pages/55_Monthend_Sales_Forecast.py",
+        "category": "Reporting",
+        "section": "Sales Handbook",
+        "gradient": "linear-gradient(135deg, #0f2027, #2c5364)",
+        "tags": ["manager"],
+        "tagline": "Predict month-end sales and plan final pushes to hit targets.",
+        "what_it_does": "During the last 5 days of the month, this page shows which orders are committed and likely to be billed. It calculates the forecasted sales value so managers know if the team will hit the monthly target.",
+        "features": [
+            {
+                "icon": "🎯",
+                "name": "Month-End Forecast Value",
+                "desc": "Calculates the total expected sales value from all confirmed and committed orders in the closing period.",
+                "benefit": "Know your target gap in advance",
+            },
+            {
+                "icon": "✅",
+                "name": "Committed Order Tracking",
+                "desc": "Shows orders that are both MIS-committed (Godrej system) and manually confirmed by managers.",
+                "benefit": "Accurate forecast, not guesswork",
+            },
+            {
+                "icon": "🏭",
+                "name": "34s Stock Cross-Check",
+                "desc": "Automatically checks whether uncommitted items are physically available in your store stock.",
+                "benefit": "Avoid promises you can't keep",
+            },
+            {
+                "icon": "💾",
+                "name": "Forecast Persistence",
+                "desc": "Each month's forecast is saved to a dedicated Google Sheet for future reference and accountability.",
+                "benefit": "Compare forecast vs actual month-end",
+            },
+        ],
+    },
+    # ── SALES TEAM TASKS ──────────────────────────────────────────────────────
+    {
+        "id": "sales_tasks",
+        "emoji": "✅",
+        "title": "Sales Team Tasks",
+        "route": "pages/90_Sales_Team_Tasks.py",
+        "category": "Productivity",
+        "section": "Sales Handbook",
+        "gradient": "linear-gradient(135deg, #4facfe, #00f2fe)",
+        "tags": ["daily", "manager"],
+        "tagline": "Keep the entire team on track with daily, weekly, and monthly tasks.",
+        "what_it_does": "This page manages all tasks assigned to sales team members — daily checklists, weekly reviews, monthly reports, and special tasks. Managers can see what is done, pending, or missed at a glance.",
+        "features": [
+            {
+                "icon": "📋",
+                "name": "Daily Task Checklist",
+                "desc": "Each team member sees their tasks for today — from floor duties to customer follow-ups. Mark them done when complete.",
+                "benefit": "Structured daily routine",
+            },
+            {
+                "icon": "📆",
+                "name": "Weekly & Monthly Tasks",
+                "desc": "Tracks recurring tasks that happen every week or month — like updating reports, stock checks, or review collections.",
+                "benefit": "Never miss periodic tasks",
+            },
+            {
+                "icon": "🚨",
+                "name": "Missed Task Alerts",
+                "desc": "Daily tasks not completed by end of day are automatically marked as 'Missed' so managers can follow up.",
+                "benefit": "Accountability for the whole team",
+            },
+            {
+                "icon": "📊",
+                "name": "Task Completion Dashboard",
+                "desc": "Managers see a summary of how many tasks were done vs pending vs missed across the entire team.",
+                "benefit": "Team performance at a glance",
+            },
+            {
+                "icon": "📤",
+                "name": "Email Notifications",
+                "desc": "Team members get email reminders for upcoming tasks, and managers get daily completion reports.",
+                "benefit": "Everyone stays informed",
+            },
+            {
+                "icon": "🏖️",
+                "name": "Week-off Integration",
+                "desc": "If an employee is on their weekly off, tasks are automatically skipped for that day — no manual adjustments needed.",
+                "benefit": "Smart task scheduling",
+            },
+        ],
+    },
+    # ── HAPPY CALLING ─────────────────────────────────────────────────────────
+    {
+        "id": "happy_calling",
+        "emoji": "📞",
+        "title": "Happy Calling",
+        "route": "pages/95_Happy_Calling.py",
+        "category": "Sales",
+        "section": "Sales Handbook",
+        "gradient": "linear-gradient(135deg, #f7971e, #ffd200)",
+        "tags": ["daily", "sales"],
+        "tagline": "Call delivered customers to ensure satisfaction and collect Google reviews.",
+        "what_it_does": "After a customer receives their furniture, this page helps you call them to check if they are happy. It also makes it easy to ask for a Google review — which builds your showroom's online reputation.",
+        "features": [
+            {
+                "icon": "📱",
+                "name": "Delivered Customer List",
+                "desc": "Shows all customers whose furniture has been delivered, making it easy to know who to call next.",
+                "benefit": "Systematic post-sale follow-up",
+            },
+            {
+                "icon": "💬",
+                "name": "WhatsApp Message Generator",
+                "desc": "One-click button generates a personalized WhatsApp message with the customer's name, product, Google review link, and your WhatsApp channel.",
+                "benefit": "Professional messages in seconds",
+            },
+            {
+                "icon": "📅",
+                "name": "Happy Call Date Logging",
+                "desc": "Record the date when you called the customer. Edit directly in the table — no extra forms needed.",
+                "benefit": "Complete post-sale history",
+            },
+            {
+                "icon": "📊",
+                "name": "Calling Progress Metrics",
+                "desc": "Shows total delivered customers, how many have been called, and how many are still awaiting a call.",
+                "benefit": "Track team's calling progress",
+            },
+            {
+                "icon": "⏰",
+                "name": "Daily Call Reminders",
+                "desc": "Automated email reminder at 7 AM every day reminding the team who needs a happy call today.",
+                "benefit": "Never forget post-delivery calls",
+            },
+        ],
+    },
+    # ── LEADS ─────────────────────────────────────────────────────────────────
+    {
+        "id": "leads",
+        "emoji": "🎯",
+        "title": "Leads",
+        "route": "pages/70_Leads.py",
+        "category": "Sales",
+        "section": "Sales Handbook",
+        "gradient": "linear-gradient(135deg, #11998e, #38ef7d)",
+        "tags": ["daily", "sales"],
+        "tagline": "Track every potential customer from first contact to final sale.",
+        "what_it_does": "The Leads page is where you manage all potential customers who have shown interest but haven't purchased yet. Track leads from Instagram, Facebook, phone calls, walk-ins, and more — all in one organized list.",
+        "features": [
+            {
+                "icon": "➕",
+                "name": "Add New Lead",
+                "desc": "Manually add a new potential customer with their name, phone, email, source of enquiry, and any notes.",
+                "benefit": "Never lose a prospect",
+            },
+            {
+                "icon": "📧",
+                "name": "Auto-Import from Email",
+                "desc": "Leads coming from OneCRM via email are automatically imported and added to the list — no manual entry needed.",
+                "benefit": "Zero data entry for online leads",
+            },
+            {
+                "icon": "🔄",
+                "name": "Lead Status Tracking",
+                "desc": "Mark each lead as: New → Contacted → Qualified → Proposal Sent → Converted or Lost. Color-coded for easy scanning.",
+                "benefit": "Know where every lead stands",
+            },
+            {
+                "icon": "👤",
+                "name": "Assign to Sales Executive",
+                "desc": "Assign any lead to a specific team member so there is clear ownership and accountability.",
+                "benefit": "No leads fall through the cracks",
+            },
+            {
+                "icon": "📅",
+                "name": "Follow-Up Date Reminder",
+                "desc": "Set a follow-up date for each lead. You'll know exactly when to call or message each prospect.",
+                "benefit": "Never miss a follow-up",
+            },
+            {
+                "icon": "📍",
+                "name": "Lead Source Tracking",
+                "desc": "Records where each lead came from — Instagram, Facebook, Website, Phone, Walk-in, Referral, Event, or LinkedIn.",
+                "benefit": "Know which channels bring best leads",
+            },
+            {
+                "icon": "💰",
+                "name": "Deal Value Tracking",
+                "desc": "Note the estimated deal value for each lead so you can prioritize high-value prospects.",
+                "benefit": "Focus on the biggest opportunities",
+            },
+        ],
+    },
+    # ── MIS UPDATE ────────────────────────────────────────────────────────────
+    {
+        "id": "mis_update",
+        "emoji": "📦",
+        "title": "MIS Update",
+        "route": "pages/50_MIS_Update.py",
+        "category": "Operations",
+        "section": "Inventory and Stocks",
+        "gradient": "linear-gradient(135deg, #2c3e50, #4ca1af)",
+        "tags": ["daily", "manager"],
+        "tagline": "Live stock and order commitment data directly from Godrej warehouse systems.",
+        "what_it_does": "MIS (Management Information System) shows the latest order and stock status from Godrej's internal system. It tells you which orders have been committed by Godrej and which products are confirmed for dispatch.",
+        "features": [
+            {
+                "icon": "📋",
+                "name": "Live MIS Data Table",
+                "desc": "Shows all current orders with their Godrej system status — including order quantities, committed quantities, and dates.",
+                "benefit": "Real-time order visibility",
+            },
+            {
+                "icon": "🟢",
+                "name": "Delivery-Ready Highlighting",
+                "desc": "Rows highlighted in green = items that are committed by Godrej AND belong to your pending delivery customers. These are ready to deliver!",
+                "benefit": "Instantly spot what can be delivered today",
+            },
+            {
+                "icon": "🔄",
+                "name": "Auto-Refresh at 11 AM",
+                "desc": "MIS data is automatically pulled from Godrej's email system every morning at 11 AM without any manual work.",
+                "benefit": "Always up-to-date without effort",
+            },
+            {
+                "icon": "🔃",
+                "name": "Manual Force Refresh",
+                "desc": "Need the latest data right now? Click 'Force Fetch Now' to immediately pull the newest MIS update.",
+                "benefit": "Get data when you need it",
+            },
+            {
+                "icon": "📊",
+                "name": "Summary Metrics",
+                "desc": "Shows total orders, total line items, total order quantity, and how many items are ready for delivery.",
+                "benefit": "Quick operations summary",
+            },
+        ],
+    },
+    # ── STOCK ─────────────────────────────────────────────────────────────────
+    {
+        "id": "stock",
+        "emoji": "🏭",
+        "title": "Stock",
+        "route": "pages/60_Stock.py",
+        "category": "Operations",
+        "section": "Inventory and Stocks",
+        "gradient": "linear-gradient(135deg, #373b44, #4286f4)",
+        "tags": ["daily", "manager"],
+        "tagline": "Check live stock levels across all product categories at a glance.",
+        "what_it_does": "The Stock page shows the current inventory levels for all products in the system. You can instantly see how many units of each product are available, helping you avoid over-promising customers.",
+        "features": [
+            {
+                "icon": "📦",
+                "name": "Live Stock Levels",
+                "desc": "Shows current stock quantity for every product SKU in the system — updated daily from Godrej's system.",
+                "benefit": "Accurate inventory at all times",
+            },
+            {
+                "icon": "🔴",
+                "name": "Zero Stock Alerts",
+                "desc": "Products with zero stock are highlighted so you can immediately see what needs to be restocked.",
+                "benefit": "Never accidentally sell out-of-stock items",
+            },
+            {
+                "icon": "🔍",
+                "name": "Search & Filter",
+                "desc": "Search for any product by name or category to find stock levels instantly.",
+                "benefit": "Fast product lookup for customers",
+            },
+            {
+                "icon": "🔄",
+                "name": "Daily Auto-Update",
+                "desc": "Stock data is automatically refreshed every day at 11 AM from Godrej's email system.",
+                "benefit": "Always current without manual work",
+            },
+            {
+                "icon": "📊",
+                "name": "Stock Summary Metrics",
+                "desc": "Shows total SKUs tracked, total units in stock, number of categories, and count of zero-stock items.",
+                "benefit": "Overall inventory health in seconds",
+            },
+        ],
+    },
+    # ── 34S STOCK ─────────────────────────────────────────────────────────────
+    {
+        "id": "34s_stock",
+        "emoji": "📦",
+        "title": "34S Physical Stock Register",
+        "route": "pages/62_34s_Stock.py",
+        "category": "Operations",
+        "section": "Inventory and Stocks",
+        "gradient": "linear-gradient(135deg, #093028, #237a57)",
+        "tags": ["daily"],
+        "tagline": "Physical stock register for your 34S store — daily inward, outward, and closing stock.",
+        "what_it_does": "This is the daily physical stock register for the 34S store location. It records stock received (In Ward), stock dispatched (Out Ward), and the closing stock for each day — just like a manual stock register, but digital.",
+        "features": [
+            {
+                "icon": "📅",
+                "name": "Daily Stock Columns",
+                "desc": "Each day's inward, outward, opening, and closing stock is recorded separately — easy to trace any day's movement.",
+                "benefit": "Complete daily stock trail",
+            },
+            {
+                "icon": "🟥",
+                "name": "Zero Stock Highlighting",
+                "desc": "Products with zero closing stock are highlighted in red — immediate visual warning.",
+                "benefit": "Spot gaps before customers ask",
+            },
+            {
+                "icon": "📤",
+                "name": "Setup Monthly Sheet",
+                "desc": "One-click setup creates the current month's stock register sheet with all date columns pre-filled.",
+                "benefit": "Zero manual spreadsheet setup",
+            },
+            {
+                "icon": "🔄",
+                "name": "Auto-Update from Emails",
+                "desc": "Daily stock reports received via email are automatically parsed and filled into the register.",
+                "benefit": "Fully automated record keeping",
+            },
+            {
+                "icon": "📧",
+                "name": "Email Monthly Report",
+                "desc": "Send the complete monthly stock register as an Excel file to management with one click.",
+                "benefit": "Easy reporting to HO",
+            },
+            {
+                "icon": "⬇️",
+                "name": "CSV Download",
+                "desc": "Download the current month's stock register as a CSV file for offline use or sharing.",
+                "benefit": "Portable data when needed",
+            },
+        ],
+    },
+    # ── PRICE LIST ────────────────────────────────────────────────────────────
+    {
+        "id": "price_list",
+        "emoji": "💰",
+        "title": "Price List",
+        "route": "pages/65_Price_List.py",
+        "category": "Operations",
+        "section": "Inventory and Stocks",
+        "gradient": "linear-gradient(135deg, #f7971e, #ffd200)",
+        "tags": ["daily", "sales"],
+        "tagline": "Always have the latest Godrej product prices at your fingertips.",
+        "what_it_does": "The Price List page shows the current selling prices for all Godrej furniture, storage, and mattress products — including category, item code, CPL (cost price), GST, and final selling price. No more paper price lists!",
+        "features": [
+            {
+                "icon": "🪑",
+                "name": "Furniture & Storage Prices",
+                "desc": "Browse all furniture and storage product prices organized by category with item codes and GST details.",
+                "benefit": "Instant price answers for customers",
+            },
+            {
+                "icon": "🛏️",
+                "name": "Mattress Prices",
+                "desc": "Separate tab with mattress prices including thickness in inches and centimeters for easy comparison.",
+                "benefit": "Avoid wrong pricing mistakes",
+            },
+            {
+                "icon": "🔍",
+                "name": "Search Products",
+                "desc": "Type any product name or code to find its price instantly without scrolling.",
+                "benefit": "Faster customer queries",
+            },
+            {
+                "icon": "🔄",
+                "name": "Auto-Updated Prices",
+                "desc": "Prices are updated from official Godrej price list PDFs. No manual updates by staff needed.",
+                "benefit": "Always using current official prices",
+            },
+        ],
+    },
+    # ── PRODUCTS CATALOG ──────────────────────────────────────────────────────
+    {
+        "id": "products_catalog",
+        "emoji": "🪑",
+        "title": "Product Catalogue",
+        "route": "pages/40_Products_catalog.py",
+        "category": "Sales",
+        "section": "Inventory and Stocks",
+        "gradient": "linear-gradient(135deg, #8360c3, #2ebf91)",
+        "tags": ["sales"],
+        "tagline": "Browse the complete Godrej Interio product range with photos and specs.",
+        "what_it_does": "This is your digital product catalogue. Browse all available Godrej Interio products with multiple photos, features, dimensions, and colour options — exactly like a digital brochure.",
+        "features": [
+            {
+                "icon": "📸",
+                "name": "Product Photo Gallery",
+                "desc": "Each product has multiple photos you can scroll through — left and right navigation buttons for each product.",
+                "benefit": "Show customers accurate visuals",
+            },
+            {
+                "icon": "📐",
+                "name": "Product Measurements",
+                "desc": "Detailed dimensions like Width, Depth, Height, and Seat Height displayed in a clean table format.",
+                "benefit": "Answer space-fit questions instantly",
+            },
+            {
+                "icon": "🎨",
+                "name": "Colour & Material Options",
+                "desc": "Shows all available colour options with swatch images. Customers can easily visualize what fits their home.",
+                "benefit": "Reduce returns and dissatisfaction",
+            },
+            {
+                "icon": "⭐",
+                "name": "Product Features",
+                "desc": "Detailed feature descriptions for each product — materials, mechanisms, finishes, and selling points.",
+                "benefit": "Better sales pitches",
+            },
+            {
+                "icon": "🚫",
+                "name": "Discontinued Product Alert",
+                "desc": "A red banner appears at the top if any displayed product has been discontinued, with the exact date.",
+                "benefit": "Avoid selling discontinued items",
+            },
+            {
+                "icon": "🔍",
+                "name": "Search & Browse by Category",
+                "desc": "Search by name or browse by Main Category → Sub Category using breadcrumb navigation.",
+                "benefit": "Find any product in seconds",
+            },
+        ],
+    },
     # ── CUSTOMER INTELLIGENCE ─────────────────────────────────────────────────
     {
         "id": "customer_intelligence",
@@ -337,7 +760,7 @@ MODULES = [
         "title": "Customer Intelligence Engine",
         "route": "pages/17_Customer_Intelligence_Engine.py",
         "category": "Sales",
-        "section": "Main",
+        "section": "Analytics & Management",
         "gradient": "linear-gradient(135deg, #7c4dff, #1565c0)",
         "tags": ["sales", "manager"],
         "tagline": "Know your best customers, spot at-risk ones, and never lose a loyal buyer.",
@@ -394,7 +817,7 @@ MODULES = [
         "title": "Product Sales Analysis",
         "route": "pages/20_Product_Sales_Analysis.py",
         "category": "Reporting",
-        "section": "Main",
+        "section": "Analytics & Management",
         "gradient": "linear-gradient(135deg, #f093fb, #f5576c)",
         "tags": ["manager", "sales"],
         "tagline": "See which products are selling most and which categories drive revenue.",
@@ -426,159 +849,6 @@ MODULES = [
             },
         ],
     },
-    # ── LEADS ─────────────────────────────────────────────────────────────────
-    {
-        "id": "leads",
-        "emoji": "🎯",
-        "title": "Leads",
-        "route": "pages/70_Leads.py",
-        "category": "Sales",
-        "section": "Main",
-        "gradient": "linear-gradient(135deg, #11998e, #38ef7d)",
-        "tags": ["daily", "sales"],
-        "tagline": "Track every potential customer from first contact to final sale.",
-        "what_it_does": "The Leads page is where you manage all potential customers who have shown interest but haven't purchased yet. Track leads from Instagram, Facebook, phone calls, walk-ins, and more — all in one organized list.",
-        "features": [
-            {
-                "icon": "➕",
-                "name": "Add New Lead",
-                "desc": "Manually add a new potential customer with their name, phone, email, source of enquiry, and any notes.",
-                "benefit": "Never lose a prospect",
-            },
-            {
-                "icon": "📧",
-                "name": "Auto-Import from Email",
-                "desc": "Leads coming from OneCRM via email are automatically imported and added to the list — no manual entry needed.",
-                "benefit": "Zero data entry for online leads",
-            },
-            {
-                "icon": "🔄",
-                "name": "Lead Status Tracking",
-                "desc": "Mark each lead as: New → Contacted → Qualified → Proposal Sent → Converted or Lost. Color-coded for easy scanning.",
-                "benefit": "Know where every lead stands",
-            },
-            {
-                "icon": "👤",
-                "name": "Assign to Sales Executive",
-                "desc": "Assign any lead to a specific team member so there is clear ownership and accountability.",
-                "benefit": "No leads fall through the cracks",
-            },
-            {
-                "icon": "📅",
-                "name": "Follow-Up Date Reminder",
-                "desc": "Set a follow-up date for each lead. You'll know exactly when to call or message each prospect.",
-                "benefit": "Never miss a follow-up",
-            },
-            {
-                "icon": "📍",
-                "name": "Lead Source Tracking",
-                "desc": "Records where each lead came from — Instagram, Facebook, Website, Phone, Walk-in, Referral, Event, or LinkedIn.",
-                "benefit": "Know which channels bring best leads",
-            },
-            {
-                "icon": "💰",
-                "name": "Deal Value Tracking",
-                "desc": "Note the estimated deal value for each lead so you can prioritize high-value prospects.",
-                "benefit": "Focus on the biggest opportunities",
-            },
-        ],
-    },
-    # ── SALES TEAM TASKS ──────────────────────────────────────────────────────
-    {
-        "id": "sales_tasks",
-        "emoji": "✅",
-        "title": "Sales Team Tasks",
-        "route": "pages/90_Sales_Team_Tasks.py",
-        "category": "Productivity",
-        "section": "Main",
-        "gradient": "linear-gradient(135deg, #4facfe, #00f2fe)",
-        "tags": ["daily", "manager"],
-        "tagline": "Keep the entire team on track with daily, weekly, and monthly tasks.",
-        "what_it_does": "This page manages all tasks assigned to sales team members — daily checklists, weekly reviews, monthly reports, and special tasks. Managers can see what is done, pending, or missed at a glance.",
-        "features": [
-            {
-                "icon": "📋",
-                "name": "Daily Task Checklist",
-                "desc": "Each team member sees their tasks for today — from floor duties to customer follow-ups. Mark them done when complete.",
-                "benefit": "Structured daily routine",
-            },
-            {
-                "icon": "📆",
-                "name": "Weekly & Monthly Tasks",
-                "desc": "Tracks recurring tasks that happen every week or month — like updating reports, stock checks, or review collections.",
-                "benefit": "Never miss periodic tasks",
-            },
-            {
-                "icon": "🚨",
-                "name": "Missed Task Alerts",
-                "desc": "Daily tasks not completed by end of day are automatically marked as 'Missed' so managers can follow up.",
-                "benefit": "Accountability for the whole team",
-            },
-            {
-                "icon": "📊",
-                "name": "Task Completion Dashboard",
-                "desc": "Managers see a summary of how many tasks were done vs pending vs missed across the entire team.",
-                "benefit": "Team performance at a glance",
-            },
-            {
-                "icon": "📤",
-                "name": "Email Notifications",
-                "desc": "Team members get email reminders for upcoming tasks, and managers get daily completion reports.",
-                "benefit": "Everyone stays informed",
-            },
-            {
-                "icon": "🏖️",
-                "name": "Week-off Integration",
-                "desc": "If an employee is on their weekly off, tasks are automatically skipped for that day — no manual adjustments needed.",
-                "benefit": "Smart task scheduling",
-            },
-        ],
-    },
-    # ── HAPPY CALLING ─────────────────────────────────────────────────────────
-    {
-        "id": "happy_calling",
-        "emoji": "📞",
-        "title": "Happy Calling",
-        "route": "pages/95_Happy_Calling.py",
-        "category": "Sales",
-        "section": "Main",
-        "gradient": "linear-gradient(135deg, #f7971e, #ffd200)",
-        "tags": ["daily", "sales"],
-        "tagline": "Call delivered customers to ensure satisfaction and collect Google reviews.",
-        "what_it_does": "After a customer receives their furniture, this page helps you call them to check if they are happy. It also makes it easy to ask for a Google review — which builds your showroom's online reputation.",
-        "features": [
-            {
-                "icon": "📱",
-                "name": "Delivered Customer List",
-                "desc": "Shows all customers whose furniture has been delivered, making it easy to know who to call next.",
-                "benefit": "Systematic post-sale follow-up",
-            },
-            {
-                "icon": "💬",
-                "name": "WhatsApp Message Generator",
-                "desc": "One-click button generates a personalized WhatsApp message with the customer's name, product, Google review link, and your WhatsApp channel.",
-                "benefit": "Professional messages in seconds",
-            },
-            {
-                "icon": "📅",
-                "name": "Happy Call Date Logging",
-                "desc": "Record the date when you called the customer. Edit directly in the table — no extra forms needed.",
-                "benefit": "Complete post-sale history",
-            },
-            {
-                "icon": "📊",
-                "name": "Calling Progress Metrics",
-                "desc": "Shows total delivered customers, how many have been called, and how many are still awaiting a call.",
-                "benefit": "Track team's calling progress",
-            },
-            {
-                "icon": "⏰",
-                "name": "Daily Call Reminders",
-                "desc": "Automated email reminder at 7 AM every day reminding the team who needs a happy call today.",
-                "benefit": "Never forget post-delivery calls",
-            },
-        ],
-    },
     # ── SALES MANAGER DASHBOARD ───────────────────────────────────────────────
     {
         "id": "sales_manager",
@@ -586,7 +856,7 @@ MODULES = [
         "title": "Sales Manager Dashboard",
         "route": "pages/100_Sales_Manager_Dashboard.py",
         "category": "HR & Incentives",
-        "section": "Main",
+        "section": "Analytics & Management",
         "gradient": "linear-gradient(135deg, #f7971e, #f953c6)",
         "tags": ["manager"],
         "tagline": "Calculate incentives, track quarterly targets, and reward top performers.",
@@ -630,333 +900,6 @@ MODULES = [
             },
         ],
     },
-    # ── SALES REPORTS ─────────────────────────────────────────────────────────
-    {
-        "id": "sales_reports",
-        "emoji": "💡",
-        "title": "Sales Reports and Strategy",
-        "route": "pages/30_Sales_Reports_and_Strategy.py",
-        "category": "Reporting",
-        "section": "Sales Handbook",
-        "gradient": "linear-gradient(135deg, #667eea, #764ba2)",
-        "tags": ["manager", "sales"],
-        "tagline": "Deep analysis of revenue trends, product mix, and team performance.",
-        "what_it_does": "The most comprehensive reporting page in the CRM. It gives managers a complete strategic view of sales performance — from monthly trends to the best selling products to festival-based sales strategies.",
-        "features": [
-            {
-                "icon": "📊",
-                "name": "Headline KPIs",
-                "desc": "Shows lifetime revenue, current month revenue, and a projected run-rate for the month — all at a glance.",
-                "benefit": "Instant business health check",
-            },
-            {
-                "icon": "📅",
-                "name": "Monthly Target Tracker",
-                "desc": "Visual progress bar showing how close the showroom is to hitting the monthly sales target.",
-                "benefit": "Real-time goal tracking",
-            },
-            {
-                "icon": "📈",
-                "name": "Revenue Trend Charts",
-                "desc": "Charts showing sales by month, day of week, and hour of day — revealing the busiest selling times.",
-                "benefit": "Schedule staff during peak hours",
-            },
-            {
-                "icon": "🏅",
-                "name": "Sales Person Leaderboard",
-                "desc": "Ranked list of all executives by sales value, with their Google review count included.",
-                "benefit": "Fair, data-driven recognition",
-            },
-            {
-                "icon": "🛋️",
-                "name": "Product Mix Analysis",
-                "desc": "Shows which product categories contribute most to revenue — furniture, storage, mattresses.",
-                "benefit": "Stock decisions based on real data",
-            },
-            {
-                "icon": "🏮",
-                "name": "Festival Sales Strategy",
-                "desc": "Shows upcoming Odia festivals with specific sales-event recommendations — décor themes, floor activations, product promotions.",
-                "benefit": "Never miss a festive sales opportunity",
-            },
-            {
-                "icon": "👥",
-                "name": "Customer Cohort Summary",
-                "desc": "Quick summary of how many High Value, Loyal, At-Risk, and New customers you have currently.",
-                "benefit": "Strategic customer relationship overview",
-            },
-        ],
-    },
-    # ── MIS UPDATE ────────────────────────────────────────────────────────────
-    {
-        "id": "mis_update",
-        "emoji": "📦",
-        "title": "MIS Update",
-        "route": "pages/50_MIS_Update.py",
-        "category": "Operations",
-        "section": "Sales Handbook",
-        "gradient": "linear-gradient(135deg, #2c3e50, #4ca1af)",
-        "tags": ["daily", "manager"],
-        "tagline": "Live stock and order commitment data directly from Godrej warehouse systems.",
-        "what_it_does": "MIS (Management Information System) shows the latest order and stock status from Godrej's internal system. It tells you which orders have been committed by Godrej and which products are confirmed for dispatch.",
-        "features": [
-            {
-                "icon": "📋",
-                "name": "Live MIS Data Table",
-                "desc": "Shows all current orders with their Godrej system status — including order quantities, committed quantities, and dates.",
-                "benefit": "Real-time order visibility",
-            },
-            {
-                "icon": "🟢",
-                "name": "Delivery-Ready Highlighting",
-                "desc": "Rows highlighted in green = items that are committed by Godrej AND belong to your pending delivery customers. These are ready to deliver!",
-                "benefit": "Instantly spot what can be delivered today",
-            },
-            {
-                "icon": "🔄",
-                "name": "Auto-Refresh at 11 AM",
-                "desc": "MIS data is automatically pulled from Godrej's email system every morning at 11 AM without any manual work.",
-                "benefit": "Always up-to-date without effort",
-            },
-            {
-                "icon": "🔃",
-                "name": "Manual Force Refresh",
-                "desc": "Need the latest data right now? Click 'Force Fetch Now' to immediately pull the newest MIS update.",
-                "benefit": "Get data when you need it",
-            },
-            {
-                "icon": "📊",
-                "name": "Summary Metrics",
-                "desc": "Shows total orders, total line items, total order quantity, and how many items are ready for delivery.",
-                "benefit": "Quick operations summary",
-            },
-        ],
-    },
-    # ── MONTHEND FORECAST ─────────────────────────────────────────────────────
-    {
-        "id": "monthend_forecast",
-        "emoji": "📅",
-        "title": "Monthend Sales Forecast",
-        "route": "pages/55_Monthend_Sales_Forecast.py",
-        "category": "Reporting",
-        "section": "Sales Handbook",
-        "gradient": "linear-gradient(135deg, #0f2027, #2c5364)",
-        "tags": ["manager"],
-        "tagline": "Predict month-end sales and plan final pushes to hit targets.",
-        "what_it_does": "During the last 5 days of the month, this page shows which orders are committed and likely to be billed. It calculates the forecasted sales value so managers know if the team will hit the monthly target.",
-        "features": [
-            {
-                "icon": "🎯",
-                "name": "Month-End Forecast Value",
-                "desc": "Calculates the total expected sales value from all confirmed and committed orders in the closing period.",
-                "benefit": "Know your target gap in advance",
-            },
-            {
-                "icon": "✅",
-                "name": "Committed Order Tracking",
-                "desc": "Shows orders that are both MIS-committed (Godrej system) and manually confirmed by managers.",
-                "benefit": "Accurate forecast, not guesswork",
-            },
-            {
-                "icon": "🏭",
-                "name": "34s Stock Cross-Check",
-                "desc": "Automatically checks whether uncommitted items are physically available in your store stock.",
-                "benefit": "Avoid promises you can't keep",
-            },
-            {
-                "icon": "💾",
-                "name": "Forecast Persistence",
-                "desc": "Each month's forecast is saved to a dedicated Google Sheet for future reference and accountability.",
-                "benefit": "Compare forecast vs actual month-end",
-            },
-        ],
-    },
-    # ── STOCK ─────────────────────────────────────────────────────────────────
-    {
-        "id": "stock",
-        "emoji": "🏭",
-        "title": "Stock",
-        "route": "pages/60_Stock.py",
-        "category": "Operations",
-        "section": "Sales Handbook",
-        "gradient": "linear-gradient(135deg, #373b44, #4286f4)",
-        "tags": ["daily", "manager"],
-        "tagline": "Check live stock levels across all product categories at a glance.",
-        "what_it_does": "The Stock page shows the current inventory levels for all products in the system. You can instantly see how many units of each product are available, helping you avoid over-promising customers.",
-        "features": [
-            {
-                "icon": "📦",
-                "name": "Live Stock Levels",
-                "desc": "Shows current stock quantity for every product SKU in the system — updated daily from Godrej's system.",
-                "benefit": "Accurate inventory at all times",
-            },
-            {
-                "icon": "🔴",
-                "name": "Zero Stock Alerts",
-                "desc": "Products with zero stock are highlighted so you can immediately see what needs to be restocked.",
-                "benefit": "Never accidentally sell out-of-stock items",
-            },
-            {
-                "icon": "🔍",
-                "name": "Search & Filter",
-                "desc": "Search for any product by name or category to find stock levels instantly.",
-                "benefit": "Fast product lookup for customers",
-            },
-            {
-                "icon": "🔄",
-                "name": "Daily Auto-Update",
-                "desc": "Stock data is automatically refreshed every day at 11 AM from Godrej's email system.",
-                "benefit": "Always current without manual work",
-            },
-            {
-                "icon": "📊",
-                "name": "Stock Summary Metrics",
-                "desc": "Shows total SKUs tracked, total units in stock, number of categories, and count of zero-stock items.",
-                "benefit": "Overall inventory health in seconds",
-            },
-        ],
-    },
-    # ── 34S STOCK ─────────────────────────────────────────────────────────────
-    {
-        "id": "34s_stock",
-        "emoji": "📦",
-        "title": "34S Physical Stock Register",
-        "route": "pages/62_34s_Stock.py",
-        "category": "Operations",
-        "section": "Sales Handbook",
-        "gradient": "linear-gradient(135deg, #093028, #237a57)",
-        "tags": ["daily"],
-        "tagline": "Physical stock register for your 34S store — daily inward, outward, and closing stock.",
-        "what_it_does": "This is the daily physical stock register for the 34S store location. It records stock received (In Ward), stock dispatched (Out Ward), and the closing stock for each day — just like a manual stock register, but digital.",
-        "features": [
-            {
-                "icon": "📅",
-                "name": "Daily Stock Columns",
-                "desc": "Each day's inward, outward, opening, and closing stock is recorded separately — easy to trace any day's movement.",
-                "benefit": "Complete daily stock trail",
-            },
-            {
-                "icon": "🟥",
-                "name": "Zero Stock Highlighting",
-                "desc": "Products with zero closing stock are highlighted in red — immediate visual warning.",
-                "benefit": "Spot gaps before customers ask",
-            },
-            {
-                "icon": "📤",
-                "name": "Setup Monthly Sheet",
-                "desc": "One-click setup creates the current month's stock register sheet with all date columns pre-filled.",
-                "benefit": "Zero manual spreadsheet setup",
-            },
-            {
-                "icon": "🔄",
-                "name": "Auto-Update from Emails",
-                "desc": "Daily stock reports received via email are automatically parsed and filled into the register.",
-                "benefit": "Fully automated record keeping",
-            },
-            {
-                "icon": "📧",
-                "name": "Email Monthly Report",
-                "desc": "Send the complete monthly stock register as an Excel file to management with one click.",
-                "benefit": "Easy reporting to HO",
-            },
-            {
-                "icon": "⬇️",
-                "name": "CSV Download",
-                "desc": "Download the current month's stock register as a CSV file for offline use or sharing.",
-                "benefit": "Portable data when needed",
-            },
-        ],
-    },
-    # ── PRICE LIST ────────────────────────────────────────────────────────────
-    {
-        "id": "price_list",
-        "emoji": "💰",
-        "title": "Price List",
-        "route": "pages/65_Price_List.py",
-        "category": "Operations",
-        "section": "Sales Handbook",
-        "gradient": "linear-gradient(135deg, #f7971e, #ffd200)",
-        "tags": ["daily", "sales"],
-        "tagline": "Always have the latest Godrej product prices at your fingertips.",
-        "what_it_does": "The Price List page shows the current selling prices for all Godrej furniture, storage, and mattress products — including category, item code, CPL (cost price), GST, and final selling price. No more paper price lists!",
-        "features": [
-            {
-                "icon": "🪑",
-                "name": "Furniture & Storage Prices",
-                "desc": "Browse all furniture and storage product prices organized by category with item codes and GST details.",
-                "benefit": "Instant price answers for customers",
-            },
-            {
-                "icon": "🛏️",
-                "name": "Mattress Prices",
-                "desc": "Separate tab with mattress prices including thickness in inches and centimeters for easy comparison.",
-                "benefit": "Avoid wrong pricing mistakes",
-            },
-            {
-                "icon": "🔍",
-                "name": "Search Products",
-                "desc": "Type any product name or code to find its price instantly without scrolling.",
-                "benefit": "Faster customer queries",
-            },
-            {
-                "icon": "🔄",
-                "name": "Auto-Updated Prices",
-                "desc": "Prices are updated from official Godrej price list PDFs. No manual updates by staff needed.",
-                "benefit": "Always using current official prices",
-            },
-        ],
-    },
-    # ── PRODUCTS CATALOG ──────────────────────────────────────────────────────
-    {
-        "id": "products_catalog",
-        "emoji": "🪑",
-        "title": "Product Catalogue",
-        "route": "pages/40_Products_catalog.py",
-        "category": "Sales",
-        "section": "Sales Handbook",
-        "gradient": "linear-gradient(135deg, #8360c3, #2ebf91)",
-        "tags": ["sales"],
-        "tagline": "Browse the complete Godrej Interio product range with photos and specs.",
-        "what_it_does": "This is your digital product catalogue. Browse all available Godrej Interio products with multiple photos, features, dimensions, and colour options — exactly like a digital brochure.",
-        "features": [
-            {
-                "icon": "📸",
-                "name": "Product Photo Gallery",
-                "desc": "Each product has multiple photos you can scroll through — left and right navigation buttons for each product.",
-                "benefit": "Show customers accurate visuals",
-            },
-            {
-                "icon": "📐",
-                "name": "Product Measurements",
-                "desc": "Detailed dimensions like Width, Depth, Height, and Seat Height displayed in a clean table format.",
-                "benefit": "Answer space-fit questions instantly",
-            },
-            {
-                "icon": "🎨",
-                "name": "Colour & Material Options",
-                "desc": "Shows all available colour options with swatch images. Customers can easily visualize what fits their home.",
-                "benefit": "Reduce returns and dissatisfaction",
-            },
-            {
-                "icon": "⭐",
-                "name": "Product Features",
-                "desc": "Detailed feature descriptions for each product — materials, mechanisms, finishes, and selling points.",
-                "benefit": "Better sales pitches",
-            },
-            {
-                "icon": "🚫",
-                "name": "Discontinued Product Alert",
-                "desc": "A red banner appears at the top if any displayed product has been discontinued, with the exact date.",
-                "benefit": "Avoid selling discontinued items",
-            },
-            {
-                "icon": "🔍",
-                "name": "Search & Browse by Category",
-                "desc": "Search by name or browse by Main Category → Sub Category using breadcrumb navigation.",
-                "benefit": "Find any product in seconds",
-            },
-        ],
-    },
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -989,7 +932,7 @@ ROUTE_MAP = {m["id"]: m["route"] for m in MODULES}
 st.markdown("""
 <div class="crm-hero">
   <div class="hero-badge">✦ INTERIO BY GODREJ PATIA · CRM FEATURE GUIDE</div>
-  <div class="hero-title">What This CRM Can Do</div>
+  <div class="hero-title">CRM FEATURE GUIDE</div>
   <div class="hero-subtitle">
     Your complete guide to every tool in the system. Click on any module to go there directly,
     or explore what each feature does and how it helps your daily work.
@@ -1095,6 +1038,8 @@ else:
     # ── SECTION: MAIN ────────────────────────────────────────────────────────
     main_mods = [m for m in filtered if m["section"] == "Main"]
     handbook_mods = [m for m in filtered if m["section"] == "Sales Handbook"]
+    inventory_mods = [m for m in filtered if m["section"] == "Inventory and Stocks"]
+    analytics_mods = [m for m in filtered if m["section"] == "Analytics & Management"]
 
     def render_tag(t: str) -> str:
         cls_map = {"daily": "tag-daily", "manager": "tag-manager", "sales": "tag-sales", "auto": "tag-auto", "new": "tag-new"}
@@ -1183,8 +1128,10 @@ else:
                              use_container_width=True):
                     st.switch_page(mod["route"])
 
-    render_section(main_mods, "Main Dashboard & Tools", "🛋️")
+    render_section(main_mods, "Main Dashboards", "🛋️")
     render_section(handbook_mods, "Sales Handbook", "📚")
+    render_section(inventory_mods, "Inventory and Stocks", "📦")
+    render_section(analytics_mods, "Analytics & Management", "📊")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
