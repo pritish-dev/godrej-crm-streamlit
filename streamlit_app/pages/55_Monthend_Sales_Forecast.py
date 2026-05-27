@@ -994,10 +994,11 @@ with ib2:
 if fetch_today_clicked:
     with st.spinner("Connecting to Gmail and reading today's invoice emails…"):
         _, _msg = fetch_and_save_today_invoices()
-    st.session_state.inv_status_msg        = _msg
-    st.session_state.inv_last_fetched_month = datetime.now(IST).strftime("%B")
+    st.session_state.inv_status_msg         = _msg
+    st.session_state.inv_last_fetched_month  = datetime.now(IST).strftime("%B")
     try:
         get_df.clear()
+        _load_invoice_data.clear()
     except Exception:
         pass
     st.rerun()
@@ -1005,10 +1006,11 @@ if fetch_today_clicked:
 if fetch_month_clicked:
     with st.spinner("Fetching all invoice emails for this month…"):
         _, _msg = fetch_and_save_month_invoices()
-    st.session_state.inv_status_msg        = _msg
-    st.session_state.inv_last_fetched_month = datetime.now(IST).strftime("%B")
+    st.session_state.inv_status_msg         = _msg
+    st.session_state.inv_last_fetched_month  = datetime.now(IST).strftime("%B")
     try:
         get_df.clear()
+        _load_invoice_data.clear()
     except Exception:
         pass
     st.rerun()
@@ -1080,16 +1082,18 @@ else:
         for h in _inv_hdrs
     )
 
+    import html as _html  # std-lib — safe HTML escaping for cell values
+
     inv_rows_html = []
     for i, row in inv_display.iterrows():
         bg = "#f0f8ff" if i % 2 == 0 else "#ffffff"
         cells = [
-            row.get("Purchase Invoice", ""),
-            row.get("Dated", ""),
-            row.get("Bill Code", ""),
-            row.get("So No", ""),
-            row.get("Amount without GST", ""),
-            row.get("Sales Executive", ""),
+            _html.escape(str(row.get("Purchase Invoice", ""))),
+            _html.escape(str(row.get("Dated", ""))),
+            _html.escape(str(row.get("Bill Code", ""))),
+            _html.escape(str(row.get("So No", ""))),
+            _html.escape(str(row.get("Amount without GST", ""))),
+            _html.escape(str(row.get("Sales Executive", ""))),
         ]
         td_style = "padding:5px 8px;font-size:12px;border-bottom:1px solid #ddd;"
         inv_rows_html.append(

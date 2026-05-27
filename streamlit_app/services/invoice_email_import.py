@@ -95,44 +95,52 @@ _EXCEL_COL_ALIASES: dict[str, str] = {
     "basic amount":          "Taxable Value",
 }
 
-# ─── Regex patterns for each field in PDF text (tried in order) ──────────────
+# ─── Regex patterns for each field — tuned to Godrej & Boyce invoice format ──
+#
+# Actual invoice labels (from real sample):
+#   "Sales Invoice No : 100011P11133069"
+#   "Date : 27-05-2026"
+#   "Customer Code/Name :WDX000001 WFR000096/ 4S INTERIORS"
+#   line item: "1 WOS013908/1/0 94032090 ..."   (SO No/Pos/Seq)
+#   "Net Amount Payable 838.00 75.42 75.42 988.84"
+#
 _PDF_PATTERNS: dict[str, list[str]] = {
     "Sales Invoice No": [
-        r"(?:Sales\s+)?Invoice\s+No\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9/\-]+)",
-        r"Invoice\s+Number\s*[:\-]?\s*([A-Z0-9][A-Z0-9/\-]+)",
-        r"Inv(?:oice)?\.?\s*No\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9/\-]+)",
-        r"Bill\s+No\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9/\-]+)",
+        # Primary: "Sales Invoice No : 100011P11133069"
+        r"Sales\s+Invoice\s+No\s*:\s*([A-Z0-9]+)",
+        r"Invoice\s+No\s*:\s*([A-Z0-9]+)",
+        r"Invoice\s+Number\s*:\s*([A-Z0-9]+)",
     ],
     "Date": [
-        r"(?:Invoice\s+)?Date\s*[:\-]?\s*(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})",
-        r"(?:Invoice\s+)?Date\s*[:\-]?\s*(\d{1,2}[\s\-][A-Za-z]{3}[\s\-]\d{2,4})",
-        r"Dated?\s*[:\-]?\s*(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})",
-        r"Dated?\s*[:\-]?\s*(\d{1,2}[\s\-][A-Za-z]{3}[\s\-]\d{2,4})",
-        r"Date\s*[:\-]?\s*(\d{1,2}-[A-Za-z]+-\d{4})",
+        # "Date : 27-05-2026"  — use word boundary to avoid "P.O. No & Date : 6418"
+        r"(?<!\w)Date\s*:\s*(\d{1,2}-\d{1,2}-\d{4})",
+        r"(?<!\w)Date\s*:\s*(\d{1,2}/\d{1,2}/\d{4})",
+        r"(?<!\w)Date\s*:\s*(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})",
+        r"Invoice\s+Date\s*:\s*(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})",
     ],
     "Customer Code Name": [
-        r"Customer\s+Code\s+(?:&\s*Name|Name)\s*[:\-]?\s*([^\n\r]{3,80})",
-        r"Bill\s+To\s*[:\-]?\s*\n\s*([^\n\r]{3,80})",
-        r"Consignee\s*[:\-]?\s*\n\s*([^\n\r]{3,80})",
-        r"Customer\s*[:\-]?\s*([^\n\r]{3,60})",
-        r"Buyer\s*[:\-]?\s*([^\n\r]{3,60})",
-        # Godrej format: 6-digit code followed by customer name
-        r"(\d{6,8}\s+[A-Z][A-Za-z\s&\.\-]+)",
+        # "Customer Code/Name :WDX000001 WFR000096/ 4S INTERIORS"
+        r"Customer\s+Code/Name\s*:\s*([^\n\r]{3,80})",
+        r"Customer\s+Code\s*/\s*Name\s*:\s*([^\n\r]{3,80})",
+        r"Customer\s+Code\s*&\s*Name\s*:\s*([^\n\r]{3,80})",
+        r"Customer\s+Code\s*:\s*([^\n\r]{3,60})",
     ],
     "Sales Order No": [
-        r"(?:Customer\s+)?(?:Sales\s+)?Order\s+No\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9/\-]+)",
-        r"S\.?O\.?\s*No\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9/\-]+)",
-        r"Cust(?:omer)?\.?\s*(?:P\.?O\.?|Ord(?:er)?)\s*No\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9/\-]+)",
-        r"Your\s+(?:Order|P\.?O\.?)\s*No\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9/\-]+)",
-        r"PO\s*No\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9/\-]+)",
-        r"Ref(?:erence)?\s*No\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9/\-]+)",
+        # From line items "WOS013908/1/0" — capture only the SO part before /pos/seq
+        r"\b([A-Z]{2,4}\d{5,})/\d+/\d+",
+        # Fallback: explicit SO No label
+        r"Sales\s+Order\s+No\s*:\s*([A-Z0-9]+)",
+        r"\bSO\s+No\s*:\s*([A-Z0-9]+)",
     ],
     "Taxable Value": [
-        r"Taxable\s+(?:Value|Amount)\s*[:\-]?\s*(?:Rs\.?|INR|₹)?\s*([\d,]+\.?\d*)",
-        r"(?:Sub[\s\-]?Total|Total\s+Taxable)\s*[:\-]?\s*(?:Rs\.?|INR|₹)?\s*([\d,]+\.?\d*)",
-        r"Basic\s+(?:Value|Amount|Price)\s*[:\-]?\s*(?:Rs\.?|INR|₹)?\s*([\d,]+\.?\d*)",
-        r"(?:Net\s+)?Amount\s+(?:Before\s+Tax|Excl\.?\s+Tax)\s*[:\-]?\s*([\d,]+\.?\d*)",
-        r"Total\s+(?:Basic|Net)\s*[:\-]?\s*(?:Rs\.?|INR|₹)?\s*([\d,]+\.?\d*)",
+        # "Net Amount Payable 838.00 75.42 75.42 988.84" — first number = taxable
+        r"Net\s+Amount\s+Payable\s+([\d,]+\.\d+)",
+        # Line item total row: "Total 1 2.79 0.00 838.00 ..."
+        # Capture the 4th number after "Total" (taxable column position)
+        r"^Total\s+\d+\s+[\d.]+\s+[\d.]+\s+([\d,]+\.\d+)",
+        # Explicit label
+        r"Taxable\s+(?:Value|Amount)\s*\(?\s*₹?\s*\)?\s*:\s*([\d,]+\.?\d*)",
+        r"Taxable\s+(?:Value|Amount)\s*\(₹\)\s+([\d,]+\.\d+)",
     ],
 }
 
@@ -170,18 +178,52 @@ def _get_attachments(msg) -> list[tuple[bytes, str]]:
 
 
 def _regex_find(patterns: list[str], text: str) -> str:
-    """Try each pattern; return first non-empty group match, or ''."""
+    """
+    Try each pattern against `text`; return the first clean non-empty group match.
+    Uses IGNORECASE + MULTILINE so ^ anchors work per-line.
+    """
     for pat in patterns:
         try:
             m = re.search(pat, text, re.IGNORECASE | re.MULTILINE)
             if m:
-                val = m.group(1).strip()
-                # Skip obvious noise
-                if val and val.lower() not in ("nan", "none", "na", "-", ""):
+                val = _clean_val(m.group(1))
+                if val and val.lower() not in ("nan", "none", "na", "-", "n/a", ""):
                     return val
         except Exception:
             continue
     return ""
+
+
+def _clean_val(val: str) -> str:
+    """
+    Collapse internal newlines / extra whitespace to a single space and strip.
+    Prevents multi-line garbage from leaking into a field value.
+    """
+    if not val:
+        return ""
+    # Replace newlines and tabs with a single space, then collapse runs
+    cleaned = re.sub(r"[\r\n\t]+", " ", str(val))
+    cleaned = re.sub(r" {2,}", " ", cleaned)
+    return cleaned.strip()
+
+
+def _clean_customer_name(raw: str) -> str:
+    """
+    Normalize the 'Customer Code/Name' field.
+    Input  : "WDX000001 WFR000096/ 4S INTERIORS"
+    Output : "WDX000001 / 4S INTERIORS"
+    Strips the intermediate internal franchise code (WFR…) when present.
+    """
+    raw = _clean_val(raw)
+    # Pattern: CODE  INTERNALCODE/ NAME  →  keep CODE and NAME
+    m = re.match(r"^(\S+)\s+\S+/\s*(.+)$", raw)
+    if m:
+        return f"{m.group(1)} / {m.group(2).strip()}"
+    # Pattern: CODE/ NAME  →  keep as-is but normalise spacing
+    m2 = re.match(r"^(\S+)\s*/\s*(.+)$", raw)
+    if m2:
+        return f"{m2.group(1)} / {m2.group(2).strip()}"
+    return raw
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -190,76 +232,55 @@ def _regex_find(patterns: list[str], text: str) -> str:
 
 def parse_invoice_pdf(pdf_bytes: bytes) -> tuple[pd.DataFrame, str]:
     """
-    Parse a Godrej invoice PDF.
-    Uses pdfplumber to extract text, then applies regex patterns.
-    Returns (single-row DataFrame, status_message).
+    Parse a Godrej & Boyce invoice PDF using pdfplumber text extraction
+    + targeted regex patterns.  Returns (single-row DataFrame, status_message).
+
+    The broken table-extraction fallback that was writing multi-line garbage
+    into fields has been intentionally removed.
     """
     try:
         import pdfplumber
     except ImportError:
         return pd.DataFrame(), "❌ pdfplumber not installed — run: pip install pdfplumber"
 
-    # ── Extract text ──────────────────────────────────────────────────────────
+    # ── 1. Extract raw text from every page ───────────────────────────────────
+    full_text = ""
     try:
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-            pages_text = []
+            pages = []
             for page in pdf.pages:
                 t = page.extract_text(x_tolerance=3, y_tolerance=3) or ""
-                pages_text.append(t)
-            full_text = "\n".join(pages_text)
+                pages.append(t)
+            full_text = "\n".join(pages)
     except Exception as e:
         return pd.DataFrame(), f"❌ PDF read error: {e}"
 
     if not full_text.strip():
         return pd.DataFrame(), "⚠️ PDF has no extractable text (may be a scanned image)"
 
-    # ── Apply field patterns ───────────────────────────────────────────────────
+    # ── 2. Apply field-specific regex patterns ────────────────────────────────
     row: dict[str, str] = {}
     for field, patterns in _PDF_PATTERNS.items():
         row[field] = _regex_find(patterns, full_text)
 
-    # ── Also try table extraction for any still-missing fields ────────────────
-    if any(v == "" for v in row.values()):
-        try:
-            with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-                for page in pdf.pages:
-                    for table in (page.extract_tables() or []):
-                        for trow in table:
-                            if not trow:
-                                continue
-                            cells = [str(c or "").strip() for c in trow]
-                            for i, cell in enumerate(cells):
-                                cell_lower = cell.lower()
-                                # Try to pair label + value from adjacent cells
-                                for field, patterns in _PDF_PATTERNS.items():
-                                    if row[field]:
-                                        continue
-                                    for pat in patterns:
-                                        # Check if this cell IS the value (match against cell directly)
-                                        m = re.match(
-                                            pat.split(r"\s*[:\-]?\s*")[-1],
-                                            cell, re.IGNORECASE
-                                        )
-                                        if m:
-                                            row[field] = cell
-                                            break
-                                        # Check if preceding cell is the label
-                                        if i > 0:
-                                            label_pat = pat.rsplit(r"\s*[:\-]?\s*", 1)[0]
-                                            if re.search(label_pat, cells[i-1], re.IGNORECASE):
-                                                if cell and cell.lower() not in ("", "nan", "-"):
-                                                    row[field] = cell
-                                                    break
-        except Exception:
-            pass
+    # ── 3. Post-process Customer Code Name ───────────────────────────────────
+    if row.get("Customer Code Name"):
+        row["Customer Code Name"] = _clean_customer_name(row["Customer Code Name"])
 
+    # ── 4. Ensure all values are single-line clean strings ───────────────────
+    for k in row:
+        row[k] = _clean_val(row[k])
+
+    # ── 5. Build result ───────────────────────────────────────────────────────
     filled = sum(1 for v in row.values() if v)
     df = pd.DataFrame([row])
 
     if filled == 0:
-        # Return debug info so we can see what text was extracted
-        preview = full_text[:400].replace("\n", " | ")
-        return pd.DataFrame(), f"⚠️ Could not extract any fields. PDF text preview: {preview}"
+        preview = full_text[:500].replace("\n", " | ")
+        return pd.DataFrame(), (
+            f"⚠️ Could not extract any fields from PDF.\n"
+            f"Text preview: {preview}"
+        )
 
     missing = [f for f, v in row.items() if not v]
     status  = f"✅ PDF parsed — {filled}/5 fields found"
