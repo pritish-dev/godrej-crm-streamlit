@@ -1,5 +1,5 @@
 """
-01_What_This_CRM_Can_Do.py
+01_CRM_Feature_Guide.py
 Interactive CRM Feature Discovery & Navigation Guide
 """
 
@@ -10,7 +10,7 @@ import streamlit as st
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
     layout="wide",
-    page_title="CRM Feature Guide",
+    page_title="CRM FEATURE GUIDE",
     page_icon="🗺️",
     initial_sidebar_state="expanded",
 )
@@ -760,7 +760,7 @@ MODULES = [
         "title": "Customer Intelligence Engine",
         "route": "pages/17_Customer_Intelligence_Engine.py",
         "category": "Sales",
-        "section": "Analytics & Management",
+        "section": "Analytics & Reports",
         "gradient": "linear-gradient(135deg, #7c4dff, #1565c0)",
         "tags": ["sales", "manager"],
         "tagline": "Know your best customers, spot at-risk ones, and never lose a loyal buyer.",
@@ -817,7 +817,7 @@ MODULES = [
         "title": "Product Sales Analysis",
         "route": "pages/20_Product_Sales_Analysis.py",
         "category": "Reporting",
-        "section": "Analytics & Management",
+        "section": "Analytics & Reports",
         "gradient": "linear-gradient(135deg, #f093fb, #f5576c)",
         "tags": ["manager", "sales"],
         "tagline": "See which products are selling most and which categories drive revenue.",
@@ -856,7 +856,7 @@ MODULES = [
         "title": "Sales Manager Dashboard",
         "route": "pages/100_Sales_Manager_Dashboard.py",
         "category": "HR & Incentives",
-        "section": "Analytics & Management",
+        "section": "Analytics & Reports",
         "gradient": "linear-gradient(135deg, #f7971e, #f953c6)",
         "tags": ["manager"],
         "tagline": "Calculate incentives, track quarterly targets, and reward top performers.",
@@ -1039,7 +1039,7 @@ else:
     main_mods = [m for m in filtered if m["section"] == "Main"]
     handbook_mods = [m for m in filtered if m["section"] == "Sales Handbook"]
     inventory_mods = [m for m in filtered if m["section"] == "Inventory and Stocks"]
-    analytics_mods = [m for m in filtered if m["section"] == "Analytics & Management"]
+    analytics_mods = [m for m in filtered if m["section"] == "Analytics & Reports"]
 
     def render_tag(t: str) -> str:
         cls_map = {"daily": "tag-daily", "manager": "tag-manager", "sales": "tag-sales", "auto": "tag-auto", "new": "tag-new"}
@@ -1131,7 +1131,7 @@ else:
     render_section(main_mods, "Main Dashboards", "🛋️")
     render_section(handbook_mods, "Sales Handbook", "📚")
     render_section(inventory_mods, "Inventory and Stocks", "📦")
-    render_section(analytics_mods, "Dashboards & Reports", "📊")
+    render_section(analytics_mods, "Analytics & Reports", "📊")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
