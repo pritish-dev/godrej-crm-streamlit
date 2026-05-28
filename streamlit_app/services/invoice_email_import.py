@@ -226,6 +226,67 @@ def _clean_customer_name(raw: str) -> str:
     return raw
 
 
+def _is_credit_note(invoice_no: str, full_text: str = "") -> bool:
+    """
+    Return True if this invoice is a credit note.
+    Detection: invoice number contains 'Y' between digit groups
+    (e.g. 100011Y11030561) OR the PDF text contains 'CREDIT NOTE'.
+    """
+    if re.search(r"\d+Y\d+", str(invoice_no).strip()):
+        return True
+    if full_text and re.search(r"\bCREDIT\s+NOTE\b", full_text, re.IGNORECASE):
+        return True
+    return False
+
+
+def _parse_invoice_date(date_str: str) -> "date | None":
+    """Parse invoice date from Godrej invoice formats. Returns None if unparseable."""
+    if not date_str or not date_str.strip():
+        return None
+    clean = date_str.strip()
+    for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d", "%d-%b-%Y", "%d %b %Y"):
+        try:
+            return datetime.strptime(clean, fmt).date()
+        except ValueError:
+            pass
+    try:
+        d = pd.to_datetime(clean, dayfirst=True, errors="coerce")
+        if pd.notna(d):
+            return d.date()
+    except Exception:
+        pass
+    return None
+
+
+def _filter_invoices_by_month(
+    df: pd.DataFrame, year: int, month: int
+) -> tuple[pd.DataFrame, str]:
+    """
+    Keep only rows whose Date falls in (year, month).
+    Rows with an unparseable/empty date are kept (benefit of the doubt).
+    Returns (filtered_df, warning_message).
+    """
+    if df is None or df.empty or "Date" not in df.columns:
+        return df, ""
+
+    dates = df["Date"].apply(_parse_invoice_date)
+    keep_mask = dates.apply(
+        lambda d: d is None or (d.year == year and d.month == month)
+    )
+    skip_count = int((~keep_mask).sum())
+
+    filtered = df[keep_mask].reset_index(drop=True)
+    msg = ""
+    if skip_count > 0:
+        skipped = df.loc[~keep_mask, "Sales Invoice No"].fillna("").astype(str).tolist()
+        target_label = date(year, month, 1).strftime("%B %Y")
+        msg = (
+            f"⚠️ {skip_count} invoice(s) skipped — invoice date is outside "
+            f"{target_label}: {', '.join(skipped)}"
+        )
+    return filtered, msg
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # PDF PARSER
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -271,7 +332,16 @@ def parse_invoice_pdf(pdf_bytes: bytes) -> tuple[pd.DataFrame, str]:
     for k in row:
         row[k] = _clean_val(row[k])
 
-    # ── 5. Build result ───────────────────────────────────────────────────────
+    # ── 5. Credit-note: store Taxable Value as negative ───────────────────────
+    if _is_credit_note(row.get("Sales Invoice No", ""), full_text):
+        tv = row.get("Taxable Value", "").replace(",", "").strip()
+        if tv:
+            try:
+                row["Taxable Value"] = str(-abs(float(tv)))
+            except (ValueError, TypeError):
+                pass
+
+    # ── 6. Build result ───────────────────────────────────────────────────────
     filled = sum(1 for v in row.values() if v)
     df = pd.DataFrame([row])
 
@@ -338,6 +408,19 @@ def parse_invoice_excel(excel_bytes: bytes) -> tuple[pd.DataFrame, str]:
         result[col] = df_mapped[col].fillna("").astype(str).str.strip() if col in df_mapped.columns else ""
 
     result = result[result["Sales Invoice No"].str.strip().ne("")]
+
+    # Credit-note detection via invoice number pattern (no full text for Excel)
+    if "Sales Invoice No" in result.columns and "Taxable Value" in result.columns:
+        for idx in result.index:
+            inv_no = str(result.at[idx, "Sales Invoice No"]).strip()
+            if _is_credit_note(inv_no):
+                tv = str(result.at[idx, "Taxable Value"]).replace(",", "").strip()
+                if tv:
+                    try:
+                        result.at[idx, "Taxable Value"] = str(-abs(float(tv)))
+                    except (ValueError, TypeError):
+                        pass
+
     result.reset_index(drop=True, inplace=True)
 
     missing = [c for c in required if c not in df_mapped.columns]
@@ -649,7 +732,14 @@ def fetch_and_save_today_invoices() -> tuple[pd.DataFrame, str]:
     df, status = fetch_invoice_emails(today_only=True)
     if df is None or df.empty:
         return df, status
-    month    = datetime.now(IST).strftime("%B")
+    now   = datetime.now(IST)
+    month = now.strftime("%B")
+    # Filter: only save invoices whose date belongs to the current month
+    df, filter_msg = _filter_invoices_by_month(df, now.year, now.month)
+    if filter_msg:
+        status = f"{status}\n{filter_msg}"
+    if df is None or df.empty:
+        return df, f"{status}\n⚠️ No invoices remain after date filtering."
     save_msg = save_invoices_to_sheet(df, month)
     return df, f"{status}\n{save_msg}"
 
@@ -665,5 +755,11 @@ def fetch_and_save_month_invoices() -> tuple[pd.DataFrame, str]:
     df, status = fetch_invoice_emails(month_start=m_start, month_end=m_end)
     if df is None or df.empty:
         return df, status
+    # Filter: only save invoices whose date belongs to the current month
+    df, filter_msg = _filter_invoices_by_month(df, now.year, now.month)
+    if filter_msg:
+        status = f"{status}\n{filter_msg}"
+    if df is None or df.empty:
+        return df, f"{status}\n⚠️ No invoices remain after date filtering."
     save_msg = save_invoices_to_sheet(df, month)
     return df, f"{status}\n{save_msg}"
