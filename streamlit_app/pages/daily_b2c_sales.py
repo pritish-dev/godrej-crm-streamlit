@@ -9,6 +9,7 @@ Data source : SHEET_DETAILS → Franchise_sheets + four_s_sheets
 """
 import sys
 import os
+import re
 import calendar
 import streamlit as st
 import pandas as pd
@@ -37,9 +38,10 @@ except Exception:
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-FY_START     = date(2026, 4, 1)
-TODAY        = datetime.today().date()
-TARGET_SHEET = "SALES_TARGETS"
+FY_START      = date(2026, 4, 1)
+TODAY         = datetime.today().date()
+TARGET_SHEET  = "SALES_TARGETS"
+_DATE_PATTERN = re.compile(r"^\d{1,2}[-/]\d{1,2}[-/]\d{2,4}$")
 
 _MONTH_NAMES = {
     1: "JANUARY", 2: "FEBRUARY", 3: "MARCH", 4: "APRIL",
@@ -423,7 +425,11 @@ sales_sums      = df_filtered.groupby("SALES PERSON")["GROSS AMT"].sum()
 active_in_period = sales_sums[sales_sums > 0].index.str.strip().str.upper().tolist()
 
 all_execs = sorted(set(official_sales_people + active_in_period))
-all_execs = [x for x in all_execs if x not in ("", "NAN", "NONE", "0", "UNKNOWN")]
+all_execs = [
+    x for x in all_execs
+    if x not in ("", "NAN", "NONE", "0", "UNKNOWN")
+    and not _DATE_PATTERN.match(x)
+]
 
 if not all_execs:
     st.info("No sales data found for the selected date range.")
