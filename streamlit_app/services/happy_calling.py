@@ -137,6 +137,7 @@ def _load_crm_combined() -> pd.DataFrame:
 
     crm = crm.rename(columns={
         "ORDER UNIT PRICE=(AFTER DISC + TAX)":             "ORDER VALUE",
+        "ORDER AMOUNT (WITH TAX AND AFTER DISC)":          "ORDER VALUE",
         "DELIVERY REMARKS(DELIVERED/PENDING)":             "DELIVERY STATUS",
         "DELIVERY REMARKS (DELIVERED/PENDING)":            "DELIVERY STATUS",
         "DELIVERY REMARKS":                                "DELIVERY STATUS",
@@ -161,6 +162,10 @@ def _load_crm_combined() -> pd.DataFrame:
         crm["ORDER DATE"] = _parse_mixed_dates(crm["ORDER DATE"])
     if "DELIVERY DATE" in crm.columns:
         crm["DELIVERY DATE"] = _parse_mixed_dates(crm["DELIVERY DATE"])
+
+    # Exclude free stock items
+    if "FREE STOCK REMARK" in crm.columns:
+        crm = crm[crm["FREE STOCK REMARK"].astype(str).str.strip().str.upper() != "FREE STOCK"].copy()
 
     if "ORDER VALUE" in crm.columns:
         crm["ORDER VALUE"] = pd.to_numeric(

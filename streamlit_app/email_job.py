@@ -130,6 +130,7 @@ def fetch_all_pending() -> pd.DataFrame:
     # Normalise column names
     crm = crm.rename(columns={
         "ORDER UNIT PRICE=(AFTER DISC + TAX)":             "ORDER VALUE",
+        "ORDER AMOUNT (WITH TAX AND AFTER DISC)":          "ORDER VALUE",
         "CROSS CHECK GROSS AMT (ORDER VALUE WITHOUT TAX)": "GROSS AMT EX-TAX",
         "DATE":                                            "ORDER DATE",
         "CUSTOMER DELIVERY DATE (TO BE)":                  "DELIVERY DATE",
@@ -178,6 +179,10 @@ def fetch_all_pending() -> pd.DataFrame:
         crm["DELIVERY STATUS"].isin(["", "nan", "NaN", "None", "none"]),
         "DELIVERY STATUS",
     ] = "PENDING"
+
+    # Exclude free stock items (FREE STOCK REMARK == "FREE STOCK")
+    if "FREE STOCK REMARK" in crm.columns:
+        crm = crm[crm["FREE STOCK REMARK"].astype(str).str.strip().str.upper() != "FREE STOCK"].copy()
 
     # Keep only PENDING rows
     pending = crm[
