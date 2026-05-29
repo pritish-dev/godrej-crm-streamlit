@@ -169,9 +169,9 @@ def fetch_all_crm():
     if "ORDER VALUE" in crm.columns:
         crm = crm[crm["ORDER VALUE"] > 0].copy()
 
-    # Exclude free stock items (FREE STOCK REMARK == "FREE STOCK")
-    if "FREE STOCK REMARK" in crm.columns:
-        crm = crm[crm["FREE STOCK REMARK"].astype(str).str.strip().str.upper() != "FREE STOCK"].copy()
+    # Exclude free stock items (FREE STOCK == "FREE STOCK")
+    if "FREE STOCK" in crm.columns:
+        crm = crm[crm["FREE STOCK"].astype(str).str.strip().str.upper() != "FREE STOCK"].copy()
 
     crm = _group_by_order_no(crm)
     print(f"  → {len(crm)} orders loaded after grouping.")

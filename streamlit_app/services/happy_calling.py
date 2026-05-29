@@ -164,8 +164,8 @@ def _load_crm_combined() -> pd.DataFrame:
         crm["DELIVERY DATE"] = _parse_mixed_dates(crm["DELIVERY DATE"])
 
     # Exclude free stock items
-    if "FREE STOCK REMARK" in crm.columns:
-        crm = crm[crm["FREE STOCK REMARK"].astype(str).str.strip().str.upper() != "FREE STOCK"].copy()
+    if "FREE STOCK" in crm.columns:
+        crm = crm[crm["FREE STOCK"].astype(str).str.strip().str.upper() != "FREE STOCK"].copy()
 
     if "ORDER VALUE" in crm.columns:
         crm["ORDER VALUE"] = pd.to_numeric(

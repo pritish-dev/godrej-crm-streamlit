@@ -180,9 +180,9 @@ def fetch_all_pending() -> pd.DataFrame:
         "DELIVERY STATUS",
     ] = "PENDING"
 
-    # Exclude free stock items (FREE STOCK REMARK == "FREE STOCK")
-    if "FREE STOCK REMARK" in crm.columns:
-        crm = crm[crm["FREE STOCK REMARK"].astype(str).str.strip().str.upper() != "FREE STOCK"].copy()
+    # Exclude free stock items (FREE STOCK == "FREE STOCK")
+    if "FREE STOCK" in crm.columns:
+        crm = crm[crm["FREE STOCK"].astype(str).str.strip().str.upper() != "FREE STOCK"].copy()
 
     # Keep only PENDING rows
     pending = crm[

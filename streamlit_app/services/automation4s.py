@@ -60,8 +60,8 @@ def get_alerts(df, team_df, alert_type="delivery"):
     df = clean_headers(df)
 
     # Exclude free stock items from all alerts
-    if "FREE STOCK REMARK" in df.columns:
-        df = df[df["FREE STOCK REMARK"].astype(str).str.strip().str.upper() != "FREE STOCK"].copy()
+    if "FREE STOCK" in df.columns:
+        df = df[df["FREE STOCK"].astype(str).str.strip().str.upper() != "FREE STOCK"].copy()
 
     delivery_col = get_col(df, "DELIVERY DATE", "CUSTOMER DELIVERY DATE", "CUSTOMER DELIVERY DATE (TO BE)")
     order_col    = get_col(df, "ORDER DATE", "DATE")
