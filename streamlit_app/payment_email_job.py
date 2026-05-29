@@ -139,6 +139,7 @@ def fetch_all_crm():
         "ORDER VALUE (AFTER DISC + TAX)":                  "ORDER VALUE",
         "ORDER VALUE(AFTER DISC + TAX)":                   "ORDER VALUE",
         "ORDER AMOUNT":                                    "ORDER VALUE",
+        "ORDER AMOUNT (WITH TAX AND AFTER DISC)":          "ORDER VALUE",
         "CROSS CHECK GROSS AMT (ORDER VALUE WITHOUT TAX)": "GROSS AMT EX-TAX",
         "DATE":                                            "ORDER DATE",
         "CUSTOMER DELIVERY DATE (TO BE)":                  "DELIVERY DATE",
@@ -167,6 +168,10 @@ def fetch_all_crm():
     # Filter valid orders
     if "ORDER VALUE" in crm.columns:
         crm = crm[crm["ORDER VALUE"] > 0].copy()
+
+    # Exclude free stock items (FREE STOCK REMARK == "FREE STOCK")
+    if "FREE STOCK REMARK" in crm.columns:
+        crm = crm[crm["FREE STOCK REMARK"].astype(str).str.strip().str.upper() != "FREE STOCK"].copy()
 
     crm = _group_by_order_no(crm)
     print(f"  → {len(crm)} orders loaded after grouping.")

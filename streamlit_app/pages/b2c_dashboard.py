@@ -259,6 +259,7 @@ def load_b2c_data():
         "ORDER VALUE (AFTER DISC + TAX)":                  "ORDER VALUE",
         "ORDER VALUE(AFTER DISC + TAX)":                   "ORDER VALUE",
         "ORDER AMOUNT":                                    "ORDER VALUE",
+        "ORDER AMOUNT (WITH TAX AND AFTER DISC)":          "ORDER VALUE",
         # All known variants of the delivery-status column
         "DELIVERY REMARKS(DELIVERED/PENDING)":             "DELIVERY STATUS",
         "DELIVERY REMARKS (DELIVERED/PENDING)":            "DELIVERY STATUS",
@@ -744,9 +745,17 @@ st.dataframe(sales_display.iloc[s_idx : s_idx + PAGE_SIZE], use_container_width=
 
 # ── Pending Deliveries — split into UPCOMING and OVERDUE ─────────────────────
 
-# All PENDING rows from CRM
+# Helper: returns a boolean mask for rows that are free stock (to be excluded
+# from pending delivery and payment due tables).
+def _is_free_stock(df: pd.DataFrame) -> "pd.Series":
+    if "FREE STOCK REMARK" in df.columns:
+        return df["FREE STOCK REMARK"].astype(str).str.strip().str.upper() == "FREE STOCK"
+    return pd.Series(False, index=df.index)
+
+# All PENDING rows from CRM — free stock items excluded
 _all_pending = crm[
-    crm["DELIVERY STATUS"].astype(str).str.upper().str.strip() == "PENDING"
+    (crm["DELIVERY STATUS"].astype(str).str.upper().str.strip() == "PENDING")
+    & ~_is_free_stock(crm)
 ].copy()
 
 # Split by delivery date
@@ -1545,7 +1554,8 @@ st.subheader("💰 Payment Due")
 # advance and order value for multi-line orders. We must aggregate at the
 # ORDER NO level first so the sums cover every line of the order, then keep
 # only orders that still have an outstanding balance.
-payment_grouped = group_by_order_no(crm.copy())
+_crm_no_freestock = crm[~_is_free_stock(crm)].copy()
+payment_grouped = group_by_order_no(_crm_no_freestock)
 payment_grouped = payment_grouped[payment_grouped["PENDING DUE"] > 0].copy()
 payment_grouped = payment_grouped.sort_values(
     "DELIVERY DATE", ascending=False
