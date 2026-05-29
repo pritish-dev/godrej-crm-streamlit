@@ -754,46 +754,10 @@ def _is_free_stock(df: pd.DataFrame) -> "pd.Series":
     return pd.Series(False, index=df.index)
 
 
-def _apply_free_stock_deduction(grouped_df: pd.DataFrame, adj: pd.DataFrame) -> pd.DataFrame:
-    """
-    Subtract free-stock QTY (and ORDER VALUE) from grouped pending rows that
-    share the same ORDER NO, then drop rows whose QTY reaches zero.
-    `adj` is a DataFrame indexed by ORDER NO with columns FREE_STK_QTY and
-    FREE_STK_OV (order value).
-    """
-    if adj.empty or grouped_df.empty or "ORDER NO" not in grouped_df.columns:
-        return grouped_df
-    df = grouped_df.merge(adj, on="ORDER NO", how="left")
-    if "QTY" in df.columns:
-        df["QTY"] = (df["QTY"] - df["FREE_STK_QTY"].fillna(0)).clip(lower=0)
-    if "ORDER VALUE" in df.columns:
-        df["ORDER VALUE"] = (df["ORDER VALUE"] - df["FREE_STK_OV"].fillna(0)).clip(lower=0)
-    if "ADV RECEIVED" in df.columns and "ORDER VALUE" in df.columns:
-        df["PENDING DUE"] = (df["ORDER VALUE"] - df["ADV RECEIVED"]).round(2).clip(lower=0)
-    df = df.drop(columns=["FREE_STK_QTY", "FREE_STK_OV"], errors="ignore")
-    # Remove orders where QTY (or ORDER VALUE) fell to zero after deduction
-    if "QTY" in df.columns:
-        df = df[df["QTY"] > 0].copy()
-    return df.reset_index(drop=True)
-
-
-# Pre-compute free-stock adjustments from ALL crm rows (PENDING free-stock items
-# only — delivered free stock rows have already been fulfilled, no deduction needed).
-_free_stock_pending = crm[
-    _is_free_stock(crm)
-    & (crm["DELIVERY STATUS"].astype(str).str.upper().str.strip() == "PENDING")
-]
-
-if not _free_stock_pending.empty and "ORDER NO" in _free_stock_pending.columns:
-    _fs_adj = (
-        _free_stock_pending
-        .groupby("ORDER NO", as_index=False)
-        .agg(FREE_STK_QTY=("QTY", "sum"), FREE_STK_OV=("ORDER VALUE", "sum"))
-    )
-else:
-    _fs_adj = pd.DataFrame(columns=["ORDER NO", "FREE_STK_QTY", "FREE_STK_OV"])
-
-# All PENDING rows from CRM — free stock items excluded
+# All PENDING rows from CRM — free stock items excluded.
+# Because free stock rows are removed BEFORE grouping, their QTY and ORDER VALUE
+# are never summed into the group totals. PENDING DUE = ORDER VALUE − ADV RECEIVED
+# is therefore already correct without any additional deduction step.
 _all_pending = crm[
     (crm["DELIVERY STATUS"].astype(str).str.upper().str.strip() == "PENDING")
     & ~_is_free_stock(crm)
@@ -807,21 +771,15 @@ pending_overdue_raw  = _all_pending[_del_dates_all <  today].copy().reset_index(
 # Pre-compute both grouped views so the combined-alert button in Section A
 # can reference overdue_grouped (defined logically in Section B).
 pending_grouped = (
-    _apply_free_stock_deduction(
-        group_by_order_no(pending_upcoming_raw)
-        .sort_values("DELIVERY DATE", ascending=True)
-        .reset_index(drop=True),
-        _fs_adj,
-    )
+    group_by_order_no(pending_upcoming_raw)
+    .sort_values("DELIVERY DATE", ascending=True)
+    .reset_index(drop=True)
 ) if not pending_upcoming_raw.empty else pd.DataFrame()
 
 overdue_grouped = (
-    _apply_free_stock_deduction(
-        group_by_order_no(pending_overdue_raw)
-        .sort_values("DELIVERY DATE", ascending=True)
-        .reset_index(drop=True),
-        _fs_adj,
-    )
+    group_by_order_no(pending_overdue_raw)
+    .sort_values("DELIVERY DATE", ascending=True)
+    .reset_index(drop=True)
 ) if not pending_overdue_raw.empty else pd.DataFrame()
 
 
@@ -1602,7 +1560,7 @@ st.subheader("💰 Payment Due")
 # ORDER NO level first so the sums cover every line of the order, then keep
 # only orders that still have an outstanding balance.
 _crm_no_freestock = crm[~_is_free_stock(crm)].copy()
-payment_grouped = _apply_free_stock_deduction(group_by_order_no(_crm_no_freestock), _fs_adj)
+payment_grouped = group_by_order_no(_crm_no_freestock)
 payment_grouped = payment_grouped[payment_grouped["PENDING DUE"] > 0].copy()
 payment_grouped = payment_grouped.sort_values(
     "DELIVERY DATE", ascending=False
