@@ -740,7 +740,32 @@ with pc2:
     st.caption(f"Page {st.session_state.b2c_page + 1} of {total_pages}")
 
 s_idx = st.session_state.b2c_page * PAGE_SIZE
-st.dataframe(sales_display.iloc[s_idx : s_idx + PAGE_SIZE], use_container_width=True)
+_page_df = sales_display.iloc[s_idx : s_idx + PAGE_SIZE].copy()
+
+def _style_sales_row(row):
+    src    = str(row.get("Source", "")).strip()
+    status = str(row.get("Delivery Status", "")).strip()
+    is_4s        = "4S" in src or "4s" in src
+    is_franchise = "Franchise" in src or "franchise" in src.lower()
+    is_delivered = status.lower() == "delivered"
+
+    text_color = "yellow" if is_4s else ("pink" if is_franchise else "")
+    bg_color   = "green"  if is_delivered else ""
+
+    styles = []
+    for _ in row:
+        parts = []
+        if text_color:
+            parts.append(f"color: {text_color}")
+        if bg_color:
+            parts.append(f"background-color: {bg_color}")
+        styles.append("; ".join(parts))
+    return styles
+
+st.dataframe(
+    _page_df.style.apply(_style_sales_row, axis=1),
+    use_container_width=True,
+)
 
 
 # ── Pending Deliveries — split into UPCOMING and OVERDUE ─────────────────────
