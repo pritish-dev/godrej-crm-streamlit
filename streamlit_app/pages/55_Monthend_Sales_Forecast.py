@@ -761,7 +761,14 @@ if not st.session_state.mef_loaded or refresh:
         pending_raw, delivered_sos = _load_pending_delivery_lookup()
         invoiced_sos = _get_invoiced_so_numbers(month_name)
 
-        fresh = build_forecast(mis_raw, pending_raw, win_start, win_end)
+        # Build with extended upper bound so beyond-5th records are included
+        # before the committed filter is applied below.
+        if win_end.month == 12:
+            _ext_year, _ext_month = win_end.year + 1, 1
+        else:
+            _ext_year, _ext_month = win_end.year, win_end.month + 1
+        extended_end = date(_ext_year, _ext_month, monthrange(_ext_year, _ext_month)[1])
+        fresh = build_forecast(mis_raw, pending_raw, win_start, extended_end)
 
         # ── Filter 1: remove SOs already invoiced this month ─────────────────
         if invoiced_sos and not fresh.empty:
@@ -773,10 +780,9 @@ if not st.session_state.mef_loaded or refresh:
 
         # ── Filter 3: beyond 5th of next month → only show if committed ───────
         if not fresh.empty:
-            next_month_5 = win_end  # win_end is already 5th of next month
             beyond_mask = (
                 fresh["DELIVERY_DATE"].notna()
-                & (fresh["DELIVERY_DATE"].dt.date > next_month_5)
+                & (fresh["DELIVERY_DATE"].dt.date > win_end)
             )
             if beyond_mask.any():
                 committed_mask = fresh.apply(_is_committed, axis=1)
