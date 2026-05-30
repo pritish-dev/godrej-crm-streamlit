@@ -749,7 +749,7 @@ def _style_sales_row(row):
     is_franchise = "Franchise" in src or "franchise" in src.lower()
     is_delivered = status.lower() == "delivered"
 
-    text_color = "yellow" if is_4s else ("pink" if is_franchise else "")
+    text_color = "yellow" if is_4s else ("red" if is_franchise else "")
     bg_color   = "green"  if is_delivered else ""
 
     styles = []
