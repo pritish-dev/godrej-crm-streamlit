@@ -125,15 +125,16 @@ def _load_mis() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=120)
-def _load_pending_delivery_lookup() -> pd.DataFrame:
+def _load_pending_delivery_lookup() -> tuple[pd.DataFrame, set[str]]:
     """
-    Loads all CRM sheets and returns a deduplicated lookup:
-        GODREJ_SO | DELIVERY_DATE | SALES_EXECUTIVE
+    Loads all CRM sheets and returns:
+        - deduplicated lookup: GODREJ_SO | DELIVERY_DATE | SALES_EXECUTIVE
+        - set of SO numbers whose status is "Delivered"
     """
     try:
         cfg = get_df("SHEET_DETAILS")
         if cfg is None or cfg.empty:
-            return pd.DataFrame()
+            return pd.DataFrame(), set()
         sheets = []
         for col in ("Franchise_sheets", "four_s_sheets"):
             if col in cfg.columns:
@@ -141,6 +142,8 @@ def _load_pending_delivery_lookup() -> pd.DataFrame:
         sheets = list({s for s in sheets if s})
 
         frames = []
+        delivered_sos: set[str] = set()
+
         for sname in sheets:
             raw = get_df(sname)
             if raw is None or raw.empty:
@@ -161,9 +164,19 @@ def _load_pending_delivery_lookup() -> pd.DataFrame:
             so_col = next(
                 (c for c in raw.columns if c == "GODREJ SO NO"), None
             )
+            status_col = next(
+                (c for c in raw.columns if c in ("STATUS", "DELIVERY STATUS", "ORDER STATUS")), None
+            )
 
             if so_col is None:
                 continue
+
+            # Collect delivered SOs
+            if status_col:
+                delivered_mask = raw[status_col].astype(str).str.strip().str.upper() == "DELIVERED"
+                for so_val in raw.loc[delivered_mask, so_col].dropna().astype(str).str.strip():
+                    if so_val and so_val.lower() not in ("", "nan", "none"):
+                        delivered_sos.add(so_val)
 
             sub = raw[[so_col]].copy()
             sub.rename(columns={so_col: "GODREJ_SO"}, inplace=True)
@@ -184,15 +197,42 @@ def _load_pending_delivery_lookup() -> pd.DataFrame:
             frames.append(sub)
 
         if not frames:
-            return pd.DataFrame()
+            return pd.DataFrame(), delivered_sos
 
         combined = pd.concat(frames, ignore_index=True)
         # Prefer rows with a delivery date when deduplicating
         combined = combined.sort_values("DELIVERY_DATE", na_position="last")
         combined = combined.drop_duplicates(subset=["GODREJ_SO"], keep="first")
-        return combined.reset_index(drop=True)
+        return combined.reset_index(drop=True), delivered_sos
     except Exception as e:
-        return pd.DataFrame()
+        return pd.DataFrame(), set()
+
+
+@st.cache_data(ttl=120)
+def _get_invoiced_so_numbers(month: str) -> set[str]:
+    """Return SO numbers that already have a purchase invoice in the given month's invoice sheet."""
+    try:
+        inv_df = load_invoice_sheet(month)
+        if inv_df is None or inv_df.empty:
+            return set()
+        so_col = next(
+            (c for c in inv_df.columns if c.strip().lower() in ("sales order no", "so no", "sales order no.")),
+            None,
+        )
+        if not so_col:
+            return set()
+        sos = (
+            inv_df[so_col]
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .pipe(lambda s: s[~s.str.lower().isin(["", "nan", "none"])])
+            .unique()
+            .tolist()
+        )
+        return set(sos)
+    except Exception:
+        return set()
 
 
 @st.cache_data(ttl=300)
@@ -718,8 +758,29 @@ with c2:
 if not st.session_state.mef_loaded or refresh:
     with st.spinner("Loading MIS data and pending deliveries…"):
         mis_raw = _load_mis()
-        pending_raw = _load_pending_delivery_lookup()
+        pending_raw, delivered_sos = _load_pending_delivery_lookup()
+        invoiced_sos = _get_invoiced_so_numbers(month_name)
+
         fresh = build_forecast(mis_raw, pending_raw, win_start, win_end)
+
+        # ── Filter 1: remove SOs already invoiced this month ─────────────────
+        if invoiced_sos and not fresh.empty:
+            fresh = fresh[~fresh["SO_NO"].isin(invoiced_sos)].reset_index(drop=True)
+
+        # ── Filter 2: remove SOs marked as Delivered in CRM ──────────────────
+        if delivered_sos and not fresh.empty:
+            fresh = fresh[~fresh["SO_NO"].isin(delivered_sos)].reset_index(drop=True)
+
+        # ── Filter 3: beyond 5th of next month → only show if committed ───────
+        if not fresh.empty:
+            next_month_5 = win_end  # win_end is already 5th of next month
+            beyond_mask = (
+                fresh["DELIVERY_DATE"].notna()
+                & (fresh["DELIVERY_DATE"].dt.date > next_month_5)
+            )
+            if beyond_mask.any():
+                committed_mask = fresh.apply(_is_committed, axis=1)
+                fresh = fresh[~beyond_mask | committed_mask].reset_index(drop=True)
 
         # Merge with saved state (preserve manual flags)
         saved = load_saved_state(sheet_name)
