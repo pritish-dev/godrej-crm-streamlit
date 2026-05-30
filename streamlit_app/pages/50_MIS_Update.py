@@ -220,6 +220,7 @@ st.dataframe(
         "Sales Order Qty"           : st.column_config.NumberColumn("SO Qty", width="small"),
         "Sales Order Warehouse"     : st.column_config.TextColumn("Warehouse", width="medium"),
         "Sales Order Committed Qty" : st.column_config.NumberColumn("Committed Qty", width="small"),
+        "Inventory Commitment Date" : st.column_config.TextColumn("Inv. Commitment Date", width="medium"),
         "Freight Order No"          : st.column_config.TextColumn("FO No.", width="medium"),
         "FO Pos"                    : st.column_config.TextColumn("FO Pos", width="small"),
         "FO Firm Commitment Qty"    : st.column_config.NumberColumn("FO Committed", width="small"),

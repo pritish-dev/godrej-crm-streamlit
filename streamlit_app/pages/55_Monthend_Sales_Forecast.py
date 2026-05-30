@@ -61,6 +61,8 @@ MIS_FETCH_COLS = [
     "Sales Order Committed Qty",
     "Address Line 4(Ship To)",
     "City",
+    "Customer Name",
+    "Inventory Commitment Date",
 ]
 
 # Canonical column names used internally
@@ -68,6 +70,7 @@ INTERNAL_COLS = [
     "SO_NO", "SO_POSITION", "ITEM_CODE", "ITEM_DESCRIPTION",
     "SO_QTY", "WAREHOUSE", "TOTAL_NET_BASIC", "SO_COMMITTED_QTY",
     "ADDRESS_LINE_4", "CITY",
+    "CUSTOMER_NAME", "INV_COMMITMENT_DATE",
     "DELIVERY_DATE", "SALES_EXECUTIVE",
     "CAN_COMMIT_MANUALLY", "APPROVED_BY",
     "CANNOT_COMMIT", "AGREE_PART_DELIVERY", "DISAGREE_PART_DELIVERY",
@@ -75,16 +78,18 @@ INTERNAL_COLS = [
 ]
 
 MIS_TO_INTERNAL = {
-    "Sales Order No.":          "SO_NO",
-    "Sales Order Position":     "SO_POSITION",
-    "Item Code":                "ITEM_CODE",
-    "Item Description":         "ITEM_DESCRIPTION",
-    "Sales Order Qty":          "SO_QTY",
-    "Sales Order Warehouse":    "WAREHOUSE",
-    "Total Net Basic":          "TOTAL_NET_BASIC",
+    "Sales Order No.":           "SO_NO",
+    "Sales Order Position":      "SO_POSITION",
+    "Item Code":                 "ITEM_CODE",
+    "Item Description":          "ITEM_DESCRIPTION",
+    "Sales Order Qty":           "SO_QTY",
+    "Sales Order Warehouse":     "WAREHOUSE",
+    "Total Net Basic":           "TOTAL_NET_BASIC",
     "Sales Order Committed Qty": "SO_COMMITTED_QTY",
-    "Address Line 4(Ship To)":  "ADDRESS_LINE_4",
-    "City":                     "CITY",
+    "Address Line 4(Ship To)":   "ADDRESS_LINE_4",
+    "City":                      "CITY",
+    "Customer Name":             "CUSTOMER_NAME",
+    "Inventory Commitment Date": "INV_COMMITMENT_DATE",
 }
 
 
@@ -610,9 +615,10 @@ def render_forecast_html(df: pd.DataFrame) -> str:
 
     DISPLAY_HDRS = [
         "SO No.", "Pos", "Item Code", "Item Description",
+        "Customer Name",
         "SO Qty", "Committed Qty", "Total Net Basic",
         "Warehouse", "Address", "City",
-        "Delivery Date", "Sales Executive", "Status / Note",
+        "Inv. Commitment Date", "Delivery Date", "Sales Executive", "Status / Note",
     ]
 
     rows_html = []
@@ -681,12 +687,14 @@ def render_forecast_html(df: pd.DataFrame) -> str:
             row.get("SO_POSITION", ""),
             row.get("ITEM_CODE", ""),
             row.get("ITEM_DESCRIPTION", ""),
+            row.get("CUSTOMER_NAME", ""),
             _fmt_num(row.get("SO_QTY", "")),
             _fmt_num(row.get("SO_COMMITTED_QTY", "")),
             _fmt_num(row.get("TOTAL_NET_BASIC", "")),
             row.get("WAREHOUSE", ""),
             row.get("ADDRESS_LINE_4", ""),
             row.get("CITY", ""),
+            str(row.get("INV_COMMITMENT_DATE", "") or ""),
             _fmt_date(del_date),
             row.get("SALES_EXECUTIVE", ""),
             status_cell,

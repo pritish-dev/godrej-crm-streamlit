@@ -86,6 +86,7 @@ DISPLAY_COLUMNS = [
     "Sales Order Qty",
     "Sales Order Warehouse",
     "Sales Order Committed Qty",
+    "Inventory Commitment Date",
     "Freight Order No",
     "FO Pos",
     "FO Firm Commitment Qty",
