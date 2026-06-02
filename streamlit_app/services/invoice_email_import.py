@@ -890,7 +890,11 @@ def fetch_and_save_invoices_range(
         return df, status
 
     df = df.copy()
-    parsed = df["Date"].apply(_parse_invoice_date)
+    if "Date" in df.columns:
+        parsed = df["Date"].apply(_parse_invoice_date)
+    else:
+        # No Date column → treat every row as undated (falls into end-date month).
+        parsed = pd.Series([None] * len(df), index=df.index)
 
     # Group rows by (year, month) of their invoice date.  Rows with an
     # unparseable/empty date are assigned to the end-date month.
