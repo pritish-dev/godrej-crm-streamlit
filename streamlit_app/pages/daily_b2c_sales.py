@@ -19,12 +19,22 @@ from datetime import datetime, date, timedelta
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
-from services.sheets import get_df, _get_spreadsheet
+from services.sheets import get_df
 try:
-    from services.incentive_store import get_targets_df as _get_iq_targets_df
+    from services.incentive_store import (
+        get_targets_df as _get_iq_targets_df,
+        upsert_target as _upsert_iq_target,
+    )
     _IQ_AVAILABLE = True
 except Exception:
     _IQ_AVAILABLE = False
+
+# Invoice-based achievement source ("SALE INVOICE- <Month>" sheets)
+try:
+    from services.invoice_email_import import load_invoice_sheet as _load_invoice_sheet
+    _INVOICE_AVAILABLE = True
+except Exception:
+    _INVOICE_AVAILABLE = False
 
 # GMB Reviews integration (manual "Fetch Now" + last-sync display)
 try:
@@ -40,7 +50,6 @@ except Exception:
 
 FY_START      = date(2026, 4, 1)
 TODAY         = datetime.today().date()
-TARGET_SHEET  = "SALES_TARGETS"
 _DATE_PATTERN = re.compile(r"^\d{1,2}[-/]\d{1,2}[-/]\d{2,4}$")
 
 _MONTH_NAMES = {
@@ -200,177 +209,87 @@ def load_data():
 
 
 @st.cache_data(ttl=120)
-def load_sales_team() -> list:
-    df = get_df("Sales Team")
-    if df is None or df.empty:
+def load_iq_sales_people() -> list:
+    """Salespeople listed in the Incentive_Quarterly_Targets sheet (upper-case)."""
+    if not _IQ_AVAILABLE:
         return []
-    df.columns = [str(c).strip().upper() for c in df.columns]
-    if "ROLE" not in df.columns or "NAME" not in df.columns:
+    try:
+        df = _get_iq_targets_df()
+        if df is None or df.empty:
+            return []
+        return sorted(
+            df["SALES PERSON"].dropna().astype(str).str.strip().str.upper()
+            .replace("", pd.NA).dropna().unique().tolist()
+        )
+    except Exception:
         return []
-    return sorted(
-        df[df["ROLE"].astype(str).str.strip().str.upper() == "SALES"]["NAME"]
-        .dropna().astype(str).str.strip().unique().tolist()
-    )
 
+
+# ── Invoice-based achievement (BILL SALES without GST) ─────────────────────────
 
 @st.cache_data(ttl=120)
-def load_targets() -> pd.DataFrame:
-    df = get_df(TARGET_SHEET)
-    if df is None or df.empty:
-        return pd.DataFrame(columns=["SALES PERSON", "MONTH", "YEAR", "TARGET"])
-    df.columns = [str(c).strip().upper() for c in df.columns]
-    return df
+def load_invoice_achievement(month_name: str) -> pd.DataFrame:
+    """Return a per-salesperson achievement total for one invoice month sheet.
 
+    Source : "SALE INVOICE- <Month>" (the same sheets that power the
+             'Monthly Sales from Invoices (without Tax)' section on the
+             Month-end Sales Forecast page).
+    Value   : sum of 'Taxable Value' (without GST) per 'Sales Executive',
+             restricted to WFX customer-code records — matching the
+             'Total Month Sales (without Tax)' figure shown on that page.
 
-@st.cache_data(ttl=60)
-def load_crm_for_targets() -> pd.DataFrame:
-    """Load CRM data optimised for target achievement calculation.
-
-    Handles all column name variants across old and new sheet formats so no
-    sheet is silently skipped and April/future months always show real achievement.
+    Output  : DataFrame with columns ['SALES PERSON', 'AMOUNT'] (SALES PERSON
+              upper-cased). Empty DataFrame on any error / missing sheet.
     """
-    config_df = get_df("SHEET_DETAILS")
-    if config_df is None or config_df.empty:
-        return pd.DataFrame()
-
-    franchise_sheets = (
-        config_df["Franchise_sheets"].dropna().astype(str).str.strip().unique().tolist()
-        if "Franchise_sheets" in config_df.columns else []
-    )
-    fours_sheets = (
-        config_df["four_s_sheets"].dropna().astype(str).str.strip().unique().tolist()
-        if "four_s_sheets" in config_df.columns else []
-    )
-
-    # Priority-ordered candidates for the gross amount column
-    _AMT_CANDIDATES = [
-        "CROSS CHECK GROSS AMT (ORDER VALUE WITHOUT TAX)",
-        "GROSS AMT",
-        "ORDER VALUE",
-        "ORDER UNIT PRICE=(AFTER DISC + TAX)",
-        "ORDER AMOUNT",
-    ]
-    # All variants that mean SALES PERSON
-    _SP_MAP = {
-        "SALES REP":       "SALES PERSON",
-        "SALES EXECUTIVE": "SALES PERSON",
-        "EXECUTIVE":       "SALES PERSON",
-    }
-    # All variants that mean ORDER DATE
-    _DATE_MAP = {"DATE": "ORDER DATE"}
-
-    dfs = []
-    for name in franchise_sheets + fours_sheets:
-        try:
-            df = get_df(name)
-            if df is None or df.empty:
-                continue
-            df.columns = [str(c).strip().upper() for c in df.columns]
-            df = df.loc[:, ~df.columns.duplicated()]
-
-            # Normalise sales-person column name
-            df = df.rename(columns={k: v for k, v in _SP_MAP.items()
-                                     if k in df.columns and v not in df.columns})
-            # Normalise date column name
-            df = df.rename(columns={k: v for k, v in _DATE_MAP.items()
-                                     if k in df.columns and v not in df.columns})
-
-            # Resolve GROSS AMT from whichever candidate column exists first
-            if "GROSS AMT" not in df.columns:
-                for cand in _AMT_CANDIDATES:
-                    if cand in df.columns:
-                        df["GROSS AMT"] = df[cand]
-                        break
-
-            # Skip only if the three required columns are truly absent
-            if "GROSS AMT" not in df.columns:
-                continue
-            if "ORDER DATE" not in df.columns:
-                continue
-            if "SALES PERSON" not in df.columns:
-                continue
-
-            df["GROSS AMT"] = pd.to_numeric(
-                df["GROSS AMT"].astype(str).str.replace(r"[₹,]", "", regex=True),
-                errors="coerce",
-            ).fillna(0)
-            df["ORDER DATE"] = pd.to_datetime(df["ORDER DATE"], dayfirst=True, errors="coerce")
-            df = df[df["GROSS AMT"] > 0].copy()
-            dfs.append(df[["SALES PERSON", "ORDER DATE", "GROSS AMT"]])
-        except Exception:
-            continue
-
-    if not dfs:
-        return pd.DataFrame()
-
-    crm = pd.concat(dfs, ignore_index=True)
-    crm["SALES PERSON"] = crm["SALES PERSON"].astype(str).str.strip().str.upper()
-    crm = crm[crm["ORDER DATE"].notna() & (crm["ORDER DATE"].dt.date >= FY_START)]
-    return crm
-
-
-# ── Google Sheets write: save / update target ─────────────────────────────────
-
-def save_target(sales_person: str, month: int, year: int, target: float) -> str:
+    empty = pd.DataFrame(columns=["SALES PERSON", "AMOUNT"])
+    if not _INVOICE_AVAILABLE or not month_name:
+        return empty
     try:
-        sh = _get_spreadsheet()
-        try:
-            ws = sh.worksheet(TARGET_SHEET)
-        except Exception:
-            ws = sh.add_worksheet(title=TARGET_SHEET, rows=2000, cols=5)
-            ws.append_row(["SALES PERSON", "MONTH", "YEAR", "TARGET"])
+        df = _load_invoice_sheet(month_name)
+    except Exception:
+        return empty
+    if df is None or df.empty:
+        return empty
 
-        headers   = [h.strip().upper() for h in ws.row_values(1)]
-        all_data  = ws.get_all_values()
-        sp_upper  = sales_person.strip().upper()
-        month_str = str(month)
-        year_str  = str(year)
+    df.columns = [str(c).strip() for c in df.columns]
+    if "Sales Executive" not in df.columns or "Taxable Value" not in df.columns:
+        return empty
 
-        found_row = None
-        for i, row in enumerate(all_data[1:], start=2):
-            row_padded = row + [""] * (len(headers) - len(row))
-            row_dict   = {h: row_padded[j] for j, h in enumerate(headers)}
-            if (row_dict.get("SALES PERSON", "").strip().upper() == sp_upper and
-                    row_dict.get("MONTH", "").strip() == month_str and
-                    row_dict.get("YEAR", "").strip() == year_str):
-                found_row = i
-                break
+    # WFX filter — Customer Code Name must start with "WFX"
+    if "Customer Code Name" in df.columns:
+        wfx_mask = (
+            df["Customer Code Name"].fillna("").astype(str).str.strip().str.upper()
+            .str.startswith("WFX")
+        )
+        df = df[wfx_mask].copy()
+    if df.empty:
+        return empty
 
-        val_map = {
-            "SALES PERSON": sp_upper,
-            "MONTH": month_str,
-            "YEAR": year_str,
-            "TARGET": str(target),
-        }
-        if found_row:
-            for col_idx, col_name in enumerate(headers, start=1):
-                if col_name in val_map:
-                    ws.update_cell(found_row, col_idx, val_map[col_name])
-            return f"✅ Target updated for {sales_person} — {calendar.month_name[month]} {year}"
-        else:
-            ws.append_row([val_map.get(col, "") for col in headers])
-            return f"✅ Target set for {sales_person} — {calendar.month_name[month]} {year}"
-
-    except Exception as exc:
-        return f"❌ Failed to save target: {exc}"
+    df["AMOUNT"] = pd.to_numeric(
+        df["Taxable Value"].astype(str).str.replace(r"[₹,]", "", regex=True),
+        errors="coerce",
+    ).fillna(0.0)
+    df["SALES PERSON"] = df["Sales Executive"].astype(str).str.strip().str.upper()
+    df = df[df["SALES PERSON"] != ""]
+    if df.empty:
+        return empty
+    return df.groupby("SALES PERSON", as_index=False)["AMOUNT"].sum()
 
 
-def compute_achievement(crm: pd.DataFrame, sales_person: str, month: int, year: int) -> float:
-    if crm.empty:
+def compute_achievement(sales_person: str, month: int, year: int) -> float:
+    """Bill-sales (without GST) achievement for a salesperson in a given month."""
+    grp = load_invoice_achievement(calendar.month_name[month])
+    if grp is None or grp.empty:
         return 0.0
-    mask = (
-        (crm["SALES PERSON"].str.upper() == sales_person.strip().upper()) &
-        (crm["ORDER DATE"].dt.month == month) &
-        (crm["ORDER DATE"].dt.year == year)
-    )
-    return float(crm.loc[mask, "GROSS AMT"].sum())
+    match = grp[grp["SALES PERSON"] == sales_person.strip().upper()]
+    return float(match["AMOUNT"].sum()) if not match.empty else 0.0
 
 
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE — DAILY SALES
 # ═════════════════════════════════════════════════════════════════════════════
 
-st.title("📅 Daily B2C Sales by Sales Executive")
+st.title("📅 Daily B2C Order booking by Sales Executive(without GST)")
 st.caption("Franchise + 4S Interiors · FY 2026-27 · Value = Gross Amt (Ex-Tax)")
 
 crm_raw, team_df = load_data()
@@ -1140,11 +1059,15 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
     </div>
     """, unsafe_allow_html=True)
 
-    sales_people = load_sales_team()
-    crm_tgt_df   = load_crm_for_targets()
+    # Salespeople driving both the dropdown and the table now come from the
+    # Incentive_Quarterly_Targets sheet (single source of truth for targets).
+    sales_people = load_iq_sales_people()
 
     if not sales_people:
-        st.warning("No salespeople found in the 'Sales Team' sheet with role = SALES.")
+        st.warning(
+            "No salespeople found in the 'Incentive_Quarterly_Targets' sheet. "
+            "Add target rows there first."
+        )
     else:
         # ── Set / Update Monthly Target ───────────────────────────────────────
         st.subheader("✏️ Set / Update Monthly Target")
@@ -1155,7 +1078,7 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
             with fc1:
                 selected_sp = st.selectbox(
                     "Sales Person", options=sales_people,
-                    help="Only staff with role = SALES in the Sales Team sheet are listed",
+                    help="Salespeople are read from the Incentive_Quarterly_Targets sheet",
                 )
             with fc2:
                 _today = datetime.now().date()
@@ -1172,42 +1095,42 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                     index=0,
                 )
             with fc4:
-                targets_df      = load_targets()
-                existing_target = 0.0
-                if not targets_df.empty:
-                    _match = targets_df[
-                        (targets_df["SALES PERSON"].astype(str).str.strip().str.upper() == selected_sp.upper()) &
-                        (targets_df["MONTH"].astype(str).str.strip() == str(selected_month)) &
-                        (targets_df["YEAR"].astype(str).str.strip() == str(selected_year))
-                    ]
-                    if not _match.empty:
-                        try:
-                            existing_target = float(_match.iloc[0]["TARGET"])
-                        except Exception:
-                            existing_target = 0.0
-                # Auto-fill from Incentive_Quarterly_Targets if no manual override
-                if existing_target == 0.0:
-                    existing_target = _iq_target_rupees(selected_sp, selected_month, selected_year)
+                # Current value comes straight from Incentive_Quarterly_Targets
+                # (stored in Lakh, shown here in ₹).
+                existing_target = _iq_target_rupees(selected_sp, selected_month, selected_year)
 
                 target_value = st.number_input(
                     "Target (₹)", min_value=0.0,
                     value=existing_target, step=50000.0, format="%.2f",
-                    help="Auto-filled from Incentive_Quarterly_Targets (in Lakh). Override by saving a new value.",
+                    help=(
+                        "Enter the target in rupees (e.g. 2000000). It is saved to "
+                        "Incentive_Quarterly_Targets in Lakh (2000000 → 20)."
+                    ),
                 )
 
             submitted = st.form_submit_button("💾 Save Target", use_container_width=True, type="primary")
             if submitted:
-                msg = save_target(selected_sp, selected_month, selected_year, target_value)
-                if msg.startswith("✅"):
-                    st.success(msg)
-                    st.cache_data.clear()
+                if not _IQ_AVAILABLE:
+                    st.error("❌ Incentive_Quarterly_Targets service is unavailable.")
                 else:
-                    st.error(msg)
+                    # Convert ₹ → Lakh so the sheet stays in Lakh units.
+                    _target_lakh = float(target_value) / 100_000
+                    _fy = _get_fy_str(selected_month, selected_year)
+                    _mon_name = _MONTH_NAMES.get(selected_month, "")
+                    try:
+                        msg = _upsert_iq_target(selected_sp, _fy, _mon_name, _target_lakh)
+                    except Exception as exc:
+                        msg = f"❌ Failed to save target: {exc}"
+                    if msg.startswith("✅"):
+                        st.success(msg)
+                        st.cache_data.clear()
+                    else:
+                        st.error(msg)
 
         st.divider()
 
         # ── Target vs Achievement Table ───────────────────────────────────────
-        st.subheader("📊 Target vs Achievement")
+        st.subheader("📊 Target vs Achievement (BILL SALES without GST)")
 
         _today = datetime.now().date()
         tfc1, tfc2 = st.columns(2)
@@ -1226,9 +1149,6 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
             _last_day = calendar.monthrange(view_to.year, view_to.month)[1]
             view_to   = view_to.replace(day=_last_day)
 
-        # Reload targets after possible save
-        targets_df = load_targets()
-
         # Build month list in range
         month_list = []
         _cur = view_from.replace(day=1)
@@ -1241,39 +1161,16 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                 _ny += 1
             _cur = date(_ny, _nm, 1)
 
-        # Build the full list of salespeople: Sales Team sheet UNION IQ-targets sheet
-        # so everyone with a target entry is shown even if not in the Sales Team sheet.
-        _iq_sp_list: list[str] = []
-        if _IQ_AVAILABLE:
-            try:
-                _iq_df_sp = _get_iq_targets_df()
-                if _iq_df_sp is not None and not _iq_df_sp.empty:
-                    _iq_sp_list = (
-                        _iq_df_sp["SALES PERSON"]
-                        .dropna().astype(str).str.strip().str.upper().unique().tolist()
-                    )
-            except Exception:
-                pass
-        _all_sp = sorted(set([s.strip().upper() for s in sales_people] + _iq_sp_list))
+        # Salespeople come from the Incentive_Quarterly_Targets sheet.
+        _all_sp = sorted(set(s.strip().upper() for s in sales_people))
 
         rows = []
         for sp in _all_sp:
-            sp_upper = sp.strip().upper()
             for m, y in month_list:
-                if not targets_df.empty:
-                    _t = targets_df[
-                        (targets_df["SALES PERSON"].astype(str).str.strip().str.upper() == sp_upper) &
-                        (targets_df["MONTH"].astype(str).str.strip() == str(m)) &
-                        (targets_df["YEAR"].astype(str).str.strip() == str(y))
-                    ]
-                    target = float(_t.iloc[0]["TARGET"]) if not _t.empty else 0.0
-                else:
-                    target = 0.0
-                # Fallback to Incentive_Quarterly_Targets if no manual target set
-                if target == 0.0:
-                    target = _iq_target_rupees(sp, m, y)
-
-                achievement = compute_achievement(crm_tgt_df, sp, m, y)
+                # Target is read from Incentive_Quarterly_Targets (Lakh → ₹).
+                target = _iq_target_rupees(sp, m, y)
+                # Achievement is bill sales (without GST) from the invoice sheets.
+                achievement = compute_achievement(sp, m, y)
                 rows.append({
                     "Month":            f"{calendar.month_name[m]} {y}",
                     "_month":           m,
@@ -1385,6 +1282,11 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                 "🟢 Green = Target achieved (≥100%)  ·  "
                 "🟠 Orange = Close (80–99%)  ·  "
                 "🔴 Red = Needs attention (<80%)"
+            )
+            st.caption(
+                "Target source: **Incentive_Quarterly_Targets** (Lakh).  "
+                "Achievement source: **bill sales (without GST)** from the "
+                "'SALE INVOICE- <Month>' sheets — WFX invoices, per Sales Executive."
             )
 
             # Bar chart — current month snapshot
