@@ -80,18 +80,31 @@ def _resolve_secret(key: str) -> str:
     return ""
 
 
+def _resolve_first(keys: tuple[str, ...]) -> str:
+    """Return the first non-empty secret among several candidate key names."""
+    for k in keys:
+        v = _resolve_secret(k)
+        if v:
+            return v
+    return ""
+
+
 def _load_imap_accounts() -> list[tuple[str, str]]:
     """
     Build the list of (email, app_password) inboxes to read invoices from.
     Only accounts whose email AND password are both configured are included.
+
+    For the second account both naming styles are accepted —
+    "EMAIL_SENDER_2"/"EMAIL_PASSWORD_2" and "EMAIL_SENDER2"/"EMAIL_PASSWORD2" —
+    so it works regardless of whether the secret key includes the underscore.
     """
     accounts: list[tuple[str, str]] = []
-    for email_key, pwd_key in (
-        ("EMAIL_SENDER",   "EMAIL_PASSWORD"),     # Account 1 (primary)
-        ("EMAIL_SENDER_2", "EMAIL_PASSWORD_2"),   # Account 2 (secondary)
+    for email_keys, pwd_keys in (
+        (("EMAIL_SENDER",),                  ("EMAIL_PASSWORD",)),                   # Account 1 (primary)
+        (("EMAIL_SENDER_2", "EMAIL_SENDER2"), ("EMAIL_PASSWORD_2", "EMAIL_PASSWORD2")),  # Account 2 (secondary)
     ):
-        e = _resolve_secret(email_key)
-        p = _resolve_secret(pwd_key)
+        e = _resolve_first(email_keys)
+        p = _resolve_first(pwd_keys)
         if e and p:
             accounts.append((e, p))
     return accounts
