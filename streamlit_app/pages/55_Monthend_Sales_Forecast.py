@@ -38,6 +38,7 @@ from services.invoice_email_import import (
     load_invoice_sheet,
     invoice_sheet_name,
     save_invoices_to_sheet,
+    configured_invoice_inboxes,
 )
 
 # ─── Page config ──────────────────────────────────────────────────────────────
@@ -1122,6 +1123,20 @@ inv_selected_month = st.selectbox(
 # ─── Fetch by date range ──────────────────────────────────────────────────────
 _inv_today = datetime.now(IST).date()
 _inv_default_start = _inv_today.replace(day=1)
+
+# Show which Gmail inboxes the app will read invoices from, so it's obvious
+# whether the secondary account (EMAIL_SENDER_2 / EMAIL_PASSWORD_2) is detected.
+_inv_inboxes = configured_invoice_inboxes()
+if _inv_inboxes:
+    st.caption(
+        f"📬 Reading invoices from **{len(_inv_inboxes)}** inbox(es): "
+        + ", ".join(_inv_inboxes)
+    )
+else:
+    st.warning(
+        "📬 No invoice inbox configured. Set EMAIL_SENDER / EMAIL_PASSWORD "
+        "(and EMAIL_SENDER_2 / EMAIL_PASSWORD_2 for a second account) in secrets."
+    )
 
 ic1, ic2 = st.columns([3, 1.6])
 with ic1:

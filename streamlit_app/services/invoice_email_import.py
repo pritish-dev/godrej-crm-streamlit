@@ -104,6 +104,17 @@ IMAP_ACCOUNTS = _load_imap_accounts()
 IMAP_EMAIL    = IMAP_ACCOUNTS[0][0] if IMAP_ACCOUNTS else None
 IMAP_PASSWORD = IMAP_ACCOUNTS[0][1] if IMAP_ACCOUNTS else None
 
+
+def configured_invoice_inboxes() -> list[str]:
+    """
+    Return the email addresses of every currently-configured invoice inbox.
+
+    Re-reads the credentials on each call (rather than relying on the
+    module-level IMAP_ACCOUNTS snapshot) so the UI reflects secrets that may
+    have been added after the module was first imported.
+    """
+    return [email for email, _pwd in _load_imap_accounts()]
+
 IMAP_HOST            = "imap.gmail.com"
 INVOICE_SUBJECT      = "invoice information"
 INVOICE_SHEET_PREFIX = "SALE INVOICE- "
