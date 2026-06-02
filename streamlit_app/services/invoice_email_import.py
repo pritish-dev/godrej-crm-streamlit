@@ -27,39 +27,82 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
 # ─── Credentials (same pattern as mis_email_import.py) ────────────────────────
-IMAP_EMAIL    = None
-IMAP_PASSWORD = None
+#
+# Invoices are fetched from one OR MORE Gmail accounts. Each account is
+# configured via a pair of keys (email + app-password). To add another inbox,
+# create a new app password for it and add its keys below + to your secrets/env.
+#
+# Account 1 (primary)   : EMAIL_SENDER    / EMAIL_PASSWORD
+# Account 2 (secondary) : EMAIL_SENDER_2  / EMAIL_PASSWORD_2
+#
+# Resolution order for each key: environment variable → Streamlit secrets
+# (admin section, then top level) → .env file.
 
-try:
-    _e = os.getenv("EMAIL_SENDER", "").strip()
-    _p = os.getenv("EMAIL_PASSWORD", "").strip()
-    if _e and _p:
-        IMAP_EMAIL, IMAP_PASSWORD = _e, _p
-except Exception:
-    pass
 
-if IMAP_EMAIL is None:
+def _resolve_secret(key: str) -> str:
+    """Look up a single credential value from env → st.secrets → .env."""
+    # 1) Environment variable
+    try:
+        v = os.getenv(key, "").strip()
+        if v:
+            return v
+    except Exception:
+        pass
+
+    # 2) Streamlit secrets (admin section first, then top level)
     try:
         import streamlit as st
         try:
-            IMAP_EMAIL    = st.secrets["admin"]["EMAIL_SENDER"]
-            IMAP_PASSWORD = st.secrets["admin"]["EMAIL_PASSWORD"]
+            v = str(st.secrets["admin"][key]).strip()
+            if v:
+                return v
         except Exception:
-            IMAP_EMAIL    = st.secrets["EMAIL_SENDER"]
-            IMAP_PASSWORD = st.secrets["EMAIL_PASSWORD"]
+            pass
+        try:
+            v = str(st.secrets[key]).strip()
+            if v:
+                return v
+        except Exception:
+            pass
     except Exception:
         pass
 
-if IMAP_EMAIL is None:
+    # 3) .env file
     try:
         from dotenv import load_dotenv
         load_dotenv(dotenv_path=os.path.join(BASE_DIR, ".env"))
-        _e = os.getenv("EMAIL_SENDER", "").strip()
-        _p = os.getenv("EMAIL_PASSWORD", "").strip()
-        if _e and _p:
-            IMAP_EMAIL, IMAP_PASSWORD = _e, _p
+        v = os.getenv(key, "").strip()
+        if v:
+            return v
     except Exception:
         pass
+
+    return ""
+
+
+def _load_imap_accounts() -> list[tuple[str, str]]:
+    """
+    Build the list of (email, app_password) inboxes to read invoices from.
+    Only accounts whose email AND password are both configured are included.
+    """
+    accounts: list[tuple[str, str]] = []
+    for email_key, pwd_key in (
+        ("EMAIL_SENDER",   "EMAIL_PASSWORD"),     # Account 1 (primary)
+        ("EMAIL_SENDER_2", "EMAIL_PASSWORD_2"),   # Account 2 (secondary)
+    ):
+        e = _resolve_secret(email_key)
+        p = _resolve_secret(pwd_key)
+        if e and p:
+            accounts.append((e, p))
+    return accounts
+
+
+# All configured invoice inboxes
+IMAP_ACCOUNTS = _load_imap_accounts()
+
+# Backwards-compatible references to the primary account
+IMAP_EMAIL    = IMAP_ACCOUNTS[0][0] if IMAP_ACCOUNTS else None
+IMAP_PASSWORD = IMAP_ACCOUNTS[0][1] if IMAP_ACCOUNTS else None
 
 IMAP_HOST            = "imap.gmail.com"
 INVOICE_SUBJECT      = "invoice information"
@@ -510,60 +553,64 @@ def lookup_sales_executive(so_numbers: list[str]) -> dict[str, str]:
 # EMAIL FETCHER
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def fetch_invoice_emails(
-    today_only: bool = False,
-    month_start: date | None = None,
-    month_end: date | None = None,
-) -> tuple[pd.DataFrame, str]:
-    """
-    Fetch invoice emails from Gmail.
-
-    today_only=True          → only today's emails
-    month_start + month_end  → emails in that date range
-    neither                  → last 7 days (fallback)
-    """
-    if not IMAP_EMAIL or not IMAP_PASSWORD:
-        return pd.DataFrame(), "❌ Email credentials not configured. Check EMAIL_SENDER / EMAIL_PASSWORD."
-
-    try:
-        mail = imaplib.IMAP4_SSL(IMAP_HOST)
-        mail.login(IMAP_EMAIL, IMAP_PASSWORD)
-        mail.select("inbox")
-    except Exception as e:
-        return pd.DataFrame(), f"❌ IMAP login failed: {e}"
-
+def _build_search_query(
+    today_only: bool,
+    month_start: date | None,
+    month_end: date | None,
+) -> str:
+    """Build the IMAP search query string (shared across all accounts)."""
     now_ist = datetime.now(IST)
-
     if today_only:
         today_str    = now_ist.strftime("%d-%b-%Y")
         tomorrow_str = (now_ist + timedelta(days=1)).strftime("%d-%b-%Y")
-        query = f'(SUBJECT "{INVOICE_SUBJECT}" SINCE {today_str} BEFORE {tomorrow_str})'
+        return f'(SUBJECT "{INVOICE_SUBJECT}" SINCE {today_str} BEFORE {tomorrow_str})'
     elif month_start and month_end:
         since_str  = month_start.strftime("%d-%b-%Y")
         before_str = (month_end + timedelta(days=1)).strftime("%d-%b-%Y")
-        query = f'(SUBJECT "{INVOICE_SUBJECT}" SINCE {since_str} BEFORE {before_str})'
+        return f'(SUBJECT "{INVOICE_SUBJECT}" SINCE {since_str} BEFORE {before_str})'
     else:
         since_str = (now_ist - timedelta(days=7)).strftime("%d-%b-%Y")
-        query = f'(SUBJECT "{INVOICE_SUBJECT}" SINCE {since_str})'
+        return f'(SUBJECT "{INVOICE_SUBJECT}" SINCE {since_str})'
+
+
+def _fetch_from_account(
+    imap_email: str,
+    imap_password: str,
+    query: str,
+) -> tuple[list[pd.DataFrame], list[str], int, int, str]:
+    """
+    Read invoice emails from a single Gmail account.
+
+    Returns: (all_frames, parse_errors, no_attachment_count, email_count, login_error)
+    `login_error` is "" on success, otherwise a human-readable error string.
+    """
+    all_frames: list[pd.DataFrame] = []
+    parse_errors: list[str]        = []
+    no_attachment_count            = 0
+
+    try:
+        mail = imaplib.IMAP4_SSL(IMAP_HOST)
+        mail.login(imap_email, imap_password)
+        mail.select("inbox")
+    except Exception as e:
+        return all_frames, parse_errors, 0, 0, f"{imap_email}: IMAP login failed: {e}"
 
     try:
         _, data = mail.search(None, query)
     except Exception as e:
-        mail.logout()
-        return pd.DataFrame(), f"❌ IMAP search error: {e}"
+        try:
+            mail.logout()
+        except Exception:
+            pass
+        return all_frames, parse_errors, 0, 0, f"{imap_email}: IMAP search error: {e}"
 
     email_ids = data[0].split() if data and data[0] else []
     if not email_ids:
-        mail.logout()
-        label = "today" if today_only else "the selected period"
-        return pd.DataFrame(), (
-            f"⚠️ No invoice emails found for {label}.\n"
-            f"Subject searched: **{INVOICE_SUBJECT}**"
-        )
-
-    all_frames: list[pd.DataFrame] = []
-    parse_errors: list[str]        = []
-    no_attachment_count            = 0
+        try:
+            mail.logout()
+        except Exception:
+            pass
+        return all_frames, parse_errors, 0, 0, ""
 
     for eid in email_ids:
         try:
@@ -579,8 +626,6 @@ def fetch_invoice_emails(
                           email_subject, re.IGNORECASE)
             if m:
                 subject_inv_no = m.group(1).strip()
-
-            email_date_str = _decode_str(msg.get("Date", ""))
 
             attachments = _get_attachments(msg)
             if not attachments:
@@ -612,7 +657,63 @@ def fetch_invoice_emails(
         except Exception as ex:
             parse_errors.append(str(ex))
 
-    mail.logout()
+    try:
+        mail.logout()
+    except Exception:
+        pass
+
+    return all_frames, parse_errors, no_attachment_count, len(email_ids), ""
+
+
+def fetch_invoice_emails(
+    today_only: bool = False,
+    month_start: date | None = None,
+    month_end: date | None = None,
+) -> tuple[pd.DataFrame, str]:
+    """
+    Fetch invoice emails from ALL configured Gmail accounts (IMAP_ACCOUNTS).
+
+    today_only=True          → only today's emails
+    month_start + month_end  → emails in that date range
+    neither                  → last 7 days (fallback)
+    """
+    if not IMAP_ACCOUNTS:
+        return pd.DataFrame(), (
+            "❌ Email credentials not configured. "
+            "Check EMAIL_SENDER / EMAIL_PASSWORD (and EMAIL_SENDER_2 / EMAIL_PASSWORD_2)."
+        )
+
+    query = _build_search_query(today_only, month_start, month_end)
+
+    all_frames: list[pd.DataFrame] = []
+    parse_errors: list[str]        = []
+    no_attachment_count            = 0
+    total_emails                   = 0
+    login_errors: list[str]        = []
+
+    for acct_email, acct_password in IMAP_ACCOUNTS:
+        frames, errors, no_att, n_emails, login_err = _fetch_from_account(
+            acct_email, acct_password, query
+        )
+        if login_err:
+            login_errors.append(login_err)
+            continue
+        all_frames.extend(frames)
+        parse_errors.extend(errors)
+        no_attachment_count += no_att
+        total_emails        += n_emails
+
+    # All accounts failed to log in
+    if login_errors and not all_frames and total_emails == 0 and len(login_errors) == len(IMAP_ACCOUNTS):
+        return pd.DataFrame(), "❌ " + "; ".join(login_errors)
+
+    if total_emails == 0 and not all_frames:
+        label = "today" if today_only else "the selected period"
+        suffix = f"\n⚠️ {'; '.join(login_errors)}" if login_errors else ""
+        return pd.DataFrame(), (
+            f"⚠️ No invoice emails found for {label} across {len(IMAP_ACCOUNTS)} account(s).\n"
+            f"Subject searched: **{INVOICE_SUBJECT}**{suffix}"
+        )
 
     if not all_frames:
         detail_parts = []
@@ -622,7 +723,7 @@ def fetch_invoice_emails(
             detail_parts.append(f"Parse errors: {'; '.join(parse_errors[:3])}")
         detail = "  ".join(detail_parts) if detail_parts else ""
         return pd.DataFrame(), (
-            f"⚠️ No invoice data extracted from {len(email_ids)} email(s). {detail}"
+            f"⚠️ No invoice data extracted from {total_emails} email(s). {detail}"
         )
 
     combined = pd.concat(all_frames, ignore_index=True)
@@ -635,7 +736,12 @@ def fetch_invoice_emails(
     exec_map = lookup_sales_executive(combined["Sales Order No"].tolist())
     combined["Sales Executive"] = combined["Sales Order No"].map(exec_map).fillna("")
 
-    status_msg = f"✅ {len(combined)} invoice(s) extracted from {len(email_ids)} email(s)"
+    status_msg = (
+        f"✅ {len(combined)} invoice(s) extracted from {total_emails} email(s) "
+        f"across {len(IMAP_ACCOUNTS)} account(s)"
+    )
+    if login_errors:
+        status_msg += f"  ⚠️ {len(login_errors)} account(s) failed to log in: {'; '.join(login_errors)}"
     if parse_errors:
         status_msg += f"  ⚠️ {len(parse_errors)} attachment(s) could not be parsed"
 
