@@ -435,6 +435,43 @@ def write_df(sheet_name, df):
     # Explicit range 'A1' avoids deprecation warnings in gspread v6+
     worksheet.update('A1', data)
 
+
+def write_rows(sheet_name, rows):
+    """
+    Clear a worksheet and write an arbitrary list-of-lists (rows of cells).
+
+    Unlike `write_df` this does NOT assume a single rectangular DataFrame —
+    it lets the caller stack several tables (with their own header rows and
+    blank-row gaps) inside one worksheet. Every value is stringified and
+    None/NaN/NaT are rendered as empty strings, so the call never crashes on
+    non-serialisable types. The worksheet is created if it does not exist.
+    """
+    import math
+
+    def _clean(val):
+        if val is None or val is pd.NaT:
+            return ""
+        if isinstance(val, float) and math.isnan(val):
+            return ""
+        if isinstance(val, pd.Timestamp):
+            return "" if pd.isna(val) else val.strftime("%d-%m-%Y")
+        s = str(val)
+        return "" if s in ("nan", "NaT", "<NA>", "None") else s
+
+    clean_rows = [[_clean(c) for c in row] for row in rows]
+
+    sh = _get_spreadsheet()
+    try:
+        worksheet = sh.worksheet(sheet_name)
+    except Exception:
+        n_rows = max(len(clean_rows) + 50, 100)
+        n_cols = max((max((len(r) for r in clean_rows), default=1)), 1)
+        worksheet = sh.add_worksheet(title=sheet_name, rows=str(n_rows), cols=str(n_cols))
+
+    worksheet.clear()
+    if clean_rows:
+        worksheet.update("A1", clean_rows)
+
 # ==============================
 # EMAIL LOG
 # ==============================

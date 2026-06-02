@@ -35,7 +35,7 @@ import streamlit as st
 st.set_page_config(layout="wide")
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from services.sheets import get_df, update_followup           # noqa: E402
+from services.sheets import get_df, update_followup, write_rows  # noqa: E402
 from utils.helpers import standardize_columns, fix_duplicate_columns  # noqa: E402
 
 
@@ -387,6 +387,21 @@ def build_summary(df: pd.DataFrame) -> pd.DataFrame:
     else:
         order_count_map = {}
 
+    # ── Most-frequent SALES PERSON per customer (computed before merging) ─────
+    # merge_duplicate_orders drops the SALES PERSON column, so capture it here.
+    if "SALES PERSON" in df.columns:
+        sp = df.assign(
+            _sp=df["SALES PERSON"].astype(str).str.strip()
+        )
+        sp = sp[~sp["_sp"].str.upper().isin(["", "NAN", "NONE"])]
+        salesperson_map = (
+            sp.groupby(NAME_COL)["_sp"]
+            .agg(lambda s: s.mode().iat[0] if not s.mode().empty else "")
+            .to_dict()
+        )
+    else:
+        salesperson_map = {}
+
     df = merge_duplicate_orders(df)
     df = df.explode("PHONE_LIST")
     df["PHONE_LIST"] = df["PHONE_LIST"].astype(str).replace("nan", None)
@@ -413,6 +428,8 @@ def build_summary(df: pd.DataFrame) -> pd.DataFrame:
             .astype(int)
         )
 
+    summary["sales_person"] = summary[NAME_COL].map(salesperson_map).fillna("")
+
     today = pd.Timestamp.today().normalize()
     summary["last_purchase_date"]    = pd.to_datetime(summary["last_purchase_date"])
     summary["days_since_last_order"] = (today - summary["last_purchase_date"]).dt.days
@@ -438,6 +455,68 @@ def build_summary(df: pd.DataFrame) -> pd.DataFrame:
     summary["🌐 Web #2"]  = summary.apply(lambda r: wa_web_link(r["alt_phone"],     r["message"]), axis=1)
 
     return summary
+
+
+# =========================================================
+# CONTACT-LIST EXPORT  (Google Sheet "CUSTOMER CONTACT LISTS")
+# =========================================================
+
+CONTACT_LIST_SHEET = "CUSTOMER CONTACT LISTS"
+
+# Column headers exactly as requested by the business.
+CONTACT_LIST_HEADERS = [
+    "customer Name", "contact number", "contact number2", "contact number3",
+    "Sales person", "Purchase Value", "purchased items", "last purchase date",
+]
+
+
+def _cohort_contact_rows(summary: pd.DataFrame, cohort: str) -> list[list]:
+    """Return data rows (list-of-lists, no header) for one cohort, sorted by value desc."""
+    sub = summary[summary["cohort"] == cohort].sort_values("total_value", ascending=False)
+    rows = []
+    for _, r in sub.iterrows():
+        phones = r["phone_list"] if isinstance(r["phone_list"], list) else []
+        p1 = phones[0] if len(phones) > 0 else ""
+        p2 = phones[1] if len(phones) > 1 else ""
+        p3 = phones[2] if len(phones) > 2 else ""
+        last_dt = r["last_purchase_date"]
+        last_str = "" if pd.isna(last_dt) else pd.to_datetime(last_dt).strftime("%d-%m-%Y")
+        value = r["total_value"]
+        value_str = str(int(round(value))) if pd.notna(value) else ""
+        rows.append([
+            r[NAME_COL], p1, p2, p3,
+            r.get("sales_person", ""), value_str,
+            r.get("products_purchased", "") or "", last_str,
+        ])
+    return rows
+
+
+def generate_contact_lists_sheet(summary: pd.DataFrame) -> dict:
+    """
+    Build the 'CUSTOMER CONTACT LISTS' Google Sheet with three stacked tables —
+    High-Value, Loyal and Dormant — each with its own title + header row and
+    separated by two blank rows. Returns a dict of {cohort_label: row_count}.
+    """
+    sections = [
+        ("HIGH VALUE CUSTOMERS", "HIGH_VALUE"),
+        ("LOYAL CUSTOMERS",      "LOYAL"),
+        ("DORMANT CUSTOMERS",    "DORMANT"),
+    ]
+
+    all_rows: list[list] = []
+    counts: dict = {}
+    for i, (title, cohort) in enumerate(sections):
+        if i > 0:
+            all_rows.append([])   # 2 blank rows between sections
+            all_rows.append([])
+        data_rows = _cohort_contact_rows(summary, cohort)
+        counts[title] = len(data_rows)
+        all_rows.append([title])
+        all_rows.append(CONTACT_LIST_HEADERS)
+        all_rows.extend(data_rows)
+
+    write_rows(CONTACT_LIST_SHEET, all_rows)
+    return counts
 
 
 # =========================================================
@@ -692,6 +771,32 @@ with st.expander("✍️ Manually log a follow-up (single customer)"):
     if cust and st.button("✔ Mark as Followed-Up"):
         update_followup(cust, pd.Timestamp.today().strftime("%d-%B-%Y"))
         st.success(f"Logged follow-up for {cust} — visible under 'Last Followup Date' in the table.")
+
+st.divider()
+
+# ── Generate Customer Contact Lists Google Sheet ──────────────────────────────
+st.subheader("📇 Generate Customer Contact List")
+st.caption(
+    "Builds (or refreshes) a Google Sheet named **\"CUSTOMER CONTACT LISTS\"** in the "
+    "CRM workbook with three stacked tables — **High-Value**, **Loyal** and **Dormant** "
+    "customers — each separated by two blank rows. Columns: customer Name · contact "
+    "number / 2 / 3 · Sales person · Purchase Value · purchased items · last purchase "
+    "date. Run this whenever you want a fresh export."
+)
+if st.button("📤 Generate Customer List", type="primary"):
+    with st.spinner("Building 'CUSTOMER CONTACT LISTS' sheet…"):
+        try:
+            counts = generate_contact_lists_sheet(summary)
+            total = sum(counts.values())
+            st.success(
+                f"✅ '{CONTACT_LIST_SHEET}' updated — "
+                f"💎 High-Value: {counts.get('HIGH VALUE CUSTOMERS', 0)} · "
+                f"🔁 Loyal: {counts.get('LOYAL CUSTOMERS', 0)} · "
+                f"💤 Dormant: {counts.get('DORMANT CUSTOMERS', 0)} "
+                f"({total} customers total). Open the CRM workbook to view it."
+            )
+        except Exception as exc:
+            st.error(f"❌ Could not generate the sheet: {exc}")
 
 # ── Footnote ──────────────────────────────────────────────────────────────────
 st.markdown(
