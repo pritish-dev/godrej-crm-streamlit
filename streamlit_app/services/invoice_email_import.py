@@ -758,8 +758,12 @@ def invoice_sheet_name(month: str) -> str:
 
 def save_invoices_to_sheet(df: pd.DataFrame, month: str) -> str:
     """
-    Merge new invoice rows into "SALE INVOICE- <Month>".
-    Existing rows (matched by Sales Invoice No) are updated; new rows appended.
+    Append new invoice rows into "SALE INVOICE- <Month>".
+
+    Rows whose Sales Invoice No already exists in the sheet are LEFT UNTOUCHED
+    (not overwritten), so any manual edits in the sheet — e.g. a Sales Executive
+    name added by hand — are preserved.  Only invoice numbers not already present
+    are appended.
     """
     if df is None or df.empty:
         return "⚠️ Nothing to save — DataFrame is empty."
@@ -779,8 +783,13 @@ def save_invoices_to_sheet(df: pd.DataFrame, month: str) -> str:
     except Exception:
         existing = None
 
+    skipped = 0
     if existing is None or existing.empty:
-        merged = df_new
+        # No existing data — de-duplicate within the new batch and write all.
+        merged = df_new.drop_duplicates(
+            subset=["Sales Invoice No"], keep="first"
+        ).reset_index(drop=True)
+        added = len(merged)
     else:
         existing.columns = [str(c).strip() for c in existing.columns]
         for c in SHEET_COLS:
@@ -789,19 +798,27 @@ def save_invoices_to_sheet(df: pd.DataFrame, month: str) -> str:
         existing = existing[SHEET_COLS].copy()
 
         inv_col = "Sales Invoice No"
-        idx_map = {
-            str(r[inv_col]).strip(): i
-            for i, r in existing.iterrows()
+        existing_inv = {
+            str(r[inv_col]).strip()
+            for _, r in existing.iterrows()
             if str(r[inv_col]).strip()
         }
+
         new_rows: list[pd.Series] = []
+        seen_in_batch: set[str] = set()
         for _, row in df_new.iterrows():
             inv_no = str(row[inv_col]).strip()
-            if inv_no in idx_map:
-                existing.loc[idx_map[inv_no]] = row
-            else:
-                new_rows.append(row)
+            if not inv_no:
+                continue
+            if inv_no in existing_inv or inv_no in seen_in_batch:
+                # Already present in the sheet (or earlier in this batch) →
+                # leave the existing row as-is and move on.
+                skipped += 1
+                continue
+            seen_in_batch.add(inv_no)
+            new_rows.append(row)
 
+        added = len(new_rows)
         if new_rows:
             merged = pd.concat(
                 [existing, pd.DataFrame(new_rows)], ignore_index=True
@@ -811,7 +828,10 @@ def save_invoices_to_sheet(df: pd.DataFrame, month: str) -> str:
 
     try:
         write_df(sheet, merged)
-        return f"✅ Saved {len(merged)} row(s) to sheet **{sheet}**."
+        msg = f"✅ Added {added} new row(s) to sheet **{sheet}**"
+        if skipped:
+            msg += f" · {skipped} already present, left unchanged"
+        return msg + "."
     except Exception as e:
         return f"❌ Save to sheet failed: {e}"
 
@@ -848,6 +868,44 @@ def fetch_and_save_today_invoices() -> tuple[pd.DataFrame, str]:
         return df, f"{status}\n⚠️ No invoices remain after date filtering."
     save_msg = save_invoices_to_sheet(df, month)
     return df, f"{status}\n{save_msg}"
+
+
+def fetch_and_save_invoices_range(
+    start_date: date, end_date: date
+) -> tuple[pd.DataFrame, str]:
+    """
+    Fetch invoice emails received between `start_date` and `end_date` (inclusive)
+    and save each invoice to the month sheet matching its own invoice date.
+
+    A range may span several months; invoices are grouped by their invoice-date
+    month so each lands in the correct "SALE INVOICE- <Month>" sheet.  Invoices
+    whose number already exists in a sheet are left untouched (see
+    `save_invoices_to_sheet`).
+    """
+    if start_date > end_date:
+        start_date, end_date = end_date, start_date
+
+    df, status = fetch_invoice_emails(month_start=start_date, month_end=end_date)
+    if df is None or df.empty:
+        return df, status
+
+    df = df.copy()
+    parsed = df["Date"].apply(_parse_invoice_date)
+
+    # Group rows by (year, month) of their invoice date.  Rows with an
+    # unparseable/empty date are assigned to the end-date month.
+    grouped: dict[tuple[int, int], list[int]] = {}
+    for i, d in parsed.items():
+        key = (d.year, d.month) if d is not None else (end_date.year, end_date.month)
+        grouped.setdefault(key, []).append(i)
+
+    save_msgs: list[str] = []
+    for (yr, mo), idxs in sorted(grouped.items()):
+        sub = df.loc[idxs].reset_index(drop=True)
+        month_name = date(yr, mo, 1).strftime("%B")
+        save_msgs.append(save_invoices_to_sheet(sub, month_name))
+
+    return df, status + "\n" + "\n".join(save_msgs)
 
 
 def fetch_and_save_month_invoices() -> tuple[pd.DataFrame, str]:

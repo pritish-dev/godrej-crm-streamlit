@@ -34,8 +34,7 @@ sys.path.insert(0, BASE_DIR)
 from services.sheets import get_df, write_df
 from services.mis_email_import import load_cached_mis
 from services.invoice_email_import import (
-    fetch_and_save_today_invoices,
-    fetch_and_save_month_invoices,
+    fetch_and_save_invoices_range,
     load_invoice_sheet,
     invoice_sheet_name,
     save_invoices_to_sheet,
@@ -1120,46 +1119,57 @@ inv_selected_month = st.selectbox(
     help="Loads data from the corresponding 'SALE INVOICE- <Month>' sheet.",
 )
 
-# ─── Fetch buttons ────────────────────────────────────────────────────────────
-ib1, ib2, ib_spacer = st.columns([1.8, 2.2, 4])
-with ib1:
-    fetch_today_clicked = st.button(
-        "⚡ Fetch Today's Invoices",
-        key="inv_fetch_today",
-        help="Read today's 'invoice information' emails only and save to current month sheet.",
-        use_container_width=True,
+# ─── Fetch by date range ──────────────────────────────────────────────────────
+_inv_today = datetime.now(IST).date()
+_inv_default_start = _inv_today.replace(day=1)
+
+ic1, ic2 = st.columns([3, 1.6])
+with ic1:
+    inv_date_range = st.date_input(
+        "Select date range to fetch invoices from Gmail",
+        value=(_inv_default_start, _inv_today),
+        max_value=_inv_today,
+        key="inv_date_range",
+        format="DD/MM/YYYY",
+        help=(
+            "Reads 'invoice information' emails received in this date range and "
+            "saves each invoice to the month sheet matching its invoice date. "
+            "Invoices already present in a sheet are left unchanged."
+        ),
     )
-with ib2:
-    fetch_month_clicked = st.button(
-        "📅 Fetch This Month's Invoices",
-        key="inv_fetch_month",
-        help="Read all 'invoice information' emails for the current month and save.",
+with ic2:
+    st.write("")   # vertical alignment with the date input label
+    st.write("")
+    fetch_range_clicked = st.button(
+        "📥 Fetch Invoices",
+        key="inv_fetch_range",
         use_container_width=True,
     )
 
-if fetch_today_clicked:
-    with st.spinner("Connecting to Gmail and reading today's invoice emails…"):
-        _, _msg = fetch_and_save_today_invoices()
-    st.session_state.inv_status_msg         = _msg
-    st.session_state.inv_last_fetched_month  = datetime.now(IST).strftime("%B")
-    try:
-        get_df.clear()
-        _load_invoice_data.clear()
-    except Exception:
-        pass
-    st.rerun()
+if fetch_range_clicked:
+    # st.date_input may return a single date (range not yet completed) or a
+    # (start, end) tuple. Normalise to two dates before fetching.
+    if isinstance(inv_date_range, (list, tuple)):
+        _range_start = inv_date_range[0] if len(inv_date_range) >= 1 else None
+        _range_end   = inv_date_range[1] if len(inv_date_range) >= 2 else _range_start
+    else:
+        _range_start = _range_end = inv_date_range
 
-if fetch_month_clicked:
-    with st.spinner("Fetching all invoice emails for this month…"):
-        _, _msg = fetch_and_save_month_invoices()
-    st.session_state.inv_status_msg         = _msg
-    st.session_state.inv_last_fetched_month  = datetime.now(IST).strftime("%B")
-    try:
-        get_df.clear()
-        _load_invoice_data.clear()
-    except Exception:
-        pass
-    st.rerun()
+    if not _range_start or not _range_end:
+        st.warning("Please select both a start and an end date, then click Fetch Invoices.")
+    else:
+        with st.spinner(
+            f"Fetching invoice emails from {_range_start:%d %b %Y} to {_range_end:%d %b %Y}…"
+        ):
+            _, _msg = fetch_and_save_invoices_range(_range_start, _range_end)
+        st.session_state.inv_status_msg        = _msg
+        st.session_state.inv_last_fetched_month = _range_end.strftime("%B")
+        try:
+            get_df.clear()
+            _load_invoice_data.clear()
+        except Exception:
+            pass
+        st.rerun()
 
 if st.session_state.inv_status_msg:
     msg = st.session_state.inv_status_msg
