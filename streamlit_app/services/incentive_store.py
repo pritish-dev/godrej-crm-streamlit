@@ -128,6 +128,90 @@ def get_targets_df() -> pd.DataFrame:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Targets write (create / update a monthly target row)
+# ─────────────────────────────────────────────────────────────────────────────
+def _quarter_for_month(month_name: str) -> str:
+    """Map a month name to its fiscal-year quarter (FY starts in April)."""
+    q_map = {
+        "APRIL": "Q1", "MAY": "Q1", "JUNE": "Q1",
+        "JULY": "Q2", "AUGUST": "Q2", "SEPTEMBER": "Q2",
+        "OCTOBER": "Q3", "NOVEMBER": "Q3", "DECEMBER": "Q3",
+        "JANUARY": "Q4", "FEBRUARY": "Q4", "MARCH": "Q4",
+    }
+    return q_map.get(str(month_name).strip().upper(), "")
+
+
+def upsert_target(
+    sales_person: str,
+    fy: str,
+    month: str,
+    target_lakh: float,
+    quarter: str = "",
+) -> str:
+    """Create or update a target row in Incentive_Quarterly_Targets.
+
+    Matches on SALES PERSON + FY + MONTH (case-insensitive). ``target_lakh`` is
+    stored in Lakh (e.g. ₹20,00,000 → 20). Whole numbers are stored without a
+    trailing ``.0`` so the existing 'Target vs Achievement' rendering does not
+    break.
+    """
+    ws = ensure_targets_tab()
+    headers = [h.strip().upper() for h in (ws.row_values(1) or [])]
+    if not headers:
+        ws.update("A1", [TARGETS_HEADERS])
+        headers = TARGETS_HEADERS[:]
+
+    sp_u  = (sales_person or "").strip().upper()
+    fy_c  = (fy or "").strip()
+    mon_u = (month or "").strip().upper()
+    if not quarter:
+        quarter = _quarter_for_month(mon_u)
+
+    # Store whole numbers as ints (18, 20) and fractions rounded to 2 dp.
+    try:
+        tgt_num = float(target_lakh)
+    except (TypeError, ValueError):
+        tgt_num = 0.0
+    tgt_store = int(round(tgt_num)) if float(tgt_num).is_integer() else round(tgt_num, 2)
+
+    all_data  = ws.get_all_values()
+    found_row = None
+    for i, row in enumerate(all_data[1:], start=2):
+        row_padded = row + [""] * (len(headers) - len(row))
+        rd = {h: row_padded[j] for j, h in enumerate(headers)}
+        if (rd.get("SALES PERSON", "").strip().upper() == sp_u and
+                rd.get("FY", "").strip() == fy_c and
+                rd.get("MONTH", "").strip().upper() == mon_u):
+            found_row = i
+            break
+
+    val_map = {
+        "SALES PERSON": sp_u,
+        "FY":           fy_c,
+        "QUARTER":      quarter,
+        "MONTH":        mon_u,
+        "TARGET":       tgt_store,
+    }
+    if found_row:
+        for col_idx, col_name in enumerate(headers, start=1):
+            if col_name in val_map:
+                ws.update_cell(found_row, col_idx, val_map[col_name])
+        action = "updated"
+    else:
+        ws.append_row([val_map.get(c, "") for c in headers])
+        action = "set"
+
+    # Bust caches so the new value is reflected immediately.
+    for _clearable in (get_df, get_targets_df):
+        try:
+            _clearable.clear()
+        except Exception:
+            pass
+
+    return f"✅ Target {action} for {sales_person} — {month} (FY {fy_c}): {tgt_store} Lakh"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Audit log
 # ─────────────────────────────────────────────────────────────────────────────
 def append_log(
