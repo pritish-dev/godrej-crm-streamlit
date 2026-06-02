@@ -74,6 +74,7 @@ INTERNAL_COLS = [
     "DELIVERY_DATE", "SALES_EXECUTIVE",
     "CAN_COMMIT_MANUALLY", "APPROVED_BY",
     "CANNOT_COMMIT", "AGREE_PART_DELIVERY", "DISAGREE_PART_DELIVERY",
+    "CUSTOMER_DENIED_DELIVERY",
     "STOCK_34S_MESSAGE",
 ]
 
@@ -399,6 +400,10 @@ def _disagree_part(row: pd.Series) -> bool:
     return str(row.get("DISAGREE_PART_DELIVERY", "")).upper() in ("TRUE", "1", "YES")
 
 
+def _customer_denied(row: pd.Series) -> bool:
+    return str(row.get("CUSTOMER_DENIED_DELIVERY", "")).upper() in ("TRUE", "1", "YES")
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # FORECAST SHEET PERSISTENCE
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -412,6 +417,7 @@ def load_saved_state(sheet_name: str) -> pd.DataFrame:
         bool_cols = [
             "CAN_COMMIT_MANUALLY", "CANNOT_COMMIT",
             "AGREE_PART_DELIVERY", "DISAGREE_PART_DELIVERY",
+            "CUSTOMER_DENIED_DELIVERY",
         ]
         for bc in bool_cols:
             if bc in df.columns:
@@ -432,6 +438,7 @@ def save_state(df: pd.DataFrame, sheet_name: str) -> str:
         bool_cols = [
             "CAN_COMMIT_MANUALLY", "CANNOT_COMMIT",
             "AGREE_PART_DELIVERY", "DISAGREE_PART_DELIVERY",
+            "CUSTOMER_DENIED_DELIVERY",
         ]
         for bc in bool_cols:
             if bc in out.columns:
@@ -527,6 +534,7 @@ def build_forecast(
         ("CANNOT_COMMIT",       False),
         ("AGREE_PART_DELIVERY", False),
         ("DISAGREE_PART_DELIVERY", False),
+        ("CUSTOMER_DENIED_DELIVERY", False),
         ("STOCK_34S_MESSAGE",   ""),
     ]:
         if col not in df.columns:
@@ -551,7 +559,8 @@ def merge_state(fresh: pd.DataFrame, saved: pd.DataFrame) -> pd.DataFrame:
 
     state_flag_cols = [
         "CAN_COMMIT_MANUALLY", "APPROVED_BY", "CANNOT_COMMIT",
-        "AGREE_PART_DELIVERY", "DISAGREE_PART_DELIVERY", "STOCK_34S_MESSAGE",
+        "AGREE_PART_DELIVERY", "DISAGREE_PART_DELIVERY",
+        "CUSTOMER_DENIED_DELIVERY", "STOCK_34S_MESSAGE",
     ]
 
     saved_map = {}
@@ -628,6 +637,8 @@ def render_forecast_html(df: pd.DataFrame) -> str:
     for _, row in df.iterrows():
         so = str(row["SO_NO"])
         if so in hidden_sos:
+            continue
+        if _customer_denied(row):
             continue
 
         del_date = row["DELIVERY_DATE"]
@@ -843,7 +854,10 @@ for so, grp in df.groupby("SO_NO"):
             hidden_sos.add(str(so))
             break
 
+# Customer-denied delivery is excluded at the line-item level (a whole order is
+# denied by denying all its line items), so filter those rows out here too.
 visible_df = df[~df["SO_NO"].isin(hidden_sos)].copy()
+visible_df = visible_df[~visible_df.apply(_customer_denied, axis=1)].copy()
 
 # ─── Compute KPI values ───────────────────────────────────────────────────────
 green_mask = visible_df.apply(_is_committed, axis=1)
@@ -893,9 +907,89 @@ st.markdown("---")
 
 # ─── Styled visual table ──────────────────────────────────────────────────────
 st.subheader("📋 Forecast Table")
-st.caption("🟢 Green = committed  ·  🔴 Red = cannot commit, agreed to part delivery  ·  Entire order disappears when 'Disagree for Part Delivery'")
+st.caption("🟢 Green = committed  ·  🔴 Red = cannot commit, agreed to part delivery  ·  Entire order disappears when 'Disagree for Part Delivery' or 'Customer Denied Delivery'")
 table_html = render_forecast_html(visible_df)
 st.html(table_html)
+
+# ─── Customer Denied Delivery ─────────────────────────────────────────────────
+# An order whose customer has refused delivery can no longer be part of this
+# month's Sale. Denial works at the line-item level, so it can be applied to a
+# whole order (master checkbox) or to individual items. Denied items are removed
+# from the forecast table above and excluded from the forecast value, regardless
+# of their commitment status.
+st.markdown("---")
+st.subheader("🚫 Customer Denied Delivery")
+st.caption(
+    "Mark an order (or individual items) whose customer has denied delivery. "
+    "Use **Deny entire order** to drop the whole order, or tick specific items "
+    "for a partial denial. Denied items disappear from the forecast above and "
+    "from the month's Sale. Untick to restore."
+)
+
+denied_changed = False
+for so_no, so_grp in df.groupby("SO_NO", sort=False):
+    so_no = str(so_no)
+    cust       = str(so_grp["CUSTOMER_NAME"].iloc[0])
+    sales_exec = str(so_grp["SALES_EXECUTIVE"].iloc[0])
+    del_label  = _fmt_date(so_grp["DELIVERY_DATE"].iloc[0])
+    order_val  = so_grp["TOTAL_NET_BASIC"].apply(_to_num).sum()
+    is_green   = bool(so_grp.apply(_is_committed, axis=1).any())
+    n_items    = len(so_grp)
+    n_denied   = int(so_grp.apply(_customer_denied, axis=1).sum())
+    all_denied = n_items > 0 and n_denied == n_items
+
+    badge = ""
+    if all_denied:
+        badge = "  🚫 fully denied"
+    elif n_denied:
+        badge = f"  🚫 {n_denied}/{n_items} item(s) denied"
+    header = (
+        f"SO {so_no}  ·  {cust or '—'}  ·  {sales_exec or '—'}  ·  "
+        f"{del_label or 'No Date'}  ·  ₹{order_val:,.0f}"
+        + ("  🟢 committed" if is_green else "")
+        + badge
+    )
+
+    with st.expander(header, expanded=False):
+        # ── Master: deny the entire order ────────────────────────────────────
+        master = st.checkbox(
+            "🚫 Deny entire order",
+            value=all_denied,
+            key=f"deny_all_{so_no}",
+            help="Removes every line item of this order from the forecast.",
+        )
+        if master != all_denied:
+            denied_changed = True
+            for idx in so_grp.index:
+                st.session_state.mef_df.at[idx, "CUSTOMER_DENIED_DELIVERY"] = master
+            # Master change cascades to all items — rerun picks up the new state.
+            continue
+
+        st.markdown("<div style='font-size:12px;color:#666;'>Or deny individual items:</div>", unsafe_allow_html=True)
+
+        # ── Per-line-item denial ─────────────────────────────────────────────
+        for _, item_row in so_grp.iterrows():
+            idx       = item_row.name
+            pos       = str(item_row.get("SO_POSITION", ""))
+            item_code = str(item_row.get("ITEM_CODE", ""))
+            item_desc = str(item_row.get("ITEM_DESCRIPTION", ""))
+            cur_item  = _customer_denied(item_row)
+            new_item  = st.checkbox(
+                f"Pos {pos}: {item_code} — {item_desc}",
+                value=cur_item,
+                key=f"deny_item_{idx}",
+            )
+            if new_item != cur_item:
+                denied_changed = True
+                st.session_state.mef_df.at[idx, "CUSTOMER_DENIED_DELIVERY"] = new_item
+
+if denied_changed:
+    save_state(st.session_state.mef_df, sheet_name)
+    try:
+        get_df.clear()
+    except Exception:
+        pass
+    st.rerun()
 
 # ─── Interactive edit section ─────────────────────────────────────────────────
 st.markdown("---")
@@ -911,7 +1005,9 @@ if not sales_persons:
 
 changed = False
 
-non_committed = df[~df.apply(_is_committed, axis=1)].copy()
+non_committed = df[
+    ~df.apply(_is_committed, axis=1) & ~df.apply(_customer_denied, axis=1)
+].copy()
 
 if non_committed.empty:
     st.success("✅ All items in the forecast window are committed!")
