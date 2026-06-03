@@ -144,16 +144,32 @@ else:
 m4.metric("🟢 Ready Items", int(green_mask.sum()))
 
 # ─── Negative stock & pending value counters ──────────────────────────────────
-_so_qty_col = "SO Qty" if "SO Qty" in df.columns else "Sales Order Qty"
-so_qty_num = pd.to_numeric(df.get(_so_qty_col, pd.Series(dtype=float)), errors="coerce")
-_wh_col    = "Sales Order Warehouse" if "Sales Order Warehouse" in df.columns else "Warehouse"
-wh_col     = df.get(_wh_col, pd.Series(dtype=str)).astype(str)
+# Detect actual SO Qty column (strip whitespace from all col names for safety)
+df.columns = [c.strip() for c in df.columns]
 
-neg_mask      = so_qty_num < 0
-credited_count    = int((neg_mask & (wh_col == "ZBF11U")).sum())
-to_be_credited    = int((neg_mask & (wh_col == "ZBF11T")).sum())
+_so_qty_col = next((c for c in df.columns if c.strip() in ("SO Qty", "Sales Order Qty")), None)
+_wh_col     = next((c for c in df.columns if c.strip() in ("Sales Order Warehouse", "Warehouse")), None)
+_net_col    = next((c for c in df.columns if c.strip() in ("Total Net Basic", "Net Basic Value", "Net Basic")), None)
 
-net_basic_num = pd.to_numeric(df.get("Total Net Basic", pd.Series(dtype=float)), errors="coerce").fillna(0)
+if _so_qty_col:
+    so_qty_num = pd.to_numeric(df[_so_qty_col].astype(str).str.strip(), errors="coerce")
+else:
+    so_qty_num = pd.Series([float("nan")] * len(df))
+
+if _wh_col:
+    wh_col = df[_wh_col].astype(str).str.strip()
+else:
+    wh_col = pd.Series([""] * len(df))
+
+neg_mask       = so_qty_num < 0
+credited_count = int((neg_mask & (wh_col == "ZBF11U")).sum())
+to_be_credited = int((neg_mask & (wh_col == "ZBF11T")).sum())
+
+if _net_col:
+    net_basic_num = pd.to_numeric(df[_net_col].astype(str).str.strip().str.replace(",", ""), errors="coerce").fillna(0)
+else:
+    net_basic_num = pd.Series([0.0] * len(df))
+
 total_net_basic   = net_basic_num.sum()
 neg_net_basic     = net_basic_num[neg_mask].sum()
 pending_order_val = total_net_basic - neg_net_basic
@@ -165,6 +181,19 @@ c2.metric("To Be CREDITED STOCK (ZBF11T)", f"{to_be_credited:,}",
           help="Count of line items with negative SO Qty under warehouse ZBF11T")
 c3.metric("PENDING ORDER VALUE", f"₹{pending_order_val:,.0f}",
           help="Total Net Basic Value minus Net Basic Value of negative SO Qty items")
+
+# ─── Debug expander (remove once confirmed working) ──────────────────────────
+with st.expander("🔍 Debug: Column detection", expanded=False):
+    st.write(f"**SO Qty column found:** `{_so_qty_col}`")
+    st.write(f"**Warehouse column found:** `{_wh_col}`")
+    st.write(f"**Net Basic column found:** `{_net_col}`")
+    st.write(f"**Total rows:** {len(df)} | **Negative SO Qty rows:** {int(neg_mask.sum())}")
+    if _so_qty_col and _wh_col:
+        neg_rows = df[neg_mask][[_so_qty_col, _wh_col]].head(10)
+        st.write("**Sample negative SO Qty rows (up to 10):**")
+        st.dataframe(neg_rows)
+    st.write("**All column names in df:**")
+    st.write(list(df.columns))
 
 # ─── Filters ──────────────────────────────────────────────────────────────────
 st.markdown("### 🔍 Filters")
