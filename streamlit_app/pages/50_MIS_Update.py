@@ -144,8 +144,10 @@ else:
 m4.metric("🟢 Ready Items", int(green_mask.sum()))
 
 # ─── Negative stock & pending value counters ──────────────────────────────────
-so_qty_num = pd.to_numeric(df.get("Sales Order Qty", pd.Series(dtype=float)), errors="coerce")
-wh_col     = df.get("Sales Order Warehouse", pd.Series(dtype=str)).astype(str)
+_so_qty_col = "SO Qty" if "SO Qty" in df.columns else "Sales Order Qty"
+so_qty_num = pd.to_numeric(df.get(_so_qty_col, pd.Series(dtype=float)), errors="coerce")
+_wh_col    = "Sales Order Warehouse" if "Sales Order Warehouse" in df.columns else "Warehouse"
+wh_col     = df.get(_wh_col, pd.Series(dtype=str)).astype(str)
 
 neg_mask      = so_qty_num < 0
 credited_count    = int((neg_mask & (wh_col == "ZBF11U")).sum())
