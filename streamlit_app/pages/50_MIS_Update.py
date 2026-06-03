@@ -149,7 +149,13 @@ df.columns = [c.strip() for c in df.columns]
 
 _so_qty_col = next((c for c in df.columns if c.strip() in ("SO Qty", "Sales Order Qty")), None)
 _wh_col     = next((c for c in df.columns if c.strip() in ("Sales Order Warehouse", "Warehouse")), None)
-_net_col    = next((c for c in df.columns if c.strip() in ("Total Net Basic", "Net Basic Value", "Net Basic")), None)
+_net_col    = next(
+    (c for c in df.columns if c.strip() in ("Total Net Basic", "Net Basic Value", "Net Basic")),
+    next(
+        (c for c in df.columns if "net" in c.lower() and "basic" in c.lower()),
+        None
+    )
+)
 
 if _so_qty_col:
     so_qty_num = pd.to_numeric(df[_so_qty_col].astype(str).str.strip(), errors="coerce")
@@ -175,8 +181,10 @@ if _net_col:
 else:
     net_basic_num = pd.Series([0.0] * len(df), index=df.index)
 
-# Pending order value = Net Basic of positive SO Qty rows only (exclude negative stock)
-pending_order_val = net_basic_num[~neg_mask].sum()
+# Total Net Basic of ALL rows minus Net Basic of negative SO Qty rows
+total_net_basic   = net_basic_num.sum()
+neg_net_basic     = net_basic_num[neg_mask].sum()
+pending_order_val = total_net_basic - neg_net_basic
 
 c1, c2, c3 = st.columns(3)
 c1.metric("CREDITED STOCK (ZBF11U)", f"{credited_qty:,}",
@@ -184,17 +192,16 @@ c1.metric("CREDITED STOCK (ZBF11U)", f"{credited_qty:,}",
 c2.metric("To Be CREDITED STOCK (ZBF11T)", f"{to_be_credited:,}",
           help="Sum of SO Qty for negative stock items under warehouse ZBF11T")
 c3.metric("PENDING ORDER VALUE", f"₹{pending_order_val:,.0f}",
-          help="Total Net Basic Value for orders with positive SO Qty (negative stock rows excluded)")
+          help="Total Net Basic of all rows minus Net Basic of negative SO Qty rows")
 
-# ─── Debug expander ───────────────────────────────────────────────────────────
-with st.expander("🔍 Debug: Column detection (remove once counters verified)", expanded=False):
-    st.write(f"**SO Qty column detected:** `{_so_qty_col}`")
-    st.write(f"**Warehouse column detected:** `{_wh_col}`")
-    st.write(f"**Net Basic column detected:** `{_net_col}`")
+# ─── Debug expander (open by default to help identify column names) ───────────
+with st.expander("🔍 Debug: Column detection", expanded=True):
+    st.write(f"**SO Qty column:** `{_so_qty_col}`  |  **Warehouse column:** `{_wh_col}`  |  **Net Basic column:** `{_net_col}`")
     st.write(f"**Total rows:** {len(df)}  |  **Negative SO Qty rows:** {int(neg_mask.sum())}")
+    st.write(f"**Total Net Basic:** ₹{total_net_basic:,.0f}  |  **Neg rows Net Basic:** ₹{neg_net_basic:,.0f}  |  **Pending:** ₹{pending_order_val:,.0f}")
     if _so_qty_col and _wh_col:
-        st.write("**Sample negative SO Qty rows (up to 10):**")
-        st.dataframe(df[neg_mask][[_so_qty_col, _wh_col]].head(10))
+        cols_to_show = [c for c in [_so_qty_col, _wh_col, _net_col] if c]
+        st.dataframe(df[neg_mask][cols_to_show].head(10))
     st.write("**All column names:**", list(df.columns))
 
 # ─── Filters ──────────────────────────────────────────────────────────────────
