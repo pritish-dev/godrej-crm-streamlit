@@ -143,6 +143,27 @@ else:
 
 m4.metric("🟢 Ready Items", int(green_mask.sum()))
 
+# ─── Negative stock & pending value counters ──────────────────────────────────
+so_qty_num = pd.to_numeric(df.get("Sales Order Qty", pd.Series(dtype=float)), errors="coerce")
+wh_col     = df.get("Sales Order Warehouse", pd.Series(dtype=str)).astype(str)
+
+neg_mask      = so_qty_num < 0
+credited_count    = int((neg_mask & (wh_col == "ZBF11U")).sum())
+to_be_credited    = int((neg_mask & (wh_col == "ZBF11T")).sum())
+
+net_basic_num = pd.to_numeric(df.get("Total Net Basic", pd.Series(dtype=float)), errors="coerce").fillna(0)
+total_net_basic   = net_basic_num.sum()
+neg_net_basic     = net_basic_num[neg_mask].sum()
+pending_order_val = total_net_basic - neg_net_basic
+
+c1, c2, c3 = st.columns(3)
+c1.metric("CREDITED STOCK (ZBF11U)", f"{credited_count:,}",
+          help="Count of line items with negative SO Qty under warehouse ZBF11U")
+c2.metric("To Be CREDITED STOCK (ZBF11T)", f"{to_be_credited:,}",
+          help="Count of line items with negative SO Qty under warehouse ZBF11T")
+c3.metric("PENDING ORDER VALUE", f"₹{pending_order_val:,.0f}",
+          help="Total Net Basic Value minus Net Basic Value of negative SO Qty items")
+
 # ─── Filters ──────────────────────────────────────────────────────────────────
 st.markdown("### 🔍 Filters")
 
