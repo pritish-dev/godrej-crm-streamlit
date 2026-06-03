@@ -144,12 +144,30 @@ else:
 m4.metric("🟢 Ready Items", int(green_mask.sum()))
 
 # ─── Negative stock & pending value counters ──────────────────────────────────
-# Strip whitespace from all column names (Google Sheets can add trailing spaces)
+# Strip whitespace from all column names
 df.columns = [c.strip() for c in df.columns]
 
-_so_qty_col = next((c for c in df.columns if c.strip() in ("SO Qty", "Sales Order Qty")), None)
-_wh_col     = next((c for c in df.columns if c.strip() in ("Sales Order Warehouse", "Warehouse")), None)
-_net_col    = next((c for c in df.columns if c.strip() in ("Total Net Basic", "Net Basic Value", "Net Basic")), None)
+def _find_col(df_cols, *exact_names):
+    """Return first column matching any exact name, then fallback to partial match."""
+    exact_lower = [n.lower() for n in exact_names]
+    for c in df_cols:
+        if c.lower() in exact_lower:
+            return c
+    # Fallback: partial match (all keywords must appear in the column name)
+    for c in df_cols:
+        cl = c.lower()
+        if all(kw in cl for kw in exact_lower[0].split()):
+            return c
+    return None
+
+_so_qty_col = _find_col(df.columns, "SO Qty", "Sales Order Qty")
+_wh_col     = _find_col(df.columns, "Sales Order Warehouse", "Warehouse")
+
+# Net Basic: try exact names first, then any col with both "net" and "basic"
+_net_col = next(
+    (c for c in df.columns if c.lower() in ("total net basic", "net basic value", "net basic")),
+    next((c for c in df.columns if "net" in c.lower() and "basic" in c.lower()), None)
+)
 
 if _so_qty_col:
     so_qty_num = pd.to_numeric(df[_so_qty_col].astype(str).str.strip(), errors="coerce")
@@ -175,8 +193,10 @@ if _net_col:
 else:
     net_basic_num = pd.Series([0.0] * len(df), index=df.index)
 
-# Pending order value = Net Basic of positive SO Qty rows only (exclude negative stock)
-pending_order_val = net_basic_num[~neg_mask].sum()
+# Total Net Basic of ALL rows − Net Basic of rows with negative SO Qty
+total_net_basic   = net_basic_num.sum()
+neg_net_basic     = net_basic_num[neg_mask].sum()
+pending_order_val = total_net_basic - neg_net_basic
 
 c1, c2, c3 = st.columns(3)
 c1.metric("CREDITED STOCK (ZBF11U)", f"{credited_qty:,}",
@@ -184,18 +204,21 @@ c1.metric("CREDITED STOCK (ZBF11U)", f"{credited_qty:,}",
 c2.metric("To Be CREDITED STOCK (ZBF11T)", f"{to_be_credited:,}",
           help="Sum of SO Qty for negative stock items under warehouse ZBF11T")
 c3.metric("PENDING ORDER VALUE", f"₹{pending_order_val:,.0f}",
-          help="Total Net Basic Value for orders with positive SO Qty (negative stock rows excluded)")
+          help="Total Net Basic (all rows) minus Net Basic of negative SO Qty rows")
 
-# ─── Debug expander ───────────────────────────────────────────────────────────
-with st.expander("🔍 Debug: Column detection (remove once counters verified)", expanded=False):
-    st.write(f"**SO Qty column detected:** `{_so_qty_col}`")
-    st.write(f"**Warehouse column detected:** `{_wh_col}`")
-    st.write(f"**Net Basic column detected:** `{_net_col}`")
-    st.write(f"**Total rows:** {len(df)}  |  **Negative SO Qty rows:** {int(neg_mask.sum())}")
-    if _so_qty_col and _wh_col:
-        st.write("**Sample negative SO Qty rows (up to 10):**")
-        st.dataframe(df[neg_mask][[_so_qty_col, _wh_col]].head(10))
-    st.write("**All column names:**", list(df.columns))
+# ─── Debug expander (open — shows column names & values to verify) ────────────
+with st.expander("🔍 Debug: Counter diagnostics", expanded=True):
+    st.write(f"**SO Qty col:** `{_so_qty_col}` | **Warehouse col:** `{_wh_col}` | **Net Basic col:** `{_net_col}`")
+    st.write(f"**Total rows:** {len(df)} | **Neg SO Qty rows:** {int(neg_mask.sum())}")
+    st.write(f"**Total Net Basic (all):** ₹{total_net_basic:,.0f}")
+    st.write(f"**Net Basic of -ve SO Qty rows:** ₹{neg_net_basic:,.0f}")
+    st.write(f"**Pending Order Value:** ₹{pending_order_val:,.0f}")
+    if neg_mask.any() and _so_qty_col:
+        cols_to_show = [c for c in [_so_qty_col, _wh_col, _net_col] if c]
+        st.write("**Negative SO Qty rows:**")
+        st.dataframe(df[neg_mask][cols_to_show])
+    st.write("**All column names in data:**")
+    st.write(list(df.columns))
 
 # ─── Filters ──────────────────────────────────────────────────────────────────
 st.markdown("### 🔍 Filters")
