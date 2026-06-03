@@ -193,10 +193,9 @@ if _net_col:
 else:
     net_basic_num = pd.Series([0.0] * len(df), index=df.index)
 
-# Total Net Basic of ALL rows − Net Basic of rows with negative SO Qty
-total_net_basic   = net_basic_num.sum()
-neg_net_basic     = net_basic_num[neg_mask].sum()
-pending_order_val = total_net_basic - neg_net_basic
+# Sum of ALL Net Basic values — negative SO Qty rows already carry negative Net Basic,
+# so they deduct automatically from the total (e.g. 1000+2000-1800+5000 = 6200)
+pending_order_val = net_basic_num.sum()
 
 c1, c2, c3 = st.columns(3)
 c1.metric("CREDITED STOCK (ZBF11U)", f"{credited_qty:,}",
@@ -210,9 +209,7 @@ c3.metric("PENDING ORDER VALUE", f"₹{pending_order_val:,.0f}",
 with st.expander("🔍 Debug: Counter diagnostics", expanded=True):
     st.write(f"**SO Qty col:** `{_so_qty_col}` | **Warehouse col:** `{_wh_col}` | **Net Basic col:** `{_net_col}`")
     st.write(f"**Total rows:** {len(df)} | **Neg SO Qty rows:** {int(neg_mask.sum())}")
-    st.write(f"**Total Net Basic (all):** ₹{total_net_basic:,.0f}")
-    st.write(f"**Net Basic of -ve SO Qty rows:** ₹{neg_net_basic:,.0f}")
-    st.write(f"**Pending Order Value:** ₹{pending_order_val:,.0f}")
+    st.write(f"**Pending Order Value (sum of all Net Basic incl. -ve):** ₹{pending_order_val:,.0f}")
     if neg_mask.any() and _so_qty_col:
         cols_to_show = [c for c in [_so_qty_col, _wh_col, _net_col] if c]
         st.write("**Negative SO Qty rows:**")
