@@ -168,37 +168,29 @@ def sync_contacts_to_4s_sheet() -> dict:
         except Exception:
             continue
 
-    # ── Append new contacts to Google Sheet ───────────────────────────────────
+    # ── Append new contacts to Google Sheet (single batched write) ───────────
+    # Using append_rows() instead of looping append_row() keeps the entire
+    # operation as ONE write request, avoiding the 429 quota error.
+    sh = _get_spreadsheet()
+    try:
+        ws = sh.worksheet(CONTACTS_SHEET)
+    except Exception:
+        ws = sh.add_worksheet(
+            title=CONTACTS_SHEET,
+            rows=str(max(len(new_rows) + 200, 1000)),
+            cols=str(len(CONTACTS_HEADERS)),
+        )
+
+    # Add headers if the sheet is empty
+    existing_vals = ws.get_all_values()
+    if not existing_vals:
+        ws.append_row(CONTACTS_HEADERS)
+
     added = 0
     if new_rows:
-        sh = _get_spreadsheet()
-        try:
-            ws = sh.worksheet(CONTACTS_SHEET)
-        except Exception:
-            ws = sh.add_worksheet(
-                title=CONTACTS_SHEET,
-                rows=str(max(len(new_rows) + 200, 1000)),
-                cols=str(len(CONTACTS_HEADERS)),
-            )
-            ws.append_row(CONTACTS_HEADERS)
-
-        # If the sheet is empty (e.g. just created), add headers first
-        if not ws.get_all_values():
-            ws.append_row(CONTACTS_HEADERS)
-
-        for row in new_rows:
-            ws.append_row(row)
-            added += 1
-    else:
-        # Ensure the destination sheet exists even if nothing new was added
-        sh = _get_spreadsheet()
-        try:
-            sh.worksheet(CONTACTS_SHEET)
-        except Exception:
-            ws = sh.add_worksheet(
-                title=CONTACTS_SHEET, rows="1000", cols=str(len(CONTACTS_HEADERS))
-            )
-            ws.append_row(CONTACTS_HEADERS)
+        # Single API call for all rows — well within quota limits
+        ws.append_rows(new_rows, value_input_option="USER_ENTERED")
+        added = len(new_rows)
 
     skipped = len(seen_in_batch) - added
 
