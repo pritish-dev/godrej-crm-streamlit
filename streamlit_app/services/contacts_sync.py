@@ -168,37 +168,27 @@ def sync_contacts_to_4s_sheet() -> dict:
         except Exception:
             continue
 
-    # ── Append new contacts to Google Sheet ───────────────────────────────────
+    # ── Append new contacts to Google Sheet (single batched write) ───────────
+    # append_rows() sends all rows in ONE API request, avoiding the 429 quota
+    # error that occurs when looping append_row() once per contact.
+    sh = _get_spreadsheet()
+    try:
+        ws = sh.worksheet(CONTACTS_SHEET)
+    except Exception:
+        ws = sh.add_worksheet(
+            title=CONTACTS_SHEET,
+            rows=str(max(len(new_rows) + 200, 1000)),
+            cols=str(len(CONTACTS_HEADERS)),
+        )
+
+    # Add headers if the sheet is empty
+    if not ws.get_all_values():
+        ws.append_row(CONTACTS_HEADERS)
+
     added = 0
     if new_rows:
-        sh = _get_spreadsheet()
-        try:
-            ws = sh.worksheet(CONTACTS_SHEET)
-        except Exception:
-            ws = sh.add_worksheet(
-                title=CONTACTS_SHEET,
-                rows=str(max(len(new_rows) + 200, 1000)),
-                cols=str(len(CONTACTS_HEADERS)),
-            )
-            ws.append_row(CONTACTS_HEADERS)
-
-        # If the sheet is empty (e.g. just created), add headers first
-        if not ws.get_all_values():
-            ws.append_row(CONTACTS_HEADERS)
-
-        for row in new_rows:
-            ws.append_row(row)
-            added += 1
-    else:
-        # Ensure the destination sheet exists even if nothing new was added
-        sh = _get_spreadsheet()
-        try:
-            sh.worksheet(CONTACTS_SHEET)
-        except Exception:
-            ws = sh.add_worksheet(
-                title=CONTACTS_SHEET, rows="1000", cols=str(len(CONTACTS_HEADERS))
-            )
-            ws.append_row(CONTACTS_HEADERS)
+        ws.append_rows(new_rows, value_input_option="USER_ENTERED")
+        added = len(new_rows)
 
     skipped = len(seen_in_batch) - added
 
