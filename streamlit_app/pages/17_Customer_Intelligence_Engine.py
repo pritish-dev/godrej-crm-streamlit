@@ -798,6 +798,70 @@ if st.button("📤 Generate Customer List", type="primary"):
         except Exception as exc:
             st.error(f"❌ Could not generate the sheet: {exc}")
 
+st.divider()
+
+# ── Sync Contacts to '4sContacts' Sheet ──────────────────────────────────────
+st.subheader("📱 Sync Franchise & 4S Contacts")
+st.caption(
+    "Scans **all franchise and 4S sheets** across all financial years (current + historical), "
+    "extracts every valid 10-digit Indian mobile number (including multiple numbers per cell "
+    "separated by `/` or `,`), and appends only **new unique contacts** to the "
+    "**\"4sContacts\"** sheet in the CRM workbook. "
+    "Already-synced numbers are never duplicated — each run adds only what's new."
+)
+
+try:
+    from services.contacts_sync import sync_contacts_to_4s_sheet, CONTACTS_SHEET as _CS
+
+    # Show last sync time if sheet already has data
+    try:
+        from services.sheets import get_df as _gdf
+        _meta_df = _gdf(_CS)
+        if _meta_df is not None and not _meta_df.empty:
+            _meta_df.columns = [c.strip().upper() for c in _meta_df.columns]
+            _total = len(_meta_df)
+            _last_ts = ""
+            if "DATE SYNCED" in _meta_df.columns:
+                _non_blank = (
+                    _meta_df["DATE SYNCED"].dropna().astype(str)
+                    .pipe(lambda s: s[s.str.strip() != ""])
+                )
+                if not _non_blank.empty:
+                    _last_ts = _non_blank.iloc[-1]
+            if _last_ts:
+                st.info(
+                    f"📋 **{_total}** contacts currently in '4sContacts' sheet.  "
+                    f"Last synced: **{_last_ts}**"
+                )
+            else:
+                st.info(f"📋 **{_total}** contacts currently in '4sContacts' sheet.")
+    except Exception:
+        pass
+
+    if st.button("📲 Sync Contacts to '4sContacts'", type="primary", key="sync_4s_contacts_btn"):
+        with st.spinner("Scanning all franchise & 4S sheets for contact numbers…"):
+            try:
+                result = sync_contacts_to_4s_sheet()
+                if result["added"] > 0:
+                    st.success(
+                        f"✅ Sync complete — **{result['added']} new contact(s) added** to "
+                        f"'4sContacts'.  "
+                        f"Skipped {result['skipped']} duplicate(s).  "
+                        f"Sheets scanned: {result['sheets_processed']}.  "
+                        f"Synced at: {result['current_sync']}"
+                    )
+                else:
+                    st.info(
+                        f"✔ No new contacts found — all {result['skipped']} valid numbers "
+                        f"already exist in '4sContacts'.  "
+                        f"Sheets scanned: {result['sheets_processed']}.  "
+                        f"Synced at: {result['current_sync']}"
+                    )
+            except Exception as exc:
+                st.error(f"❌ Sync failed: {exc}")
+except ImportError as ie:
+    st.error(f"contacts_sync module not found: {ie}")
+
 # ── Footnote ──────────────────────────────────────────────────────────────────
 st.markdown(
     """
