@@ -1149,63 +1149,6 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
         # ── Target vs Achievement Table ───────────────────────────────────────
         st.subheader("📊 Target vs Achievement (BILL SALES without GST)")
 
-        # Refresh button — re-reads Drive invoices and re-writes the sheet
-        if _DRIVE_ACHIEVEMENT_AVAILABLE:
-            _ref_col, _info_col = st.columns([1, 3])
-            with _ref_col:
-                _refresh_clicked = st.button(
-                    "🔄 Refresh Achievement from Drive",
-                    type="secondary",
-                    use_container_width=True,
-                    key="refresh_drive_achievement",
-                    help=(
-                        "Re-reads all invoice PDFs from the '4s Delivery Invoices' "
-                        "Google Drive folder for the selected months, extracts the "
-                        "Godrej SO No and pre-GST amount, maps to salesperson via "
-                        "the CRM sheet, and updates 'Monthly Sales value without GST'."
-                    ),
-                )
-            with _info_col:
-                st.caption(
-                    "Achievement = total invoice value **without GST** from Drive PDFs.  "
-                    "Data is cached in *Monthly Sales value without GST* sheet — "
-                    "click Refresh to re-scan Drive for the latest invoices."
-                )
-
-            if _refresh_clicked:
-                _today_r = datetime.now().date()
-                _ref_month_list: list[tuple[int, int]] = []
-                _rm = _today_r.replace(day=1)
-                while _rm <= _today_r:
-                    _ref_month_list.append((_rm.month, _rm.year))
-                    _nm2 = _rm.month + 1
-                    _ny2 = _rm.year
-                    if _nm2 > 12:
-                        _nm2 = 1; _ny2 += 1
-                    _rm = date(_ny2, _nm2, 1)
-
-                with st.spinner("Scanning Drive invoices and updating achievement sheet…"):
-                    _refresh_results = {}
-                    for _rm2, _ry2 in _ref_month_list:
-                        try:
-                            _agg = _compute_drive_achievement_for_month(_rm2, _ry2, write_to_sheet=True)
-                            _refresh_results[f"{_DRIVE_MONTH_NAMES.get(_rm2, str(_rm2))} {_ry2}"] = _agg
-                        except Exception as _re:
-                            _refresh_results[f"{_DRIVE_MONTH_NAMES.get(_rm2, str(_rm2))} {_ry2}"] = {"error": str(_re)}
-
-                st.success("✅ Achievement refreshed from Drive invoices.")
-                for _mkey, _mdata in _refresh_results.items():
-                    if "error" in _mdata:
-                        st.warning(f"⚠️ {_mkey}: {_mdata['error']}")
-                    elif _mdata:
-                        _lines = [f"**{_sp}**: ₹{_amt:,.2f}" for _sp, _amt in sorted(_mdata.items())]
-                        st.write(f"**{_mkey}** — " + "  ·  ".join(_lines))
-                    else:
-                        st.info(f"ℹ️ {_mkey}: No invoices found in Drive.")
-
-                st.cache_data.clear()
-                st.rerun()
-
         _today = datetime.now().date()
         tfc1, tfc2 = st.columns(2)
         with tfc1:
@@ -1234,6 +1177,52 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                 _nm = 1
                 _ny += 1
             _cur = date(_ny, _nm, 1)
+
+        # Refresh button — re-reads Drive invoices and re-writes the sheet
+        if _DRIVE_ACHIEVEMENT_AVAILABLE:
+            _ref_col, _info_col = st.columns([1, 3])
+            with _ref_col:
+                _refresh_clicked = st.button(
+                    "🔄 Refresh Achievement from Drive",
+                    type="secondary",
+                    use_container_width=True,
+                    key="refresh_drive_achievement",
+                    help=(
+                        "Re-reads all invoice PDFs from the '4s Delivery Invoices' "
+                        "Google Drive folder for the selected months, extracts the "
+                        "Godrej SO No and pre-GST amount, maps to salesperson via "
+                        "the CRM sheet, and updates 'Monthly Sales value without GST'."
+                    ),
+                )
+            with _info_col:
+                st.caption(
+                    "Achievement = total invoice value **without GST** from Drive PDFs.  "
+                    "Data is cached in *Monthly Sales value without GST* sheet — "
+                    "click Refresh to re-scan Drive for the latest invoices."
+                )
+
+            if _refresh_clicked:
+                with st.spinner("Scanning Drive invoices and updating achievement sheet…"):
+                    _refresh_results = {}
+                    for _rm2, _ry2 in month_list:
+                        try:
+                            _agg = _compute_drive_achievement_for_month(_rm2, _ry2, write_to_sheet=True)
+                            _refresh_results[f"{_DRIVE_MONTH_NAMES.get(_rm2, str(_rm2))} {_ry2}"] = _agg
+                        except Exception as _re:
+                            _refresh_results[f"{_DRIVE_MONTH_NAMES.get(_rm2, str(_rm2))} {_ry2}"] = {"error": str(_re)}
+
+                st.success("✅ Achievement refreshed from Drive invoices.")
+                for _mkey, _mdata in _refresh_results.items():
+                    if "error" in _mdata:
+                        st.warning(f"⚠️ {_mkey}: {_mdata['error']}")
+                    elif _mdata:
+                        _lines = [f"**{_sp}**: ₹{_amt:,.2f}" for _sp, _amt in sorted(_mdata.items())]
+                        st.write(f"**{_mkey}** — " + "  ·  ".join(_lines))
+                    else:
+                        st.info(f"ℹ️ {_mkey}: No invoices found in Drive.")
+
+                st.cache_data.clear()
+                st.rerun()
 
         # Salespeople come from the Incentive_Quarterly_Targets sheet.
         _all_sp = sorted(set(s.strip().upper() for s in sales_people))
