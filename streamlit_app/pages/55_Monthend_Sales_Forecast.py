@@ -32,6 +32,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
 from services.sheets import get_df, write_df
+from utils.helpers import to_indian_number_string
 from services.mis_email_import import load_cached_mis
 from services.invoice_email_import import (
     fetch_and_save_invoices_range,
@@ -589,7 +590,7 @@ def merge_state(fresh: pd.DataFrame, saved: pd.DataFrame) -> pd.DataFrame:
 def _fmt_num(v) -> str:
     try:
         f = float(str(v).replace(",", "").strip())
-        return f"{f:,.0f}"
+        return to_indian_number_string(f, 0)
     except Exception:
         return str(v) if str(v) not in ("nan", "None", "") else ""
 
@@ -871,22 +872,22 @@ with kpi_placeholder.container():
     k1, k2, k3, k4 = st.columns(4)
     k1.metric(
         "🎯 Monthly Sales Target",
-        f"₹{_monthly_target:,.0f}",
+        f"₹{to_indian_number_string(_monthly_target, 0)}",
         help=f"Sum of all sales person targets for {month_name} from Incentive_Quarterly_Targets (values in lakh, converted to ₹).",
     )
     k2.metric(
         "✅ Current Sales Achievement",
-        f"₹{_current_achieve:,.0f}",
+        f"₹{to_indian_number_string(_current_achieve, 0)}",
         help=f"Total Month Sales (without Tax) for {month_name} — WFX invoices only.",
     )
     k3.metric(
         "📈 Sales Forecast",
-        f"₹{total_net_basic_green:,.0f}",
+        f"₹{to_indian_number_string(total_net_basic_green, 0)}",
         help=f"Monthend Forecast Sale Value ({month_name}) — sum of Total Net Basic for all committed (green) items.",
     )
     k4.metric(
         "⏳ Pending Sales Target",
-        f"₹{_pending_target:,.0f}",
+        f"₹{to_indian_number_string(_pending_target, 0)}",
         help="Monthly Sales Target − (Current Sales Achievement + Sales Forecast).",
     )
 
@@ -895,11 +896,11 @@ st.markdown("---")
 
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Forecast Window", f"{win_start.strftime('%d %b')} – {win_end.strftime('%d %b')}")
-m2.metric("Total Line Items", f"{len(visible_df):,}")
-m3.metric("🟢 Committed Items", f"{int(green_mask.sum()):,}")
+m2.metric("Total Line Items", f"{to_indian_number_string(len(visible_df), 0)}")
+m3.metric("🟢 Committed Items", f"{to_indian_number_string(int(green_mask.sum()), 0)}")
 m4.metric(
     "💰 Forecast Sale Value",
-    f"₹{total_net_basic_green:,.0f}",
+    f"₹{to_indian_number_string(total_net_basic_green, 0)}",
     help="Sum of Total Net Basic for all committed (green) line items.",
 )
 
@@ -945,7 +946,7 @@ for so_no, so_grp in df.groupby("SO_NO", sort=False):
         badge = f"  🚫 {n_denied}/{n_items} item(s) denied"
     header = (
         f"SO {so_no}  ·  {cust or '—'}  ·  {sales_exec or '—'}  ·  "
-        f"{del_label or 'No Date'}  ·  ₹{order_val:,.0f}"
+        f"{del_label or 'No Date'}  ·  ₹{to_indian_number_string(order_val, 0)}"
         + ("  🟢 committed" if is_green else "")
         + badge
     )
@@ -1158,7 +1159,7 @@ st.markdown(
                 padding:18px;margin-top:10px;">
         <h3 style="margin:0;color:#1e8449;">
             💰 Monthend Forecast Sale Value ({month_name}):
-            &nbsp;₹{total_net_basic_green:,.0f}
+            &nbsp;₹{to_indian_number_string(total_net_basic_green, 0)}
         </h3>
         <p style="margin:6px 0 0;color:#555;font-size:13px;">
             Sum of <b>Total Net Basic</b> for all <b>committed (green)</b> line items
@@ -1479,7 +1480,7 @@ else:
                         padding:14px;margin-top:12px;">
                 <h4 style="margin:0;color:#1a5276;">
                     🧾 Total Month Sales (without Tax) — {inv_selected_month}:
-                    &nbsp;₹{_total_inv:,.2f}
+                    &nbsp;₹{to_indian_number_string(_total_inv, 2)}
                 </h4>
                 <p style="margin:6px 0 0;color:#555;font-size:12px;">
                     Sum of <b>Taxable Value (without GST)</b> for all

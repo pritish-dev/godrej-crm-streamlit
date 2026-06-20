@@ -9,6 +9,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
 from services.sheets import get_df, write_df
+from utils.helpers import to_indian_number_string
 
 
 # ─── Number formatting helpers ────────────────────────────────────────────────
@@ -23,8 +24,8 @@ def _fmt_num(val):
     if pd.isna(f):
         return ""
     if float(f).is_integer():
-        return f"{int(round(f)):,}"
-    s = f"{f:,.2f}"
+        return to_indian_number_string(f, 0)
+    s = to_indian_number_string(f, 2)
     if "." in s:
         s = s.rstrip("0").rstrip(".")
     return s

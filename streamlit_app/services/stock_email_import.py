@@ -16,6 +16,8 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 
+from utils.helpers import to_indian_number_string
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
@@ -132,7 +134,7 @@ def fetch_stock_data(days_back: int = 3, today_only: bool = False) -> tuple[pd.D
     df.dropna(how="all", inplace=True)
     df.reset_index(drop=True, inplace=True)
 
-    return df, f"✅ Stock data loaded — {len(df):,} rows | Email date: {email_date}"
+    return df, f"✅ Stock data loaded — {to_indian_number_string(len(df), 0)} rows | Email date: {email_date}"
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -150,7 +152,7 @@ def save_stock_to_sheet(df: pd.DataFrame) -> str:
     try:
         from services.sheets import write_df
         write_df(STOCK_CACHE_SHEET, out.fillna("").astype(str))
-        return f"✅ Cached {len(out):,} stock rows to '{STOCK_CACHE_SHEET}'."
+        return f"✅ Cached {to_indian_number_string(len(out), 0)} stock rows to '{STOCK_CACHE_SHEET}'."
     except Exception as exc:
         return f"❌ Failed to cache stock to sheet: {exc}"
 
@@ -179,7 +181,7 @@ def load_cached_stock() -> tuple[pd.DataFrame, str]:
 
     df = df.replace("", pd.NA).dropna(how="all").reset_index(drop=True)
 
-    msg = f"✅ Loaded {len(df):,} stock rows from cache."
+    msg = f"✅ Loaded {to_indian_number_string(len(df), 0)} stock rows from cache."
     if fetched_on:
         msg += f"  ·  Fetched on: **{fetched_on}**"
     return df, msg

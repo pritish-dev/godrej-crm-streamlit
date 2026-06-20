@@ -36,6 +36,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
 from services.sheets import get_df
+from utils.helpers import to_indian_number_string
 from services.auth import AuthService, current_user_badge
 from services.incentive_store import (
     append_log,
@@ -636,8 +637,8 @@ def _fmt_int_or_2dp(v) -> str:
     if pd.isna(f):
         return ""
     if float(f).is_integer():
-        return f"{int(round(f)):,}"
-    s = f"{f:,.2f}"
+        return to_indian_number_string(f, 0)
+    s = to_indian_number_string(f, 2)
     if "." in s:
         s = s.rstrip("0").rstrip(".")
     return s

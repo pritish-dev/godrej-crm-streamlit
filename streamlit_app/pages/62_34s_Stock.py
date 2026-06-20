@@ -30,6 +30,8 @@ sys.path.insert(0, BASE_DIR)
 
 import streamlit as st
 import pandas as pd
+
+from utils.helpers import to_indian_number_string
 from datetime import datetime, timezone, timedelta, date
 
 from services.stock_34s_service import (
@@ -323,13 +325,13 @@ if not df_display.empty:
         in_s  = pd.to_numeric(df_display.get("In Ward",   pd.Series(dtype=float)), errors="coerce")
         out_s = pd.to_numeric(df_display.get("Out Ward",  pd.Series(dtype=float)), errors="coerce")
 
-        m1.metric("Total SKUs",       f"{len(df_display):,}")
-        m2.metric("Total Cl Stock",   f"{int(cl_s.fillna(0).sum()):,}")
-        m3.metric("In Ward Today",    f"{int(in_s.fillna(0).sum()):,}")
-        m4.metric("Out Ward Today",   f"{int(out_s.fillna(0).sum()):,}")
-        m5.metric("Zero Stock Items", f"{int((cl_s.fillna(0) == 0).sum()):,}")
+        m1.metric("Total SKUs",       to_indian_number_string(len(df_display), 0))
+        m2.metric("Total Cl Stock",   to_indian_number_string(int(cl_s.fillna(0).sum()), 0))
+        m3.metric("In Ward Today",    to_indian_number_string(int(in_s.fillna(0).sum()), 0))
+        m4.metric("Out Ward Today",   to_indian_number_string(int(out_s.fillna(0).sum()), 0))
+        m5.metric("Zero Stock Items", to_indian_number_string(int((cl_s.fillna(0) == 0).sum()), 0))
     except Exception:
-        m1.metric("Total SKUs", f"{len(df_display):,}")
+        m1.metric("Total SKUs", to_indian_number_string(len(df_display), 0))
 
 # ─── Category filter (sidebar) ────────────────────────────────────────────────
 if not df_display.empty:
@@ -354,7 +356,7 @@ if not df_display.empty:
 
     # ─── Data table ───────────────────────────────────────────────────────────
     st.markdown(
-        f"### 📋 Stock — {sel_date.strftime('%d %b %Y')}  ·  {len(filtered):,} items"
+        f"### 📋 Stock — {sel_date.strftime('%d %b %Y')}  ·  {to_indian_number_string(len(filtered), 0)} items"
     )
     st.caption("🔴 Red rows = zero closing stock")
 

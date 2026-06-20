@@ -14,6 +14,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
 from services.sheets import get_df
+from utils.helpers import to_indian_number_string
 from services.automation4s import get_alerts, generate_whatsapp_group_link, generate_whatsapp_web_link
 from services.email_sender_4s import (
     send_combined_delivery_alert_email_4s,
@@ -145,9 +146,9 @@ def fmt_number(val):
         return ""
     # If value is a whole number, render as integer (no decimals)
     if float(f).is_integer():
-        return f"{int(round(f)):,}"
+        return to_indian_number_string(f, 0)
     # Else: 2-dp with trailing zeros stripped (e.g. 12.50 → 12.5)
-    s = f"{f:,.2f}"
+    s = to_indian_number_string(f, 2)
     if "." in s:
         s = s.rstrip("0").rstrip(".")
     return s
@@ -194,7 +195,7 @@ def _fmt_qty_int(v) -> str:
         return str(v)
     if pd.isna(f):
         return ""
-    return f"{int(round(f)):,}"
+    return to_indian_number_string(f, 0)
 
 
 def apply_qty_fmt(df, col="QTY"):

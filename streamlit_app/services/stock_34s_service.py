@@ -45,6 +45,8 @@ import pandas as pd
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
+from utils.helpers import to_indian_number_string
+
 # ─── Constants ────────────────────────────────────────────────────────────────
 
 IST             = timezone(timedelta(hours=5, minutes=30))
@@ -1180,13 +1182,13 @@ def send_daily_stock_email(target_date: date) -> dict:
         in_total  = int(pd.to_numeric(flat.get("In Ward",   pd.Series()), errors="coerce").fillna(0).sum())
         out_total = int(pd.to_numeric(flat.get("Out Ward",  pd.Series()), errors="coerce").fillna(0).sum())
         summary_line = (
-            f"Total items: <b>{len(flat):,}</b> &nbsp;|&nbsp; "
-            f"Cl Stock: <b>{cl_total:,}</b> &nbsp;|&nbsp; "
-            f"In Ward: <b>{in_total:,}</b> &nbsp;|&nbsp; "
-            f"Out Ward: <b>{out_total:,}</b>"
+            f"Total items: <b>{to_indian_number_string(len(flat), 0)}</b> &nbsp;|&nbsp; "
+            f"Cl Stock: <b>{to_indian_number_string(cl_total, 0)}</b> &nbsp;|&nbsp; "
+            f"In Ward: <b>{to_indian_number_string(in_total, 0)}</b> &nbsp;|&nbsp; "
+            f"Out Ward: <b>{to_indian_number_string(out_total, 0)}</b>"
         )
     except Exception:
-        summary_line = f"Total items: <b>{len(flat):,}</b>"
+        summary_line = f"Total items: <b>{to_indian_number_string(len(flat), 0)}</b>"
 
     html_body = (
         f"<html><body style='font-family:Arial,sans-serif;color:#222'>"

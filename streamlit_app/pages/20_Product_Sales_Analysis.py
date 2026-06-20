@@ -32,6 +32,7 @@ import pandas as pd
 import streamlit as st
 
 from services.sheets import get_df
+from utils.helpers import to_indian_number_string
 
 st.set_page_config(page_title="Product Sales Analysis", layout="wide")
 st.title("📦 Product Sales Performance")
@@ -361,8 +362,8 @@ def _fmt_num(v) -> str:
     if pd.isna(f):
         return ""
     if float(f).is_integer():
-        return f"{int(round(f)):,}"
-    s = f"{f:,.2f}"
+        return to_indian_number_string(f, 0)
+    s = to_indian_number_string(f, 2)
     if "." in s:
         s = s.rstrip("0").rstrip(".")
     return s
