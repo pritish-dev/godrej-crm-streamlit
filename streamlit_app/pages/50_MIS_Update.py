@@ -18,6 +18,7 @@ sys.path.insert(0, BASE_DIR)
 
 import streamlit as st
 import pandas as pd
+from utils.helpers import to_indian_number_string
 from services.mis_email_import import (
     MIS_SUBJECT,
     MIS_CACHE_SHEET,
@@ -135,7 +136,7 @@ m2.metric("Total Line Items", len(df))
 if "Sales Order Qty" in df.columns:
     try:
         total_qty = pd.to_numeric(df["Sales Order Qty"], errors="coerce").sum()
-        m3.metric("Total Order Qty", f"{int(total_qty):,}")
+        m3.metric("Total Order Qty", to_indian_number_string(total_qty, 0))
     except Exception:
         m3.metric("Total Order Qty", "—")
 else:
@@ -198,18 +199,18 @@ else:
 pending_order_val = net_basic_num.sum()
 
 c1, c2, c3 = st.columns(3)
-c1.metric("CREDITED STOCK (ZBF11U)", f"{credited_qty:,}",
+c1.metric("CREDITED STOCK (ZBF11U)", to_indian_number_string(credited_qty, 0),
           help="Sum of SO Qty for negative stock items under warehouse ZBF11U")
-c2.metric("To Be CREDITED STOCK (ZBF11T)", f"{to_be_credited:,}",
+c2.metric("To Be CREDITED STOCK (ZBF11T)", to_indian_number_string(to_be_credited, 0),
           help="Sum of SO Qty for negative stock items under warehouse ZBF11T")
-c3.metric("PENDING ORDER VALUE", f"₹{pending_order_val:,.0f}",
+c3.metric("PENDING ORDER VALUE", f"₹{to_indian_number_string(pending_order_val, 0)}",
           help="Total Net Basic (all rows) minus Net Basic of negative SO Qty rows")
 
 # ─── Debug expander (open — shows column names & values to verify) ────────────
 with st.expander("🔍 Debug: Counter diagnostics", expanded=True):
     st.write(f"**SO Qty col:** `{_so_qty_col}` | **Warehouse col:** `{_wh_col}` | **Net Basic col:** `{_net_col}`")
     st.write(f"**Total rows:** {len(df)} | **Neg SO Qty rows:** {int(neg_mask.sum())}")
-    st.write(f"**Pending Order Value (sum of all Net Basic incl. -ve):** ₹{pending_order_val:,.0f}")
+    st.write(f"**Pending Order Value (sum of all Net Basic incl. -ve):** ₹{to_indian_number_string(pending_order_val, 0)}")
     if neg_mask.any() and _so_qty_col:
         cols_to_show = [c for c in [_so_qty_col, _wh_col, _net_col] if c]
         st.write("**Negative SO Qty rows:**")
@@ -266,7 +267,7 @@ if selected_wh != "All" and "Sales Order Warehouse" in filtered.columns:
     filtered_msk = filtered_msk.loc[filtered.index] if not filtered_msk.empty else filtered_msk
 
 # ─── Data table ───────────────────────────────────────────────────────────────
-st.markdown(f"### 📋 PO Data — {len(filtered):,} rows  ·  🟢 Green = Ready for Delivery")
+st.markdown(f"### 📋 PO Data — {to_indian_number_string(len(filtered), 0)} rows  ·  🟢 Green = Ready for Delivery")
 
 # Only show the 16 configured display columns (all columns are saved to the sheet)
 show_cols   = [c for c in DISPLAY_COLUMNS if c in filtered.columns]

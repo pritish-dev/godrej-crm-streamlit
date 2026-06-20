@@ -14,6 +14,7 @@ sys.path.insert(0, BASE_DIR)
 
 import streamlit as st
 import pandas as pd
+from utils.helpers import to_indian_number_string
 from services.stock_email_import import (
     MIS_SUBJECT,
     STOCK_CACHE_SHEET,
@@ -100,7 +101,7 @@ st.markdown("---")
 cols = df.columns.tolist()
 
 m1, m2, m3, m4 = st.columns(4)
-m1.metric("Total SKUs", f"{len(df):,}")
+m1.metric("Total SKUs", to_indian_number_string(len(df), 0))
 
 qty_col = next(
     (c for c in cols if any(kw in c.lower() for kw in ("qty", "quantity", "stock", "available"))),
@@ -109,7 +110,7 @@ qty_col = next(
 if qty_col:
     try:
         qty_series = pd.to_numeric(df[qty_col], errors="coerce")
-        m2.metric("Total Stock Qty", f"{int(qty_series.sum()):,}")
+        m2.metric("Total Stock Qty", to_indian_number_string(int(qty_series.sum()), 0))
         zero_count = int((qty_series.fillna(0) == 0).sum())
         m4.metric("Zero Stock Items", zero_count)
     except Exception:
@@ -156,7 +157,7 @@ if selected_cat != "All" and cat_col:
     filtered = filtered[filtered[cat_col] == selected_cat]
 
 # ─── Table — red highlight for zero-stock rows ────────────────────────────────
-st.markdown(f"### 📋 Stock Data — {len(filtered):,} rows  ·  🔴 Red = Zero Stock")
+st.markdown(f"### 📋 Stock Data — {to_indian_number_string(len(filtered), 0)} rows  ·  🔴 Red = Zero Stock")
 
 display_df = filtered.reset_index(drop=True)
 

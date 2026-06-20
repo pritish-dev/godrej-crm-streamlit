@@ -20,6 +20,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
 from services.sheets import get_df
+from utils.helpers import to_indian_number_string
 try:
     from services.incentive_store import (
         get_targets_df as _get_iq_targets_df,
@@ -447,8 +448,8 @@ if not df_display.empty and all_execs:
         if pd.isna(f):
             return ""
         if float(f).is_integer():
-            return f"{int(round(f)):,}"
-        s = f"{f:,.2f}"
+            return to_indian_number_string(f, 0)
+        s = to_indian_number_string(f, 2)
         if "." in s:
             s = s.rstrip("0").rstrip(".")
         return s
@@ -500,8 +501,8 @@ if not df_display.empty and all_execs:
         if pd.isna(f):
             return ""
         if float(f).is_integer():
-            return f"{int(round(f)):,}"
-        s = f"{f:,.2f}"
+            return to_indian_number_string(f, 0)
+        s = to_indian_number_string(f, 2)
         if "." in s:
             s = s.rstrip("0").rstrip(".")
         return s
@@ -1216,7 +1217,7 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                     if "error" in _mdata:
                         st.warning(f"⚠️ {_mkey}: {_mdata['error']}")
                     elif _mdata:
-                        _lines = [f"**{_sp}**: ₹{_amt:,.2f}" for _sp, _amt in sorted(_mdata.items())]
+                        _lines = [f"**{_sp}**: ₹{to_indian_number_string(_amt, 2)}" for _sp, _amt in sorted(_mdata.items())]
                         st.write(f"**{_mkey}** — " + "  ·  ".join(_lines))
                     else:
                         st.info(f"ℹ️ {_mkey}: No invoices found in Drive.")
@@ -1322,8 +1323,8 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                 if pd.isna(f):
                     return ""
                 if float(f).is_integer():
-                    return f"₹{int(round(f)):,}"
-                s = f"{f:,.2f}"
+                    return f"₹{to_indian_number_string(f, 0)}"
+                s = to_indian_number_string(f, 2)
                 if "." in s:
                     s = s.rstrip("0").rstrip(".")
                 return f"₹{s}"

@@ -15,6 +15,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
 from services.sheets import get_df
+from utils.helpers import to_indian_number_string
 from services.automation import get_alerts, generate_whatsapp_group_link, generate_whatsapp_web_link
 from services.email_sender import (
     send_pending_delivery_email,
@@ -157,8 +158,8 @@ crm["PENDING AMOUNT"] = (crm["ORDER AMOUNT"] - crm["ADV RECEIVED"]).clip(lower=0
 # ── KPIs ──────────────────────────────────────────────────────────────────────
 k1, k2, k3 = st.columns(3)
 k1.metric("📦 Total Orders",    len(crm))
-k2.metric("💰 Total Sales",     f"₹{crm['ORDER AMOUNT'].sum():,.0f}")
-k3.metric("🧾 Pending Amount",  f"₹{crm['PENDING AMOUNT'].sum():,.0f}")
+k2.metric("💰 Total Sales",     f"₹{to_indian_number_string(crm['ORDER AMOUNT'].sum(), 0)}")
+k3.metric("🧾 Pending Amount",  f"₹{to_indian_number_string(crm['PENDING AMOUNT'].sum(), 0)}")
 
 st.divider()
 
@@ -274,7 +275,7 @@ pay_due = crm[crm["PENDING AMOUNT"] > 0].copy().sort_values(
 ).reset_index(drop=True)
 
 if not pay_due.empty:
-    st.warning(f"Total Outstanding: ₹{pay_due['PENDING AMOUNT'].sum():,.2f}")
+    st.warning(f"Total Outstanding: ₹{to_indian_number_string(pay_due['PENDING AMOUNT'].sum(), 2)}")
 
     pay_col_list = [c for c in sale_cols + ["PENDING AMOUNT"] if c in pay_due.columns]
     pay_disp     = pay_due[pay_col_list].copy()

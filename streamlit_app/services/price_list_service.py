@@ -51,6 +51,8 @@ import json
 import re
 import pandas as pd
 
+from utils.helpers import to_indian_number_string
+
 # Sheet names
 PRICE_LIST_SHEET          = "Price_List"
 PRICE_LIST_MATTRESS_SHEET = "Price_List_Mattress"
@@ -591,9 +593,9 @@ def fetch_price_list_from_drive():
 
         parts = []
         if not f_df.empty:
-            parts.append(f"{len(f_df):,} furniture")
+            parts.append(f"{to_indian_number_string(len(f_df), 0)} furniture")
         if not m_df.empty:
-            parts.append(f"{len(m_df):,} mattress")
+            parts.append(f"{to_indian_number_string(len(m_df), 0)} mattress")
         eff_note  = f" · \U0001f4c5 {eff_date}" if eff_date else ""
         warn_note = ("  ⚠️ " + "; ".join(warnings)) if warnings else ""
         parse_log.append(
@@ -626,12 +628,12 @@ def fetch_price_list_from_drive():
 
     status_head = (
         f"✅ Price list refreshed - "
-        f"{len(furniture_merged):,} furniture + {len(mattress_merged):,} mattress rows "
+        f"{to_indian_number_string(len(furniture_merged), 0)} furniture + {to_indian_number_string(len(mattress_merged), 0)} mattress rows "
         f"from {len(pdf_files)} PDF(s)."
     )
     if write_errors:
         status_head = (
-            f"⚠️ Parsed {len(furniture_merged) + len(mattress_merged):,} rows "
+            f"⚠️ Parsed {to_indian_number_string(len(furniture_merged) + len(mattress_merged), 0)} rows "
             f"but {'; '.join(write_errors)}."
         )
 
@@ -671,7 +673,7 @@ def load_price_list_from_sheet():
         cats  = df["CATEGORY"].nunique() if "CATEGORY" in df.columns else "-"
         items = df["ITEM"].nunique()     if "ITEM"     in df.columns else "-"
         return df, (
-            f"✅ Loaded {len(df):,} furniture rows · {cats} categories · "
+            f"✅ Loaded {to_indian_number_string(len(df), 0)} furniture rows · {cats} categories · "
             f"{items} items from '{PRICE_LIST_SHEET}' sheet."
         )
     except Exception as exc:
@@ -696,7 +698,7 @@ def load_mattress_list_from_sheet():
         cats  = df["CATEGORY"].nunique() if "CATEGORY" in df.columns else "-"
         items = df["ITEM"].nunique()     if "ITEM"     in df.columns else "-"
         return df, (
-            f"✅ Loaded {len(df):,} mattress rows · {cats} categories · "
+            f"✅ Loaded {to_indian_number_string(len(df), 0)} mattress rows · {cats} categories · "
             f"{items} models from '{PRICE_LIST_MATTRESS_SHEET}' sheet."
         )
     except Exception as exc:

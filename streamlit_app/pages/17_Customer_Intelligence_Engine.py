@@ -36,7 +36,7 @@ st.set_page_config(layout="wide")
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from services.sheets import get_df, update_followup, write_rows  # noqa: E402
-from utils.helpers import standardize_columns, fix_duplicate_columns  # noqa: E402
+from utils.helpers import standardize_columns, fix_duplicate_columns, to_indian_number_string  # noqa: E402
 
 
 # =========================================================
@@ -62,7 +62,7 @@ COHORT_META = {
         "icon": "💎", "label": "High-Value",
         "color": "#7c4dff",
         "desc": (
-            f"Customers whose **total lifetime spend is ₹{HIGH_VALUE_THRESHOLD:,.0f} or more**. "
+            f"Customers whose **total lifetime spend is ₹{to_indian_number_string(HIGH_VALUE_THRESHOLD, 0)} or more**. "
             "These are your most important patrons — give them VIP attention, personalised previews "
             "of premium collections, and a dedicated relationship manager experience."
         ),
@@ -684,9 +684,9 @@ if summary.empty:
 
 # ── Data coverage info ────────────────────────────────────────────────────────
 era_counts = crm_raw.get("DATA_ERA", pd.Series(dtype=str)).value_counts().to_dict() if not crm_raw.empty else {}
-era_parts  = [f"**{era}**: {cnt:,} rows" for era, cnt in sorted(era_counts.items())]
+era_parts  = [f"**{era}**: {to_indian_number_string(cnt, 0)} rows" for era, cnt in sorted(era_counts.items())]
 if era_parts:
-    st.info(f"📊 Data loaded — {' · '.join(era_parts)} · Total customers analysed: **{len(summary):,}**")
+    st.info(f"📊 Data loaded — {' · '.join(era_parts)} · Total customers analysed: **{to_indian_number_string(len(summary), 0)}**")
 
 # ── Top KPIs ──────────────────────────────────────────────────────────────────
 total_customers = len(summary)
@@ -706,8 +706,8 @@ def _fmt_num(v) -> str:
     if pd.isna(f):
         return ""
     if float(f).is_integer():
-        return f"{int(round(f)):,}"
-    s = f"{f:,.2f}"
+        return to_indian_number_string(f, 0)
+    s = to_indian_number_string(f, 2)
     if "." in s:
         s = s.rstrip("0").rstrip(".")
     return s

@@ -13,6 +13,8 @@ Scheduled Emails:
 import smtplib
 import os
 import pandas as pd
+
+from utils.helpers import to_indian_number_string
 from datetime import datetime, timedelta, date
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -144,8 +146,8 @@ def _fmt_number(val):
     if pd.isna(f):
         return ""
     if float(f).is_integer():
-        return f"{int(round(f)):,}"
-    s = f"{f:,.2f}"
+        return to_indian_number_string(f, 0)
+    s = to_indian_number_string(f, 2)
     if "." in s:
         s = s.rstrip("0").rstrip(".")
     return s

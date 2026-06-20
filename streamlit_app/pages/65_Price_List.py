@@ -31,6 +31,7 @@ sys.path.insert(0, BASE_DIR)
 
 import streamlit as st
 import pandas as pd
+from utils.helpers import to_indian_number_string
 from services.price_list_service import (
     load_price_list_from_sheet,
     load_mattress_list_from_sheet,
@@ -151,7 +152,7 @@ def _render_price_tab(df, columns, status_msg, download_stem, show_thickness=Fal
 
     # Summary metrics
     m_cols = st.columns(4)
-    m_cols[0].metric("Total Rows",   f"{len(df):,}")
+    m_cols[0].metric("Total Rows",   to_indian_number_string(len(df), 0))
     m_cols[1].metric("Categories",   df["CATEGORY"].replace("", pd.NA).dropna().nunique())
     m_cols[2].metric("Items",        df["ITEM"].replace("", pd.NA).dropna().nunique())
 
@@ -162,7 +163,7 @@ def _render_price_tab(df, columns, status_msg, download_stem, show_thickness=Fal
     if not price_series.isna().all():
         m_cols[3].metric(
             "Price Range",
-            f"₹{price_series.min():,.0f} - ₹{price_series.max():,.0f}",
+            f"₹{to_indian_number_string(price_series.min(), 0)} - ₹{to_indian_number_string(price_series.max(), 0)}",
         )
     else:
         m_cols[3].metric("Price Range", "-")
@@ -204,7 +205,7 @@ def _render_price_tab(df, columns, status_msg, download_stem, show_thickness=Fal
         filtered = filtered[mask]
 
     # Table
-    st.markdown(f"### 📋 {download_stem.replace('_', ' ')} - {len(filtered):,} rows")
+    st.markdown(f"### 📋 {download_stem.replace('_', ' ')} - {to_indian_number_string(len(filtered), 0)} rows")
 
     col_cfg = {
         "CATEGORY"         : st.column_config.TextColumn("Category",         width="medium"),

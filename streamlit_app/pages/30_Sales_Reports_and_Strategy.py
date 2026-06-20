@@ -40,6 +40,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
 from services.sheets import get_df  # noqa: E402
+from utils.helpers import to_indian_number_string  # noqa: E402
 try:
     from services.incentive_store import get_targets_df as _get_iq_targets
     _IQ_OK = True
@@ -192,8 +193,8 @@ def _fmt_num(v) -> str:
     if pd.isna(f):
         return ""
     if float(f).is_integer():
-        return f"{int(round(f)):,}"
-    s = f"{f:,.2f}"
+        return to_indian_number_string(f, 0)
+    s = to_indian_number_string(f, 2)
     if "." in s:
         s = s.rstrip("0").rstrip(".")
     return s
@@ -217,7 +218,7 @@ k3.metric(
          "Excludes orders with ₹0 value."
 )
 k4.metric(
-    "👥 Unique Customers", f"{total_cust:,}",
+    "👥 Unique Customers", to_indian_number_string(total_cust, 0),
     help="Count of unique CUSTOMER NAME entries across all FY 2026-27 orders."
 )
 k5.metric(
@@ -270,7 +271,7 @@ with t1:
     monthly_goal = st.number_input(
         "Set Monthly Target (₹)", min_value=100_000.0, step=100_000.0,
         key="monthly_goal_persistent",
-        help=f"Auto-calculated from Incentive_Quarterly_Targets: ₹{_auto_monthly_target:,.0f}",
+        help=f"Auto-calculated from Incentive_Quarterly_Targets: ₹{to_indian_number_string(_auto_monthly_target, 0)}",
     )
 
 ach_pct  = (m_sales / monthly_goal * 100) if monthly_goal else 0
