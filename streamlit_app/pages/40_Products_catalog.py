@@ -9,7 +9,8 @@ from google.oauth2.service_account import Credentials
 st.set_page_config(page_title="Product Catalog", layout="wide")
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-SPREADSHEET_ID = "1wFpK-WokcZB6k1vzG7B6JO5TdGHrUwdgvVm_-UQse54"
+import sys, os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from services.sheet_config import OPS_SPREADSHEET_ID as SPREADSHEET_ID
 CATALOG_SHEET_NAME = "Product Catalog"
 DISCONTINUED_SHEET_NAME = "Discontinued Products"
 ITEMS_PER_PAGE = 10

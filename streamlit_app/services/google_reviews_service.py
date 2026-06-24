@@ -864,7 +864,8 @@ def _log_review_details(
     if not matched_rows and not unmatched_rows:
         return
     try:
-        sh = client.open_by_key(spreadsheet_id)
+        from services.sheet_config import OPS_SPREADSHEET_ID
+        sh = client.open_by_key(OPS_SPREADSHEET_ID)
         sheet_name = SHEET_CONFIG["DETAILS_SHEET"]
         try:
             ws = sh.worksheet(sheet_name)
@@ -925,7 +926,8 @@ def _log_sync_run(
 ) -> None:
     """One row per fetch run — used by the UI to show 'last synced' time."""
     try:
-        sh = client.open_by_key(spreadsheet_id)
+        from services.sheet_config import OPS_SPREADSHEET_ID
+        sh = client.open_by_key(OPS_SPREADSHEET_ID)
         sheet_name = SHEET_CONFIG["SYNC_LOG_SHEET"]
         try:
             ws = sh.worksheet(sheet_name)
@@ -960,8 +962,8 @@ def get_last_sync_info(spreadsheet_id: Optional[str] = None) -> Dict:
              "unmatched": 0, "errors": 0, "status": ""}
     try:
         if spreadsheet_id is None:
-            from services.sheets import SPREADSHEET_ID  # late import
-            spreadsheet_id = SPREADSHEET_ID
+            from services.sheet_config import OPS_SPREADSHEET_ID
+            spreadsheet_id = OPS_SPREADSHEET_ID
         client = _get_sheets_client()
         sh = client.open_by_key(spreadsheet_id)
         try:
@@ -1290,11 +1292,8 @@ def fetch_and_update_reviews_4s(
              "errors": 1, "written": 0, "status": msg}
         try:
             client = _get_sheets_client()
-            sid = spreadsheet_id
-            if sid is None:
-                from services.sheets import SPREADSHEET_ID
-                sid = SPREADSHEET_ID
-            _log_sync_run(client, sid, s, triggered_by)
+            from services.sheet_config import OPS_SPREADSHEET_ID
+            _log_sync_run(client, OPS_SPREADSHEET_ID, s, triggered_by)
         except Exception:
             pass
         return s
@@ -1313,8 +1312,8 @@ def fetch_and_update_reviews_4s(
         )
 
     if spreadsheet_id is None:
-        from services.sheets import SPREADSHEET_ID
-        spreadsheet_id = SPREADSHEET_ID
+        from services.sheet_config import CRM_SPREADSHEET_ID
+        spreadsheet_id = CRM_SPREADSHEET_ID
 
     if sales_df is None:
         try:
@@ -1358,7 +1357,8 @@ def fetch_and_update_reviews_4s(
 
     try:
         client = _get_sheets_client()
-        _log_sync_run(client, spreadsheet_id, stats, triggered_by)
+        from services.sheet_config import OPS_SPREADSHEET_ID
+        _log_sync_run(client, OPS_SPREADSHEET_ID, stats, triggered_by)
     except Exception as exc:
         print(f"  !  Sync-log write failed (non-fatal): {exc}")
 

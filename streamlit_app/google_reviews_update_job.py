@@ -33,7 +33,8 @@ from datetime import datetime, timezone, timedelta
 # Make services/ importable when run from streamlit_app/
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from services.sheets import get_df, SPREADSHEET_ID                 # noqa: E402
+from services.sheets import get_df                                  # noqa: E402
+from services.sheet_config import CRM_SPREADSHEET_ID as SPREADSHEET_ID  # noqa: E402
 from services.google_reviews_service import (                       # noqa: E402
     fetch_and_update_reviews_4s,
     SHEET_CONFIG,

@@ -21,7 +21,15 @@ except Exception:
     st = _Dummy()
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-SPREADSHEET_ID = "1wFpK-WokcZB6k1vzG7B6JO5TdGHrUwdgvVm_-UQse54"
+
+from services.sheet_config import (  # noqa: E402
+    CRM_SPREADSHEET_ID,
+    OPS_SPREADSHEET_ID,
+    get_spreadsheet_id_for,
+)
+# Backward-compatible alias — external code that does
+# `from services.sheets import SPREADSHEET_ID` still works.
+SPREADSHEET_ID = CRM_SPREADSHEET_ID
 
 # ==============================
 # HEADERS (MASTER DEFINITIONS)
@@ -108,14 +116,26 @@ def _get_client():
 
 @st.cache_resource
 def _get_spreadsheet():
-    return _get_client().open_by_key(SPREADSHEET_ID)
+    """Returns CRM spreadsheet (Sheet 1). Kept for backward compatibility."""
+    return _get_client().open_by_key(CRM_SPREADSHEET_ID)
+
+@st.cache_resource
+def _get_ops_spreadsheet():
+    """Returns OPS spreadsheet (Sheet 2)."""
+    return _get_client().open_by_key(OPS_SPREADSHEET_ID)
+
+def _get_sh(sheet_name: str):
+    """Route sheet name to the correct gspread Spreadsheet object."""
+    if get_spreadsheet_id_for(sheet_name) == OPS_SPREADSHEET_ID:
+        return _get_ops_spreadsheet()
+    return _get_spreadsheet()
 
 # ==============================
 # ENSURE SHEET + HEADERS
 # ==============================
 
 def _ensure_sheet(sheet_name):
-    sh = _get_spreadsheet()
+    sh = _get_sh(sheet_name)
 
     try:
         ws = sh.worksheet(sheet_name)
@@ -169,12 +189,13 @@ def get_df(sheet_name):
 
     return pd.DataFrame(data[1:], columns=data[0])
 
+
 # ==============================
 # UPSERT LOGIC
 # ==============================
 
 def upsert_record(sheet_name, unique_fields, new_data):
-    ws = _ensure_sheet(sheet_name)
+    ws = _ensure_sheet(sheet_name)  # already routes via _get_sh
     headers = ws.row_values(1)
 
     df = get_df(sheet_name)
@@ -210,7 +231,7 @@ def upsert_record(sheet_name, unique_fields, new_data):
         
 def get_sheet(sheet_name):
     try:
-        return sh.worksheet(sheet_name)
+        return _get_sh(sheet_name).worksheet(sheet_name)
     except Exception:
         raise Exception(f"Sheet '{sheet_name}' not found in Google Sheets")
         
@@ -264,8 +285,7 @@ def upsert_target_record(sheet_name: str, unique_fields: dict, new_data: dict):
 
     gc = gspread.authorize(CREDS)
 
-    SPREADSHEET_ID = "1wFpK-WokcZB6k1vzG7B6JO5TdGHrUwdgvVm_-UQse54"
-    sh = gc.open_by_key(SPREADSHEET_ID)
+    sh = gc.open_by_key(get_spreadsheet_id_for(sheet_name))
 
     # -----------------------------
     # OPEN SHEET
@@ -412,8 +432,7 @@ def write_df(sheet_name, df):
 
     gc = gspread.authorize(CREDS)
 
-    SPREADSHEET_ID = "1wFpK-WokcZB6k1vzG7B6JO5TdGHrUwdgvVm_-UQse54"
-    sheet = gc.open_by_key(SPREADSHEET_ID)
+    sheet = gc.open_by_key(get_spreadsheet_id_for(sheet_name))
 
     # ── SAFE SERIALIZATION (must happen BEFORE clear so we know it won't crash) ──
     # Converts NaT / NaN / Timestamp / numpy scalars → plain strings / "".
@@ -460,7 +479,7 @@ def write_rows(sheet_name, rows):
 
     clean_rows = [[_clean(c) for c in row] for row in rows]
 
-    sh = _get_spreadsheet()
+    sh = _get_sh(sheet_name)
     try:
         worksheet = sh.worksheet(sheet_name)
     except Exception:
@@ -488,8 +507,8 @@ def append_email_log(job_name: str, records_count: int, recipients: list,
     now_ist = datetime.now(IST).strftime("%Y-%m-%d %H:%M IST")
 
     try:
-        sh = _get_spreadsheet()
         LOG_SHEET = "EMAIL_LOG"
+        sh = _get_sh(LOG_SHEET)
         try:
             ws = sh.worksheet(LOG_SHEET)
         except Exception:
@@ -524,7 +543,7 @@ def was_email_sent_today(job_name: str) -> bool:
     today_str = datetime.now(IST).strftime("%Y-%m-%d")
 
     try:
-        sh = _get_spreadsheet()
+        sh = _get_sh("EMAIL_LOG")
         try:
             ws = sh.worksheet("EMAIL_LOG")
         except Exception:

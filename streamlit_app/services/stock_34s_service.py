@@ -177,8 +177,8 @@ def _get_spreadsheet():
             creds = Credentials.from_service_account_info(st.secrets["google"], scopes=SCOPES)
         except Exception:
             raise RuntimeError("Google credentials not found")
-    from services.sheets import SPREADSHEET_ID
-    return gspread.authorize(creds).open_by_key(SPREADSHEET_ID)
+    from services.sheet_config import OPS_SPREADSHEET_ID
+    return gspread.authorize(creds).open_by_key(OPS_SPREADSHEET_ID)
 
 
 def _read_sheet_direct(sheet_name: str) -> pd.DataFrame:

@@ -183,6 +183,17 @@ def job_invoice_email_import():
         print(f"  ❌ Invoice Email Import failed: {e}")
 
 
+def job_crm_backup():
+    """9:00 PM — Daily backup of CRM spreadsheet (Sheet 1) to Google Drive."""
+    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M')}] 💾 Running CRM Daily Backup")
+    try:
+        from backup_job import run_backup
+        status = run_backup()
+        print(f"  → {status}")
+    except Exception as e:
+        print(f"  ❌ CRM Backup failed: {e}")
+
+
 # ─── MIS daily import (11 AM) ────────────────────────────────────────────────
 
 def job_mis_daily_import():
@@ -209,6 +220,7 @@ schedule.every().day.at("17:00").do(job_email1)             # Email 1 — Evenin
 schedule.every().day.at("20:00").do(job_stock_34s_update)   # 34S Stock Update — 8 PM
 schedule.every().day.at("20:00").do(job_invoice_email_import)  # Invoice Import — 8 PM
 schedule.every().day.at("20:15").do(job_invoice_email_import)  # Invoice Import — drift backup
+schedule.every().day.at("21:00").do(job_crm_backup)            # CRM Backup — 9 PM
 
 _print_tz_banner()
 print("=" * 60)
@@ -225,6 +237,7 @@ print("   5:00 PM (local) → Email 1: Pending Delivery Report (Evening)")
 print("   8:00 PM (local) → 34S Stock Update")
 print("   8:00 PM (local) → Invoice Email Import (primary)")
 print("   8:15 PM (local) → Invoice Email Import (drift backup)")
+print("   9:00 PM (local) → CRM Daily Backup to Google Drive")
 print("=" * 60)
 print("  Press Ctrl+C to stop.\n")
 
