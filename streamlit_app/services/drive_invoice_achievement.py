@@ -320,13 +320,13 @@ def _write_invoice_rows_to_sheet(rows: list[dict]) -> None:
     Rows with the same (Month, Year) are first removed, then the new rows
     (one per invoice) are appended, followed by a per-person TOTAL row.
     """
-    from services.sheets import SPREADSHEET_ID
+    from services.sheet_config import OPS_SPREADSHEET_ID
 
     if not rows:
         return
 
     gc = _get_gspread_client()
-    sh = gc.open_by_key(SPREADSHEET_ID)
+    sh = gc.open_by_key(OPS_SPREADSHEET_ID)
 
     # Get or create the sheet
     try:

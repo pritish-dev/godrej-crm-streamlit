@@ -24,7 +24,11 @@ except Exception:  # pragma: no cover
 
 # ---- Constants ----
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-SPREADSHEET_ID = "1wFpK-WokcZB6k1vzG7B6JO5TdGHrUwdgvVm_-UQse54"
+
+from services.sheet_config import OPS_SPREADSHEET_ID  # noqa: E402
+# All sheets handled by sheets_1.py (Users, History Log, Leads, etc.) live in
+# the OPS spreadsheet (Sheet 2).
+SPREADSHEET_ID = OPS_SPREADSHEET_ID
 
 EMAIL_COLS = {"Staff Email", "Customer Email"}
 TITLE_COLS = {

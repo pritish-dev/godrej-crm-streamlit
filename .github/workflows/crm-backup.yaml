@@ -1,0 +1,44 @@
+name: CRM Daily Backup
+
+on:
+  schedule:
+    # 9:00 PM IST = 15:30 UTC
+    - cron: '30 15 * * *'
+
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Set to true to test without actual Drive changes'
+        required: false
+        default: 'false'
+
+jobs:
+  crm-backup:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          if [ -f streamlit_app/requirements.txt ]; then
+            pip install -r streamlit_app/requirements.txt
+          else
+            pip install -r requirements.txt
+          fi
+
+      - name: Run CRM daily backup
+        env:
+          GOOGLE_CREDENTIALS:              ${{ secrets.GOOGLE_CREDENTIALS }}
+          GOOGLE_DRIVE_INVOICES_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_INVOICES_FOLDER_ID }}
+          OPS_SPREADSHEET_ID:              ${{ secrets.OPS_SPREADSHEET_ID }}
+        run: |
+          cd streamlit_app
+          python backup_job.py
