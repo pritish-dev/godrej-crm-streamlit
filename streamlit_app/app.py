@@ -15,6 +15,8 @@ st.set_page_config(
 
 if "show_old_data_dashboard" not in st.session_state:
     st.session_state.show_old_data_dashboard = False
+if "show_ops_migration" not in st.session_state:
+    st.session_state.show_ops_migration = False
 
 with st.sidebar:
     st.markdown("### Page Settings")
@@ -25,6 +27,11 @@ with st.sidebar:
             "Turn this on to view the historical (pre FY 26-27) data dashboard. "
             "When off, the page is hidden from the sidebar."
         ),
+    )
+    st.toggle(
+        "Show OPS Migration (one-time admin tool)",
+        key="show_ops_migration",
+        help="Enable to access the one-time migration page that copies OPS data to the new Sheet 2. Remove this toggle and the page file once migration is done.",
     )
     st.markdown("---")
 
@@ -66,6 +73,11 @@ nav_pages = {
 if st.session_state.show_old_data_dashboard:
     nav_pages[""].append(
         st.Page("pages/old_data_dashboard.py", title="Old Data Dashboard", icon="📂")
+    )
+
+if st.session_state.show_ops_migration:
+    nav_pages[""].append(
+        st.Page("pages/00_OPS_Migration.py", title="OPS Data Migration (Admin)", icon="🔧")
     )
 
 pg = st.navigation(nav_pages)
