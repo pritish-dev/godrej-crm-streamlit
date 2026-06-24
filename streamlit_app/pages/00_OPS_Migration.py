@@ -29,7 +29,7 @@ st.success(f"**Sheet 1 (CRM):** `{CRM_SPREADSHEET_ID}`")
 st.success(f"**Sheet 2 (OPS):** `{OPS_SPREADSHEET_ID}`")
 st.divider()
 
-# ── Helper ────────────────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 def _is_ops_sheet(name: str) -> bool:
     if name in _OPS_SHEETS:
         return True
@@ -54,24 +54,44 @@ def _get_gc():
     creds = Credentials.from_service_account_file(cfg, scopes=SCOPES)
     return gspread.authorize(creds)
 
-# ── Scan source spreadsheet ───────────────────────────────────────────────────
-st.subheader("Step 1 — Preview what will be migrated")
-
-@st.cache_data(ttl=30, show_spinner="Scanning source spreadsheet…")
-def _scan_source():
+# ── Scan both spreadsheets ────────────────────────────────────────────────────
+@st.cache_data(ttl=30, show_spinner="Scanning spreadsheets…")
+def _scan_both():
+    import gspread
     gc = _get_gc()
     src = gc.open_by_key(CRM_SPREADSHEET_ID)
-    tabs = src.worksheets()
-    crm_tabs = [ws.title for ws in tabs if not _is_ops_sheet(ws.title)]
-    ops_tabs = [ws.title for ws in tabs if _is_ops_sheet(ws.title)]
-    return crm_tabs, ops_tabs
+    dst = gc.open_by_key(OPS_SPREADSHEET_ID)
+
+    src_tabs = {ws.title: ws for ws in src.worksheets()}
+    dst_tabs = {ws.title: ws for ws in dst.worksheets()}
+
+    crm_tabs = [t for t in src_tabs if not _is_ops_sheet(t)]
+    ops_tabs  = [t for t in src_tabs if _is_ops_sheet(t)]
+
+    # Row counts: read values length (minus header row) for each ops sheet
+    verification = []
+    for name in ops_tabs:
+        src_rows = len(src_tabs[name].get_all_values())
+        if name in dst_tabs:
+            dst_rows = len(dst_tabs[name].get_all_values())
+        else:
+            dst_rows = None   # sheet doesn't exist in dst yet
+        verification.append({
+            "sheet": name,
+            "src_rows": src_rows,
+            "dst_rows": dst_rows,
+        })
+
+    return crm_tabs, ops_tabs, verification
 
 try:
-    crm_tabs, ops_tabs = _scan_source()
+    crm_tabs, ops_tabs, verification = _scan_both()
 except Exception as e:
-    st.error(f"Could not read source spreadsheet: {e}")
+    st.error(f"Could not read spreadsheets: {e}")
     st.stop()
 
+# ── Step 1: Preview ───────────────────────────────────────────────────────────
+st.subheader("Step 1 — Preview")
 col1, col2 = st.columns(2)
 with col1:
     st.markdown("**Stay in Sheet 1 (CRM) — not touched**")
@@ -88,8 +108,53 @@ if not ops_tabs:
 
 st.divider()
 
-# ── Migration controls ────────────────────────────────────────────────────────
-st.subheader("Step 2 — Run migration")
+# ── Step 2: Verification status ───────────────────────────────────────────────
+st.subheader("Step 2 — Verification: what's already in Sheet 2?")
+
+import pandas as pd
+
+rows_data = []
+all_done = True
+for v in verification:
+    src_rows = v["src_rows"]
+    dst_rows = v["dst_rows"]
+
+    if dst_rows is None:
+        status = "❌ Not in Sheet 2 yet"
+        all_done = False
+    elif dst_rows == 0:
+        status = "⚠️ Sheet exists but is empty"
+        all_done = False
+    elif dst_rows < src_rows:
+        status = f"⚠️ Partial — {dst_rows} / {src_rows} rows"
+        all_done = False
+    else:
+        status = "✅ Matches"
+
+    rows_data.append({
+        "Sheet name": v["sheet"],
+        "Rows in Sheet 1": src_rows,
+        "Rows in Sheet 2": dst_rows if dst_rows is not None else "—",
+        "Status": status,
+    })
+
+df_status = pd.DataFrame(rows_data)
+st.dataframe(df_status, use_container_width=True, hide_index=True)
+
+if all_done:
+    st.success("🎉 All OPS sheets are present in Sheet 2 with matching row counts. Migration is complete!")
+else:
+    pending = sum(1 for r in rows_data if "✅" not in r["Status"])
+    st.warning(f"{pending} sheet(s) still need to be migrated or re-checked. Run the migration below.")
+
+if st.button("🔄 Refresh verification", type="secondary"):
+    _scan_both.clear()
+    st.rerun()
+
+st.divider()
+
+# ── Step 3: Run migration ─────────────────────────────────────────────────────
+st.subheader("Step 3 — Run migration")
 
 force = st.checkbox(
     "Force overwrite — re-copy sheets that already have data in Sheet 2",
@@ -109,7 +174,7 @@ if st.button("▶️ Start Migration", type="primary"):
     results = {"ok": 0, "skip": 0, "error": 0}
 
     for i, sheet_name in enumerate(ops_tabs):
-        progress.progress((i) / len(ops_tabs), text=f"Processing '{sheet_name}'…")
+        progress.progress(i / len(ops_tabs), text=f"Processing '{sheet_name}'…")
         try:
             src_ws = src_sh.worksheet(sheet_name)
             all_values = src_ws.get_all_values()
@@ -148,7 +213,6 @@ if st.button("▶️ Start Migration", type="primary"):
         time.sleep(1.2)  # respect Google Sheets rate limits
 
     progress.progress(1.0, text="Done")
-
     st.divider()
     st.markdown(f"### Results: {results['ok']} copied · {results['skip']} skipped · {results['error']} error(s)")
 
@@ -156,9 +220,9 @@ if st.button("▶️ Start Migration", type="primary"):
         st.warning("Some sheets failed. Fix the errors above and re-run.")
     else:
         st.success(
-            "Migration complete! "
-            "Restart the app to confirm everything reads from the correct spreadsheet. "
+            "Migration complete! Click **Refresh verification** above to confirm all row counts match. "
             "Once verified, you can delete the OPS tabs from Sheet 1 to keep it clean, "
             "and remove this page (`pages/00_OPS_Migration.py`) from the codebase."
         )
-        _scan_source.clear()
+
+    _scan_both.clear()
