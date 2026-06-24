@@ -27,6 +27,54 @@ if CRM_SPREADSHEET_ID == OPS_SPREADSHEET_ID:
 
 st.success(f"**Sheet 1 (CRM):** `{CRM_SPREADSHEET_ID}`")
 st.success(f"**Sheet 2 (OPS):** `{OPS_SPREADSHEET_ID}`")
+
+# ── Diagnostics expander ──────────────────────────────────────────────────────
+with st.expander("🔍 Connection diagnostics", expanded=False):
+    import json as _json
+    sa_email = "unknown"
+    try:
+        raw = os.getenv("GOOGLE_CREDENTIALS", "").strip()
+        if raw:
+            sa_email = _json.loads(raw).get("client_email", "unknown")
+        else:
+            sa_email = st.secrets["google"].get("client_email", "unknown")
+    except Exception:
+        pass
+    st.markdown(f"**Service account email:** `{sa_email}`")
+    st.caption("This is the email that must be shared as Editor on Sheet 2.")
+
+    if st.button("Run connection test"):
+        import gspread
+        from gspread.exceptions import APIError
+        gc2 = _get_gc()
+        col_a, col_b = st.columns(2)
+
+        # Test read on CRM
+        try:
+            sh_crm = gc2.open_by_key(CRM_SPREADSHEET_ID)
+            col_a.success(f"✅ Sheet 1 (CRM): read OK — '{sh_crm.title}'")
+        except Exception as e:
+            col_a.error(f"❌ Sheet 1 (CRM): {e}")
+
+        # Test read on OPS
+        try:
+            sh_ops = gc2.open_by_key(OPS_SPREADSHEET_ID)
+            col_b.success(f"✅ Sheet 2 (OPS): read OK — '{sh_ops.title}'")
+            # Test write on OPS
+            try:
+                ws0 = sh_ops.get_worksheet(0)
+                val = ws0.acell("A1").value or ""
+                ws0.update("A1", [[val]])
+                col_b.success("✅ Sheet 2 (OPS): write OK — Editor access confirmed")
+            except APIError as ae:
+                col_b.error(f"❌ Sheet 2 (OPS): write failed ({ae}) — service account has Viewer access only")
+            except Exception as we:
+                col_b.warning(f"⚠️ Sheet 2 (OPS): write probe error — {we}")
+        except PermissionError:
+            col_b.error("❌ Sheet 2 (OPS): cannot open — not shared with service account at all")
+        except Exception as e:
+            col_b.error(f"❌ Sheet 2 (OPS): {e}")
+
 st.divider()
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
