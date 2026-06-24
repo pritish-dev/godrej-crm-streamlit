@@ -184,10 +184,48 @@ force = st.checkbox(
 
 if st.button("▶️ Start Migration", type="primary"):
     import time, gspread
+    from gspread.exceptions import APIError
 
     gc = _get_gc()
     src_sh = gc.open_by_key(CRM_SPREADSHEET_ID)
     dst_sh = gc.open_by_key(OPS_SPREADSHEET_ID)
+
+    # ── Pre-flight: verify write access on the OPS spreadsheet ───────────────
+    try:
+        dst_sh.worksheets()   # lightweight read
+        # Try a harmless title update on the spreadsheet object to probe write
+        test_title = dst_sh.title  # just fetch title to confirm access level
+    except Exception:
+        pass
+
+    try:
+        # Attempt to list + touch the first sheet to detect Viewer-only access
+        _probe = dst_sh.get_worksheet(0)
+        _probe.get("A1")   # read is fine
+        # A real write probe — try updating a cell with its current value
+        _val = _probe.acell("A1").value or ""
+        _probe.update("A1", [[_val]])
+    except APIError as api_err:
+        if "403" in str(api_err):
+            sa_email = "your service account email"
+            try:
+                import json
+                raw = os.getenv("GOOGLE_CREDENTIALS", "").strip()
+                if raw:
+                    sa_email = json.loads(raw).get("client_email", sa_email)
+                else:
+                    sa_email = st.secrets["google"].get("client_email", sa_email)
+            except Exception:
+                pass
+            st.error(
+                "**Cannot write to Sheet 2 — service account has Viewer access only.**\n\n"
+                f"Open the OPS spreadsheet → **Share** → find `{sa_email}` → "
+                "change role from **Viewer** to **Editor** → Save.\n\n"
+                "Then click **▶️ Start Migration** again."
+            )
+            st.stop()
+    except Exception:
+        pass  # ignore other probe errors, let the actual copy surface them
 
     progress = st.progress(0, text="Starting…")
     log = st.container()
@@ -226,6 +264,13 @@ if st.button("▶️ Start Migration", type="primary"):
             log.success(f"✅ **{sheet_name}** — {row_count} rows × {col_count} cols copied")
             results["ok"] += 1
 
+        except APIError as api_err:
+            if "403" in str(api_err):
+                log.error(f"❌ **{sheet_name}** — Permission denied (403). Service account needs Editor access on Sheet 2.")
+            else:
+                log.error(f"❌ **{sheet_name}** — {api_err}")
+            results["error"] += 1
+
         except Exception as exc:
             log.error(f"❌ **{sheet_name}** — {exc}")
             results["error"] += 1
@@ -237,7 +282,7 @@ if st.button("▶️ Start Migration", type="primary"):
     st.markdown(f"### Results: {results['ok']} copied · {results['skip']} skipped · {results['error']} error(s)")
 
     if results["error"]:
-        st.warning("Some sheets failed. Fix the errors above and re-run.")
+        st.warning("Some sheets failed. Check errors above — most likely the service account still needs **Editor** access on Sheet 2.")
     else:
         st.success(
             "Migration complete! Click **Refresh verification** above to confirm all row counts match. "
