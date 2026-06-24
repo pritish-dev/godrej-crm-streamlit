@@ -2,21 +2,21 @@
 backup_job.py
 
 Daily 9 PM IST job — creates a copy of the CRM spreadsheet (Sheet 1) in
-Google Drive under a "CRM_Daily_Backups" sub-folder, then deletes any
-backup files older than 7 days.
+the "B2C CRM BACKUP" Google Drive folder, then deletes any backup files
+older than 7 days.
 
 Run via:
   - GitHub Actions (.github/workflows/crm-backup.yaml)  — recommended
   - scheduler.py (added at 21:00)                        — local fallback
 
 Required secrets (same service account used everywhere):
-  GOOGLE_CREDENTIALS  env var (JSON)   — GitHub Actions
-  st.secrets["google"]                 — Streamlit Cloud
-  config/credentials.json              — local fallback
+  GOOGLE_CREDENTIALS        env var (JSON)   — service-account credentials
+  CRM_BACKUP_DRIVE_FOLDER_ID                 — Drive folder ID for "B2C CRM BACKUP"
 
-The backup folder is created automatically as a sub-folder of the existing
-Google Drive invoices root (GOOGLE_DRIVE_INVOICES_FOLDER_ID).
-If that root is not configured, backups go to the service account's root.
+CRM_BACKUP_DRIVE_FOLDER_ID resolution order:
+  1. CRM_BACKUP_DRIVE_FOLDER_ID environment variable
+  2. st.secrets["admin"]["CRM_BACKUP_DRIVE_FOLDER_ID"]
+  3. st.secrets["CRM_BACKUP_DRIVE_FOLDER_ID"]
 """
 from __future__ import annotations
 
@@ -29,7 +29,6 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
 
 IST = timezone(timedelta(hours=5, minutes=30))
-BACKUP_FOLDER_NAME = "CRM_Daily_Backups"
 RETENTION_DAYS = 7
 
 # Drive scopes — need write access to copy and delete files
@@ -74,66 +73,39 @@ def _get_drive_service():
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 
-def _get_invoices_folder_id() -> str | None:
-    """Return the configured Drive invoices root folder ID, or None."""
-    v = os.getenv("GOOGLE_DRIVE_INVOICES_FOLDER_ID", "").strip()
+def _get_backup_folder_id() -> str:
+    """
+    Return the Drive folder ID for the 'B2C CRM BACKUP' folder.
+    Reads CRM_BACKUP_DRIVE_FOLDER_ID from env var or Streamlit secrets.
+    Raises RuntimeError if not configured.
+    """
+    v = os.getenv("CRM_BACKUP_DRIVE_FOLDER_ID", "").strip()
     if v:
         return v
     try:
         import streamlit as st
         try:
-            return st.secrets["admin"]["GOOGLE_DRIVE_INVOICES_FOLDER_ID"]
+            return st.secrets["admin"]["CRM_BACKUP_DRIVE_FOLDER_ID"]
         except Exception:
-            try:
-                return st.secrets["GOOGLE_DRIVE_INVOICES_FOLDER_ID"]
-            except Exception:
-                pass
+            return st.secrets["CRM_BACKUP_DRIVE_FOLDER_ID"]
     except Exception:
         pass
-    # Hardcoded fallback matching email_sender_delivery_schedule.py
-    return "1Sss9vlv_BKLiUXWcTtS8Uc5kzoAuBh1r"
-
-
-def _get_or_create_backup_folder(drive, parent_id: str | None) -> str:
-    """Find or create the CRM_Daily_Backups folder; return its Drive ID."""
-    q_parts = [f"name='{BACKUP_FOLDER_NAME}'", "mimeType='application/vnd.google-apps.folder'",
-                "trashed=false"]
-    if parent_id:
-        q_parts.append(f"'{parent_id}' in parents")
-
-    results = drive.files().list(
-        q=" and ".join(q_parts),
-        fields="files(id,name)",
-        spaces="drive",
-    ).execute()
-
-    files = results.get("files", [])
-    if files:
-        return files[0]["id"]
-
-    # Create the folder
-    metadata: dict = {
-        "name": BACKUP_FOLDER_NAME,
-        "mimeType": "application/vnd.google-apps.folder",
-    }
-    if parent_id:
-        metadata["parents"] = [parent_id]
-
-    folder = drive.files().create(body=metadata, fields="id").execute()
-    return folder["id"]
+    raise RuntimeError(
+        "CRM_BACKUP_DRIVE_FOLDER_ID is not configured. "
+        "Set it as a GitHub Actions secret or in st.secrets['admin']['CRM_BACKUP_DRIVE_FOLDER_ID']."
+    )
 
 
 def run_backup() -> str:
     """
-    Copy the CRM spreadsheet to the backup folder with today's date in the name.
-    Delete backups older than RETENTION_DAYS.
+    Copy the CRM spreadsheet into the 'B2C CRM BACKUP' Drive folder with
+    today's IST date in the name. Delete copies older than RETENTION_DAYS.
     Returns a status string.
     """
     from services.sheet_config import CRM_SPREADSHEET_ID
 
     drive = _get_drive_service()
-    parent_id = _get_invoices_folder_id()
-    backup_folder_id = _get_or_create_backup_folder(drive, parent_id)
+    backup_folder_id = _get_backup_folder_id()
 
     now_ist = datetime.now(IST)
     backup_name = f"CRM Backup {now_ist.strftime('%Y-%m-%d')}"
