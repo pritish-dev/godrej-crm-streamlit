@@ -86,6 +86,26 @@ def _scan_both():
 
 try:
     crm_tabs, ops_tabs, verification = _scan_both()
+except PermissionError:
+    # Find the service account email to show in the error message
+    sa_email = "your service account email"
+    try:
+        import json
+        raw = os.getenv("GOOGLE_CREDENTIALS", "").strip()
+        if raw:
+            sa_email = json.loads(raw).get("client_email", sa_email)
+        else:
+            sa_email = st.secrets["google"].get("client_email", sa_email)
+    except Exception:
+        pass
+    st.error(
+        "**Permission denied on the OPS spreadsheet.**\n\n"
+        f"The service account **`{sa_email}`** does not have access to Sheet 2.\n\n"
+        "**Fix:** Open the OPS spreadsheet in Google Sheets → Share → "
+        f"add `{sa_email}` as an **Editor** → Save.\n\n"
+        "Then click **Refresh verification** or reload this page."
+    )
+    st.stop()
 except Exception as e:
     st.error(f"Could not read spreadsheets: {e}")
     st.stop()
