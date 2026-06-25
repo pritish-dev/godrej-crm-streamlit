@@ -64,6 +64,7 @@ _OPS_PREFIXES: tuple[str, ...] = (
     "SALE INVOICE",
     "34s Stock Register",
     "ARCHIVED 34S Stock",
+    "Incentive_",  # Incentive_Users / Incentive_Quarterly_Targets / Incentive_Audit_Log
 )
 
 
