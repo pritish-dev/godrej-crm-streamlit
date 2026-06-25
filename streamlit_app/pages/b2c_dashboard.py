@@ -675,6 +675,13 @@ with r2c3:
 with r2c4:
     filt_src  = st.selectbox("Source",          _src_options,  key="filt_src")
 
+# Row 3: free-text search across customer name / phone / order no / SO no
+search_term = st.text_input(
+    "🔍 Search",
+    key="sales_search",
+    placeholder="Search by customer name, phone number, order no or Godrej SO no…",
+).strip()
+
 # Apply all filters
 sales_filtered = crm[
     crm["ORDER DATE"].notna() &
@@ -695,6 +702,18 @@ if filt_src  != "All" and "SOURCE"          in sales_filtered.columns:
 sales_grouped = group_by_order_no(sales_filtered)
 sales_grouped = sales_grouped.sort_values("ORDER DATE", ascending=False).reset_index(drop=True)
 
+# Free-text search across customer name / phone / order no / Godrej SO no.
+# Case-insensitive substring match; a row matches if the term appears in any field.
+if search_term:
+    _search_cols = ["CUSTOMER NAME", "CONTACT NUMBER", "ORDER NO", "GODREJ SO NO"]
+    _avail_search = [c for c in _search_cols if c in sales_grouped.columns]
+    if _avail_search:
+        _needle = search_term.lower()
+        _mask = pd.Series(False, index=sales_grouped.index)
+        for _c in _avail_search:
+            _mask |= sales_grouped[_c].astype(str).str.lower().str.contains(_needle, na=False)
+        sales_grouped = sales_grouped[_mask].reset_index(drop=True)
+
 st.caption(
     f"Showing **{filter_start.strftime('%d %b %Y')}** → **{filter_end.strftime('%d %b %Y')}**"
     f"  ·  **{len(sales_grouped)}** orders"
@@ -702,6 +721,7 @@ st.caption(
     + (f"  ·  Cat: **{filt_cat}**"     if filt_cat  != "All" else "")
     + (f"  ·  Status: **{filt_stat}**" if filt_stat != "All" else "")
     + (f"  ·  Source: **{filt_src}**"  if filt_src  != "All" else "")
+    + (f"  ·  Search: **{search_term}**" if search_term else "")
 )
 
 # Build display table
@@ -720,7 +740,7 @@ sales_display = sales_display.rename(
 
 # Reset pagination when any filter changes
 PAGE_SIZE = 25
-_filter_key = (filter_start, filter_end, filt_sp, filt_cat, filt_stat, filt_src)
+_filter_key = (filter_start, filter_end, filt_sp, filt_cat, filt_stat, filt_src, search_term)
 if "b2c_page" not in st.session_state:
     st.session_state.b2c_page = 0
 if "b2c_filter_key" not in st.session_state:
