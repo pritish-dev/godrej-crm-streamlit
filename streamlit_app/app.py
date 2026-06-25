@@ -36,6 +36,7 @@ with st.sidebar:
     st.markdown("---")
 
 sales_handbook_pages = [
+    st.Page("pages/30_Sales_Reports_and_Strategy.py",  title="Sales Reports and Strategy",          icon="💡"),
     st.Page("pages/55_Monthend_Sales_Forecast.py",    title="Monthly Sales Target vs Achievement", icon="📅"),
     st.Page("pages/90_Sales_Team_Tasks.py",            title="Sales Team Tasks",                    icon="✅"),
     st.Page("pages/95_Happy_Calling.py",               title="Happy Calling",                       icon="📞"),
