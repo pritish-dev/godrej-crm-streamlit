@@ -50,6 +50,13 @@ _OPS_SHEETS: frozenset[str] = frozenset({
     "REVIEW_SYNC_LOG",
     "Product Catalog",
     "Discontinued Products",
+    "LEADS",
+    "TASK_LOGS",
+    "Sales Team",
+    "SALES_TEAM_TASK",
+    "Happy Calling Sheet",
+    "SHEET_DETAILS",
+    "OLD_SHEET_DETAILS",
 })
 
 # Sheet name prefixes that always belong to the OPS spreadsheet

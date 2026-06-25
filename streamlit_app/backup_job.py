@@ -148,7 +148,7 @@ def run_backup() -> str:
             print(f"  ⚠️  Could not process backup file {f.get('name', '?')}: {e}")
 
     return (
-        f"Backup '{backup_name}' created successfully in '{BACKUP_FOLDER_NAME}'. "
+        f"Backup '{backup_name}' created successfully. "
         f"Deleted {deleted} backup(s) older than {RETENTION_DAYS} days."
     )
 

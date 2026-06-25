@@ -27,9 +27,57 @@ if CRM_SPREADSHEET_ID == OPS_SPREADSHEET_ID:
 
 st.success(f"**Sheet 1 (CRM):** `{CRM_SPREADSHEET_ID}`")
 st.success(f"**Sheet 2 (OPS):** `{OPS_SPREADSHEET_ID}`")
+
+# ── Diagnostics expander ──────────────────────────────────────────────────────
+with st.expander("🔍 Connection diagnostics", expanded=False):
+    import json as _json
+    sa_email = "unknown"
+    try:
+        raw = os.getenv("GOOGLE_CREDENTIALS", "").strip()
+        if raw:
+            sa_email = _json.loads(raw).get("client_email", "unknown")
+        else:
+            sa_email = st.secrets["google"].get("client_email", "unknown")
+    except Exception:
+        pass
+    st.markdown(f"**Service account email:** `{sa_email}`")
+    st.caption("This is the email that must be shared as Editor on Sheet 2.")
+
+    if st.button("Run connection test"):
+        import gspread
+        from gspread.exceptions import APIError
+        gc2 = _get_gc()
+        col_a, col_b = st.columns(2)
+
+        # Test read on CRM
+        try:
+            sh_crm = gc2.open_by_key(CRM_SPREADSHEET_ID)
+            col_a.success(f"✅ Sheet 1 (CRM): read OK — '{sh_crm.title}'")
+        except Exception as e:
+            col_a.error(f"❌ Sheet 1 (CRM): {e}")
+
+        # Test read on OPS
+        try:
+            sh_ops = gc2.open_by_key(OPS_SPREADSHEET_ID)
+            col_b.success(f"✅ Sheet 2 (OPS): read OK — '{sh_ops.title}'")
+            # Test write on OPS
+            try:
+                ws0 = sh_ops.get_worksheet(0)
+                val = ws0.acell("A1").value or ""
+                ws0.update("A1", [[val]])
+                col_b.success("✅ Sheet 2 (OPS): write OK — Editor access confirmed")
+            except APIError as ae:
+                col_b.error(f"❌ Sheet 2 (OPS): write failed ({ae}) — service account has Viewer access only")
+            except Exception as we:
+                col_b.warning(f"⚠️ Sheet 2 (OPS): write probe error — {we}")
+        except PermissionError:
+            col_b.error("❌ Sheet 2 (OPS): cannot open — not shared with service account at all")
+        except Exception as e:
+            col_b.error(f"❌ Sheet 2 (OPS): {e}")
+
 st.divider()
 
-# ── Helper ────────────────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 def _is_ops_sheet(name: str) -> bool:
     if name in _OPS_SHEETS:
         return True
@@ -54,24 +102,64 @@ def _get_gc():
     creds = Credentials.from_service_account_file(cfg, scopes=SCOPES)
     return gspread.authorize(creds)
 
-# ── Scan source spreadsheet ───────────────────────────────────────────────────
-st.subheader("Step 1 — Preview what will be migrated")
-
-@st.cache_data(ttl=30, show_spinner="Scanning source spreadsheet…")
-def _scan_source():
+# ── Scan both spreadsheets ────────────────────────────────────────────────────
+@st.cache_data(ttl=30, show_spinner="Scanning spreadsheets…")
+def _scan_both():
+    import gspread
     gc = _get_gc()
     src = gc.open_by_key(CRM_SPREADSHEET_ID)
-    tabs = src.worksheets()
-    crm_tabs = [ws.title for ws in tabs if not _is_ops_sheet(ws.title)]
-    ops_tabs = [ws.title for ws in tabs if _is_ops_sheet(ws.title)]
-    return crm_tabs, ops_tabs
+    dst = gc.open_by_key(OPS_SPREADSHEET_ID)
+
+    src_tabs = {ws.title: ws for ws in src.worksheets()}
+    dst_tabs = {ws.title: ws for ws in dst.worksheets()}
+
+    crm_tabs = [t for t in src_tabs if not _is_ops_sheet(t)]
+    ops_tabs  = [t for t in src_tabs if _is_ops_sheet(t)]
+
+    # Row counts: read values length (minus header row) for each ops sheet
+    verification = []
+    for name in ops_tabs:
+        src_rows = len(src_tabs[name].get_all_values())
+        if name in dst_tabs:
+            dst_rows = len(dst_tabs[name].get_all_values())
+        else:
+            dst_rows = None   # sheet doesn't exist in dst yet
+        verification.append({
+            "sheet": name,
+            "src_rows": src_rows,
+            "dst_rows": dst_rows,
+        })
+
+    return crm_tabs, ops_tabs, verification
 
 try:
-    crm_tabs, ops_tabs = _scan_source()
+    crm_tabs, ops_tabs, verification = _scan_both()
+except PermissionError:
+    # Find the service account email to show in the error message
+    sa_email = "your service account email"
+    try:
+        import json
+        raw = os.getenv("GOOGLE_CREDENTIALS", "").strip()
+        if raw:
+            sa_email = json.loads(raw).get("client_email", sa_email)
+        else:
+            sa_email = st.secrets["google"].get("client_email", sa_email)
+    except Exception:
+        pass
+    st.error(
+        "**Permission denied on the OPS spreadsheet.**\n\n"
+        f"The service account **`{sa_email}`** does not have access to Sheet 2.\n\n"
+        "**Fix:** Open the OPS spreadsheet in Google Sheets → Share → "
+        f"add `{sa_email}` as an **Editor** → Save.\n\n"
+        "Then click **Refresh verification** or reload this page."
+    )
+    st.stop()
 except Exception as e:
-    st.error(f"Could not read source spreadsheet: {e}")
+    st.error(f"Could not read spreadsheets: {e}")
     st.stop()
 
+# ── Step 1: Preview ───────────────────────────────────────────────────────────
+st.subheader("Step 1 — Preview")
 col1, col2 = st.columns(2)
 with col1:
     st.markdown("**Stay in Sheet 1 (CRM) — not touched**")
@@ -88,8 +176,53 @@ if not ops_tabs:
 
 st.divider()
 
-# ── Migration controls ────────────────────────────────────────────────────────
-st.subheader("Step 2 — Run migration")
+# ── Step 2: Verification status ───────────────────────────────────────────────
+st.subheader("Step 2 — Verification: what's already in Sheet 2?")
+
+import pandas as pd
+
+rows_data = []
+all_done = True
+for v in verification:
+    src_rows = v["src_rows"]
+    dst_rows = v["dst_rows"]
+
+    if dst_rows is None:
+        status = "❌ Not in Sheet 2 yet"
+        all_done = False
+    elif dst_rows == 0:
+        status = "⚠️ Sheet exists but is empty"
+        all_done = False
+    elif dst_rows < src_rows:
+        status = f"⚠️ Partial — {dst_rows} / {src_rows} rows"
+        all_done = False
+    else:
+        status = "✅ Matches"
+
+    rows_data.append({
+        "Sheet name": v["sheet"],
+        "Rows in Sheet 1": src_rows,
+        "Rows in Sheet 2": dst_rows if dst_rows is not None else "—",
+        "Status": status,
+    })
+
+df_status = pd.DataFrame(rows_data)
+st.dataframe(df_status, use_container_width=True, hide_index=True)
+
+if all_done:
+    st.success("🎉 All OPS sheets are present in Sheet 2 with matching row counts. Migration is complete!")
+else:
+    pending = sum(1 for r in rows_data if "✅" not in r["Status"])
+    st.warning(f"{pending} sheet(s) still need to be migrated or re-checked. Run the migration below.")
+
+if st.button("🔄 Refresh verification", type="secondary"):
+    _scan_both.clear()
+    st.rerun()
+
+st.divider()
+
+# ── Step 3: Run migration ─────────────────────────────────────────────────────
+st.subheader("Step 3 — Run migration")
 
 force = st.checkbox(
     "Force overwrite — re-copy sheets that already have data in Sheet 2",
@@ -99,17 +232,55 @@ force = st.checkbox(
 
 if st.button("▶️ Start Migration", type="primary"):
     import time, gspread
+    from gspread.exceptions import APIError
 
     gc = _get_gc()
     src_sh = gc.open_by_key(CRM_SPREADSHEET_ID)
     dst_sh = gc.open_by_key(OPS_SPREADSHEET_ID)
+
+    # ── Pre-flight: verify write access on the OPS spreadsheet ───────────────
+    try:
+        dst_sh.worksheets()   # lightweight read
+        # Try a harmless title update on the spreadsheet object to probe write
+        test_title = dst_sh.title  # just fetch title to confirm access level
+    except Exception:
+        pass
+
+    try:
+        # Attempt to list + touch the first sheet to detect Viewer-only access
+        _probe = dst_sh.get_worksheet(0)
+        _probe.get("A1")   # read is fine
+        # A real write probe — try updating a cell with its current value
+        _val = _probe.acell("A1").value or ""
+        _probe.update("A1", [[_val]])
+    except APIError as api_err:
+        if "403" in str(api_err):
+            sa_email = "your service account email"
+            try:
+                import json
+                raw = os.getenv("GOOGLE_CREDENTIALS", "").strip()
+                if raw:
+                    sa_email = json.loads(raw).get("client_email", sa_email)
+                else:
+                    sa_email = st.secrets["google"].get("client_email", sa_email)
+            except Exception:
+                pass
+            st.error(
+                "**Cannot write to Sheet 2 — service account has Viewer access only.**\n\n"
+                f"Open the OPS spreadsheet → **Share** → find `{sa_email}` → "
+                "change role from **Viewer** to **Editor** → Save.\n\n"
+                "Then click **▶️ Start Migration** again."
+            )
+            st.stop()
+    except Exception:
+        pass  # ignore other probe errors, let the actual copy surface them
 
     progress = st.progress(0, text="Starting…")
     log = st.container()
     results = {"ok": 0, "skip": 0, "error": 0}
 
     for i, sheet_name in enumerate(ops_tabs):
-        progress.progress((i) / len(ops_tabs), text=f"Processing '{sheet_name}'…")
+        progress.progress(i / len(ops_tabs), text=f"Processing '{sheet_name}'…")
         try:
             src_ws = src_sh.worksheet(sheet_name)
             all_values = src_ws.get_all_values()
@@ -141,6 +312,13 @@ if st.button("▶️ Start Migration", type="primary"):
             log.success(f"✅ **{sheet_name}** — {row_count} rows × {col_count} cols copied")
             results["ok"] += 1
 
+        except APIError as api_err:
+            if "403" in str(api_err):
+                log.error(f"❌ **{sheet_name}** — Permission denied (403). Service account needs Editor access on Sheet 2.")
+            else:
+                log.error(f"❌ **{sheet_name}** — {api_err}")
+            results["error"] += 1
+
         except Exception as exc:
             log.error(f"❌ **{sheet_name}** — {exc}")
             results["error"] += 1
@@ -148,17 +326,16 @@ if st.button("▶️ Start Migration", type="primary"):
         time.sleep(1.2)  # respect Google Sheets rate limits
 
     progress.progress(1.0, text="Done")
-
     st.divider()
     st.markdown(f"### Results: {results['ok']} copied · {results['skip']} skipped · {results['error']} error(s)")
 
     if results["error"]:
-        st.warning("Some sheets failed. Fix the errors above and re-run.")
+        st.warning("Some sheets failed. Check errors above — most likely the service account still needs **Editor** access on Sheet 2.")
     else:
         st.success(
-            "Migration complete! "
-            "Restart the app to confirm everything reads from the correct spreadsheet. "
+            "Migration complete! Click **Refresh verification** above to confirm all row counts match. "
             "Once verified, you can delete the OPS tabs from Sheet 1 to keep it clean, "
             "and remove this page (`pages/00_OPS_Migration.py`) from the codebase."
         )
-        _scan_source.clear()
+
+    _scan_both.clear()
