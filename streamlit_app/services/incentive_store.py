@@ -30,7 +30,7 @@ from typing import Optional
 import pandas as pd
 import streamlit as st
 
-from services.sheets import _get_spreadsheet, get_df  # type: ignore
+from services.sheets import _get_sh, get_df  # type: ignore
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Sheet names + canonical headers
@@ -65,7 +65,7 @@ SEED_TARGETS = [
 # ─────────────────────────────────────────────────────────────────────────────
 def _ensure_tab(name: str, headers: list[str], rows: int = 1000) -> "object":
     """Get the worksheet tab; create with headers if missing."""
-    sh = _get_spreadsheet()
+    sh = _get_sh(name)
     try:
         ws = sh.worksheet(name)
     except Exception:
