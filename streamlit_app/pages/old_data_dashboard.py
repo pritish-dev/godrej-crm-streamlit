@@ -174,6 +174,13 @@ sale_cols_preferred = [
 sale_cols = [c for c in sale_cols_preferred if c in crm.columns]
 
 date_range_filter = st.date_input("Filter by date range", [], key="old_date_filter")
+
+search_term = st.text_input(
+    "🔍 Search",
+    key="old_sales_search",
+    placeholder="Search by customer name, phone number, order no or Godrej SO no…",
+).strip()
+
 filtered = crm.copy()
 
 if len(date_range_filter) == 2:
@@ -181,6 +188,18 @@ if len(date_range_filter) == 2:
         (filtered["ORDER DATE"].dt.date >= date_range_filter[0]) &
         (filtered["ORDER DATE"].dt.date <= date_range_filter[1])
     ]
+
+# Free-text search across customer name / phone / order no / Godrej SO no.
+# Case-insensitive substring match; a row matches if the term appears in any field.
+if search_term:
+    _search_cols = ["CUSTOMER NAME", "CONTACT NUMBER", "ORDER NO", "GODREJ SO NO"]
+    _avail_search = [c for c in _search_cols if c in filtered.columns]
+    if _avail_search:
+        _needle = search_term.lower()
+        _mask = pd.Series(False, index=filtered.index)
+        for _c in _avail_search:
+            _mask |= filtered[_c].astype(str).str.lower().str.contains(_needle, na=False)
+        filtered = filtered[_mask]
 
 filtered = filtered.sort_values("ORDER DATE", ascending=False)
 
