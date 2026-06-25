@@ -41,11 +41,7 @@ sys.path.insert(0, BASE_DIR)
 
 from services.sheets import get_df  # noqa: E402
 from utils.helpers import to_indian_number_string  # noqa: E402
-try:
-    from services.incentive_store import get_targets_df as _get_iq_targets
-    _IQ_OK = True
-except Exception:
-    _IQ_OK = False
+from services import monthly_metrics as mm  # noqa: E402
 
 st.set_page_config(page_title="Sales Reports and Strategy", layout="wide")
 
@@ -167,24 +163,9 @@ crm["WEEKDAY"]  = crm["ORDER DATE"].dt.dayofweek         # 0=Mon
 crm["YEAR"]     = crm["ORDER DATE"].dt.year
 
 # =========================================================
-# SECTION 1 — Headline KPIs
-# =========================================================
-st.subheader("📊 Headline KPIs")
-
-_this_month_lbl = now.strftime("%b %Y")   # e.g. "May 2026"
-month_mask = (crm["ORDER DATE"].dt.month == now.month) & (crm["ORDER DATE"].dt.year == now.year)
-fy_mask    = crm["ORDER DATE"].dt.date >= FY_START   # already filtered, but keep for clarity
-
-m_sales    = crm.loc[month_mask, "ORDER VALUE"].sum()
-m_orders   = (crm.loc[month_mask, "ORDER NO"].nunique()
-               if "ORDER NO" in crm.columns else int(month_mask.sum()))
-fy_sales   = crm["ORDER VALUE"].sum()
-fy_orders  = (crm["ORDER NO"].nunique()
-               if "ORDER NO" in crm.columns else len(crm))
-total_cust = crm["CUSTOMER NAME"].nunique() if "CUSTOMER NAME" in crm.columns else 0
-avg_basket = crm["ORDER VALUE"].mean() if len(crm) > 0 else 0
-
 # CRM-wide number formatter — integers no decimals, floats up to 2 dp.
+# (used by the leaderboard / category / cohort sections below)
+# =========================================================
 def _fmt_num(v) -> str:
     try:
         f = float(v)
@@ -199,161 +180,73 @@ def _fmt_num(v) -> str:
         s = s.rstrip("0").rstrip(".")
     return s
 
-k1, k2, k3, k4, k5 = st.columns(5)
-k1.metric(
-    f"📅 {_this_month_lbl}", f"₹{_fmt_num(m_sales)}", f"{m_orders} orders",
-    help=f"Total sales value and unique order count for {_this_month_lbl}. "
-         f"Counts only orders with ORDER DATE in {_this_month_lbl}."
-)
-k2.metric(
-    "📈 FY Apr–Today", f"₹{_fmt_num(fy_sales)}", f"{fy_orders} orders",
-    help=f"Cumulative sales for FY 2026-27. "
-         f"Includes all orders from {FY_START.strftime('%d %b %Y')} "
-         f"to {today_dt.strftime('%d %b %Y')}."
-)
-k3.metric(
-    "💰 FY Gross Revenue", f"₹{_fmt_num(fy_sales)}",
-    help=f"Total order value (gross) for FY 2026-27 "
-         f"({FY_START.strftime('%d %b %Y')} to {today_dt.strftime('%d %b %Y')}). "
-         "Excludes orders with ₹0 value."
-)
-k4.metric(
-    "👥 Unique Customers", to_indian_number_string(total_cust, 0),
-    help="Count of unique CUSTOMER NAME entries across all FY 2026-27 orders."
-)
-k5.metric(
-    "🧾 Avg. Order Value", f"₹{_fmt_num(avg_basket)}",
-    help=f"Mean order value for FY 2026-27 "
-         f"({FY_START.strftime('%d %b %Y')} to {today_dt.strftime('%d %b %Y')}). "
-         "= FY Gross Revenue ÷ Total Orders."
-)
+# =========================================================
+# CURRENT-MONTH SALES REPORTS (refreshed every month)
+# Mirrors the figures shown on the "Monthly Sales Target vs
+# Achievement" page and the "MIS Update" page.
+# =========================================================
+_month_full = now.strftime("%B %Y")   # e.g. "June 2026"
+_month_name = now.strftime("%B")      # e.g. "June"
+
+st.subheader(f"📋 Sales Reports — {_month_full}")
 st.caption(
-    f"📅 All figures above are for **FY 2026-27** · "
-    f"Data from **{FY_START.strftime('%d %b %Y')}** to **{today_dt.strftime('%d %b %Y')}**"
+    f"Live monthly figures for **{_month_full}**. These reports cover the "
+    "current month only and refresh automatically at the start of every month."
+)
+
+with st.spinner("Loading current-month sales figures…"):
+    _monthly_target    = mm.get_monthly_target(_month_name)
+    _invoice_value     = mm.get_current_sales_invoice_value(_month_name)
+    _pending_order     = mm.get_pending_order_value()
+    _monthend_forecast = mm.get_monthend_forecast_value(today_dt)
+    _pending_target    = _monthly_target - (_invoice_value + _pending_order + _monthend_forecast)
+
+rA, rB, rC = st.columns(3)
+rA.metric(
+    "🎯 Monthly Sales Target",
+    f"₹{to_indian_number_string(_monthly_target, 0)}",
+    help=f"Sum of all sales-person targets for {_month_full} from "
+         "Incentive_Quarterly_Targets. Same figure as the Monthly Sales Target "
+         "vs Achievement page.",
+)
+rB.metric(
+    "✅ Current Sales Invoice Value",
+    f"₹{to_indian_number_string(_invoice_value, 0)}",
+    help=f"Total WFX invoice value (without tax) booked in {_month_full}. "
+         "Same as 'Current Sales Achievement' on the Monthly Sales Target vs "
+         "Achievement page.",
+)
+rC.metric(
+    "📦 Pending Order Value",
+    f"₹{to_indian_number_string(_pending_order, 0)}",
+    help="Total Net Basic of all pending MIS orders. Same figure as the "
+         "Pending Order Value on the MIS Update page.",
+)
+
+rD, rE, _rF = st.columns(3)
+rD.metric(
+    "📈 Month-end Forecast",
+    f"₹{to_indian_number_string(_monthend_forecast, 0)}",
+    help=f"Month-end forecast sale value for {_month_full} (sum of Total Net "
+         "Basic for all committed items). Same as 'Sales Forecast' on the "
+         "Monthly Sales Target vs Achievement page.",
+)
+rE.metric(
+    "⏳ Pending Target Value",
+    f"₹{to_indian_number_string(_pending_target, 0)}",
+    help="Monthly Sales Target − (Current Sales Invoice Value + Pending Order "
+         "Value + Month-end Forecast).",
+)
+
+st.caption(
+    "🧮 **Pending Target Value** = Monthly Sales Target − "
+    "(Current Sales Invoice Value + Pending Order Value + Month-end Forecast)"
 )
 
 st.divider()
 
 # =========================================================
-# SECTION 2 — Monthly Target Tracker (persistent)
-# =========================================================
-st.subheader("🎯 Monthly Target Tracker")
-
-# Auto-calculate monthly target by summing all salesperson targets for this month
-def _iq_store_monthly_target(month_int: int, year_int: int) -> float:
-    """Sum all salesperson targets from Incentive_Quarterly_Targets for the given month (in ₹)."""
-    if not _IQ_OK:
-        return 10_000_000.0
-    _MN = {1:"JANUARY",2:"FEBRUARY",3:"MARCH",4:"APRIL",5:"MAY",6:"JUNE",
-           7:"JULY",8:"AUGUST",9:"SEPTEMBER",10:"OCTOBER",11:"NOVEMBER",12:"DECEMBER"}
-    try:
-        iq_df = _get_iq_targets()
-        if iq_df is None or iq_df.empty:
-            return 10_000_000.0
-        fy = f"{str(year_int)[2:]}-{str(year_int+1)[2:]}" if month_int >= 4 \
-             else f"{str(year_int-1)[2:]}-{str(year_int)[2:]}"
-        mon = _MN.get(month_int, "").upper()
-        total = iq_df[(iq_df["FY"] == fy) & (iq_df["MONTH"].str.upper() == mon)]["TARGET"].sum()
-        return float(total) * 100_000 if total > 0 else 10_000_000.0
-    except Exception:
-        return 10_000_000.0
-
-_auto_monthly_target = _iq_store_monthly_target(now.month, now.year)
-
-# Use month-keyed session state so default resets each new month automatically
-_goal_month_key = f"_goal_month_{now.year}_{now.month}"
-if _goal_month_key not in st.session_state:
-    st.session_state["monthly_goal_persistent"] = _auto_monthly_target
-    st.session_state[_goal_month_key] = True
-
-t1, t2 = st.columns([1, 2])
-with t1:
-    monthly_goal = st.number_input(
-        "Set Monthly Target (₹)", min_value=100_000.0, step=100_000.0,
-        key="monthly_goal_persistent",
-        help=f"Auto-calculated from Incentive_Quarterly_Targets: ₹{to_indian_number_string(_auto_monthly_target, 0)}",
-    )
-
-ach_pct  = (m_sales / monthly_goal * 100) if monthly_goal else 0
-remain   = monthly_goal - m_sales
-last_day = (now.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(days=1)
-days_left = max((last_day.date() - today_dt).days + 1, 1)
-
-with t2:
-    st.markdown(f"**Achievement:** ₹{_fmt_num(m_sales)}  ·  **{ach_pct:.1f}%**")
-    st.progress(min(ach_pct / 100, 1.0))
-    if remain > 0:
-        st.warning(
-            f"🚩 Gap: **₹{_fmt_num(remain)}**  ·  Need ~₹{_fmt_num(remain / days_left)}/day "
-            f"for the next {days_left} day(s)."
-        )
-    else:
-        st.success("🏆 Goal achieved this month!")
-
-st.divider()
-
-# =========================================================
-# SECTION 3 — Trends
-# =========================================================
-st.subheader("📈 Revenue & Order Trends")
-
-# 3a — Monthly trend
-monthly = (
-    crm.dropna(subset=["MONTH_DT"])
-       .groupby("MONTH_DT")
-       .agg(REVENUE=("ORDER VALUE", "sum"),
-            ORDERS=("ORDER VALUE", "count"))
-       .reset_index()
-       .sort_values("MONTH_DT")
-)
-if not monthly.empty:
-    chart_rev = alt.Chart(monthly).mark_area(opacity=0.6, color="#2e7d32").encode(
-        x=alt.X("MONTH_DT:T", title="Month"),
-        y=alt.Y("REVENUE:Q", title="Revenue (₹)"),
-        tooltip=[alt.Tooltip("MONTH_DT:T", title="Month"),
-                 alt.Tooltip("REVENUE:Q", title="Revenue", format=",.0f"),
-                 "ORDERS"],
-    ).properties(height=260, title="Monthly Revenue")
-    chart_ord = alt.Chart(monthly).mark_line(point=True, color="#1565c0").encode(
-        x="MONTH_DT:T", y=alt.Y("ORDERS:Q", title="Orders"),
-    ).properties(height=260, title="Monthly Orders")
-    cA, cB = st.columns(2)
-    cA.altair_chart(chart_rev, use_container_width=True)
-    cB.altair_chart(chart_ord, use_container_width=True)
-
-# 3b — Day-of-week analysis
-day_perf = (
-    crm.dropna(subset=["DAY_NAME"])
-       .groupby(["WEEKDAY", "DAY_NAME"])
-       .agg(REVENUE=("ORDER VALUE", "sum"),
-            ORDERS=("ORDER VALUE", "count"))
-       .reset_index()
-       .sort_values("WEEKDAY")
-)
-if not day_perf.empty:
-    top_rev_day  = day_perf.loc[day_perf["REVENUE"].idxmax(), "DAY_NAME"]
-    top_foot_day = day_perf.loc[day_perf["ORDERS"].idxmax(),  "DAY_NAME"]
-
-    cA, cB, cC = st.columns(3)
-    cA.metric("💰 Highest Revenue Day", top_rev_day)
-    cB.metric("🚶 Peak Footfall Day",   top_foot_day)
-    cC.metric("📦 Avg Orders / Day",    f"{day_perf['ORDERS'].mean():.1f}")
-
-    melted = day_perf.melt(id_vars=["WEEKDAY", "DAY_NAME"],
-                           value_vars=["REVENUE", "ORDERS"], var_name="Metric")
-    chart_dow = alt.Chart(melted).mark_bar().encode(
-        x=alt.X("DAY_NAME:N", sort=day_perf["DAY_NAME"].tolist(), title="Day"),
-        y=alt.Y("value:Q", title=""),
-        color="Metric:N",
-        column=alt.Column("Metric:N", title=""),
-        tooltip=["DAY_NAME", "Metric", alt.Tooltip("value:Q", format=",.0f")],
-    ).resolve_scale(y="independent").properties(height=240)
-    st.altair_chart(chart_dow, use_container_width=True)
-
-st.divider()
-
-# =========================================================
-# SECTION 4 — Sales Person leaderboard + GMB
+# SECTION — Sales Person leaderboard + GMB
 # =========================================================
 st.subheader("🏆 Sales Person Leaderboard")
 
