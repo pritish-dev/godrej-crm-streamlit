@@ -55,6 +55,8 @@ _OPS_SHEETS: frozenset[str] = frozenset({
     "Sales Team",
     "SALES_TEAM_TASK",
     "Happy Calling Sheet",
+    "SHEET_DETAILS",
+    "OLD_SHEET_DETAILS",
 })
 
 # Sheet name prefixes that always belong to the OPS spreadsheet
