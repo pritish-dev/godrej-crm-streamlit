@@ -27,6 +27,7 @@ Implementation notes
 """
 from __future__ import annotations
 
+import calendar
 import os
 import re
 import sys
@@ -34,6 +35,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import altair as alt
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -49,6 +51,168 @@ from services.invoice_email_import import (  # noqa: E402
     save_invoices_to_sheet,
     configured_invoice_inboxes,
 )
+
+_sr_load_invoice_sheet = load_invoice_sheet
+
+# ── Target-tracker service imports ────────────────────────────────────────────
+try:
+    from services.incentive_store import (
+        get_targets_df as _sr_get_iq_targets_df,
+        upsert_target as _sr_upsert_iq_target,
+    )
+    _SR_IQ_AVAILABLE = True
+except Exception:
+    _SR_IQ_AVAILABLE = False
+
+try:
+    from services.drive_invoice_achievement import (
+        get_drive_achievement as _sr_get_drive_achievement,
+        compute_drive_achievement_for_month as _sr_compute_drive_achievement_for_month,
+        load_achievement_from_sheet as _sr_load_achievement_from_sheet,
+        _MONTH_NUM_TO_NAME as _SR_DRIVE_MONTH_NAMES,
+    )
+    _SR_DRIVE_ACHIEVEMENT_AVAILABLE = True
+except Exception:
+    _SR_DRIVE_ACHIEVEMENT_AVAILABLE = False
+
+_SR_MONTH_NAMES = {
+    1: "JANUARY", 2: "FEBRUARY", 3: "MARCH", 4: "APRIL",
+    5: "MAY", 6: "JUNE", 7: "JULY", 8: "AUGUST",
+    9: "SEPTEMBER", 10: "OCTOBER", 11: "NOVEMBER", 12: "DECEMBER",
+}
+
+_SR_QUOTES = [
+    ("Champions keep playing until they get it right.", "Billie Jean King"),
+    ("Success is not final, failure is not fatal — it is the courage to continue that counts.", "Winston Churchill"),
+    ("The secret of getting ahead is getting started.", "Mark Twain"),
+    ("Great salespeople are relationship builders who provide value and help their customers win.", "Jeffrey Gitomer"),
+    ("Your attitude, not your aptitude, will determine your altitude.", "Zig Ziglar"),
+    ("Don't watch the clock; do what it does — keep going.", "Sam Levenson"),
+    ("The difference between ordinary and extraordinary is that little extra.", "Jimmy Johnson"),
+    ("Every sale has five basic obstacles: no need, no money, no hurry, no desire, no trust.", "Zig Ziglar"),
+    ("Ninety percent of selling is conviction and ten percent is persuasion.", "Shiv Khera"),
+    ("Opportunities don't happen. You create them.", "Chris Grosser"),
+]
+_sr_quote_text, _sr_quote_author = _SR_QUOTES[date.today().timetuple().tm_yday % len(_SR_QUOTES)]
+
+
+def _sr_get_fy_str(month_int: int, year_int: int) -> str:
+    if month_int >= 4:
+        return f"{str(year_int)[2:]}-{str(year_int + 1)[2:]}"
+    return f"{str(year_int - 1)[2:]}-{str(year_int)[2:]}"
+
+
+def _sr_iq_target_rupees(sales_person: str, month_int: int, year_int: int) -> float:
+    if not _SR_IQ_AVAILABLE:
+        return 0.0
+    try:
+        iq_df = _sr_get_iq_targets_df()
+        if iq_df is None or iq_df.empty:
+            return 0.0
+        fy  = _sr_get_fy_str(month_int, year_int)
+        mon = _SR_MONTH_NAMES.get(month_int, "").upper()
+        match = iq_df[
+            (iq_df["SALES PERSON"].str.upper() == sales_person.strip().upper()) &
+            (iq_df["FY"] == fy) &
+            (iq_df["MONTH"].str.upper() == mon)
+        ]
+        if not match.empty:
+            return float(match.iloc[0]["TARGET"]) * 100_000
+    except Exception:
+        pass
+    return 0.0
+
+
+@st.cache_data(ttl=120)
+def _sr_load_iq_sales_people() -> list:
+    if not _SR_IQ_AVAILABLE:
+        return []
+    try:
+        df = _sr_get_iq_targets_df()
+        if df is None or df.empty:
+            return []
+        return sorted(
+            df["SALES PERSON"].dropna().astype(str).str.strip().str.upper()
+            .replace("", pd.NA).dropna().unique().tolist()
+        )
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=120)
+def _sr_load_invoice_achievement(month_name: str) -> pd.DataFrame:
+    empty = pd.DataFrame(columns=["SALES PERSON", "AMOUNT"])
+    if month_name == "":
+        return empty
+    try:
+        df = _sr_load_invoice_sheet(month_name)
+    except Exception:
+        return empty
+    if df is None or df.empty:
+        return empty
+    df.columns = [str(c).strip() for c in df.columns]
+    if "Sales Executive" not in df.columns or "Taxable Value" not in df.columns:
+        return empty
+    if "Customer Code Name" in df.columns:
+        wfx_mask = (
+            df["Customer Code Name"].fillna("").astype(str).str.strip().str.upper()
+            .str.startswith("WFX")
+        )
+        df = df[wfx_mask].copy()
+    if df.empty:
+        return empty
+    df["AMOUNT"] = pd.to_numeric(
+        df["Taxable Value"].astype(str).str.replace(r"[₹,]", "", regex=True),
+        errors="coerce",
+    ).fillna(0.0)
+    df["SALES PERSON"] = df["Sales Executive"].astype(str).str.strip().str.upper()
+    df = df[df["SALES PERSON"] != ""]
+    if df.empty:
+        return empty
+    return df.groupby("SALES PERSON", as_index=False)["AMOUNT"].sum()
+
+
+def _sr_compute_achievement(sales_person: str, month: int, year: int) -> float:
+    if _SR_DRIVE_ACHIEVEMENT_AVAILABLE:
+        try:
+            return _sr_get_drive_achievement(sales_person, month, year)
+        except Exception:
+            pass
+    grp = _sr_load_invoice_achievement(calendar.month_name[month])
+    if grp is None or grp.empty:
+        return 0.0
+    match = grp[grp["SALES PERSON"] == sales_person.strip().upper()]
+    return float(match["AMOUNT"].sum()) if not match.empty else 0.0
+
+
+def _sr_fmt_money(v) -> str:
+    try:
+        f = float(v)
+    except Exception:
+        return str(v) if v is not None else ""
+    if pd.isna(f):
+        return ""
+    if float(f).is_integer():
+        return to_indian_number_string(f, 0)
+    s = to_indian_number_string(f, 2)
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    return s
+
+
+def _sr_fmt_money_rs(v) -> str:
+    try:
+        f = float(v)
+    except Exception:
+        return str(v) if v is not None else ""
+    if pd.isna(f):
+        return ""
+    if float(f).is_integer():
+        return f"₹{to_indian_number_string(f, 0)}"
+    s = to_indian_number_string(f, 2)
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    return f"₹{s}"
 
 st.set_page_config(page_title="Sales Reports and Strategy", layout="wide")
 
@@ -535,6 +699,389 @@ else:
             """,
             unsafe_allow_html=True,
         )
+
+st.divider()
+
+# =========================================================
+# SECTION — Week-over-Week Comparison
+# =========================================================
+st.subheader("📈 Week-over-Week Comparison")
+
+_sr_today_d  = today_dt
+_sr_this_mon = _sr_today_d - timedelta(days=_sr_today_d.weekday())
+_sr_last_mon = _sr_this_mon - timedelta(weeks=1)
+_sr_last_sun = _sr_this_mon - timedelta(days=1)
+
+if "ORDER DATE" in crm_all.columns:
+    _sr_crm_raw = crm_all.copy()
+    _sr_crm_raw["_DATE_DT"] = _sr_crm_raw["ORDER DATE"].dt.date
+    _sr_this_week_data = _sr_crm_raw[
+        (_sr_crm_raw["_DATE_DT"] >= _sr_this_mon) & (_sr_crm_raw["_DATE_DT"] <= _sr_today_d)
+    ]
+    _sr_last_week_data = _sr_crm_raw[
+        (_sr_crm_raw["_DATE_DT"] >= _sr_last_mon) & (_sr_crm_raw["_DATE_DT"] <= _sr_last_sun)
+    ]
+
+    _sr_this_week_total = _sr_this_week_data["ORDER VALUE"].sum()
+    _sr_last_week_total = _sr_last_week_data["ORDER VALUE"].sum()
+    _sr_wow_delta       = _sr_this_week_total - _sr_last_week_total
+    _sr_wow_pct         = ((_sr_wow_delta / _sr_last_week_total) * 100) if _sr_last_week_total > 0 else 0.0
+
+    _sr_w1, _sr_w2, _sr_w3 = st.columns(3)
+    _sr_w1.metric(
+        f"This Week ({_sr_this_mon.strftime('%d %b')} – {_sr_today_d.strftime('%d %b')})",
+        f"₹{_sr_fmt_money(_sr_this_week_total)}",
+    )
+    _sr_w2.metric(
+        f"Last Week ({_sr_last_mon.strftime('%d %b')} – {_sr_last_sun.strftime('%d %b')})",
+        f"₹{_sr_fmt_money(_sr_last_week_total)}",
+    )
+    _sr_w3.metric(
+        "Change",
+        f"₹{_sr_fmt_money(abs(_sr_wow_delta))}",
+        delta=f"{_sr_wow_pct:+.1f}%",
+        delta_color="normal",
+    )
+
+    _sr_day_abbrs = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    _sr_this_week_labels = [
+        f"{_sr_day_abbrs[i]}<br>{(_sr_this_mon + timedelta(days=i)).strftime('%d %b')}"
+        for i in range(7)
+    ]
+    _sr_last_week_labels = [
+        f"{_sr_day_abbrs[i]}<br>{(_sr_last_mon + timedelta(days=i)).strftime('%d %b')}"
+        for i in range(7)
+    ]
+
+    def _sr_daily_by_dow(data, ref_monday):
+        out = [0.0] * 7
+        for _, row in data.iterrows():
+            dow = (row["_DATE_DT"] - ref_monday).days
+            if 0 <= dow <= 6:
+                out[dow] += row["ORDER VALUE"]
+        return out
+
+    _sr_this_vals = _sr_daily_by_dow(_sr_this_week_data, _sr_this_mon)
+    _sr_last_vals = _sr_daily_by_dow(_sr_last_week_data, _sr_last_mon)
+
+    _sr_fig_wow = go.Figure()
+    _sr_fig_wow.add_trace(go.Bar(name="Last Week", x=_sr_last_week_labels, y=_sr_last_vals,
+                                 marker_color="#90caf9", opacity=0.8))
+    _sr_fig_wow.add_trace(go.Bar(name="This Week", x=_sr_this_week_labels, y=_sr_this_vals,
+                                 marker_color="#1a237e", opacity=0.9))
+    _sr_fig_wow.update_layout(
+        barmode="group", height=300, margin=dict(t=20, b=20),
+        yaxis_title="Order Value (₹)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    _sr_fig_wow.update_yaxes(tickprefix="₹", tickformat=",.0f")
+    st.plotly_chart(_sr_fig_wow, use_container_width=True)
+else:
+    st.info("Week-over-Week data not available.")
+
+st.divider()
+
+# =========================================================
+# SECTION — Sales Targets & Achievement
+# =========================================================
+
+with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
+
+    st.markdown(f"""
+    <div style="background:linear-gradient(135deg,#1a237e,#283593);
+                padding:20px 28px;border-radius:10px;margin-bottom:24px">
+      <div style="font-size:20px;font-weight:bold;color:#fff;margin-bottom:6px">
+        \U0001f4aa Today's Motivation for the Team
+      </div>
+      <div style="font-size:16px;font-style:italic;color:#c5cae9;line-height:1.5">
+        "{_sr_quote_text}"
+      </div>
+      <div style="font-size:13px;color:#9fa8da;margin-top:8px">
+        — {_sr_quote_author}
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    _sr_sales_people = _sr_load_iq_sales_people()
+
+    if not _sr_sales_people:
+        st.warning(
+            "No salespeople found in the 'Incentive_Quarterly_Targets' sheet. "
+            "Add target rows there first."
+        )
+    else:
+        st.subheader("✏️ Set / Update Monthly Target")
+
+        with st.form("sr_set_target_form", clear_on_submit=False):
+            _sr_fc1, _sr_fc2, _sr_fc3, _sr_fc4 = st.columns([2, 1, 1, 2])
+
+            with _sr_fc1:
+                _sr_selected_sp = st.selectbox(
+                    "Sales Person", options=_sr_sales_people,
+                    help="Salespeople are read from the Incentive_Quarterly_Targets sheet",
+                )
+            with _sr_fc2:
+                _sr_today_form = datetime.now().date()
+                _sr_selected_month = st.selectbox(
+                    "Month",
+                    options=list(range(1, 13)),
+                    index=_sr_today_form.month - 1,
+                    format_func=lambda m: calendar.month_name[m],
+                )
+            with _sr_fc3:
+                _sr_selected_year = st.selectbox(
+                    "Year",
+                    options=list(range(2026, _sr_today_form.year + 2)),
+                    index=0,
+                )
+            with _sr_fc4:
+                _sr_existing_target = _sr_iq_target_rupees(_sr_selected_sp, _sr_selected_month, _sr_selected_year)
+                _sr_target_value = st.number_input(
+                    "Target (₹)", min_value=0.0,
+                    value=_sr_existing_target, step=50000.0, format="%.2f",
+                    help="Enter the target in rupees (e.g. 2000000). Saved in Lakh.",
+                )
+
+            _sr_submitted = st.form_submit_button("💾 Save Target", use_container_width=True, type="primary")
+            if _sr_submitted:
+                if not _SR_IQ_AVAILABLE:
+                    st.error("❌ Incentive_Quarterly_Targets service is unavailable.")
+                else:
+                    _sr_target_lakh = float(_sr_target_value) / 100_000
+                    _sr_fy = _sr_get_fy_str(_sr_selected_month, _sr_selected_year)
+                    _sr_mon_name = _SR_MONTH_NAMES.get(_sr_selected_month, "")
+                    try:
+                        _sr_msg = _sr_upsert_iq_target(_sr_selected_sp, _sr_fy, _sr_mon_name, _sr_target_lakh)
+                    except Exception as _sr_exc:
+                        _sr_msg = f"❌ Failed to save target: {_sr_exc}"
+                    if _sr_msg.startswith("✅"):
+                        st.success(_sr_msg)
+                        st.cache_data.clear()
+                    else:
+                        st.error(_sr_msg)
+
+        st.divider()
+
+        st.subheader("📊 Target vs Achievement (BILL SALES without GST)")
+
+        _sr_today_tgt = datetime.now().date()
+        _sr_tfc1, _sr_tfc2 = st.columns(2)
+        with _sr_tfc1:
+            _sr_view_from = st.date_input(
+                "From (Month Start)", value=_sr_today_tgt.replace(day=1),
+                min_value=FY_START, max_value=_sr_today_tgt, key="sr_tgt_from",
+                help="Defaults to current month. Change to view earlier months.",
+            )
+            _sr_view_from = _sr_view_from.replace(day=1)
+        with _sr_tfc2:
+            _sr_view_to = st.date_input(
+                "To (Month End)", value=_sr_today_tgt,
+                min_value=FY_START, max_value=_sr_today_tgt, key="sr_tgt_to",
+            )
+            _sr_last_day = calendar.monthrange(_sr_view_to.year, _sr_view_to.month)[1]
+            _sr_view_to  = _sr_view_to.replace(day=_sr_last_day)
+
+        _sr_month_list = []
+        _sr_cur = _sr_view_from.replace(day=1)
+        while _sr_cur <= _sr_view_to:
+            _sr_month_list.append((_sr_cur.month, _sr_cur.year))
+            _sr_nm = _sr_cur.month + 1
+            _sr_ny = _sr_cur.year
+            if _sr_nm > 12:
+                _sr_nm = 1
+                _sr_ny += 1
+            _sr_cur = date(_sr_ny, _sr_nm, 1)
+
+        if _SR_DRIVE_ACHIEVEMENT_AVAILABLE:
+            _sr_ref_col, _sr_info_col = st.columns([1, 3])
+            with _sr_ref_col:
+                _sr_refresh_clicked = st.button(
+                    "🔄 Refresh Achievement from Drive",
+                    type="secondary",
+                    use_container_width=True,
+                    key="sr_refresh_drive_achievement",
+                    help=(
+                        "Re-reads all invoice PDFs from the '4s Delivery Invoices' "
+                        "Google Drive folder for the selected months."
+                    ),
+                )
+            with _sr_info_col:
+                st.caption(
+                    "Achievement = total invoice value **without GST** from Drive PDFs.  "
+                    "Data is cached in *Monthly Sales value without GST* sheet."
+                )
+
+            if _sr_refresh_clicked:
+                with st.spinner("Scanning Drive invoices and updating achievement sheet…"):
+                    _sr_refresh_results = {}
+                    for _sr_rm2, _sr_ry2 in _sr_month_list:
+                        try:
+                            _sr_agg = _sr_compute_drive_achievement_for_month(_sr_rm2, _sr_ry2, write_to_sheet=True)
+                            _sr_refresh_results[f"{_SR_DRIVE_MONTH_NAMES.get(_sr_rm2, str(_sr_rm2))} {_sr_ry2}"] = _sr_agg
+                        except Exception as _sr_re:
+                            _sr_refresh_results[f"{_SR_DRIVE_MONTH_NAMES.get(_sr_rm2, str(_sr_rm2))} {_sr_ry2}"] = {"error": str(_sr_re)}
+
+                st.success("✅ Achievement refreshed from Drive invoices.")
+                for _sr_mkey, _sr_mdata in _sr_refresh_results.items():
+                    if "error" in _sr_mdata:
+                        st.warning(f"⚠️ {_sr_mkey}: {_sr_mdata['error']}")
+                    elif _sr_mdata:
+                        _sr_lines = [f"**{_sp}**: ₹{to_indian_number_string(_amt, 2)}" for _sp, _amt in sorted(_sr_mdata.items())]
+                        st.write(f"**{_sr_mkey}** — " + "  ·  ".join(_sr_lines))
+                    else:
+                        st.info(f"ℹ️ {_sr_mkey}: No invoices found in Drive.")
+
+                st.cache_data.clear()
+                st.rerun()
+
+        _sr_all_sp = sorted(set(s.strip().upper() for s in _sr_sales_people))
+
+        _sr_rows = []
+        for _sr_sp in _sr_all_sp:
+            for _sr_m, _sr_y in _sr_month_list:
+                _sr_target      = _sr_iq_target_rupees(_sr_sp, _sr_m, _sr_y)
+                _sr_achievement = _sr_compute_achievement(_sr_sp, _sr_m, _sr_y)
+                _sr_rows.append({
+                    "Month":            f"{calendar.month_name[_sr_m]} {_sr_y}",
+                    "_month":           _sr_m,
+                    "_year":            _sr_y,
+                    "Sales Person":     _sr_sp,
+                    "Target (₹)":       _sr_target,
+                    "Achievement (₹)":  _sr_achievement,
+                    "Achieved %":       round((_sr_achievement / _sr_target * 100), 1) if _sr_target > 0 else 0.0,
+                })
+
+        _sr_result_df = pd.DataFrame(_sr_rows)
+        _sr_result_df = _sr_result_df[
+            (_sr_result_df["Target (₹)"] > 0) | (_sr_result_df["Achievement (₹)"] > 0)
+        ].copy()
+        _sr_result_df = _sr_result_df.sort_values(
+            ["_year", "_month", "Sales Person"]
+        ).reset_index(drop=True)
+
+        if _sr_result_df.empty:
+            st.info("No targets set or sales recorded in this date range. Use the form above to set targets.")
+        else:
+            _sr_achieved_count  = int((_sr_result_df["Achieved %"] >= 100).sum())
+            _sr_total_sp_months = len(_sr_result_df)
+            _sr_overall_pct     = (
+                _sr_result_df["Achievement (₹)"].sum() / _sr_result_df["Target (₹)"].sum() * 100
+                if _sr_result_df["Target (₹)"].sum() > 0 else 0.0
+            )
+
+            if _sr_achieved_count == _sr_total_sp_months:
+                _sr_mc, _sr_mi = "#2e7d32", "🏆"
+                _sr_mt = (f"Outstanding! Every salesperson has hit their target. "
+                          f"The entire team is firing on all cylinders — keep this momentum going!")
+            elif _sr_achieved_count > 0:
+                _sr_mc, _sr_mi = "#1565c0", "🌟"
+                _sr_mt = (f"{_sr_achieved_count} out of {_sr_total_sp_months} salesperson-months have crossed "
+                          f"the target! The team is at {_sr_overall_pct:.1f}% overall — "
+                          f"push harder and bring everyone across the finish line!")
+            elif _sr_overall_pct >= 80:
+                _sr_mc, _sr_mi = "#e65100", "💪"
+                _sr_mt = (f"So close! The team is at {_sr_overall_pct:.1f}% of target. "
+                          f"One final push this month can make all the difference — you've got this!")
+            else:
+                _sr_mc, _sr_mi = "#b71c1c", "🔥"
+                _sr_mt = (f"The team is at {_sr_overall_pct:.1f}% of target. "
+                          f"Every conversation is an opportunity — believe in yourselves and make it happen!")
+
+            st.markdown(f"""
+            <div style="background:{_sr_mc}18;border-left:5px solid {_sr_mc};
+                        padding:14px 20px;border-radius:6px;margin-bottom:16px">
+                <span style="font-size:20px">{_sr_mi}</span>
+                <span style="font-size:15px;color:{_sr_mc};font-weight:600;margin-left:8px">
+                    {_sr_mt}
+                </span>
+            </div>
+            """, unsafe_allow_html=True)
+
+            _sr_sk1, _sr_sk2, _sr_sk3, _sr_sk4 = st.columns(4)
+            _sr_sk1.metric("🎯 Total Target",      f"₹{_sr_fmt_money(_sr_result_df['Target (₹)'].sum())}")
+            _sr_sk2.metric("💰 Total Achievement", f"₹{_sr_fmt_money(_sr_result_df['Achievement (₹)'].sum())}")
+            _sr_sk3.metric("📈 Overall %",         f"{_sr_overall_pct:.1f}%")
+            _sr_sk4.metric("🏅 Targets Hit",       f"{_sr_achieved_count} / {_sr_total_sp_months}")
+
+            def _sr_row_style(row):
+                pct = row["Achieved %"]
+                tgt = row["Target (₹)"]
+                if tgt == 0:
+                    return ["background-color:#f5f5f5"] * len(row)
+                if pct >= 100:
+                    return ["background-color:#c8e6c9;font-weight:bold"] * len(row)
+                if pct >= 80:
+                    return ["background-color:#fff3e0"] * len(row)
+                return ["background-color:#ffcdd2"] * len(row)
+
+            _sr_styled_df = (
+                _sr_result_df[["Month", "Sales Person", "Target (₹)", "Achievement (₹)", "Achieved %"]]
+                .copy()
+                .style
+                .apply(_sr_row_style, axis=1)
+                .format({
+                    "Target (₹)":      _sr_fmt_money_rs,
+                    "Achievement (₹)": _sr_fmt_money_rs,
+                    "Achieved %":      lambda v: f"{v:.1f}% ✅" if v >= 100 else f"{v:.1f}%",
+                })
+            )
+
+            st.dataframe(_sr_styled_df, use_container_width=True, hide_index=True)
+            st.caption(
+                "🟢 Green = Target achieved (≥100%)  ·  "
+                "🟠 Orange = Close (80–99%)  ·  "
+                "🔴 Red = Needs attention (<80%)"
+            )
+            st.caption(
+                "Target source: **Incentive_Quarterly_Targets** (Lakh).  "
+                "Achievement source: **bill sales (without GST)** from invoice PDFs "
+                "in the *4s Delivery Invoices* Google Drive folder."
+            )
+
+            _sr_cur_m, _sr_cur_y = _sr_today_tgt.month, _sr_today_tgt.year
+            _sr_chart_df = _sr_result_df[
+                (_sr_result_df["_month"] == _sr_cur_m) & (_sr_result_df["_year"] == _sr_cur_y)
+            ].copy()
+
+            if not _sr_chart_df.empty:
+                _sr_has_achievement = _sr_chart_df["Achievement (₹)"].sum() > 0
+                st.subheader(f"📊 {calendar.month_name[_sr_cur_m]} {_sr_cur_y} — Team Snapshot")
+                if _sr_has_achievement:
+                    _sr_fig2 = go.Figure()
+                    _sr_fig2.add_trace(go.Bar(
+                        name="Target",
+                        x=_sr_chart_df["Sales Person"],
+                        y=_sr_chart_df["Target (₹)"],
+                        marker_color="#90caf9",
+                        opacity=0.85,
+                    ))
+                    _sr_fig2.add_trace(go.Bar(
+                        name="Achievement",
+                        x=_sr_chart_df["Sales Person"],
+                        y=_sr_chart_df["Achievement (₹)"],
+                        marker_color=[
+                            "#2e7d32" if v >= t else ("#e65100" if v >= 0.8 * t else "#c62828")
+                            for v, t in zip(_sr_chart_df["Achievement (₹)"], _sr_chart_df["Target (₹)"])
+                        ],
+                        opacity=0.9,
+                    ))
+                    _sr_fig2.update_layout(
+                        barmode="group",
+                        height=350,
+                        yaxis_title="Amount (₹)",
+                        margin=dict(t=20, b=40),
+                        legend=dict(
+                            orientation="h", yanchor="bottom", y=1.02,
+                            xanchor="right", x=1,
+                        ),
+                    )
+                    _sr_fig2.update_yaxes(tickprefix="₹", tickformat=",.0f")
+                    st.plotly_chart(_sr_fig2, use_container_width=True)
+                else:
+                    st.info(
+                        f"No sales recorded yet for {calendar.month_name[_sr_cur_m]} {_sr_cur_y}. "
+                        "The chart will appear once achievement data is available."
+                    )
 
 st.divider()
 

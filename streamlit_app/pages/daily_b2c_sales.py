@@ -623,6 +623,45 @@ if not df_display.empty and all_execs:
     ) if not df_reviews.empty else 0
 
     st.divider()
+
+    # ── Sales Person Leaderboard — This Month ─────────────────────────────────
+    st.subheader("🏆 Sales Person Leaderboard — This Month")
+
+    _lb_month_start = TODAY.replace(day=1)
+    _lb_data = crm_raw[
+        (crm_raw["DATE_DT"] >= _lb_month_start) &
+        (crm_raw["DATE_DT"] <= TODAY) &
+        (crm_raw["SALES PERSON"].astype(str).str.strip() != "")
+    ].copy()
+
+    if not _lb_data.empty:
+        _lb = (
+            _lb_data.groupby("SALES PERSON", as_index=False)
+            .agg(
+                Sales_Count = ("GROSS AMT", "count"),
+                Total_Value = ("GROSS AMT", "sum"),
+            )
+            .sort_values("Total_Value", ascending=False)
+            .reset_index(drop=True)
+        )
+        _lb.index = _lb.index + 1
+        _lb.index.name = "Rank"
+        _lb["Total_Value"] = _lb["Total_Value"].apply(lambda v: f"₹{_fmt_money(v)}")
+        _lb.columns = ["Sales Person", "Orders", "Total Value (Ex-Tax)"]
+
+        def _lb_style(row):
+            if row.name == 1:
+                return ["background-color:#c8e6c9;font-weight:bold"] * len(row)
+            return [""] * len(row)
+
+        st.dataframe(_lb.style.apply(_lb_style, axis=1), use_container_width=True)
+        st.caption(
+            f"Data: {_lb_month_start.strftime('%d %b')} – {TODAY.strftime('%d %b %Y')}  ·  🥇 = top performer this month"
+        )
+    else:
+        st.info("No sales data for this month yet.")
+
+    st.divider()
     st.subheader("⭐ Google My Business — Reviews Collected by Sales Executive")
 
     # ── Secrets diagnostic (✅ found / ❌ missing — never prints the value) ──
@@ -977,429 +1016,7 @@ if not df_display.empty and all_execs:
             "above to pull them on demand."
         )
 
-    # ── Week-over-Week Trend ───────────────────────────────────────────────────
-    st.divider()
-    st.subheader("📈 Week-over-Week Comparison")
-
-    _today_d   = TODAY
-    _this_mon  = _today_d - timedelta(days=_today_d.weekday())
-    _last_mon  = _this_mon - timedelta(weeks=1)
-    _last_sun  = _this_mon - timedelta(days=1)
-
-    _this_week_data = crm_raw[(crm_raw["DATE_DT"] >= _this_mon) & (crm_raw["DATE_DT"] <= _today_d)]
-    _last_week_data = crm_raw[(crm_raw["DATE_DT"] >= _last_mon) & (crm_raw["DATE_DT"] <= _last_sun)]
-    if selected_source != "All":
-        _this_week_data = _this_week_data[_this_week_data["SOURCE"] == selected_source]
-        _last_week_data = _last_week_data[_last_week_data["SOURCE"] == selected_source]
-
-    _this_week_total = _this_week_data["GROSS AMT"].sum()
-    _last_week_total = _last_week_data["GROSS AMT"].sum()
-    _wow_delta       = _this_week_total - _last_week_total
-    _wow_pct         = ((_wow_delta / _last_week_total) * 100) if _last_week_total > 0 else 0.0
-
-    _w1, _w2, _w3 = st.columns(3)
-    _w1.metric(
-        f"This Week ({_this_mon.strftime('%d %b')} – {_today_d.strftime('%d %b')})",
-        f"₹{_fmt_money(_this_week_total)}",
-    )
-    _w2.metric(
-        f"Last Week ({_last_mon.strftime('%d %b')} – {_last_sun.strftime('%d %b')})",
-        f"₹{_fmt_money(_last_week_total)}",
-    )
-    _w3.metric(
-        "Change",
-        f"₹{_fmt_money(abs(_wow_delta))}",
-        delta=f"{_wow_pct:+.1f}%",
-        delta_color="normal",
-    )
-
-    _day_abbrs = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-
-    # Build X-axis labels with day name + actual date for each week
-    _this_week_labels = [
-        f"{_day_abbrs[i]}<br>{(_this_mon + timedelta(days=i)).strftime('%d %b')}"
-        for i in range(7)
-    ]
-    _last_week_labels = [
-        f"{_day_abbrs[i]}<br>{(_last_mon + timedelta(days=i)).strftime('%d %b')}"
-        for i in range(7)
-    ]
-
-    def _daily_by_dow(data, ref_monday):
-        out = [0.0] * 7
-        for _, row in data.iterrows():
-            dow = (row["DATE_DT"] - ref_monday).days
-            if 0 <= dow <= 6:
-                out[dow] += row["GROSS AMT"]
-        return out
-
-    _this_vals = _daily_by_dow(_this_week_data, _this_mon)
-    _last_vals = _daily_by_dow(_last_week_data, _last_mon)
-
-    _fig = go.Figure()
-    _fig.add_trace(go.Bar(name="Last Week", x=_last_week_labels, y=_last_vals,
-                          marker_color="#90caf9", opacity=0.8))
-    _fig.add_trace(go.Bar(name="This Week", x=_this_week_labels, y=_this_vals,
-                          marker_color="#1a237e", opacity=0.9))
-    _fig.update_layout(
-        barmode="group", height=300, margin=dict(t=20, b=20),
-        yaxis_title="Gross Sales (₹)",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    )
-    _fig.update_yaxes(tickprefix="₹", tickformat=",.0f")
-    st.plotly_chart(_fig, use_container_width=True)
 
 else:
     st.info("No sales data found for the selected filters.")
 
-
-# ═════════════════════════════════════════════════════════════════════════════
-# SECTION — SALES TARGETS & ACHIEVEMENT
-# ═════════════════════════════════════════════════════════════════════════════
-
-st.divider()
-
-with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
-
-    # Motivational banner
-    st.markdown(f"""
-    <div style="background:linear-gradient(135deg,#1a237e,#283593);
-                padding:20px 28px;border-radius:10px;margin-bottom:24px">
-      <div style="font-size:20px;font-weight:bold;color:#fff;margin-bottom:6px">
-        💪 Today's Motivation for the Team
-      </div>
-      <div style="font-size:16px;font-style:italic;color:#c5cae9;line-height:1.5">
-        "{_quote_text}"
-      </div>
-      <div style="font-size:13px;color:#9fa8da;margin-top:8px">
-        — {_quote_author}
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # Salespeople driving both the dropdown and the table now come from the
-    # Incentive_Quarterly_Targets sheet (single source of truth for targets).
-    sales_people = load_iq_sales_people()
-
-    if not sales_people:
-        st.warning(
-            "No salespeople found in the 'Incentive_Quarterly_Targets' sheet. "
-            "Add target rows there first."
-        )
-    else:
-        # ── Set / Update Monthly Target ───────────────────────────────────────
-        st.subheader("✏️ Set / Update Monthly Target")
-
-        with st.form("set_target_form", clear_on_submit=False):
-            fc1, fc2, fc3, fc4 = st.columns([2, 1, 1, 2])
-
-            with fc1:
-                selected_sp = st.selectbox(
-                    "Sales Person", options=sales_people,
-                    help="Salespeople are read from the Incentive_Quarterly_Targets sheet",
-                )
-            with fc2:
-                _today = datetime.now().date()
-                selected_month = st.selectbox(
-                    "Month",
-                    options=list(range(1, 13)),
-                    index=_today.month - 1,
-                    format_func=lambda m: calendar.month_name[m],
-                )
-            with fc3:
-                selected_year = st.selectbox(
-                    "Year",
-                    options=list(range(2026, _today.year + 2)),
-                    index=0,
-                )
-            with fc4:
-                # Current value comes straight from Incentive_Quarterly_Targets
-                # (stored in Lakh, shown here in ₹).
-                existing_target = _iq_target_rupees(selected_sp, selected_month, selected_year)
-
-                target_value = st.number_input(
-                    "Target (₹)", min_value=0.0,
-                    value=existing_target, step=50000.0, format="%.2f",
-                    help=(
-                        "Enter the target in rupees (e.g. 2000000). It is saved to "
-                        "Incentive_Quarterly_Targets in Lakh (2000000 → 20)."
-                    ),
-                )
-
-            submitted = st.form_submit_button("💾 Save Target", use_container_width=True, type="primary")
-            if submitted:
-                if not _IQ_AVAILABLE:
-                    st.error("❌ Incentive_Quarterly_Targets service is unavailable.")
-                else:
-                    # Convert ₹ → Lakh so the sheet stays in Lakh units.
-                    _target_lakh = float(target_value) / 100_000
-                    _fy = _get_fy_str(selected_month, selected_year)
-                    _mon_name = _MONTH_NAMES.get(selected_month, "")
-                    try:
-                        msg = _upsert_iq_target(selected_sp, _fy, _mon_name, _target_lakh)
-                    except Exception as exc:
-                        msg = f"❌ Failed to save target: {exc}"
-                    if msg.startswith("✅"):
-                        st.success(msg)
-                        st.cache_data.clear()
-                    else:
-                        st.error(msg)
-
-        st.divider()
-
-        # ── Target vs Achievement Table ───────────────────────────────────────
-        st.subheader("📊 Target vs Achievement (BILL SALES without GST)")
-
-        _today = datetime.now().date()
-        tfc1, tfc2 = st.columns(2)
-        with tfc1:
-            view_from = st.date_input(
-                "From (Month Start)", value=_today.replace(day=1),
-                min_value=FY_START, max_value=_today, key="tgt_from",
-                help="Defaults to current month. Change to view earlier months.",
-            )
-            view_from = view_from.replace(day=1)
-        with tfc2:
-            view_to = st.date_input(
-                "To (Month End)", value=_today,
-                min_value=FY_START, max_value=_today, key="tgt_to",
-            )
-            _last_day = calendar.monthrange(view_to.year, view_to.month)[1]
-            view_to   = view_to.replace(day=_last_day)
-
-        # Build month list in range
-        month_list = []
-        _cur = view_from.replace(day=1)
-        while _cur <= view_to:
-            month_list.append((_cur.month, _cur.year))
-            _nm = _cur.month + 1
-            _ny = _cur.year
-            if _nm > 12:
-                _nm = 1
-                _ny += 1
-            _cur = date(_ny, _nm, 1)
-
-        # Refresh button — re-reads Drive invoices and re-writes the sheet
-        if _DRIVE_ACHIEVEMENT_AVAILABLE:
-            _ref_col, _info_col = st.columns([1, 3])
-            with _ref_col:
-                _refresh_clicked = st.button(
-                    "🔄 Refresh Achievement from Drive",
-                    type="secondary",
-                    use_container_width=True,
-                    key="refresh_drive_achievement",
-                    help=(
-                        "Re-reads all invoice PDFs from the '4s Delivery Invoices' "
-                        "Google Drive folder for the selected months, extracts the "
-                        "Godrej SO No and pre-GST amount, maps to salesperson via "
-                        "the CRM sheet, and updates 'Monthly Sales value without GST'."
-                    ),
-                )
-            with _info_col:
-                st.caption(
-                    "Achievement = total invoice value **without GST** from Drive PDFs.  "
-                    "Data is cached in *Monthly Sales value without GST* sheet — "
-                    "click Refresh to re-scan Drive for the latest invoices."
-                )
-
-            if _refresh_clicked:
-                with st.spinner("Scanning Drive invoices and updating achievement sheet…"):
-                    _refresh_results = {}
-                    for _rm2, _ry2 in month_list:
-                        try:
-                            _agg = _compute_drive_achievement_for_month(_rm2, _ry2, write_to_sheet=True)
-                            _refresh_results[f"{_DRIVE_MONTH_NAMES.get(_rm2, str(_rm2))} {_ry2}"] = _agg
-                        except Exception as _re:
-                            _refresh_results[f"{_DRIVE_MONTH_NAMES.get(_rm2, str(_rm2))} {_ry2}"] = {"error": str(_re)}
-
-                st.success("✅ Achievement refreshed from Drive invoices.")
-                for _mkey, _mdata in _refresh_results.items():
-                    if "error" in _mdata:
-                        st.warning(f"⚠️ {_mkey}: {_mdata['error']}")
-                    elif _mdata:
-                        _lines = [f"**{_sp}**: ₹{to_indian_number_string(_amt, 2)}" for _sp, _amt in sorted(_mdata.items())]
-                        st.write(f"**{_mkey}** — " + "  ·  ".join(_lines))
-                    else:
-                        st.info(f"ℹ️ {_mkey}: No invoices found in Drive.")
-
-                st.cache_data.clear()
-                st.rerun()
-
-        # Salespeople come from the Incentive_Quarterly_Targets sheet.
-        _all_sp = sorted(set(s.strip().upper() for s in sales_people))
-
-        rows = []
-        for sp in _all_sp:
-            for m, y in month_list:
-                # Target is read from Incentive_Quarterly_Targets (Lakh → ₹).
-                target = _iq_target_rupees(sp, m, y)
-                # Achievement is bill sales (without GST) from the invoice sheets.
-                achievement = compute_achievement(sp, m, y)
-                rows.append({
-                    "Month":            f"{calendar.month_name[m]} {y}",
-                    "_month":           m,
-                    "_year":            y,
-                    "Sales Person":     sp,
-                    "Target (₹)":       target,
-                    "Achievement (₹)":  achievement,
-                    "Achieved %":       round((achievement / target * 100), 1) if target > 0 else 0.0,
-                })
-
-        result_df = pd.DataFrame(rows)
-        result_df = result_df[
-            (result_df["Target (₹)"] > 0) | (result_df["Achievement (₹)"] > 0)
-        ].copy()
-        # Sort month-first so table reads: April → all people, May → all people …
-        result_df = result_df.sort_values(
-            ["_year", "_month", "Sales Person"]
-        ).reset_index(drop=True)
-
-        if result_df.empty:
-            st.info("No targets set or sales recorded in this date range. Use the form above to set targets.")
-        else:
-            _achieved_count   = int((result_df["Achieved %"] >= 100).sum())
-            _total_sp_months  = len(result_df)
-            _overall_pct      = (
-                result_df["Achievement (₹)"].sum() / result_df["Target (₹)"].sum() * 100
-                if result_df["Target (₹)"].sum() > 0 else 0.0
-            )
-
-            if _achieved_count == _total_sp_months:
-                _mc, _mi = "#2e7d32", "🏆"
-                _mt = (f"Outstanding! Every salesperson has hit their target. "
-                       f"The entire team is firing on all cylinders — keep this momentum going!")
-            elif _achieved_count > 0:
-                _mc, _mi = "#1565c0", "🌟"
-                _mt = (f"{_achieved_count} out of {_total_sp_months} salesperson-months have crossed "
-                       f"the target! The team is at {_overall_pct:.1f}% overall — "
-                       f"push harder and bring everyone across the finish line!")
-            elif _overall_pct >= 80:
-                _mc, _mi = "#e65100", "💪"
-                _mt = (f"So close! The team is at {_overall_pct:.1f}% of target. "
-                       f"One final push this month can make all the difference — you've got this!")
-            else:
-                _mc, _mi = "#b71c1c", "🔥"
-                _mt = (f"The team is at {_overall_pct:.1f}% of target. "
-                       f"Every conversation is an opportunity — believe in yourselves and make it happen!")
-
-            st.markdown(f"""
-            <div style="background:{_mc}18;border-left:5px solid {_mc};
-                        padding:14px 20px;border-radius:6px;margin-bottom:16px">
-                <span style="font-size:20px">{_mi}</span>
-                <span style="font-size:15px;color:{_mc};font-weight:600;margin-left:8px">
-                    {_mt}
-                </span>
-            </div>
-            """, unsafe_allow_html=True)
-
-            # KPI metrics (whole-rupee integers render without decimals)
-            _sk1, _sk2, _sk3, _sk4 = st.columns(4)
-            _sk1.metric("🎯 Total Target",      f"₹{_fmt_money(result_df['Target (₹)'].sum())}")
-            _sk2.metric("💰 Total Achievement", f"₹{_fmt_money(result_df['Achievement (₹)'].sum())}")
-            _sk3.metric("📈 Overall %",         f"{_overall_pct:.1f}%")
-            _sk4.metric("🏅 Targets Hit",       f"{_achieved_count} / {_total_sp_months}")
-
-            # Styled achievement table
-            # NOTE: style is applied on NUMERIC result_df, .format() handles display strings.
-            # Avoids TypeError from comparing already-formatted strings like "100.0% ✅" >= 100.
-            def _row_style(row):
-                pct = row["Achieved %"]   # numeric
-                tgt = row["Target (₹)"]   # numeric
-                if tgt == 0:
-                    return ["background-color:#f5f5f5"] * len(row)
-                if pct >= 100:
-                    return ["background-color:#c8e6c9;font-weight:bold"] * len(row)
-                if pct >= 80:
-                    return ["background-color:#fff3e0"] * len(row)
-                return ["background-color:#ffcdd2"] * len(row)
-
-            # Whole-rupee formatter — no decimals for integer amounts,
-            # up to 2 dp for fractions, trailing zeros trimmed.
-            def _fmt_money_rs(v) -> str:
-                try:
-                    f = float(v)
-                except Exception:
-                    return str(v) if v is not None else ""
-                if pd.isna(f):
-                    return ""
-                if float(f).is_integer():
-                    return f"₹{to_indian_number_string(f, 0)}"
-                s = to_indian_number_string(f, 2)
-                if "." in s:
-                    s = s.rstrip("0").rstrip(".")
-                return f"₹{s}"
-
-            styled_df = (
-                result_df[["Month", "Sales Person", "Target (₹)", "Achievement (₹)", "Achieved %"]]
-                .copy()
-                .style
-                .apply(_row_style, axis=1)
-                .format({
-                    "Target (₹)":      _fmt_money_rs,
-                    "Achievement (₹)": _fmt_money_rs,
-                    "Achieved %":      lambda v: f"{v:.1f}% ✅" if v >= 100 else f"{v:.1f}%",
-                })
-            )
-
-            st.dataframe(styled_df, use_container_width=True, hide_index=True)
-            st.caption(
-                "🟢 Green = Target achieved (≥100%)  ·  "
-                "🟠 Orange = Close (80–99%)  ·  "
-                "🔴 Red = Needs attention (<80%)"
-            )
-            st.caption(
-                "Target source: **Incentive_Quarterly_Targets** (Lakh).  "
-                "Achievement source: **bill sales (without GST)** from invoice PDFs "
-                "in the *4s Delivery Invoices* Google Drive folder — Godrej SO No "
-                "matched to salesperson via CRM, stored in *Monthly Sales value "
-                "without GST* sheet.  Click **Refresh Achievement from Drive** above "
-                "to re-scan the latest invoices."
-            )
-
-            # Bar chart — current month snapshot
-            # Only render if at least one person has actual achievement; a
-            # target-only chart is misleading and adds no value.
-            _cur_m, _cur_y = _today.month, _today.year
-            _chart_df = result_df[
-                (result_df["_month"] == _cur_m) & (result_df["_year"] == _cur_y)
-            ].copy()
-
-            if not _chart_df.empty:
-                _has_achievement = _chart_df["Achievement (₹)"].sum() > 0
-                st.subheader(f"📊 {calendar.month_name[_cur_m]} {_cur_y} — Team Snapshot")
-                if _has_achievement:
-                    _fig2 = go.Figure()
-                    _fig2.add_trace(go.Bar(
-                        name="Target",
-                        x=_chart_df["Sales Person"],
-                        y=_chart_df["Target (₹)"],
-                        marker_color="#90caf9",
-                        opacity=0.85,
-                    ))
-                    _fig2.add_trace(go.Bar(
-                        name="Achievement",
-                        x=_chart_df["Sales Person"],
-                        y=_chart_df["Achievement (₹)"],
-                        marker_color=[
-                            "#2e7d32" if v >= t else ("#e65100" if v >= 0.8 * t else "#c62828")
-                            for v, t in zip(_chart_df["Achievement (₹)"], _chart_df["Target (₹)"])
-                        ],
-                        opacity=0.9,
-                    ))
-                    _fig2.update_layout(
-                        barmode="group",
-                        height=350,
-                        yaxis_title="Amount (₹)",
-                        margin=dict(t=20, b=40),
-                        legend=dict(
-                            orientation="h", yanchor="bottom", y=1.02,
-                            xanchor="right", x=1,
-                        ),
-                    )
-                    _fig2.update_yaxes(tickprefix="₹", tickformat=",.0f")
-                    st.plotly_chart(_fig2, use_container_width=True)
-                else:
-                    st.info(
-                        f"No sales recorded yet for {calendar.month_name[_cur_m]} {_cur_y}. "
-                        "The chart will appear once achievement data is available."
-                    )
