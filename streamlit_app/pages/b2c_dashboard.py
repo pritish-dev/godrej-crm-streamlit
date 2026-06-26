@@ -567,48 +567,6 @@ k4.metric("🚚 Pending Deliveries", pending_del_cnt)
 
 st.divider()
 
-# ── Sales Person Leaderboard ──────────────────────────────────────────────────
-
-st.subheader("🏆 Sales Person Leaderboard — This Month")
-
-_this_month_start = today.replace(day=1)
-_crm_this_month   = crm[
-    crm["ORDER DATE"].notna() &
-    (crm["ORDER DATE"].dt.date >= _this_month_start) &
-    (crm["ORDER DATE"].dt.date <= today) &
-    (crm["SALES PERSON"].astype(str).str.strip() != "")
-].copy()
-
-if not _crm_this_month.empty and "SALES PERSON" in _crm_this_month.columns:
-    _lb = (
-        _crm_this_month.groupby("SALES PERSON", as_index=False)
-        .agg(
-            Orders      = ("ORDER NO", "nunique"),
-            Total_Value = ("ORDER VALUE", "sum"),
-            Pending_Del = ("DELIVERY STATUS",
-                           lambda x: int((x.astype(str).str.upper().str.strip() == "PENDING").sum())),
-        )
-        .sort_values("Total_Value", ascending=False)
-        .reset_index(drop=True)
-    )
-    _lb.index = _lb.index + 1   # 1-based rank
-    _lb.index.name = "Rank"
-    _lb["Total_Value"] = _lb["Total_Value"].apply(fmt_amount)
-    _lb.columns = ["Sales Person", "Orders", "Total Value", "Pending Deliveries"]
-
-    # Colour top performer green
-    def _lb_style(row):
-        if row.name == 1:
-            return ["background-color:#c8e6c9;font-weight:bold"] * len(row)
-        return [""] * len(row)
-
-    st.dataframe(_lb.style.apply(_lb_style, axis=1), use_container_width=True)
-    st.caption(f"Data: {_this_month_start.strftime('%d %b')} – {today.strftime('%d %b %Y')}  ·  🥇 = top performer this month")
-else:
-    st.info("No sales data for this month yet.")
-
-st.divider()
-
 
 # ── All Sales Records ─────────────────────────────────────────────────────────
 
