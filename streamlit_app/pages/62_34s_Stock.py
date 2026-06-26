@@ -361,6 +361,7 @@ if not df_display.empty:
     st.caption("🔴 Red rows = zero closing stock")
 
     disp = filtered.reset_index(drop=True)
+    disp.index = range(1, len(disp) + 1)
 
     def _row_style(row):
         try:

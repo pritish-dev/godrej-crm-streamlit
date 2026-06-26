@@ -612,6 +612,23 @@ st.divider()
 
 # ── All Sales Records ─────────────────────────────────────────────────────────
 
+st.markdown("""
+<style>
+[data-testid="stDataFrame"] ::-webkit-scrollbar {
+    width: 14px !important;
+    height: 14px !important;
+}
+[data-testid="stDataFrame"] ::-webkit-scrollbar-thumb {
+    background-color: #444 !important;
+    border-radius: 7px !important;
+    border: 2px solid #ccc !important;
+}
+[data-testid="stDataFrame"] ::-webkit-scrollbar-track {
+    background: #f0f0f0 !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 st.subheader("📋 All Sales Records")
 
 # Row 1: date range filters
@@ -708,7 +725,7 @@ sales_display = sales_display.rename(
 )
 
 # Reset pagination when any filter changes
-PAGE_SIZE = 25
+PAGE_SIZE = 15
 _filter_key = (filter_start, filter_end, filt_sp, filt_cat, filt_stat, filt_src, search_term)
 if "b2c_page" not in st.session_state:
     st.session_state.b2c_page = 0
@@ -731,6 +748,7 @@ with pc2:
 
 s_idx = st.session_state.b2c_page * PAGE_SIZE
 _page_df = sales_display.iloc[s_idx : s_idx + PAGE_SIZE].copy()
+_page_df.index = range(1, len(_page_df) + 1)
 
 def _style_sales_row(row):
     src    = str(row.get("Source", "")).strip()
@@ -752,10 +770,32 @@ def _style_sales_row(row):
         styles.append("; ".join(parts))
     return styles
 
-st.dataframe(
-    _page_df.style.apply(_style_sales_row, axis=1),
-    use_container_width=True,
-)
+_sales_table_styles = [
+    {"selector": "", "props": [("border-collapse", "collapse"), ("width", "100%")]},
+    {"selector": "th, td", "props": [
+        ("border", "2px solid #000"),
+        ("font-weight", "bold"),
+        ("font-size", "13px"),
+        ("padding", "5px 8px"),
+    ]},
+    {"selector": "td", "props": [
+        ("white-space", "normal"),
+        ("word-break", "break-word"),
+    ]},
+    {"selector": "th", "props": [
+        ("white-space", "nowrap"),
+    ]},
+]
+
+_prod_col_display = "Product" if "Product" in _page_df.columns else None
+_styled_sales = _page_df.style.apply(_style_sales_row, axis=1).set_table_styles(_sales_table_styles)
+if _prod_col_display:
+    _styled_sales = _styled_sales.set_properties(
+        subset=[_prod_col_display],
+        **{"max-width": "150px", "white-space": "normal", "word-break": "break-word"}
+    )
+
+st.dataframe(_styled_sales, use_container_width=True, height=600)
 
 
 # ── Pending Deliveries — split into UPCOMING and OVERDUE ─────────────────────
@@ -1666,9 +1706,9 @@ if not payment_grouped.empty:
         columns={k: v for k, v in COL_RENAME_DISPLAY.items() if k in pay_display.columns}
     )
     st.dataframe(
-        pay_display.style.apply(
-            lambda row: highlight_delivery(row, raw_pay_dates, today, tomorrow), axis=1
-        ),
+        pay_display.style
+            .apply(lambda row: highlight_delivery(row, raw_pay_dates, today, tomorrow), axis=1)
+            .format_index(lambda x: x + 1),
         use_container_width=True,
     )
     pm1, pm2, pm3 = st.columns(3)

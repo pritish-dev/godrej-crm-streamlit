@@ -272,7 +272,7 @@ def _row_style(row):
     return [""] * len(row)
 
 st.dataframe(
-    display_df.style.apply(_row_style, axis=1),
+    display_df.style.apply(_row_style, axis=1).format_index(lambda x: x + 1),
     use_container_width=True,
     height=550,
     column_config={
