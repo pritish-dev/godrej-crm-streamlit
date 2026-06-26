@@ -206,6 +206,7 @@ filtered = filtered.sort_values("ORDER DATE", ascending=False)
 PAGE_SIZE = 20
 page = st.number_input("Page", 1, max(1, len(filtered) // PAGE_SIZE + 1), 1, key="old_page")
 slice_df = filtered[sale_cols].iloc[(page - 1) * PAGE_SIZE : page * PAGE_SIZE].copy()
+slice_df.index = range(1, len(slice_df) + 1)
 
 slice_df["ORDER DATE"]    = slice_df["ORDER DATE"].apply(fmt_date)
 slice_df["DELIVERY DATE"] = slice_df.get("DELIVERY DATE", pd.Series()).apply(fmt_date)
@@ -264,6 +265,7 @@ if not pending.empty:
     pend_disp = pending[pend_cols].copy().sort_values(
         "DELIVERY DATE", ascending=False
     ).reset_index(drop=True)
+    pend_disp.index = range(1, len(pend_disp) + 1)
 
     raw_del = pend_disp["DELIVERY DATE"].copy() if "DELIVERY DATE" in pend_disp.columns else pd.Series()
     pend_disp["ORDER DATE"]    = pend_disp["ORDER DATE"].apply(fmt_date)
@@ -298,6 +300,7 @@ if not pay_due.empty:
 
     pay_col_list = [c for c in sale_cols + ["PENDING AMOUNT"] if c in pay_due.columns]
     pay_disp     = pay_due[pay_col_list].copy()
+    pay_disp.index = range(1, len(pay_disp) + 1)
     raw_pay      = pay_disp["DELIVERY DATE"].copy() if "DELIVERY DATE" in pay_disp.columns else pd.Series()
 
     pay_disp["ORDER DATE"]    = pay_disp["ORDER DATE"].apply(fmt_date)

@@ -160,6 +160,7 @@ if selected_cat != "All" and cat_col:
 st.markdown(f"### 📋 Stock Data — {to_indian_number_string(len(filtered), 0)} rows  ·  🔴 Red = Zero Stock")
 
 display_df = filtered.reset_index(drop=True)
+display_df.index = range(1, len(display_df) + 1)
 
 def _row_style(row):
     if qty_col and qty_col in row.index:

@@ -220,8 +220,10 @@ def _render_price_tab(df, columns, status_msg, download_stem, show_thickness=Fal
         col_cfg["THICKNESS (IN)"] = st.column_config.TextColumn("Thickness (in)", width="small")
         col_cfg["THICKNESS (CM)"] = st.column_config.TextColumn("Thickness (cm)", width="small")
 
+    _pl_df = filtered.reset_index(drop=True)
+    _pl_df.index = range(1, len(_pl_df) + 1)
     st.dataframe(
-        filtered.reset_index(drop=True),
+        _pl_df,
         use_container_width=True,
         height=580,
         column_config=col_cfg,
