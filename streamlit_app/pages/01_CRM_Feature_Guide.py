@@ -330,6 +330,63 @@ MODULES = [
             },
         ],
     },
+    # ── SALES REPORTS AND STRATEGY ───────────────────────────────────────────
+    {
+        "id": "sales_reports",
+        "emoji": "💡",
+        "title": "Sales Reports and Strategy",
+        "route": "pages/30_Sales_Reports_and_Strategy.py",
+        "category": "Reporting",
+        "section": "Sales Handbook",
+        "gradient": "linear-gradient(135deg, #134e5e, #2e7d32)",
+        "tags": ["manager", "sales"],
+        "tagline": "Full BA-grade analytics, festival calendar, and monthly sales figures — all in one place.",
+        "what_it_does": "This is the comprehensive analytics hub for the showroom. It shows headline KPIs for the current month (target, invoiced value, pending), detailed revenue trends, a sales-person leaderboard with GMB ratings, product mix breakdown, customer cohort summary, and a live Odia festival calendar with strategy recommendations to drive footfall.",
+        "features": [
+            {
+                "icon": "🎯",
+                "name": "Monthly KPI Cards",
+                "desc": "Shows Monthly Sales Target, Current Sales Invoice Value, Pending Target Value, and Pending Order Value — all aligned with the Monthly Sales Target vs Achievement page.",
+                "benefit": "Instant month status at a glance",
+            },
+            {
+                "icon": "🧾",
+                "name": "Monthly Sales from Invoices",
+                "desc": "Pulls WFX invoice data directly from the invoice sheet for the current month — shows taxable value without GST so you know the exact booked sales.",
+                "benefit": "Accurate billing figures, not estimates",
+            },
+            {
+                "icon": "📈",
+                "name": "Revenue & Order Trends",
+                "desc": "Monthly revenue trend chart, best day-of-week for sales, and best hour-of-week — so you know when customers are most likely to buy.",
+                "benefit": "Plan staffing and activations smartly",
+            },
+            {
+                "icon": "🏆",
+                "name": "Sales Person Leaderboard",
+                "desc": "Ranks each executive by total sales value and order count for the financial year, alongside their Google review count.",
+                "benefit": "Motivate the team with visible rankings",
+            },
+            {
+                "icon": "🪑",
+                "name": "Category & Product Mix",
+                "desc": "Shows what % of revenue comes from Furniture, Storage, Mattresses, and other categories — and drills into sub-categories like Beds, Sofas, Wardrobes.",
+                "benefit": "Stock what actually sells",
+            },
+            {
+                "icon": "🎉",
+                "name": "Odia Festival Strategy Calendar",
+                "desc": "Live festival calendar pulled from the web — shows upcoming Odia and Hindu festivals with tailored showroom activation ideas (décor, customer games, events — no discounts).",
+                "benefit": "Never miss a seasonal sales opportunity",
+            },
+            {
+                "icon": "👥",
+                "name": "Customer Cohort Summary",
+                "desc": "Summarises customer behaviour across cohorts — new, loyal, at-risk, and dormant buyers — so you can plan targeted outreach.",
+                "benefit": "Act on customer data, not guesswork",
+            },
+        ],
+    },
     # ── MONTHLY SALES TARGET VS ACHIEVEMENT ──────────────────────────────────
     {
         "id": "monthend_forecast",
@@ -340,31 +397,43 @@ MODULES = [
         "section": "Sales Handbook",
         "gradient": "linear-gradient(135deg, #0f2027, #2c5364)",
         "tags": ["manager"],
-        "tagline": "Predict month-end sales and plan final pushes to hit targets.",
-        "what_it_does": "During the last 5 days of the month, this page shows which orders are committed and likely to be billed. It calculates the forecasted sales value so managers know if the team will hit the monthly target.",
+        "tagline": "Track target vs achievement and forecast month-end sales from committed orders.",
+        "what_it_does": "This page shows the live monthly scorecard — how much has been invoiced vs the target, and what the expected closing sales value is based on committed orders. Managers can also flag orders the customer has denied delivery for, keeping the forecast accurate.",
         "features": [
             {
                 "icon": "🎯",
+                "name": "Live Monthly KPIs",
+                "desc": "Four top metrics: Monthly Sales Target, Current Sales Achievement (WFX invoices), Sales Forecast (committed items), and Pending Sales Value (Target − Achievement).",
+                "benefit": "Know exactly where you stand this month",
+            },
+            {
+                "icon": "📈",
                 "name": "Month-End Forecast Value",
-                "desc": "Calculates the total expected sales value from all confirmed and committed orders in the closing period.",
+                "desc": "Calculates the total expected sales value from all committed orders in the closing period (last 5 days of current month + first 5 of next month).",
                 "benefit": "Know your target gap in advance",
             },
             {
                 "icon": "✅",
                 "name": "Committed Order Tracking",
-                "desc": "Shows orders that are both MIS-committed (Godrej system) and manually confirmed by managers.",
+                "desc": "Shows orders that are MIS-committed (Godrej system: order qty = committed qty) or manually confirmed by managers with an approver name.",
                 "benefit": "Accurate forecast, not guesswork",
+            },
+            {
+                "icon": "🚫",
+                "name": "Customer Denied Delivery",
+                "desc": "Mark orders or individual line items where the customer has refused delivery. Denied items are removed from the forecast table and value automatically.",
+                "benefit": "Keep forecast realistic and honest",
             },
             {
                 "icon": "🏭",
                 "name": "34s Stock Cross-Check",
-                "desc": "Automatically checks whether uncommitted items are physically available in your store stock.",
+                "desc": "Automatically checks whether uncommitted items are physically available in your 34S store stock register.",
                 "benefit": "Avoid promises you can't keep",
             },
             {
                 "icon": "💾",
                 "name": "Forecast Persistence",
-                "desc": "Each month's forecast is saved to a dedicated Google Sheet for future reference and accountability.",
+                "desc": "Each month's forecast (including manual flags) is saved to a dedicated Google Sheet so state survives page refreshes and daily MIS updates.",
                 "benefit": "Compare forecast vs actual month-end",
             },
         ],
@@ -939,11 +1008,11 @@ st.markdown("""
   </div>
   <div class="hero-stats">
     <div class="hero-stat">
-      <span class="hero-stat-number">15+</span>
+      <span class="hero-stat-number">15</span>
       <span class="hero-stat-label">Modules</span>
     </div>
     <div class="hero-stat">
-      <span class="hero-stat-number">60+</span>
+      <span class="hero-stat-number">70+</span>
       <span class="hero-stat-label">Features</span>
     </div>
     <div class="hero-stat">
@@ -1241,9 +1310,11 @@ faqs = [
     ("What happens if I accidentally enter wrong data?",
      "Most data can be corrected by editing the record. For critical changes, please contact your manager or system admin."),
     ("How do I check my personal sales performance?",
-     "Open the 'Daily B2C Sales' page to see your sales value vs your monthly target. The 'Sales Reports' page shows a longer-term leaderboard."),
+     "Open 'Daily B2C Sales' to see your sales value vs your monthly target. For deeper analysis — trends, leaderboard, and category breakdown — open 'Sales Reports and Strategy'. For the current month's invoice vs target figure, open 'Monthly Sales Target vs Achievement'."),
     ("What is the difference between B2C Dashboard and Daily B2C Sales?",
      "B2C Dashboard shows all orders and operational details (deliveries, payments). Daily B2C Sales focuses on performance — who sold what and how close each person is to their target."),
+    ("What is the difference between Sales Reports and Monthly Sales Target vs Achievement?",
+     "Sales Reports and Strategy is the full analytics hub — it covers trends, leaderboard, festival calendar, and product mix across the financial year. Monthly Sales Target vs Achievement is a focused month-end tool for managers to track forecast from committed orders and manage delivery confirmations."),
 ]
 
 for i, (q, a) in enumerate(faqs):
