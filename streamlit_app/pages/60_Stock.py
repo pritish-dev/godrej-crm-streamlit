@@ -129,9 +129,21 @@ if cat_col:
 else:
     m3.metric("Unique SKUs", len(df))
 
+# Detect warehouse code column
+wh_col = next(
+    (c for c in cols if any(kw in c.lower() for kw in ("warehouse code", "wh code", "wh_code", "warehouse_code"))),
+    next((c for c in cols if "warehouse" in c.lower() and "code" in c.lower()), None),
+)
+
+# Detect free stock column
+free_stock_col = next(
+    (c for c in cols if any(kw in c.lower() for kw in ("free stock", "free_stock", "freestock"))),
+    None,
+)
+
 # ─── Filters ──────────────────────────────────────────────────────────────────
 st.markdown("### 🔍 Search & Filter")
-f1, f2 = st.columns(2)
+f1, f2, f3, f4 = st.columns(4)
 
 with f1:
     search_text = st.text_input("Search (any column)", placeholder="e.g. Wardrobe, WH001…")
@@ -142,6 +154,23 @@ with f2:
         selected_cat = st.selectbox(f"Filter by {cat_col}", cats)
     else:
         selected_cat = "All"
+
+with f3:
+    if wh_col:
+        wh_options = ["All"] + sorted(df[wh_col].dropna().astype(str).unique().tolist())
+        selected_wh = st.selectbox(f"Filter by {wh_col}", wh_options)
+    else:
+        selected_wh = "All"
+
+with f4:
+    if free_stock_col:
+        selected_stock_status = st.selectbox(
+            f"Filter by {free_stock_col}",
+            ["All", "In Stock", "Out of Stock"],
+            help="In Stock = Free Stock > 0  |  Out of Stock = Free Stock = 0",
+        )
+    else:
+        selected_stock_status = "All"
 
 filtered     = df.copy()
 filtered_msk = pd.Series([True] * len(df))
@@ -155,6 +184,16 @@ if search_text:
 
 if selected_cat != "All" and cat_col:
     filtered = filtered[filtered[cat_col] == selected_cat]
+
+if selected_wh != "All" and wh_col:
+    filtered = filtered[filtered[wh_col].astype(str) == selected_wh]
+
+if selected_stock_status != "All" and free_stock_col:
+    free_stock_num = pd.to_numeric(filtered[free_stock_col], errors="coerce").fillna(0)
+    if selected_stock_status == "In Stock":
+        filtered = filtered[free_stock_num > 0]
+    else:  # Out of Stock
+        filtered = filtered[free_stock_num == 0]
 
 # ─── Table — red highlight for zero-stock rows ────────────────────────────────
 st.markdown(f"### 📋 Stock Data — {to_indian_number_string(len(filtered), 0)} rows  ·  🔴 Red = Zero Stock")
