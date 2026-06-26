@@ -206,18 +206,6 @@ c2.metric("To Be CREDITED STOCK (ZBF11T)", to_indian_number_string(to_be_credite
 c3.metric("PENDING ORDER VALUE", f"₹{to_indian_number_string(pending_order_val, 0)}",
           help="Total Net Basic (all rows) minus Net Basic of negative SO Qty rows")
 
-# ─── Debug expander (open — shows column names & values to verify) ────────────
-with st.expander("🔍 Debug: Counter diagnostics", expanded=True):
-    st.write(f"**SO Qty col:** `{_so_qty_col}` | **Warehouse col:** `{_wh_col}` | **Net Basic col:** `{_net_col}`")
-    st.write(f"**Total rows:** {len(df)} | **Neg SO Qty rows:** {int(neg_mask.sum())}")
-    st.write(f"**Pending Order Value (sum of all Net Basic incl. -ve):** ₹{to_indian_number_string(pending_order_val, 0)}")
-    if neg_mask.any() and _so_qty_col:
-        cols_to_show = [c for c in [_so_qty_col, _wh_col, _net_col] if c]
-        st.write("**Negative SO Qty rows:**")
-        st.dataframe(df[neg_mask][cols_to_show])
-    st.write("**All column names in data:**")
-    st.write(list(df.columns))
-
 # ─── Filters ──────────────────────────────────────────────────────────────────
 st.markdown("### 🔍 Filters")
 
