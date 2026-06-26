@@ -198,8 +198,7 @@ with st.spinner("Loading current-month sales figures…"):
     _monthly_target    = mm.get_monthly_target(_month_name)
     _invoice_value     = mm.get_current_sales_invoice_value(_month_name)
     _pending_order     = mm.get_pending_order_value()
-    _monthend_forecast = mm.get_monthend_forecast_value(today_dt)
-    _pending_target    = _monthly_target - (_invoice_value + _pending_order + _monthend_forecast)
+    _pending_target    = _monthly_target - _invoice_value
 
 rA, rB, rC = st.columns(3)
 rA.metric(
@@ -217,30 +216,19 @@ rB.metric(
          "Achievement page.",
 )
 rC.metric(
-    "📦 Pending Order Value",
+    "⏳ Pending Target Value",
+    f"₹{to_indian_number_string(_pending_target, 0)}",
+    help="Monthly Sales Target − Current Sales Invoice Value.",
+)
+
+st.caption("🧮 **Pending Target Value** = Monthly Sales Target − Current Sales Invoice Value")
+
+rD, _, _ = st.columns(3)
+rD.metric(
+    "📦 Pending Order Value (MIS)",
     f"₹{to_indian_number_string(_pending_order, 0)}",
     help="Total Net Basic of all pending MIS orders. Same figure as the "
          "Pending Order Value on the MIS Update page.",
-)
-
-rD, rE, _rF = st.columns(3)
-rD.metric(
-    "📈 Month-end Forecast",
-    f"₹{to_indian_number_string(_monthend_forecast, 0)}",
-    help=f"Month-end forecast sale value for {_month_full} (sum of Total Net "
-         "Basic for all committed items). Same as 'Sales Forecast' on the "
-         "Monthly Sales Target vs Achievement page.",
-)
-rE.metric(
-    "⏳ Pending Target Value",
-    f"₹{to_indian_number_string(_pending_target, 0)}",
-    help="Monthly Sales Target − (Current Sales Invoice Value + Pending Order "
-         "Value + Month-end Forecast).",
-)
-
-st.caption(
-    "🧮 **Pending Target Value** = Monthly Sales Target − "
-    "(Current Sales Invoice Value + Pending Order Value + Month-end Forecast)"
 )
 
 st.divider()
@@ -325,8 +313,10 @@ st.divider()
 st.subheader("🛋️ Category & Product Mix")
 
 if "CATEGORY" in crm.columns:
+    _CAT_ALIASES = {"HF": "HOME FURNITURE", "HS": "HOME STORAGE"}
     cat_df = (
-        crm.assign(CAT=lambda d: d["CATEGORY"].astype(str).str.upper().str.strip())
+        crm.assign(CAT=lambda d: d["CATEGORY"].astype(str).str.upper().str.strip()
+                                               .map(lambda v: _CAT_ALIASES.get(v, v)))
            .query("CAT != '' and CAT != 'NAN' and CAT != 'NONE'")
            .groupby("CAT")
            .agg(REVENUE=("ORDER VALUE", "sum"),
