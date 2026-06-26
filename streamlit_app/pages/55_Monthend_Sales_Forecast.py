@@ -866,7 +866,7 @@ total_net_basic_green = visible_df.loc[green_mask, "TOTAL_NET_BASIC"].apply(_to_
 
 _monthly_target  = _get_monthly_target(month_name)
 _current_achieve = _get_month_sales_achievement(month_name)
-_pending_target  = _monthly_target - (_current_achieve + total_net_basic_green)
+_pending_target  = _monthly_target - _current_achieve
 
 with kpi_placeholder.container():
     k1, k2, k3, k4 = st.columns(4)
@@ -886,9 +886,9 @@ with kpi_placeholder.container():
         help=f"Monthend Forecast Sale Value ({month_name}) — sum of Total Net Basic for all committed (green) items.",
     )
     k4.metric(
-        "⏳ Pending Sales Target",
+        "⏳ Pending Sales Value",
         f"₹{to_indian_number_string(_pending_target, 0)}",
-        help="Monthly Sales Target − (Current Sales Achievement + Sales Forecast).",
+        help="Monthly Sales Target − Current Sales Achievement.",
     )
 
 # ─── Metrics ─────────────────────────────────────────────────────────────────
