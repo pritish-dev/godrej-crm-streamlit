@@ -542,37 +542,6 @@ if crm.empty:
     st.error("No valid B2C data found. Check that SHEET_DETAILS has sheet names and they are accessible.")
     st.stop()
 
-# ── 🔧 TEMPORARY DEBUG PANEL — remove once delivery status is confirmed fixed ──
-with st.expander("🔧 Debug: Sheet Column Inspector (remove after fix confirmed)", expanded=False):
-    st.markdown("**Columns in each raw sheet (before any renaming):**")
-    for _sname in (franchise_sheets + fours_sheets):
-        _raw = get_df(_sname)
-        if _raw is not None and not _raw.empty:
-            _raw_cols_upper = [" ".join(str(c).split()).upper() for c in _raw.columns]
-            st.write(f"📄 **{_sname}** → `{_raw_cols_upper}`")
-            _del_candidates = [c for c in _raw_cols_upper
-                               if "DELIVERY" in c or "REMARK" in c or "STATUS" in c]
-            if _del_candidates:
-                st.success(f"   Delivery-related columns found: `{_del_candidates}`")
-                # Show first 5 sample values
-                for _dc in _del_candidates:
-                    _orig_col = next((c for c in _raw.columns
-                                      if " ".join(str(c).split()).upper() == _dc), None)
-                    if _orig_col:
-                        _samples = _raw[_orig_col].dropna().astype(str).str.strip()
-                        _samples = _samples[_samples != ""].head(5).tolist()
-                        st.write(f"   `{_dc}` sample values: `{_samples}`")
-            else:
-                st.warning(f"   ⚠️ No delivery/remarks/status column found in this sheet!")
-    st.markdown("---")
-    st.markdown("**DELIVERY STATUS column in final merged CRM (after rename):**")
-    if "DELIVERY STATUS" in crm.columns:
-        _vc = crm["DELIVERY STATUS"].value_counts(dropna=False).head(10)
-        st.dataframe(_vc.reset_index().rename(columns={"index": "Value", "DELIVERY STATUS": "Count"}))
-    else:
-        st.error("❌ DELIVERY STATUS column was NOT created — column name in sheet is unknown!")
-# ── END DEBUG PANEL ────────────────────────────────────────────────────────────
-
 today    = datetime.now().date()
 tomorrow = today + timedelta(days=1)
 
