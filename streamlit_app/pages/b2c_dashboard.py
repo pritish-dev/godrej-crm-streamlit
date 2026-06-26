@@ -709,24 +709,12 @@ _page_df = sales_display.iloc[s_idx : s_idx + PAGE_SIZE].copy()
 _page_df.index = range(1, len(_page_df) + 1)
 
 def _style_sales_row(row):
-    src    = str(row.get("Source", "")).strip()
     status = str(row.get("Delivery Status", "")).strip()
-    is_4s        = "4S" in src or "4s" in src
-    is_franchise = "Franchise" in src or "franchise" in src.lower()
     is_delivered = status.lower() == "delivered"
 
-    text_color = "#b8860b" if is_4s else ("red" if is_franchise else "")
-    bg_color   = "green"  if is_delivered else ""
-
-    styles = []
-    for _ in row:
-        parts = []
-        if text_color:
-            parts.append(f"color: {text_color}")
-        if bg_color:
-            parts.append(f"background-color: {bg_color}")
-        styles.append("; ".join(parts))
-    return styles
+    if is_delivered:
+        return ["background-color: green"] * len(row)
+    return [""] * len(row)
 
 _sales_table_styles = [
     {"selector": "", "props": [("border-collapse", "collapse"), ("width", "100%")]},
