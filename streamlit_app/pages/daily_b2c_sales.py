@@ -361,7 +361,7 @@ df_filtered = crm[mask].copy()
 sales_sums      = df_filtered.groupby("SALES PERSON")["GROSS AMT"].sum()
 active_in_period = sales_sums[sales_sums > 0].index.str.strip().str.upper().tolist()
 
-all_execs = sorted(set(official_sales_people + active_in_period))
+all_execs = sorted(set(active_in_period))
 all_execs = [
     x for x in all_execs
     if x not in ("", "NAN", "NONE", "0", "UNKNOWN")
