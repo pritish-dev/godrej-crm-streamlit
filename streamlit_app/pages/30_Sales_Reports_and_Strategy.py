@@ -30,7 +30,7 @@ from __future__ import annotations
 import os
 import re
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import altair as alt
 import pandas as pd
@@ -42,6 +42,13 @@ sys.path.insert(0, BASE_DIR)
 from services.sheets import get_df  # noqa: E402
 from utils.helpers import to_indian_number_string  # noqa: E402
 from services import monthly_metrics as mm  # noqa: E402
+from services.invoice_email_import import (  # noqa: E402
+    fetch_and_save_invoices_range,
+    load_invoice_sheet,
+    invoice_sheet_name,
+    save_invoices_to_sheet,
+    configured_invoice_inboxes,
+)
 
 st.set_page_config(page_title="Sales Reports and Strategy", layout="wide")
 
@@ -230,6 +237,304 @@ rD.metric(
     help="Total Net Basic of all pending MIS orders. Same figure as the "
          "Pending Order Value on the MIS Update page.",
 )
+
+st.divider()
+
+# =========================================================
+# SECTION — Monthly Sales from Invoices (without Tax)
+# =========================================================
+
+st.subheader("🧾 Monthly Sales from Invoices (without Tax)")
+
+if "inv_status_msg" not in st.session_state:
+    st.session_state.inv_status_msg = ""
+if "inv_last_fetched_month" not in st.session_state:
+    st.session_state.inv_last_fetched_month = ""
+
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+def _invoice_month_options(count: int = 12) -> list[str]:
+    """Return last `count` month names, most recent first."""
+    _now = datetime.now(_IST)
+    names = []
+    yr, mo = _now.year, _now.month
+    for _ in range(count):
+        names.append(date(yr, mo, 1).strftime("%B"))
+        mo -= 1
+        if mo == 0:
+            mo, yr = 12, yr - 1
+    seen: set[str] = set()
+    unique = []
+    for n in names:
+        if n not in seen:
+            seen.add(n)
+            unique.append(n)
+    return unique
+
+_inv_month_options = _invoice_month_options()
+
+inv_selected_month = st.selectbox(
+    "Filter by Month",
+    options=_inv_month_options,
+    index=0,
+    key="inv_month_select_sr",
+    help="Loads data from the corresponding 'SALE INVOICE- <Month>' sheet.",
+)
+
+_inv_today = datetime.now().date()
+_inv_default_start = _inv_today.replace(day=1)
+
+_inv_inboxes = configured_invoice_inboxes()
+if _inv_inboxes:
+    st.caption(
+        f"📬 Reading invoices from **{len(_inv_inboxes)}** inbox(es): "
+        + ", ".join(_inv_inboxes)
+    )
+else:
+    st.warning(
+        "📬 No invoice inbox configured. Set EMAIL_SENDER / EMAIL_PASSWORD "
+        "(and EMAIL_SENDER_2 / EMAIL_PASSWORD_2 for a second account) in secrets."
+    )
+
+ic1, ic2 = st.columns([3, 1.6])
+with ic1:
+    inv_date_range = st.date_input(
+        "Select date range to fetch invoices from Gmail",
+        value=(_inv_default_start, _inv_today),
+        max_value=_inv_today,
+        key="inv_date_range_sr",
+        format="DD/MM/YYYY",
+        help=(
+            "Reads 'invoice information' emails received in this date range and "
+            "saves each invoice to the month sheet matching its invoice date. "
+            "Invoices already present in a sheet are left unchanged."
+        ),
+    )
+with ic2:
+    st.write("")
+    st.write("")
+    fetch_range_clicked = st.button(
+        "📥 Fetch Invoices",
+        key="inv_fetch_range_sr",
+        use_container_width=True,
+    )
+
+if fetch_range_clicked:
+    if isinstance(inv_date_range, (list, tuple)):
+        _range_start = inv_date_range[0] if len(inv_date_range) >= 1 else None
+        _range_end   = inv_date_range[1] if len(inv_date_range) >= 2 else _range_start
+    else:
+        _range_start = _range_end = inv_date_range
+
+    if not _range_start or not _range_end:
+        st.warning("Please select both a start and an end date, then click Fetch Invoices.")
+    else:
+        with st.spinner(
+            f"Fetching invoice emails from {_range_start:%d %b %Y} to {_range_end:%d %b %Y}…"
+        ):
+            _, _msg = fetch_and_save_invoices_range(_range_start, _range_end)
+        st.session_state.inv_status_msg        = _msg
+        st.session_state.inv_last_fetched_month = _range_end.strftime("%B")
+        try:
+            get_df.clear()
+            _load_invoice_data_sr.clear()
+        except Exception:
+            pass
+        st.rerun()
+
+if st.session_state.inv_status_msg:
+    msg = st.session_state.inv_status_msg
+    if "✅" in msg:
+        st.success(msg)
+    elif "❌" in msg:
+        st.error(msg)
+    else:
+        st.warning(msg)
+
+@st.cache_data(ttl=120)
+def _load_invoice_data_sr(month: str) -> pd.DataFrame:
+    return load_invoice_sheet(month)
+
+inv_df = _load_invoice_data_sr(inv_selected_month)
+
+st.markdown(
+    f"<h4 style='margin-top:16px;'>Monthly Sales from Invoices(without Tax) "
+    f"<span style='color:#1a5276;'>{inv_selected_month}</span></h4>",
+    unsafe_allow_html=True,
+)
+st.caption(
+    f"Source sheet: **{invoice_sheet_name(inv_selected_month)}**  ·  "
+    "Automatic fetch runs daily at 8:00 PM IST."
+)
+
+@st.cache_data(ttl=300)
+def _load_sales_persons_sr() -> list[str]:
+    try:
+        df = get_df("Sales Team")
+        if df is None or df.empty:
+            return []
+        df.columns = [str(c).strip().upper() for c in df.columns]
+        name_col = next((c for c in df.columns if c in ("NAME", "EMPLOYEE", "FULL NAME")), None)
+        role_col = next((c for c in df.columns if c in ("ROLE", "DESIGNATION")), None)
+        if not name_col:
+            return []
+        if role_col:
+            df = df[df[role_col].str.strip().str.upper() == "SALES"]
+        names = (
+            df[name_col]
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .pipe(lambda s: s[s.str.len() > 0])
+            .unique()
+            .tolist()
+        )
+        return sorted(names)
+    except Exception:
+        return []
+
+if "inv_save_msg_sr" not in st.session_state:
+    st.session_state.inv_save_msg_sr = ""
+
+_inv_col_map = {
+    "Sales Invoice No":   "Purchase Invoice",
+    "Date":               "Dated",
+    "Customer Code Name": "Bill Code",
+    "Sales Order No":     "So No",
+    "Taxable Value":      "Amount without GST",
+    "Sales Executive":    "Sales Executive",
+}
+
+def _to_inv_float(v) -> float:
+    try:
+        return float(str(v).replace(",", "").strip())
+    except (ValueError, TypeError):
+        return 0.0
+
+if inv_df is None or inv_df.empty:
+    st.info(
+        f"No invoice data found for **{inv_selected_month}**. "
+        "Use the buttons above to fetch from email, or wait for the automatic 8 PM fetch."
+    )
+else:
+    if "Customer Code Name" in inv_df.columns:
+        _wfx_mask = (
+            inv_df["Customer Code Name"]
+            .fillna("").astype(str).str.strip().str.upper()
+            .str.startswith("WFX")
+        )
+        inv_df_wfx = inv_df[_wfx_mask].copy().reset_index(drop=True)
+    else:
+        inv_df_wfx = inv_df.copy().reset_index(drop=True)
+
+    _total_records = len(inv_df)
+    _wfx_records   = len(inv_df_wfx)
+    st.caption(
+        f"Showing **{_wfx_records}** WFX record(s) "
+        f"(filtered from {_total_records} total invoice(s) in {inv_selected_month}). "
+        "Only rows whose Customer Code starts with **WFX** are displayed."
+    )
+
+    if inv_df_wfx.empty:
+        st.info(
+            f"No WFX customer records found for **{inv_selected_month}**. "
+            f"All {_total_records} invoice(s) have non-WFX customer codes."
+        )
+    else:
+        inv_display = pd.DataFrame()
+        for sheet_col, display_col in _inv_col_map.items():
+            if sheet_col in inv_df_wfx.columns:
+                inv_display[display_col] = inv_df_wfx[sheet_col].fillna("").astype(str)
+            else:
+                inv_display[display_col] = ""
+
+        _sales_persons_sr = _load_sales_persons_sr()
+        _sp_options_sr = [""] + _sales_persons_sr
+
+        st.caption(
+            "✏️ **Sales Executive column is editable** — click a cell to pick a name from the dropdown, "
+            "then click **💾 Save Sales Executive** to write back to the sheet."
+        )
+
+        edited_inv = st.data_editor(
+            inv_display,
+            column_config={
+                "Purchase Invoice": st.column_config.TextColumn(
+                    "Purchase Invoice", disabled=True, width="medium"
+                ),
+                "Dated": st.column_config.TextColumn(
+                    "Dated", disabled=True, width="small"
+                ),
+                "Bill Code": st.column_config.TextColumn(
+                    "Bill Code", disabled=True, width="medium"
+                ),
+                "So No": st.column_config.TextColumn(
+                    "So No", disabled=True, width="small"
+                ),
+                "Amount without GST": st.column_config.TextColumn(
+                    "Amount without GST", disabled=True, width="small"
+                ),
+                "Sales Executive": st.column_config.SelectboxColumn(
+                    "Sales Executive",
+                    options=_sp_options_sr,
+                    required=False,
+                    width="medium",
+                    help="Select the Sales Executive responsible for this invoice.",
+                ),
+            },
+            hide_index=True,
+            use_container_width=True,
+            num_rows="fixed",
+            key="inv_editor_sr",
+        )
+
+        _save_col, _spacer = st.columns([1.5, 6])
+        with _save_col:
+            if st.button("💾 Save Sales Executive", type="primary", use_container_width=True, key="inv_save_exec_sr"):
+                inv_updated = inv_df.copy()
+                _inv_no_col = "Sales Invoice No"
+
+                for _, edited_row in edited_inv.iterrows():
+                    inv_no   = str(edited_row.get("Purchase Invoice", "")).strip()
+                    exec_val = str(edited_row.get("Sales Executive", "")).strip()
+                    if inv_no and _inv_no_col in inv_updated.columns:
+                        _mask = inv_updated[_inv_no_col].astype(str).str.strip() == inv_no
+                        inv_updated.loc[_mask, "Sales Executive"] = exec_val
+
+                _smsg = save_invoices_to_sheet(inv_updated, inv_selected_month)
+                st.session_state.inv_save_msg_sr = _smsg
+                try:
+                    get_df.clear()
+                    _load_invoice_data_sr.clear()
+                except Exception:
+                    pass
+                st.rerun()
+
+        if st.session_state.inv_save_msg_sr:
+            _sm = st.session_state.inv_save_msg_sr
+            if "✅" in _sm:
+                st.success(_sm)
+            else:
+                st.error(_sm)
+
+        _total_inv = edited_inv["Amount without GST"].apply(_to_inv_float).sum()
+
+        st.markdown(
+            f"""
+            <div style="background:#eaf4fb;border:2px solid #1a5276;border-radius:8px;
+                        padding:14px;margin-top:12px;">
+                <h4 style="margin:0;color:#1a5276;">
+                    🧾 Total Month Sales (without Tax) — {inv_selected_month}:
+                    &nbsp;₹{to_indian_number_string(_total_inv, 2)}
+                </h4>
+                <p style="margin:6px 0 0;color:#555;font-size:12px;">
+                    Sum of <b>Taxable Value (without GST)</b> for all
+                    <b>{_wfx_records}</b> WFX invoice(s) shown above.
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
 st.divider()
 
