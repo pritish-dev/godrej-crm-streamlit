@@ -519,7 +519,7 @@ def parse_attachment(att_bytes: bytes, filename: str) -> tuple[pd.DataFrame, str
 def lookup_sales_executive(so_numbers: list[str]) -> dict[str, str]:
     """
     Match each Sales Order No against "GODREJ SO NO" in all Franchise/4S sheets
-    (current FY + previous FY) listed in SHEET_DETAILS.
+    from both SHEET_DETAILS (current FY) and OLD_SHEET_DETAILS (previous FY).
     Returns {so_no: sales_person_name}.
     """
     from services.sheets import get_df
@@ -530,45 +530,49 @@ def lookup_sales_executive(so_numbers: list[str]) -> dict[str, str]:
 
     so_set = {str(s).strip() for s in so_numbers if str(s).strip()}
 
-    try:
-        cfg = get_df("SHEET_DETAILS")
-        if cfg is None or cfg.empty:
-            return result
-
-        sheets: list[str] = []
-        for col in ("Franchise_sheets", "four_s_sheets"):
-            if col in cfg.columns:
-                sheets += cfg[col].dropna().astype(str).str.strip().tolist()
-        sheets = list({s for s in sheets if s})
-
-        for sname in sheets:
-            if not so_set:
-                break
-            try:
-                raw = get_df(sname)
-                if raw is None or raw.empty:
-                    continue
-                raw.columns = [str(c).strip().upper() for c in raw.columns]
-
-                so_col = next((c for c in raw.columns if c == "GODREJ SO NO"), None)
-                sp_col = next(
-                    (c for c in raw.columns if c in ("SALES PERSON", "SALES REP")), None
-                )
-                if so_col is None or sp_col is None:
-                    continue
-
-                for _, row in raw.iterrows():
-                    so = str(row[so_col]).strip()
-                    if so not in so_set or so in result:
-                        continue
-                    sp = str(row[sp_col]).strip()
-                    if sp and sp.lower() not in ("nan", "none", ""):
-                        result[so] = sp
-                        so_set.discard(so)
-            except Exception:
+    # Collect sheet names from both current and old config sheets
+    sheets: list[str] = []
+    seen_sheets: set[str] = set()
+    for config_name in ("SHEET_DETAILS", "OLD_SHEET_DETAILS"):
+        try:
+            cfg = get_df(config_name)
+            if cfg is None or cfg.empty:
                 continue
-    except Exception:
-        pass
+            for col in ("Franchise_sheets", "four_s_sheets"):
+                if col in cfg.columns:
+                    for s in cfg[col].dropna().astype(str).str.strip():
+                        if s and s not in seen_sheets:
+                            sheets.append(s)
+                            seen_sheets.add(s)
+        except Exception:
+            continue
+
+    for sname in sheets:
+        if not so_set:
+            break
+        try:
+            raw = get_df(sname)
+            if raw is None or raw.empty:
+                continue
+            raw.columns = [str(c).strip().upper() for c in raw.columns]
+
+            so_col = next((c for c in raw.columns if c == "GODREJ SO NO"), None)
+            sp_col = next(
+                (c for c in raw.columns if c in ("SALES PERSON", "SALES REP")), None
+            )
+            if so_col is None or sp_col is None:
+                continue
+
+            for _, row in raw.iterrows():
+                so = str(row[so_col]).strip()
+                if so not in so_set or so in result:
+                    continue
+                sp = str(row[sp_col]).strip()
+                if sp and sp.lower() not in ("nan", "none", ""):
+                    result[so] = sp
+                    so_set.discard(so)
+        except Exception:
+            continue
 
     return result
 
