@@ -282,7 +282,12 @@ st.dataframe(
         "Item Description"          : st.column_config.TextColumn("Item Description", width="large"),
         "Sales Order Qty"           : st.column_config.NumberColumn("SO Qty", width="small"),
         "Sales Order Warehouse"     : st.column_config.TextColumn("Warehouse", width="medium"),
+        "Total Discount"            : st.column_config.NumberColumn("Total Discount", width="medium"),
+        "Total Net Basic"           : st.column_config.NumberColumn("Total Net Basic", width="medium"),
+        "Discount Percentage"       : st.column_config.NumberColumn("Discount %", width="small", format="%.2f%%"),
         "Sales Order Committed Qty" : st.column_config.NumberColumn("Committed Qty", width="small"),
+        "Customer Name"             : st.column_config.TextColumn("Customer Name", width="medium"),
+        "Contact No"                : st.column_config.TextColumn("Contact No", width="medium"),
         "Inventory Commitment Date" : st.column_config.TextColumn("Inv. Commitment Date", width="medium"),
         "Freight Order No"          : st.column_config.TextColumn("FO No.", width="medium"),
         "FO Pos"                    : st.column_config.TextColumn("FO Pos", width="small"),
@@ -291,8 +296,6 @@ st.dataframe(
         "Address Line 2(Ship To)"   : st.column_config.TextColumn("Address 2", width="medium"),
         "Address Line 3(Ship To)"   : st.column_config.TextColumn("Address 3", width="medium"),
         "Address Line 4(Ship To)"   : st.column_config.TextColumn("Address 4", width="medium"),
-        "Customer Name"             : st.column_config.TextColumn("Customer Name", width="medium"),
-        "Contact No"                : st.column_config.TextColumn("Contact No", width="medium"),
     },
 )
 
