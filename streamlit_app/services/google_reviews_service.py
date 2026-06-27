@@ -1002,9 +1002,12 @@ def _discover_sales_sheets(client: gspread.Client, spreadsheet_id: str) -> List[
     Return the union of every sales-sheet name listed in SHEET_DETAILS
     (Franchise_sheets + four_s_sheets).  Falls back to the legacy single
     4S sheet if SHEET_DETAILS is missing.
+    SHEET_DETAILS lives in the OPS spreadsheet; spreadsheet_id (CRM) is kept
+    as a parameter for backward compatibility but is not used for this lookup.
     """
     try:
-        sh = client.open_by_key(spreadsheet_id)
+        from services.sheet_config import OPS_SPREADSHEET_ID
+        sh = client.open_by_key(OPS_SPREADSHEET_ID)
         ws = sh.worksheet("SHEET_DETAILS")
         rows = ws.get_all_records()
     except Exception:

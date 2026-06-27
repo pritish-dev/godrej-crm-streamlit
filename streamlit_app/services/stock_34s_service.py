@@ -158,10 +158,11 @@ def _email_recipients() -> list[str]:
 # ─── Spreadsheet helpers ───────────────────────────────────────────────────────
 
 def _get_spreadsheet():
-    """Return authenticated gspread Spreadsheet object."""
+    """Return authenticated gspread Spreadsheet object (always OPS spreadsheet)."""
+    # First try to reuse the cached OPS client from sheets.py
     try:
-        from services.sheets import _get_spreadsheet as _gs
-        return _gs()
+        from services.sheets import _get_ops_spreadsheet
+        return _get_ops_spreadsheet()
     except Exception:
         pass
     import json

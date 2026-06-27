@@ -57,6 +57,7 @@ _OPS_SHEETS: frozenset[str] = frozenset({
     "Happy Calling Sheet",
     "SHEET_DETAILS",
     "OLD_SHEET_DETAILS",
+    "Stock",
 })
 
 # Sheet name prefixes that always belong to the OPS spreadsheet
@@ -74,5 +75,5 @@ def get_spreadsheet_id_for(sheet_name: str) -> str:
         return OPS_SPREADSHEET_ID
     if any(sheet_name.startswith(p) for p in _OPS_PREFIXES):
         return OPS_SPREADSHEET_ID
-    # All other sheets (franchise/4S tabs, SHEET_DETAILS, CRM, etc.) → CRM
+    # All other sheets (franchise/4S outlet tabs, CRM transaction tab, etc.) → CRM
     return CRM_SPREADSHEET_ID
