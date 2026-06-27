@@ -75,10 +75,12 @@ MIS_SUBJECT  = "BR_MIS - Interio MIS (4S INTERIO)"
 PO_COLUMNS = {
     "REFERENCE A 1": "Customer Name",
     "REFERENCE B 1": "Contact No",
+    "Order Line Booking DateTime": "Booking Date",
 }
 
 # ─── Columns shown in the MIS Update page (subset of all sheet columns) ───────
 DISPLAY_COLUMNS = [
+    "Booking Date",
     "Sales Order No.",
     "Sales Order Position",
     "Item Code",
@@ -95,7 +97,6 @@ DISPLAY_COLUMNS = [
     "Freight Order No",
     "FO Pos",
     "FO Firm Commitment Qty",
-    "Order Line Booking DateTime",
     "Address Line 2(Ship To)",
     "Address Line 3(Ship To)",
     "Address Line 4(Ship To)",

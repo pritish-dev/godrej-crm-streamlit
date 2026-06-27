@@ -260,6 +260,7 @@ st.markdown(f"### 📋 PO Data — {to_indian_number_string(len(filtered), 0)} r
 # Only show the 16 configured display columns (all columns are saved to the sheet)
 show_cols   = [c for c in DISPLAY_COLUMNS if c in filtered.columns]
 display_df  = filtered[show_cols].reset_index(drop=True)
+display_df.index = range(1, len(display_df) + 1)
 display_msk = filtered_msk.reset_index(drop=True) if not filtered_msk.empty else \
               pd.Series([False] * len(display_df))
 
@@ -272,10 +273,11 @@ def _row_style(row):
     return [""] * len(row)
 
 st.dataframe(
-    display_df.style.apply(_row_style, axis=1).format_index(lambda x: x + 1),
+    display_df.style.apply(_row_style, axis=1),
     use_container_width=True,
     height=550,
     column_config={
+        "Booking Date"              : st.column_config.TextColumn("Booking Date", width="small"),
         "Sales Order No."           : st.column_config.TextColumn("SO No.", width="small"),
         "Sales Order Position"      : st.column_config.TextColumn("SO Pos", width="small"),
         "Item Code"                 : st.column_config.TextColumn("Item Code", width="small"),
@@ -292,7 +294,6 @@ st.dataframe(
         "Freight Order No"          : st.column_config.TextColumn("FO No.", width="small"),
         "FO Pos"                    : st.column_config.TextColumn("FO Pos", width="small"),
         "FO Firm Commitment Qty"    : st.column_config.NumberColumn("FO Committed", width="small"),
-        "Order Line Booking DateTime": st.column_config.TextColumn("Booking DateTime", width="small"),
         "Address Line 2(Ship To)"   : st.column_config.TextColumn("Address 2", width="small"),
         "Address Line 3(Ship To)"   : st.column_config.TextColumn("Address 3", width="small"),
         "Address Line 4(Ship To)"   : st.column_config.TextColumn("Address 4", width="small"),
