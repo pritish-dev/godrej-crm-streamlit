@@ -85,7 +85,12 @@ DISPLAY_COLUMNS = [
     "Item Description",
     "Sales Order Qty",
     "Sales Order Warehouse",
+    "Total Discount",
+    "Total Net Basic",
+    "Discount Percentage",
     "Sales Order Committed Qty",
+    "Customer Name",
+    "Contact No",
     "Inventory Commitment Date",
     "Freight Order No",
     "FO Pos",
@@ -94,8 +99,6 @@ DISPLAY_COLUMNS = [
     "Address Line 2(Ship To)",
     "Address Line 3(Ship To)",
     "Address Line 4(Ship To)",
-    "Customer Name",
-    "Contact No",
 ]
 
 
@@ -260,6 +263,20 @@ def fetch_mis_data(days_back: int = 3, today_only: bool = False) -> tuple[pd.Dat
     # Drop fully empty rows
     df.dropna(how="all", inplace=True)
     df.reset_index(drop=True, inplace=True)
+
+    # Calculate Discount Percentage = (Total Discount / Total Net Basic) * 100
+    _disc_col = next((c for c in df.columns if c.strip().lower() == "total discount"), None)
+    _nb_col   = next((c for c in df.columns if c.strip().lower() == "total net basic"), None)
+    if _disc_col and _nb_col:
+        disc_num = pd.to_numeric(
+            df[_disc_col].astype(str).str.strip().str.replace(",", "", regex=False),
+            errors="coerce"
+        )
+        nb_num = pd.to_numeric(
+            df[_nb_col].astype(str).str.strip().str.replace(",", "", regex=False),
+            errors="coerce"
+        )
+        df["Discount Percentage"] = (disc_num / nb_num.replace(0, float("nan")) * 100).round(2)
 
     # Warn if any DISPLAY_COLUMNS are missing after rename
     missing_cols = [c for c in DISPLAY_COLUMNS if c not in df.columns]
