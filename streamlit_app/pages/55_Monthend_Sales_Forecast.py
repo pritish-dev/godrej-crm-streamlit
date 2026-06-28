@@ -751,8 +751,7 @@ win_start, win_end, month_name = get_forecast_window(today)
 sheet_name = forecast_sheet_name(month_name)
 
 st.caption(
-    f"Forecast window: **{win_start.strftime('%d-%b-%Y')}** → "
-    f"**{win_end.strftime('%d-%b-%Y')}**  ·  "
+    f"Showing all MIS orders from **{win_start.strftime('%d-%b-%Y')}** onwards  ·  "
     f"State persisted in sheet **{sheet_name}**"
 )
 
@@ -781,14 +780,8 @@ if not st.session_state.mef_loaded or refresh:
         pending_raw, delivered_sos = _load_pending_delivery_lookup()
         invoiced_sos = _get_invoiced_so_numbers(month_name)
 
-        # Build with extended upper bound so beyond-5th records are included
-        # before the committed filter is applied below.
-        if win_end.month == 12:
-            _ext_year, _ext_month = win_end.year + 1, 1
-        else:
-            _ext_year, _ext_month = win_end.year, win_end.month + 1
-        extended_end = date(_ext_year, _ext_month, monthrange(_ext_year, _ext_month)[1])
-        fresh = build_forecast(mis_raw, pending_raw, win_start, extended_end)
+        # Show all MIS orders from forecast start onwards — no upper date cap.
+        fresh = build_forecast(mis_raw, pending_raw, win_start, date(9999, 12, 31))
 
         # ── Filter 1: remove SOs already invoiced this month ─────────────────
         if invoiced_sos and not fresh.empty:
@@ -797,16 +790,6 @@ if not st.session_state.mef_loaded or refresh:
         # ── Filter 2: remove SOs marked as Delivered in CRM ──────────────────
         if delivered_sos and not fresh.empty:
             fresh = fresh[~fresh["SO_NO"].isin(delivered_sos)].reset_index(drop=True)
-
-        # ── Filter 3: beyond 5th of next month → only show if committed ───────
-        if not fresh.empty:
-            beyond_mask = (
-                fresh["DELIVERY_DATE"].notna()
-                & (fresh["DELIVERY_DATE"].dt.date > win_end)
-            )
-            if beyond_mask.any():
-                committed_mask = fresh.apply(_is_committed, axis=1)
-                fresh = fresh[~beyond_mask | committed_mask].reset_index(drop=True)
 
         # Merge with saved state (preserve manual flags)
         saved = load_saved_state(sheet_name)
@@ -840,8 +823,8 @@ df: pd.DataFrame = st.session_state.mef_df
 
 if df.empty:
     st.warning(
-        f"No MIS records found with delivery dates between "
-        f"{win_start.strftime('%d-%b-%Y')} and {win_end.strftime('%d-%b-%Y')}.\n\n"
+        f"No MIS records found with delivery dates from "
+        f"{win_start.strftime('%d-%b-%Y')} onwards.\n\n"
         "Make sure the MIS_Daily sheet is populated and the Pending Delivery "
         "records have matching GODREJ SO numbers."
     )
@@ -895,7 +878,7 @@ with kpi_placeholder.container():
 st.markdown("---")
 
 m1, m2, m3, m4 = st.columns(4)
-m1.metric("Forecast Window", f"{win_start.strftime('%d %b')} – {win_end.strftime('%d %b')}")
+m1.metric("Forecast Window", f"{win_start.strftime('%d %b')} onwards")
 m2.metric("Total Line Items", f"{to_indian_number_string(len(visible_df), 0)}")
 m3.metric("🟢 Committed Items", f"{to_indian_number_string(int(green_mask.sum()), 0)}")
 m4.metric(
