@@ -147,7 +147,9 @@ def _load_pending_delivery_lookup() -> tuple[pd.DataFrame, set[str]]:
         sheets = list({s for s in sheets if s})
 
         frames = []
-        delivered_sos: set[str] = set()
+        # Track per-SO item counts to determine fully-delivered orders.
+        # so_item_counts[so_val] = [total_items, delivered_items]
+        so_item_counts: dict[str, list[int]] = {}
 
         for sname in sheets:
             raw = get_df(sname)
@@ -176,10 +178,16 @@ def _load_pending_delivery_lookup() -> tuple[pd.DataFrame, set[str]]:
                 continue
 
             if status_col:
-                delivered_mask = raw[status_col].astype(str).str.strip().str.upper() == "DELIVERED"
-                for so_val in raw.loc[delivered_mask, so_col].dropna().astype(str).str.strip():
-                    if so_val and so_val.lower() not in ("", "nan", "none"):
-                        delivered_sos.add(so_val)
+                so_series = raw[so_col].astype(str).str.strip()
+                status_series = raw[status_col].astype(str).str.strip().str.upper()
+                for so_val, status_val in zip(so_series, status_series):
+                    if not so_val or so_val.lower() in ("", "nan", "none"):
+                        continue
+                    if so_val not in so_item_counts:
+                        so_item_counts[so_val] = [0, 0]
+                    so_item_counts[so_val][0] += 1
+                    if status_val == "DELIVERED":
+                        so_item_counts[so_val][1] += 1
 
             sub = raw[[so_col]].copy()
             sub.rename(columns={so_col: "GODREJ_SO"}, inplace=True)
@@ -198,6 +206,13 @@ def _load_pending_delivery_lookup() -> tuple[pd.DataFrame, set[str]]:
             sub["GODREJ_SO"] = sub["GODREJ_SO"].astype(str).str.strip()
             sub = sub[~sub["GODREJ_SO"].str.lower().isin(["", "nan", "none"])]
             frames.append(sub)
+
+        # An SO is fully delivered only when every item in it is marked DELIVERED
+        delivered_sos: set[str] = {
+            so_val
+            for so_val, (total, delivered) in so_item_counts.items()
+            if total > 0 and total == delivered
+        }
 
         if not frames:
             return pd.DataFrame(), delivered_sos

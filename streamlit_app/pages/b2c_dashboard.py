@@ -396,18 +396,23 @@ def group_by_order_no(df):
             agg[col] = "first"
 
     # Delivery status aggregation:
-    #   • If ALL non-empty items are "Delivered/DELIVERED" → "Delivered"
-    #   • If ANY item is explicitly PENDING                → "PENDING"
+    #   • Only "Delivered" if EVERY item in the order is explicitly "DELIVERED"
+    #   • If ANY item is "PENDING" or blank/unset                → "PENDING"
     #   • Otherwise take the first non-empty value
     if "DELIVERY STATUS" in has_no.columns:
         def _agg_delivery(x):
+            total = len(x)
             vals = [str(v).strip() for v in x if str(v).strip() not in ("", "nan", "NaN", "None")]
             if not vals:
                 return "PENDING"
             upper_vals = [v.upper() for v in vals]
-            if all(v == "DELIVERED" for v in upper_vals):
+            # Fully delivered only when every item (including blank ones) is marked DELIVERED
+            if all(v == "DELIVERED" for v in upper_vals) and len(vals) == total:
                 return vals[0]            # keep original casing e.g. "Delivered"
             if any(v == "PENDING" for v in upper_vals):
+                return "PENDING"
+            # Some items delivered, some blank or other status → still pending
+            if any(v == "DELIVERED" for v in upper_vals):
                 return "PENDING"
             return vals[0]
         agg["DELIVERY STATUS"] = _agg_delivery
