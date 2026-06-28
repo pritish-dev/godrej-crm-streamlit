@@ -387,16 +387,47 @@ def _partial_selected(row: pd.Series) -> bool:
 # FORECAST VALUE CALCULATORS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def compute_mis_committed_value(mis_df: pd.DataFrame, invoiced_sos: set, delivered_sos: set) -> float:
+    """
+    Sum of Total Net Basic for ALL MIS items where SO Qty == SO Committed Qty,
+    excluding SOs already invoiced or delivered. Uses the full MIS data, not
+    just the date-filtered forecast window.
+    """
+    if mis_df is None or mis_df.empty:
+        return 0.0
+    df = mis_df.copy()
+
+    # Flexible column lookup
+    so_col = next((c for c in df.columns if c.strip() == "Sales Order No."), None)
+    qty_col = next((c for c in df.columns if c.strip() == "Sales Order Qty"), None)
+    com_col = next((c for c in df.columns if c.strip() == "Sales Order Committed Qty"), None)
+    val_col = next((c for c in df.columns if c.strip() == "Total Net Basic"), None)
+
+    if not all([so_col, qty_col, com_col, val_col]):
+        return 0.0
+
+    df = df[[so_col, qty_col, com_col, val_col]].copy()
+    df.columns = ["SO_NO", "SO_QTY", "SO_COMMITTED_QTY", "TOTAL_NET_BASIC"]
+    df["SO_NO"] = df["SO_NO"].astype(str).str.strip()
+
+    # Exclude already invoiced / delivered
+    if invoiced_sos:
+        df = df[~df["SO_NO"].isin(invoiced_sos)]
+    if delivered_sos:
+        df = df[~df["SO_NO"].isin(delivered_sos)]
+
+    committed_mask = df.apply(_is_mis_committed, axis=1)
+    return float(df.loc[committed_mask, "TOTAL_NET_BASIC"].apply(_to_num).sum())
+
+
 def compute_forecast_breakdown(df: pd.DataFrame) -> dict[str, float]:
     """
     Returns a dict with keys:
-      committed_mis, agree, godown, partial, manual, total
+      agree, godown, partial, manual, total
+    (committed_mis is computed separately from full MIS via compute_mis_committed_value)
     """
     if df.empty:
-        return dict(committed_mis=0, agree=0, godown=0, partial=0, manual=0, total=0)
-
-    # Committed Value (MIS): item-level, irrespective of order-level commitment
-    committed_mis = df[df.apply(_is_mis_committed, axis=1)]["TOTAL_NET_BASIC"].apply(_to_num).sum()
+        return dict(agree=0, godown=0, partial=0, manual=0, total=0)
 
     # Track which items are already counted in agree/godown/partial buckets
     counted_idx: set = set()
@@ -439,7 +470,6 @@ def compute_forecast_breakdown(df: pd.DataFrame) -> dict[str, float]:
 
     total = agree_val + godown_val + partial_val + manual_val
     return dict(
-        committed_mis=committed_mis,
         agree=agree_val,
         godown=godown_val,
         partial=partial_val,
@@ -555,16 +585,19 @@ def build_forecast(
 
     df["DELIVERY_DATE"] = pd.to_datetime(df["DELIVERY_DATE"], errors="coerce")
 
-    mask = (
+    # Keep rows where delivery date is within window OR delivery date is unknown (no CRM match)
+    in_window = (
         df["DELIVERY_DATE"].notna()
         & (df["DELIVERY_DATE"].dt.date >= start)
         & (df["DELIVERY_DATE"].dt.date <= end)
     )
-    df = df[mask].copy()
+    no_date = df["DELIVERY_DATE"].isna()
+    df = df[in_window | no_date].copy()
 
     if df.empty:
         return pd.DataFrame(columns=INTERNAL_COLS)
 
+    # Sort: dated orders first (ascending), then undated orders at the bottom
     df = df.sort_values(
         ["DELIVERY_DATE", "SO_NO", "SO_POSITION"],
         na_position="last",
@@ -660,6 +693,8 @@ if "mef_loaded" not in st.session_state:
     st.session_state.mef_loaded = False
 if "mef_save_msg" not in st.session_state:
     st.session_state.mef_save_msg = ""
+if "mef_mis_committed" not in st.session_state:
+    st.session_state.mef_mis_committed = 0.0
 
 # ─── Control buttons ─────────────────────────────────────────────────────────
 c1, c2, c3 = st.columns([1.5, 1.5, 5])
@@ -675,7 +710,12 @@ if not st.session_state.mef_loaded or refresh:
         pending_raw, delivered_sos = _load_pending_delivery_lookup()
         invoiced_sos = _get_invoiced_so_numbers(month_name)
 
-        # No upper date cap — show all MIS orders from forecast start onwards
+        # Committed Value (MIS) from ALL MIS data (not date-filtered)
+        mis_committed_val = compute_mis_committed_value(mis_raw, invoiced_sos, delivered_sos)
+        st.session_state.mef_mis_committed = mis_committed_val
+
+        # Forecast orders: all pending MIS orders from win_start onwards,
+        # plus orders with no delivery date matched in CRM
         fresh = build_forecast(mis_raw, pending_raw, win_start, date(9999, 12, 31))
 
         if invoiced_sos and not fresh.empty:
@@ -715,15 +755,14 @@ df: pd.DataFrame = st.session_state.mef_df
 
 if df.empty:
     st.warning(
-        f"No MIS records found with delivery dates from "
-        f"{win_start.strftime('%d-%b-%Y')} onwards.\n\n"
-        "Make sure the MIS_Daily sheet is populated and the Pending Delivery "
-        "records have matching GODREJ SO numbers."
+        "No pending MIS records found. "
+        "Make sure the MIS_Daily sheet is populated and SOs have not already been invoiced or delivered."
     )
     st.stop()
 
 # ─── Compute KPI values ───────────────────────────────────────────────────────
 breakdown = compute_forecast_breakdown(df)
+_mis_committed_val = st.session_state.mef_mis_committed
 
 _monthly_target  = _get_monthly_target(month_name)
 _current_achieve = _get_month_sales_achievement(month_name)
@@ -748,8 +787,8 @@ k3.metric(
 )
 k4.metric(
     "📦 Committed Value (MIS)",
-    f"₹{to_indian_number_string(breakdown['committed_mis'], 0)}",
-    help="Sum of Total Net Basic for all items where SO Qty = SO Committed Qty (item-level, irrespective of order-level commitment).",
+    f"₹{to_indian_number_string(_mis_committed_val, 0)}",
+    help="Sum of Total Net Basic for ALL MIS items where SO Qty = SO Committed Qty — across all pending orders, not limited to forecast window.",
 )
 
 st.markdown("---")
@@ -1007,17 +1046,18 @@ for del_date_str, date_grp in df.groupby("_del_date_str", sort=False):
                         st.session_state.mef_df.at[idx, "APPROVED_BY"] = new_approved if new_can else ""
 
 # ─── Save button ─────────────────────────────────────────────────────────────
-if save_clicked or changed:
-    # Recompute breakdown from latest session state before saving
-    breakdown = compute_forecast_breakdown(st.session_state.mef_df)
+if changed:
+    # Auto-persist every widget interaction to session state (no rerun needed for display)
+    st.session_state.mef_save_msg = ""  # clear stale message on new change
+
+if save_clicked:
     msg = save_state(st.session_state.mef_df, sheet_name)
     st.session_state.mef_save_msg = msg
-    if save_clicked:
-        try:
-            get_df.clear()
-        except Exception:
-            pass
-        st.rerun()
+    try:
+        get_df.clear()
+    except Exception:
+        pass
+    st.rerun()
 
 if st.session_state.mef_save_msg:
     if st.session_state.mef_save_msg.startswith("✅"):
