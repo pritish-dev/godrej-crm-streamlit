@@ -387,34 +387,25 @@ def _partial_selected(row: pd.Series) -> bool:
 # FORECAST VALUE CALCULATORS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def compute_mis_committed_value(mis_df: pd.DataFrame, invoiced_sos: set, delivered_sos: set) -> float:
+def compute_mis_committed_value(mis_df: pd.DataFrame) -> float:
     """
-    Sum of Total Net Basic for ALL MIS items where SO Qty == SO Committed Qty,
-    excluding SOs already invoiced or delivered. Uses the full MIS data, not
-    just the date-filtered forecast window.
+    Sum of Total Net Basic for ALL MIS items where SO Qty == SO Committed Qty.
+    Uses the raw MIS sheet with no exclusions — this reflects exactly what the
+    MIS file shows as committed, matching the value a user would compute manually.
     """
     if mis_df is None or mis_df.empty:
         return 0.0
     df = mis_df.copy()
 
-    # Flexible column lookup
-    so_col = next((c for c in df.columns if c.strip() == "Sales Order No."), None)
     qty_col = next((c for c in df.columns if c.strip() == "Sales Order Qty"), None)
     com_col = next((c for c in df.columns if c.strip() == "Sales Order Committed Qty"), None)
     val_col = next((c for c in df.columns if c.strip() == "Total Net Basic"), None)
 
-    if not all([so_col, qty_col, com_col, val_col]):
+    if not all([qty_col, com_col, val_col]):
         return 0.0
 
-    df = df[[so_col, qty_col, com_col, val_col]].copy()
-    df.columns = ["SO_NO", "SO_QTY", "SO_COMMITTED_QTY", "TOTAL_NET_BASIC"]
-    df["SO_NO"] = df["SO_NO"].astype(str).str.strip()
-
-    # Exclude already invoiced / delivered
-    if invoiced_sos:
-        df = df[~df["SO_NO"].isin(invoiced_sos)]
-    if delivered_sos:
-        df = df[~df["SO_NO"].isin(delivered_sos)]
+    df = df[[qty_col, com_col, val_col]].copy()
+    df.columns = ["SO_QTY", "SO_COMMITTED_QTY", "TOTAL_NET_BASIC"]
 
     committed_mask = df.apply(_is_mis_committed, axis=1)
     return float(df.loc[committed_mask, "TOTAL_NET_BASIC"].apply(_to_num).sum())
@@ -710,8 +701,8 @@ if not st.session_state.mef_loaded or refresh:
         pending_raw, delivered_sos = _load_pending_delivery_lookup()
         invoiced_sos = _get_invoiced_so_numbers(month_name)
 
-        # Committed Value (MIS) from ALL MIS data (not date-filtered)
-        mis_committed_val = compute_mis_committed_value(mis_raw, invoiced_sos, delivered_sos)
+        # Committed Value (MIS): raw MIS total, no exclusions — matches manual MIS calculation
+        mis_committed_val = compute_mis_committed_value(mis_raw)
         st.session_state.mef_mis_committed = mis_committed_val
 
         # Forecast orders: all pending MIS orders from win_start onwards,
@@ -788,7 +779,7 @@ k3.metric(
 k4.metric(
     "📦 Committed Value (MIS)",
     f"₹{to_indian_number_string(_mis_committed_val, 0)}",
-    help="Sum of Total Net Basic for ALL MIS items where SO Qty = SO Committed Qty — across all pending orders, not limited to forecast window.",
+    help="Sum of Total Net Basic for all MIS items where SO Qty = SO Committed Qty — raw MIS total, no invoice/delivery exclusions. Matches what you'd compute manually from the MIS sheet.",
 )
 
 st.markdown("---")
