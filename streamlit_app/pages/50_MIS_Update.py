@@ -237,12 +237,21 @@ with f2:
 with f3:
     search_item = st.text_input("Search Item Description", placeholder="e.g. Wardrobe")
 
-# Warehouse filter
-if "Sales Order Warehouse" in df.columns:
-    warehouses = ["All"] + sorted(df["Sales Order Warehouse"].dropna().unique().tolist())
-    selected_wh = st.selectbox("Warehouse", warehouses)
-else:
-    selected_wh = "All"
+# Warehouse filter + Commitment filter
+wh_col_ui, commit_col_ui = st.columns(2)
+
+with wh_col_ui:
+    if "Sales Order Warehouse" in df.columns:
+        warehouses = ["All"] + sorted(df["Sales Order Warehouse"].dropna().unique().tolist())
+        selected_wh = st.selectbox("Warehouse", warehouses)
+    else:
+        selected_wh = "All"
+
+with commit_col_ui:
+    commitment_filter = st.selectbox(
+        "Commitment Status",
+        ["All Items", "Committed Items Only", "Non-Committed Items Only"],
+    )
 
 # Apply filters (also filter the green_mask in lock-step)
 filtered     = df.copy()
@@ -265,6 +274,18 @@ if search_item and "Item Description" in filtered.columns:
 
 if selected_wh != "All" and "Sales Order Warehouse" in filtered.columns:
     keep = filtered["Sales Order Warehouse"] == selected_wh
+    filtered     = filtered[keep]
+    filtered_msk = filtered_msk.loc[filtered.index] if not filtered_msk.empty else filtered_msk
+
+if commitment_filter != "All Items" and _committed_qty_col and _committed_qty_col in filtered.columns:
+    comm_num = pd.to_numeric(
+        filtered[_committed_qty_col].astype(str).str.strip().str.replace(",", "", regex=False),
+        errors="coerce"
+    ).fillna(0)
+    if commitment_filter == "Committed Items Only":
+        keep = comm_num > 0
+    else:  # Non-Committed Items Only
+        keep = comm_num <= 0
     filtered     = filtered[keep]
     filtered_msk = filtered_msk.loc[filtered.index] if not filtered_msk.empty else filtered_msk
 
