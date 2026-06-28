@@ -198,13 +198,27 @@ else:
 # so they deduct automatically from the total (e.g. 1000+2000-1800+5000 = 6200)
 pending_order_val = net_basic_num.sum()
 
-c1, c2, c3 = st.columns(3)
+# Committed Items Value: sum of Net Basic for rows where Sales Order Committed Qty > 0
+_committed_qty_col = _find_col(df.columns, "Sales Order Committed Qty", "Committed Qty")
+if _committed_qty_col:
+    committed_qty_num = pd.to_numeric(
+        df[_committed_qty_col].astype(str).str.strip().str.replace(",", "", regex=False),
+        errors="coerce"
+    ).fillna(0)
+    committed_mask = committed_qty_num > 0
+    committed_items_val = net_basic_num[committed_mask].sum()
+else:
+    committed_items_val = 0.0
+
+c1, c2, c3, c4 = st.columns(4)
 c1.metric("CREDITED STOCK (ZBF11U)", to_indian_number_string(credited_qty, 0),
           help="Sum of SO Qty for negative stock items under warehouse ZBF11U")
 c2.metric("To Be CREDITED STOCK (ZBF11T)", to_indian_number_string(to_be_credited, 0),
           help="Sum of SO Qty for negative stock items under warehouse ZBF11T")
 c3.metric("PENDING ORDER VALUE", f"₹{to_indian_number_string(pending_order_val, 0)}",
           help="Total Net Basic (all rows) minus Net Basic of negative SO Qty rows")
+c4.metric("COMMITTED ITEMS VALUE", f"₹{to_indian_number_string(committed_items_val, 0)}",
+          help="Sum of Net Basic Value for all items where Sales Order Committed Qty > 0")
 
 # ─── Filters ──────────────────────────────────────────────────────────────────
 st.markdown("### 🔍 Filters")
