@@ -404,6 +404,7 @@ CAT_PARTIAL       = "📦 Partial Delivery"
 CAT_DENIED        = "🚫 Customer Denied Delivery"
 CAT_GODOWN        = "🏭 Godown Delivery"
 CAT_MANUAL        = "✏️ Manually Committed"
+CAT_COMMITTED_NS  = "🟢 Committed (No Status)"
 CAT_NOT_COMMITTED = "⏳ Not Committed"
 
 # "All Pending" first so it is the default filter selection.
@@ -414,6 +415,7 @@ CATEGORY_OPTIONS = [
     CAT_DENIED,
     CAT_GODOWN,
     CAT_MANUAL,
+    CAT_COMMITTED_NS,
     CAT_NOT_COMMITTED,
 ]
 
@@ -424,7 +426,8 @@ def categorise_order(grp: pd.DataFrame) -> str:
     one category based on the delivery decision saved to the Ops sheet. The
     delivery status is per-order, so it decides the category for every item.
     Precedence:
-        Denied → Agree → Partial → Godown → Manually committed → Not committed.
+        Denied → Agree → Partial → Godown → Manually committed →
+        Committed (no status) → Not committed.
     """
     status = _delivery_status(grp.iloc[0])
     if status == "Denied Delivery":
@@ -435,10 +438,15 @@ def categorise_order(grp: pd.DataFrame) -> str:
         return CAT_PARTIAL
     if status == "Delivery to Godown":
         return CAT_GODOWN
-    # No order-level status set: an order with any manually-committed item is
-    # treated as Manually Committed, otherwise it is still Not Committed.
+    # No order-level status set:
+    #   • any manually-committed item → Manually Committed
+    #   • else any MIS-committed item (SO Qty == Committed Qty) → Committed but
+    #     not yet assigned a delivery status
+    #   • else → Not Committed
     if grp.apply(_is_manual_committed, axis=1).any():
         return CAT_MANUAL
+    if grp.apply(_is_mis_committed, axis=1).any():
+        return CAT_COMMITTED_NS
     return CAT_NOT_COMMITTED
 
 
@@ -896,7 +904,9 @@ st.markdown("---")
 # ─── Orders by Category (read-only, filterable) ───────────────────────────────
 # Every forecast order classified by the delivery decision saved to the Ops
 # sheet (agreed / partial / customer-denied / godown / manually committed /
-# not committed), with a per-category filter. Defaults to "All Pending" — every
+# committed-no-status / not committed), with a per-category filter. The
+# "Committed (No Status)" bucket holds MIS-committed orders that have not yet
+# been assigned a delivery status. Defaults to "All Pending" — every
 # order in the window. The decisions themselves are set in the interactive
 # section below. Items sharing one SO number are clubbed into a single order:
 # the order-level columns appear once and its items are listed beneath.
