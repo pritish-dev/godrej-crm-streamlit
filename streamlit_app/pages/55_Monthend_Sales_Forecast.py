@@ -578,6 +578,32 @@ def compute_forecast_breakdown(df: pd.DataFrame) -> dict[str, float]:
     )
 
 
+def compute_committed_by_category(df: pd.DataFrame) -> tuple[dict[str, float], float]:
+    """
+    Per delivery category, the value of its MIS-committed line items only
+    (Sales Order Qty == Committed Qty). Every line item belongs to exactly one
+    category, so these subtotals add up to the full MIS committed value — this is
+    what lets the category view reconcile with the "Committed Value (MIS)" KPI.
+    Returns (per_category_value, total).
+    """
+    out: dict[str, float] = {c: 0.0 for c in CATEGORY_OPTIONS[1:]}
+    if df.empty:
+        return out, 0.0
+    status_by_so = {
+        str(so): _delivery_status(grp.iloc[0])
+        for so, grp in df.groupby("SO_NO", sort=False)
+    }
+    total = 0.0
+    for _, row in df.iterrows():
+        if not _is_mis_committed(row):
+            continue
+        val = _to_num(row.get("TOTAL_NET_BASIC", 0))
+        cat = categorise_item(row, status_by_so.get(str(row["SO_NO"])))
+        out[cat] = out.get(cat, 0.0) + val
+        total += val
+    return out, total
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # FORECAST SHEET PERSISTENCE
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -639,9 +665,13 @@ def save_state(df: pd.DataFrame, sheet_name: str) -> str:
 def build_forecast(
     mis_df: pd.DataFrame,
     pending_df: pd.DataFrame,
-    start: date,
-    end: date,
 ) -> pd.DataFrame:
+    """
+    Transform the raw MIS into the internal forecast frame. Every MIS line item
+    is kept — there is no delivery-date window — so the page mirrors the MIS
+    exactly. CRM delivery dates / sales executives are still mapped on where a
+    matching SO exists, purely for display and sorting.
+    """
     if mis_df is None or mis_df.empty:
         return pd.DataFrame(columns=INTERNAL_COLS)
 
@@ -684,15 +714,6 @@ def build_forecast(
         df["SALES_EXECUTIVE"] = ""
 
     df["DELIVERY_DATE"] = pd.to_datetime(df["DELIVERY_DATE"], errors="coerce")
-
-    # Keep rows where delivery date is within window OR delivery date is unknown (no CRM match)
-    in_window = (
-        df["DELIVERY_DATE"].notna()
-        & (df["DELIVERY_DATE"].dt.date >= start)
-        & (df["DELIVERY_DATE"].dt.date <= end)
-    )
-    no_date = df["DELIVERY_DATE"].isna()
-    df = df[in_window | no_date].copy()
 
     if df.empty:
         return pd.DataFrame(columns=INTERNAL_COLS)
@@ -778,11 +799,14 @@ def _fmt_date(v) -> str:
 st.title("📅 Monthly Sales Target vs Achievement")
 
 today = datetime.now(IST).date()
-win_start, month_name = get_forecast_window(today)
+# Only the month label is needed now (for the sheet name, targets and
+# achievement lookups) — the page no longer applies a delivery-date window.
+_win_start, month_name = get_forecast_window(today)
 sheet_name = forecast_sheet_name(month_name)
 
 st.caption(
-    f"Showing all MIS orders from **{win_start.strftime('%d-%b-%Y')}** onwards  ·  "
+    f"Showing the **full MIS** — every order and line item, no delivery-date window "
+    f"and no invoice/delivery exclusions.  ·  "
     f"State persisted in sheet **{sheet_name}**"
 )
 
@@ -807,22 +831,18 @@ with c2:
 if not st.session_state.mef_loaded or refresh:
     with st.spinner("Loading MIS data and pending deliveries…"):
         mis_raw = _load_mis()
-        pending_raw, delivered_sos = _load_pending_delivery_lookup()
-        invoiced_sos = _get_invoiced_so_numbers(month_name)
+        # CRM lookup is still used to attach delivery dates / sales executives,
+        # but invoiced / delivered SOs are no longer excluded — the page mirrors
+        # the full MIS so its counts and committed total reconcile with it.
+        pending_raw, _delivered_sos = _load_pending_delivery_lookup()
 
         # Committed Value (MIS): raw MIS total, no exclusions — matches manual MIS calculation
         mis_committed_val = compute_mis_committed_value(mis_raw)
         st.session_state.mef_mis_committed = mis_committed_val
 
-        # Forecast orders: all pending MIS orders from win_start onwards,
-        # plus orders with no delivery date matched in CRM
-        fresh = build_forecast(mis_raw, pending_raw, win_start, date(9999, 12, 31))
-
-        if invoiced_sos and not fresh.empty:
-            fresh = fresh[~fresh["SO_NO"].isin(invoiced_sos)].reset_index(drop=True)
-
-        if delivered_sos and not fresh.empty:
-            fresh = fresh[~fresh["SO_NO"].isin(delivered_sos)].reset_index(drop=True)
+        # Forecast orders: the entire MIS (no delivery-date window, no invoice /
+        # delivery exclusions), with CRM delivery dates mapped on where matched.
+        fresh = build_forecast(mis_raw, pending_raw)
 
         saved = load_saved_state(sheet_name)
         df = merge_state(fresh, saved)
@@ -940,13 +960,60 @@ for _start in range(0, len(SUBFIELD_METRICS), SUBFIELDS_PER_ROW):
     for _col, (_label, _value, _help) in zip(_cols, _row):
         _col.metric(_label, f"₹{to_indian_number_string(_value, 0)}", help=_help)
 
+# ─── Committed-value reconciliation (per MIS) ────────────────────────────────
+# The bucket figures above are full order value (they include uncommitted items
+# of Agreed/Godown/Denied orders), so they will not add up to the MIS committed
+# value. This breakdown counts only each category's MIS-committed items, which
+# DO add up to the "Committed Value (MIS)" KPI.
+_committed_by_cat, _committed_total = compute_committed_by_category(df)
+with st.expander(
+    f"🔎 Committed Value reconciliation — ₹{to_indian_number_string(_committed_total, 0)} "
+    f"(per MIS; matches 📦 Committed Value above)",
+    expanded=False,
+):
+    st.caption(
+        "Each category's **MIS-committed line items only** (Sales Order Qty = "
+        "Committed Qty). Every item belongs to exactly one category, so these add "
+        "up to the full MIS committed value. The bucket metrics higher up are full "
+        "order value and intentionally include uncommitted items."
+    )
+    _recon_rows = [
+        {"Category": _c, "Committed Value (₹)": _committed_by_cat.get(_c, 0.0)}
+        for _c in CATEGORY_OPTIONS[1:]
+    ]
+    _recon_rows.append({"Category": "✅ Total (per MIS)", "Committed Value (₹)": _committed_total})
+    _recon_df = pd.DataFrame(_recon_rows)
+    _recon_df.index = range(1, len(_recon_df) + 1)
+    st.dataframe(
+        _recon_df,
+        use_container_width=True,
+        column_config={
+            "Committed Value (₹)": st.column_config.NumberColumn(format="%.0f"),
+        },
+    )
+    if abs(_committed_total - _mis_committed_val) > 1:
+        st.warning(
+            f"Reconciliation total (₹{to_indian_number_string(_committed_total, 0)}) "
+            f"differs from Committed Value (MIS) "
+            f"(₹{to_indian_number_string(_mis_committed_val, 0)}). The MIS sheet may "
+            "have changed since the last load — click 🔁 Refresh Data."
+        )
+
 st.markdown("---")
 
 # ─── Summary metrics ──────────────────────────────────────────────────────────
-m1, m2, m3 = st.columns(3)
-m1.metric("Forecast Window", f"{win_start.strftime('%d %b')} onwards")
+# Mirror the MIS headline counts so the page reconciles with it order-for-order.
+_total_order_qty = float(df["SO_QTY"].apply(_to_num).sum())
+_ready_items = int(df.apply(_is_mis_committed, axis=1).sum())
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("Total Orders", f"{to_indian_number_string(df['SO_NO'].nunique(), 0)}")
 m2.metric("Total Line Items", f"{to_indian_number_string(len(df), 0)}")
-m3.metric("Total Orders", f"{to_indian_number_string(df['SO_NO'].nunique(), 0)}")
+m3.metric("Total Order Qty", f"{to_indian_number_string(_total_order_qty, 0)}")
+m4.metric(
+    "🟢 Ready Items",
+    f"{to_indian_number_string(_ready_items, 0)}",
+    help="Line items where Sales Order Qty = Sales Order Committed Qty (MIS-committed).",
+)
 
 st.markdown("---")
 
