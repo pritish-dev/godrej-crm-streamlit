@@ -59,6 +59,7 @@ DELIVERY_OPTIONS = [
     "Denied Delivery",
     "Partial Delivery",
     "Delivery to Godown",
+    "Order Cancelled",
 ]
 
 # How a manually-committed item is sourced.
@@ -69,6 +70,10 @@ COMMITTED_VIA_OPTIONS = ["", "RPL", "34S Stock"]
 FULL_ORDER_STATUSES = ("Agree for Delivery", "Delivery to Godown")
 DELIVER_SCOPE_FULL = "FULL"
 DELIVER_SCOPE_COMMITTED = "COMMITTED_ONLY"
+
+# "Order Cancelled" scope: cancel the whole order, or only specific ticked items.
+CANCEL_SCOPE_ENTIRE = "ENTIRE"
+CANCEL_SCOPE_ITEMS = "ITEMS"
 
 # Columns fetched from MIS_Daily
 MIS_FETCH_COLS = [
@@ -99,6 +104,8 @@ INTERNAL_COLS = [
     "APPROVED_BY",          # per item
     "COMMITTED_VIA",        # per item: how a manually-committed item is sourced (RPL / 34S Stock)
     "DELIVER_SCOPE",        # per order: FULL or COMMITTED_ONLY (for Agree / Godown with uncommitted items)
+    "CANCEL_SCOPE",         # per order: ENTIRE or ITEMS (for "Order Cancelled")
+    "CANCEL_SELECTED",      # per item: True when this item is cancelled in an item-scope cancellation
     "STOCK_34S_MESSAGE",    # per item
 ]
 
@@ -420,6 +427,27 @@ def _partial_selected(row: pd.Series) -> bool:
     return str(row.get("PARTIAL_SELECTED", "")).upper() in ("TRUE", "1", "YES")
 
 
+def _cancel_scope(grp: pd.DataFrame) -> str:
+    """
+    Order-level cancellation scope for "Order Cancelled" orders:
+    ENTIRE (whole order) or ITEMS (only the ticked items). Defaults to ENTIRE.
+    """
+    if "CANCEL_SCOPE" not in grp.columns:
+        return CANCEL_SCOPE_ENTIRE
+    val = str(grp["CANCEL_SCOPE"].iloc[0]).strip().upper()
+    return CANCEL_SCOPE_ITEMS if val == CANCEL_SCOPE_ITEMS else CANCEL_SCOPE_ENTIRE
+
+
+def _cancel_scope_value(row: pd.Series) -> str:
+    """Row-level read of the order's cancellation scope (constant per order)."""
+    val = str(row.get("CANCEL_SCOPE", "")).strip().upper()
+    return CANCEL_SCOPE_ITEMS if val == CANCEL_SCOPE_ITEMS else CANCEL_SCOPE_ENTIRE
+
+
+def _cancel_selected(row: pd.Series) -> bool:
+    return str(row.get("CANCEL_SELECTED", "")).upper() in ("TRUE", "1", "YES")
+
+
 # ── Category labels (single source of truth for the categorised table) ─────────
 CAT_AGREED        = "✅ Agreed for Delivery"
 CAT_PARTIAL       = "📦 Partial Delivery"
@@ -428,6 +456,7 @@ CAT_GODOWN        = "🏭 Godown Delivery"
 CAT_MANUAL        = "✏️ Manually Committed"
 CAT_COMMITTED_NS  = "🟢 Committed (No Status)"
 CAT_NOT_COMMITTED = "⏳ Not Committed"
+CAT_CANCELLED     = "❌ Order Cancelled"
 
 # "All Pending" first so it is the default filter selection.
 CATEGORY_OPTIONS = [
@@ -439,6 +468,7 @@ CATEGORY_OPTIONS = [
     CAT_MANUAL,
     CAT_COMMITTED_NS,
     CAT_NOT_COMMITTED,
+    CAT_CANCELLED,
 ]
 
 
@@ -470,7 +500,14 @@ def categorise_item(
     the row itself.
     """
     status = order_status if order_status is not None else _delivery_status(row)
-    if status == "Denied Delivery":
+    if status == "Order Cancelled":
+        # Whole order cancelled → every item is cancelled. Item-scope cancel →
+        # only the ticked items are cancelled; the rest fall through to their
+        # own per-item classification below (so a part-cancelled order spans
+        # Order Cancelled and the natural buckets, like a part-committed order).
+        if _cancel_scope_value(row) == CANCEL_SCOPE_ENTIRE or _cancel_selected(row):
+            return CAT_CANCELLED
+    elif status == "Denied Delivery":
         return CAT_DENIED
     if status == "Agree for Delivery":
         if order_scope == DELIVER_SCOPE_COMMITTED and not _is_committed(row):
@@ -541,7 +578,7 @@ def compute_forecast_breakdown(df: pd.DataFrame) -> dict[str, float]:
     """
     if df.empty:
         return dict(agree=0, godown=0, partial=0, manual=0, committed_ns=0,
-                    denied=0, not_committed=0, total=0)
+                    denied=0, not_committed=0, cancelled=0, total=0)
 
     # Track which items are already counted in agree/godown/partial buckets
     counted_idx: set = set()
@@ -553,11 +590,32 @@ def compute_forecast_breakdown(df: pd.DataFrame) -> dict[str, float]:
     committed_ns_val = 0.0
     denied_val = 0.0
     not_committed_val = 0.0
+    cancelled_val = 0.0
 
     for so_no, grp in df.groupby("SO_NO"):
         status = _delivery_status(grp.iloc[0])
 
-        if status == "Agree for Delivery":
+        if status == "Order Cancelled":
+            # Whole order → cancel the full order value. Item scope → cancel only
+            # the ticked items; the remaining items are classified individually
+            # (committed-no-status / not-committed) and manual items counted in
+            # the manual loop below. Cancelled value is excluded from the total.
+            if _cancel_scope(grp) == CANCEL_SCOPE_ITEMS:
+                for idx, row in grp.iterrows():
+                    if _cancel_selected(row):
+                        cancelled_val += _to_num(row.get("TOTAL_NET_BASIC", 0))
+                        counted_idx.add(idx)
+                    elif _is_manual_committed(row):
+                        continue  # counted under Manually Committed below
+                    elif _is_mis_committed(row):
+                        committed_ns_val += _to_num(row.get("TOTAL_NET_BASIC", 0))
+                    else:
+                        not_committed_val += _to_num(row.get("TOTAL_NET_BASIC", 0))
+            else:
+                cancelled_val += grp["TOTAL_NET_BASIC"].apply(_to_num).sum()
+                counted_idx.update(grp.index.tolist())
+
+        elif status == "Agree for Delivery":
             # Full order by default; only committed items when the order is set
             # to "Deliver committed items only" — the uncommitted items are not
             # delivered, so they drop to Not Committed.
@@ -620,6 +678,7 @@ def compute_forecast_breakdown(df: pd.DataFrame) -> dict[str, float]:
         committed_ns=committed_ns_val,
         denied=denied_val,
         not_committed=not_committed_val,
+        cancelled=cancelled_val,
         total=total,
     )
 
@@ -702,7 +761,7 @@ def load_saved_state(sheet_name: str) -> pd.DataFrame:
             return pd.DataFrame(columns=INTERNAL_COLS)
         df.columns = [str(c).strip().upper() for c in df.columns]
 
-        bool_cols = ["CAN_COMMIT_MANUALLY", "PARTIAL_SELECTED"]
+        bool_cols = ["CAN_COMMIT_MANUALLY", "PARTIAL_SELECTED", "CANCEL_SELECTED"]
         for bc in bool_cols:
             if bc in df.columns:
                 df[bc] = df[bc].astype(str).str.upper().map(
@@ -730,6 +789,10 @@ def load_saved_state(sheet_name: str) -> pd.DataFrame:
             df["COMMITTED_VIA"] = ""
         if "DELIVER_SCOPE" not in df.columns:
             df["DELIVER_SCOPE"] = DELIVER_SCOPE_FULL
+        if "CANCEL_SCOPE" not in df.columns:
+            df["CANCEL_SCOPE"] = CANCEL_SCOPE_ENTIRE
+        if "CANCEL_SELECTED" not in df.columns:
+            df["CANCEL_SELECTED"] = False
 
         return df
     except Exception:
@@ -739,7 +802,7 @@ def load_saved_state(sheet_name: str) -> pd.DataFrame:
 def save_state(df: pd.DataFrame, sheet_name: str) -> str:
     try:
         out = df.copy()
-        bool_cols = ["CAN_COMMIT_MANUALLY", "PARTIAL_SELECTED"]
+        bool_cols = ["CAN_COMMIT_MANUALLY", "PARTIAL_SELECTED", "CANCEL_SELECTED"]
         for bc in bool_cols:
             if bc in out.columns:
                 out[bc] = out[bc].map(
@@ -824,6 +887,8 @@ def build_forecast(
         ("APPROVED_BY",         ""),
         ("COMMITTED_VIA",       ""),
         ("DELIVER_SCOPE",       DELIVER_SCOPE_FULL),
+        ("CANCEL_SCOPE",        CANCEL_SCOPE_ENTIRE),
+        ("CANCEL_SELECTED",     False),
         ("STOCK_34S_MESSAGE",   ""),
     ]:
         if col not in df.columns:
@@ -845,7 +910,8 @@ def merge_state(fresh: pd.DataFrame, saved: pd.DataFrame) -> pd.DataFrame:
     state_flag_cols = [
         "DELIVERY_STATUS", "PARTIAL_SELECTED",
         "CAN_COMMIT_MANUALLY", "APPROVED_BY",
-        "COMMITTED_VIA", "DELIVER_SCOPE", "STOCK_34S_MESSAGE",
+        "COMMITTED_VIA", "DELIVER_SCOPE",
+        "CANCEL_SCOPE", "CANCEL_SELECTED", "STOCK_34S_MESSAGE",
     ]
 
     saved_map = {}
@@ -1089,6 +1155,10 @@ SUBFIELD_METRICS = [
      "Not included in the Monthend Forecast Value."),
     ("⏳ Not Committed", breakdown["not_committed"],
      "Items in undecided orders that are neither MIS- nor manually-committed. "
+     "Not included in the Monthend Forecast Value."),
+    ("❌ Order Cancelled", breakdown["cancelled"],
+     "Value of cancelled orders — the full order value when the entire order is "
+     "cancelled, or only the cancelled items when specific items are cancelled. "
      "Not included in the Monthend Forecast Value."),
 ]
 SUBFIELDS_PER_ROW = 4
@@ -1481,6 +1551,48 @@ for del_date_str, date_grp in df.groupby("_del_date_str", sort=False):
                         changed = True
                         st.session_state.mef_df.at[idx, "PARTIAL_SELECTED"] = new_sel
 
+            # ── Order Cancelled: cancel entire order or specific items ────────
+            if new_status == "Order Cancelled":
+                cur_cancel_scope = str(so_grp["CANCEL_SCOPE"].iloc[0]).strip().upper()
+                if cur_cancel_scope != CANCEL_SCOPE_ITEMS:
+                    cur_cancel_scope = CANCEL_SCOPE_ENTIRE
+                st.markdown("**Cancellation scope:**")
+                cancel_choice = st.radio(
+                    "What is being cancelled?",
+                    options=[CANCEL_SCOPE_ENTIRE, CANCEL_SCOPE_ITEMS],
+                    index=0 if cur_cancel_scope == CANCEL_SCOPE_ENTIRE else 1,
+                    format_func=lambda x: (
+                        "Cancel entire order" if x == CANCEL_SCOPE_ENTIRE
+                        else "Cancel items from order"
+                    ),
+                    key=f"cancel_scope_{so_no}",
+                    horizontal=True,
+                )
+                if cancel_choice != cur_cancel_scope:
+                    changed = True
+                    for idx in so_grp.index:
+                        st.session_state.mef_df.at[idx, "CANCEL_SCOPE"] = cancel_choice
+
+                if cancel_choice == CANCEL_SCOPE_ITEMS:
+                    st.markdown("**Select items to cancel:**")
+                    for _, item_row in so_grp.iterrows():
+                        idx = item_row.name
+                        cur_sel   = _cancel_selected(item_row)
+                        pos       = str(item_row.get("SO_POSITION", ""))
+                        item_code = str(item_row.get("ITEM_CODE", ""))
+                        item_desc = str(item_row.get("ITEM_DESCRIPTION", ""))
+                        net_val   = _fmt_num(item_row.get("TOTAL_NET_BASIC", ""))
+                        new_sel = st.checkbox(
+                            f"Pos {pos}: {item_code} — {item_desc}  (₹{net_val})",
+                            value=cur_sel,
+                            key=f"cancel_sel_{idx}",
+                        )
+                        if new_sel != cur_sel:
+                            changed = True
+                            st.session_state.mef_df.at[idx, "CANCEL_SELECTED"] = new_sel
+                else:
+                    st.caption("The entire order will be counted as cancelled.")
+
             # ── Manual Commitment for non-MIS-committed items ─────────────────
             non_committed_items = [
                 (idx, row) for idx, row in so_grp.iterrows()
@@ -1606,12 +1718,13 @@ st.markdown(
             <td style="font-weight:bold;">₹{to_indian_number_string(breakdown['denied'], 0)}</td>
             <td style="padding:4px 16px;color:#555;">⏳ Not Committed</td>
             <td style="font-weight:bold;">₹{to_indian_number_string(breakdown['not_committed'], 0)}</td>
-            <td colspan="2"></td>
+            <td style="padding:4px 16px;color:#555;">❌ Order Cancelled</td>
+            <td style="font-weight:bold;">₹{to_indian_number_string(breakdown['cancelled'], 0)}</td>
           </tr>
           <tr>
             <td colspan="8" style="padding:6px 16px 0 0;color:#888;font-style:italic;">
-              Committed (No Status), Customer Denied and Not Committed are shown for
-              completeness — they are not part of the Forecast Value above.
+              Committed (No Status), Customer Denied, Not Committed and Order Cancelled
+              are shown for completeness — they are not part of the Forecast Value above.
             </td>
           </tr>
         </table>
