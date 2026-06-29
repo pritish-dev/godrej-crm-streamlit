@@ -420,16 +420,25 @@ CATEGORY_OPTIONS = [
 ]
 
 
-def categorise_order(grp: pd.DataFrame) -> str:
+def categorise_item(row: pd.Series, order_status: str | None = None) -> str:
     """
-    Classify a whole order (all line items sharing one SO number) into exactly
-    one category based on the delivery decision saved to the Ops sheet. The
-    delivery status is per-order, so it decides the category for every item.
-    Precedence:
-        Denied → Agree → Partial → Godown → Manually committed →
-        Committed (no status) → Not committed.
+    Classify a single line item into exactly one category.
+
+    When the order carries an explicit delivery decision (Denied / Agree /
+    Partial / Godown) that decision applies to every item, so the item takes
+    the order-level category. When no order-level status is set, items are
+    classified individually on their own commitment state. This lets one order
+    span more than one bucket: its committed items fall under Manually Committed
+    or Committed (No Status) while the rest fall under Not Committed.
+
+    Per-item precedence (no order status):
+        Manually committed → Committed (no status) → Not committed.
+
+    Pass ``order_status`` (the status shared by every row of the order) to keep
+    the order-level decision consistent across items; if omitted it is read from
+    the row itself.
     """
-    status = _delivery_status(grp.iloc[0])
+    status = order_status if order_status is not None else _delivery_status(row)
     if status == "Denied Delivery":
         return CAT_DENIED
     if status == "Agree for Delivery":
@@ -438,14 +447,14 @@ def categorise_order(grp: pd.DataFrame) -> str:
         return CAT_PARTIAL
     if status == "Delivery to Godown":
         return CAT_GODOWN
-    # No order-level status set:
-    #   • any manually-committed item → Manually Committed
-    #   • else any MIS-committed item (SO Qty == Committed Qty) → Committed but
-    #     not yet assigned a delivery status
+    # No order-level status set — classify this item on its own commitment:
+    #   • manually-committed item → Manually Committed
+    #   • else MIS-committed item (SO Qty == Committed Qty) → Committed but not
+    #     yet assigned a delivery status
     #   • else → Not Committed
-    if grp.apply(_is_manual_committed, axis=1).any():
+    if _is_manual_committed(row):
         return CAT_MANUAL
-    if grp.apply(_is_mis_committed, axis=1).any():
+    if _is_mis_committed(row):
         return CAT_COMMITTED_NS
     return CAT_NOT_COMMITTED
 
@@ -520,12 +529,16 @@ def compute_forecast_breakdown(df: pd.DataFrame) -> dict[str, float]:
                     partial_val += _to_num(row.get("TOTAL_NET_BASIC", 0))
                     counted_idx.add(idx)
 
-        # No order-level status set: an order with MIS-committed items but no
-        # manually-committed items falls into "Committed (No Status)".
-        elif status not in ("Denied Delivery",):
-            if not grp.apply(_is_manual_committed, axis=1).any() and \
-                    grp.apply(_is_mis_committed, axis=1).any():
-                committed_ns_val += grp["TOTAL_NET_BASIC"].apply(_to_num).sum()
+        # No order-level status set: count each MIS-committed item that is not
+        # manually committed into "Committed (No Status)". Classified per item
+        # so a part-committed order contributes only its committed items here
+        # (its remaining items stay Not Committed).
+        elif status != "Denied Delivery":
+            for _, row in grp.iterrows():
+                if _is_manual_committed(row):
+                    continue  # counted under Manually Committed below
+                if _is_mis_committed(row):
+                    committed_ns_val += _to_num(row.get("TOTAL_NET_BASIC", 0))
 
         # "Denied Delivery" → nothing counted, not added to counted_idx either
 
@@ -922,28 +935,42 @@ m3.metric("Total Orders", f"{to_indian_number_string(df['SO_NO'].nunique(), 0)}"
 st.markdown("---")
 
 # ─── Orders by Category (read-only, filterable) ───────────────────────────────
-# Every forecast order classified by the delivery decision saved to the Ops
+# Every forecast item classified by the delivery decision saved to the Ops
 # sheet (agreed / partial / customer-denied / godown / manually committed /
 # committed-no-status / not committed), with a per-category filter. The
-# "Committed (No Status)" bucket holds MIS-committed orders that have not yet
-# been assigned a delivery status. Defaults to "All Pending" — every
-# order in the window. The decisions themselves are set in the interactive
-# section below. Items sharing one SO number are clubbed into a single order:
-# the order-level columns appear once and its items are listed beneath.
+# "Committed (No Status)" bucket holds MIS-committed items that have not yet
+# been assigned a delivery status. Classification is per item: an order with an
+# explicit delivery decision keeps all its items in one bucket, but an undecided
+# order is split so its committed items show under Committed (No Status) /
+# Manually Committed while its remaining items show under Not Committed — such
+# an order therefore appears in more than one category, each time listing only
+# the items that belong there and valued on those items alone. Defaults to
+# "All Pending" — every item in the window. The decisions themselves are set in
+# the interactive section below. Items sharing one SO number are clubbed under
+# the order: the order-level columns appear once and its items are listed beneath.
 st.subheader("📂 Orders by Category")
 st.caption(
-    "Each order grouped by the delivery decision saved to the Ops sheet. "
-    "Items of the same SO are clubbed into one order. "
-    "Use the filter to view a single category. **All Pending** (default) shows every order."
+    "Each item grouped by the delivery decision saved to the Ops sheet. "
+    "Items of the same SO are clubbed under one order. A part-committed order "
+    "appears in both **Committed (No Status)** and **Not Committed** — showing "
+    "only the relevant items (and their value) in each. "
+    "Use the filter to view a single category. **All Pending** (default) shows everything."
 )
 
 cat_df = df.copy()
 
-# Assign one category per SO (order-level), then map it back onto every item.
-order_category: dict[str, str] = {}
-for _so, _grp in cat_df.groupby("SO_NO", sort=False):
-    order_category[str(_so)] = categorise_order(_grp)
-cat_df["CATEGORY"] = cat_df["SO_NO"].astype(str).map(order_category)
+# Assign a category per item. The order-level delivery decision (Agree / Partial
+# / Godown / Denied) applies to every item of the order; an undecided order is
+# classified item by item so it can span Committed (No Status) / Manually
+# Committed and Not Committed at once.
+order_status_by_so: dict[str, str] = {
+    str(_so): _delivery_status(_grp.iloc[0])
+    for _so, _grp in cat_df.groupby("SO_NO", sort=False)
+}
+cat_df["CATEGORY"] = cat_df.apply(
+    lambda r: categorise_item(r, order_status_by_so.get(str(r["SO_NO"]))),
+    axis=1,
+)
 
 # ── Per-category summary chips (orders + items + value) ───────────────────────
 # Lay the chips out in rows of 4 so the longer category labels stay readable
@@ -980,26 +1007,30 @@ if filtered.empty:
     st.info(f"No orders in category **{selected_cat}**.")
 else:
     # Order ordering: by category, then earliest delivery date, then SO number.
+    # Grouped by (category, SO) so a part-committed order is rendered once per
+    # category it spans — each block showing only that category's items and an
+    # Order Value summed over just those items.
     filtered = filtered.copy()
     filtered["_sort_date"] = filtered["DELIVERY_DATE"].apply(
         lambda v: v if pd.notna(v) else pd.Timestamp("9999-12-31")
     )
-    grouped = filtered.groupby("SO_NO", sort=False)
+    grouped = filtered.groupby(["CATEGORY", "SO_NO"], sort=False)
     order_keys = sorted(
-        ((grp["CATEGORY"].iloc[0], grp["_sort_date"].min(), str(so)) for so, grp in grouped),
+        ((cat, grp["_sort_date"].min(), str(so), (cat, so)) for (cat, so), grp in grouped),
         key=lambda k: (k[0], k[1], k[2]),
     )
 
     rows: list[dict] = []
-    for cat, _sort_date, so in order_keys:
-        grp = grouped.get_group(so).sort_values("SO_POSITION")
+    for cat, _sort_date, so_str, grp_key in order_keys:
+        grp = grouped.get_group(grp_key).sort_values("SO_POSITION")
+        # Order Value reflects only the items shown in this category block.
         order_total = float(grp["TOTAL_NET_BASIC"].apply(_to_num).astype(float).sum())
         first = grp.iloc[0]
         for i, (_, item) in enumerate(grp.iterrows()):
             head = (i == 0)  # order-level columns only on the first item row
             rows.append({
                 "Category":         cat if head else "",
-                "SO No.":           so if head else "",
+                "SO No.":           so_str if head else "",
                 "Customer Name":    str(first["CUSTOMER_NAME"]) if head else "",
                 "Delivery Date":    _fmt_date(first["DELIVERY_DATE"]) if head else "",
                 "Sales Executive":  str(first["SALES_EXECUTIVE"]) if head else "",
@@ -1018,10 +1049,12 @@ else:
     display = pd.DataFrame(rows)
     display.index = range(1, len(display) + 1)  # 1-based row numbers
 
-    n_orders = len(order_keys)
+    n_blocks = len(order_keys)
+    n_orders = filtered["SO_NO"].nunique()
     total_val = float(filtered["TOTAL_NET_BASIC"].apply(_to_num).astype(float).sum())
     st.caption(
-        f"Showing **{to_indian_number_string(n_orders, 0)}** order(s) · "
+        f"Showing **{to_indian_number_string(n_orders, 0)}** order(s) "
+        f"in **{to_indian_number_string(n_blocks, 0)}** category block(s) · "
         f"**{to_indian_number_string(len(display), 0)}** line item(s)  ·  "
         f"Total Net Basic: **₹{to_indian_number_string(total_val, 0)}**"
     )
