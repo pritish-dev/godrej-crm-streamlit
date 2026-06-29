@@ -655,6 +655,42 @@ def compute_committed_by_category(df: pd.DataFrame) -> tuple[dict[str, float], f
     return out, total
 
 
+def compute_manual_committed_by_via(df: pd.DataFrame) -> dict[str, float]:
+    """
+    Value of every manually-committed line item, split by how it was committed
+    (COMMITTED_VIA: RPL / 34S Stock). Counts ALL manually-committed items
+    regardless of the order's delivery status.
+
+    These items have usually already been moved into "Agree for Delivery" or
+    "Delivery to Godown", so their value is already counted inside the Monthend
+    Forecast Value — that is why the Forecast "Manually Committed" bucket reads 0.
+    This breakdown is therefore informational only and must NOT be added to the
+    Forecast Value (doing so would double-count).
+
+    Returns a dict with keys: rpl, stock_34s, other, total.
+      • rpl       — items committed via RPL
+      • stock_34s — items committed via 34S Stock
+      • other     — manually-committed items with no source selected
+      • total     — all manually-committed items (rpl + stock_34s + other)
+    """
+    out = {"rpl": 0.0, "stock_34s": 0.0, "other": 0.0, "total": 0.0}
+    if df is None or df.empty:
+        return out
+    for _, row in df.iterrows():
+        if not _is_manual_committed(row):
+            continue
+        val = _to_num(row.get("TOTAL_NET_BASIC", 0))
+        via = str(row.get("COMMITTED_VIA", "")).strip().upper()
+        if via == "RPL":
+            out["rpl"] += val
+        elif via == "34S STOCK":
+            out["stock_34s"] += val
+        else:
+            out["other"] += val
+        out["total"] += val
+    return out
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # FORECAST SHEET PERSISTENCE
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -971,6 +1007,47 @@ k4.metric(
     help="Sum of Total Net Basic for all MIS items where SO Qty = SO Committed Qty — raw MIS total, no invoice/delivery exclusions. Matches what you'd compute manually from the MIS sheet.",
 )
 
+# ─── Manually Committed Value (informational, not part of Forecast Value) ─────
+# Manually-committed items are normally moved into "Agree for Delivery" /
+# "Delivery to Godown", so their value is already counted inside the Monthend
+# Forecast Value (which is why the Forecast "Manually Committed" bucket is 0 and
+# is no longer shown there). This field reports that value purely so the amount
+# committed manually — split by source (RPL / 34S Stock) — stays visible without
+# double-counting it into the dashboard.
+_manual_via = compute_manual_committed_by_via(df)
+st.markdown(
+    f"""
+    <div style="background:#d6eaf8;border:2px solid #2980b9;border-radius:8px;
+                padding:14px 18px 8px;margin:14px 0 10px;">
+        <h4 style="margin:0 0 2px;color:#1a5276;">
+            ✏️ Manually Committed Value:&nbsp;₹{to_indian_number_string(_manual_via['total'], 0)}
+        </h4>
+        <p style="margin:0;color:#555;font-size:12px;">
+            Value of items committed manually, split by source. These items are already
+            counted under Agreed / Godown Delivery in the Monthend Forecast Value — shown
+            here for visibility only, <b>not</b> added again to the dashboard total.
+        </p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+mc1, mc2 = st.columns(2)
+mc1.metric(
+    "🔁 RPL",
+    f"₹{to_indian_number_string(_manual_via['rpl'], 0)}",
+    help="Total value of manually-committed items sourced via RPL.",
+)
+mc2.metric(
+    "🏬 34S Stock",
+    f"₹{to_indian_number_string(_manual_via['stock_34s'], 0)}",
+    help="Total value of manually-committed items sourced via 34S Stock.",
+)
+if _manual_via["other"] > 0:
+    st.caption(
+        f"ℹ️ ₹{to_indian_number_string(_manual_via['other'], 0)} of manually-committed "
+        "value has no source selected (neither RPL nor 34S Stock)."
+    )
+
 st.markdown("---")
 
 # ─── KPI Row 2: Monthend Forecast Value (big) ────────────────────────────────
@@ -983,7 +1060,8 @@ st.markdown(
             &nbsp;₹{to_indian_number_string(breakdown['total'], 0)}
         </h3>
         <p style="margin:0;color:#555;font-size:12px;">
-            Agree for Delivery + Godown Delivery + Partial Delivery + Manually Committed
+            Agree for Delivery + Godown Delivery + Partial Delivery
+            <span style="color:#888;">(manually-committed items are already included within these)</span>
         </p>
     </div>
     """,
@@ -991,9 +1069,11 @@ st.markdown(
 )
 
 # Sub-fields below Forecast Value — every delivery category and its value.
-# The first four (Agreed / Partial / Godown / Manually Committed) make up the
-# Monthend Forecast Value; the last three (Committed (No Status), Customer
-# Denied, Not Committed) are shown for completeness but excluded from it.
+# The first three (Agreed / Partial / Godown) make up the Monthend Forecast
+# Value; the last three (Committed (No Status), Customer Denied, Not Committed)
+# are shown for completeness but excluded from it. Manually-committed items are
+# reported separately in the "Manually Committed Value" field higher up — they
+# are already counted under Agreed / Godown here, so they are not shown again.
 SUBFIELD_METRICS = [
     ("🤝 Agreed for Delivery", breakdown["agree"],
      "Total order value for all orders marked 'Agree for Delivery'."),
@@ -1001,8 +1081,6 @@ SUBFIELD_METRICS = [
      "Sum of ticked items in orders marked 'Partial Delivery'."),
     ("🏭 Godown Delivery", breakdown["godown"],
      "Total order value for all orders marked 'Delivery to Godown'."),
-    ("✏️ Manually Committed", breakdown["manual"],
-     "Total value of items committed manually (not already in Agree/Godown/Partial buckets)."),
     ("🟢 Committed (No Status)", breakdown["committed_ns"],
      "MIS-committed items in orders not yet assigned any delivery status. "
      "Not included in the Monthend Forecast Value."),
@@ -1519,8 +1597,7 @@ st.markdown(
             <td style="font-weight:bold;">₹{to_indian_number_string(breakdown['partial'], 0)}</td>
             <td style="padding:4px 16px;color:#555;">🏭 Godown Delivery</td>
             <td style="font-weight:bold;">₹{to_indian_number_string(breakdown['godown'], 0)}</td>
-            <td style="padding:4px 16px;color:#555;">✏️ Manually Committed</td>
-            <td style="font-weight:bold;">₹{to_indian_number_string(breakdown['manual'], 0)}</td>
+            <td colspan="2"></td>
           </tr>
           <tr>
             <td style="padding:4px 16px 4px 0;color:#555;">🟢 Committed (No Status)</td>
