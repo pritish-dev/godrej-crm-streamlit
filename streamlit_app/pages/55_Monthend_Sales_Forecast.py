@@ -398,6 +398,44 @@ def _partial_selected(row: pd.Series) -> bool:
     return str(row.get("PARTIAL_SELECTED", "")).upper() in ("TRUE", "1", "YES")
 
 
+# ── Category labels (single source of truth for the categorised table) ─────────
+CAT_AGREED        = "✅ Agreed for Delivery"
+CAT_PARTIAL       = "📦 Partial Delivery"
+CAT_DENIED        = "🚫 Customer Denied Delivery"
+CAT_GODOWN_MANUAL = "🏬 Godown / Manually Committed"
+CAT_NOT_COMMITTED = "⏳ Not Committed"
+
+# "All Pending" first so it is the default filter selection.
+CATEGORY_OPTIONS = [
+    "All Pending",
+    CAT_AGREED,
+    CAT_PARTIAL,
+    CAT_DENIED,
+    CAT_GODOWN_MANUAL,
+    CAT_NOT_COMMITTED,
+]
+
+
+def categorise_row(row: pd.Series) -> str:
+    """
+    Classify a forecast line item into exactly one category based on the
+    delivery decision saved to the Ops sheet. Precedence:
+        Denied → Agree → Partial → Godown → Manually committed → Not committed.
+    """
+    status = _delivery_status(row)
+    if status == "Denied Delivery":
+        return CAT_DENIED
+    if status == "Agree for Delivery":
+        return CAT_AGREED
+    if status == "Partial Delivery":
+        return CAT_PARTIAL
+    if status == "Delivery to Godown":
+        return CAT_GODOWN_MANUAL
+    if _is_manual_committed(row):
+        return CAT_GODOWN_MANUAL
+    return CAT_NOT_COMMITTED
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # FORECAST VALUE CALCULATORS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -846,6 +884,82 @@ m1, m2, m3 = st.columns(3)
 m1.metric("Forecast Window", f"{win_start.strftime('%d %b')} onwards")
 m2.metric("Total Line Items", f"{to_indian_number_string(len(df), 0)}")
 m3.metric("Total Orders", f"{to_indian_number_string(df['SO_NO'].nunique(), 0)}")
+
+st.markdown("---")
+
+# ─── Orders by Category (read-only, filterable) ───────────────────────────────
+# Every forecast order classified by the delivery decision saved to the Ops
+# sheet (agreed / partial / customer-denied / godown-manual / not committed),
+# with a per-category filter. Defaults to "All Pending" — every order in the
+# window. The decisions themselves are set in the interactive section below.
+st.subheader("📂 Orders by Category")
+st.caption(
+    "Each order grouped by the delivery decision saved to the Ops sheet. "
+    "Use the filter to view a single category. **All Pending** (default) shows every order."
+)
+
+cat_df = df.copy()
+cat_df["CATEGORY"] = cat_df.apply(categorise_row, axis=1)
+
+# ── Per-category summary chips ────────────────────────────────────────────────
+summary_cols = st.columns(len(CATEGORY_OPTIONS) - 1)
+for col, cat in zip(summary_cols, CATEGORY_OPTIONS[1:]):
+    cat_rows = cat_df[cat_df["CATEGORY"] == cat]
+    cat_val = cat_rows["TOTAL_NET_BASIC"].apply(_to_num).sum()
+    col.metric(
+        cat,
+        f"{to_indian_number_string(len(cat_rows), 0)} items",
+        help=f"₹{to_indian_number_string(cat_val, 0)} (Total Net Basic)",
+    )
+
+# ── Category filter ───────────────────────────────────────────────────────────
+selected_cat = st.selectbox(
+    "Filter by category",
+    options=CATEGORY_OPTIONS,
+    index=0,
+    key="mef_category_filter",
+)
+
+filtered = cat_df if selected_cat == "All Pending" else cat_df[cat_df["CATEGORY"] == selected_cat]
+
+if filtered.empty:
+    st.info(f"No orders in category **{selected_cat}**.")
+else:
+    display = pd.DataFrame({
+        "Category":         filtered["CATEGORY"],
+        "SO No.":           filtered["SO_NO"].astype(str),
+        "Pos":              filtered["SO_POSITION"].astype(str),
+        "Item Code":        filtered["ITEM_CODE"].astype(str),
+        "Item Description": filtered["ITEM_DESCRIPTION"].astype(str),
+        "Customer Name":    filtered["CUSTOMER_NAME"].astype(str),
+        "SO Qty":           filtered["SO_QTY"].apply(_to_num),
+        "Committed Qty":    filtered["SO_COMMITTED_QTY"].apply(_to_num),
+        "Total Net Basic":  filtered["TOTAL_NET_BASIC"].apply(_to_num),
+        "Warehouse":        filtered["WAREHOUSE"].astype(str),
+        "City":             filtered["CITY"].astype(str),
+        "Delivery Date":    filtered["DELIVERY_DATE"].apply(_fmt_date),
+        "Sales Executive":  filtered["SALES_EXECUTIVE"].astype(str),
+        "Approved By":      filtered["APPROVED_BY"].astype(str),
+    })
+    display = display.sort_values(
+        ["Category", "Delivery Date", "SO No.", "Pos"]
+    ).reset_index(drop=True)
+    display.index = display.index + 1  # 1-based row numbers
+
+    total_val = filtered["TOTAL_NET_BASIC"].apply(_to_num).sum()
+    st.caption(
+        f"Showing **{to_indian_number_string(len(display), 0)}** line item(s)  ·  "
+        f"Total Net Basic: **₹{to_indian_number_string(total_val, 0)}**"
+    )
+    st.dataframe(
+        display,
+        use_container_width=True,
+        column_config={
+            "SO Qty":          st.column_config.NumberColumn(format="%d"),
+            "Committed Qty":   st.column_config.NumberColumn(format="%d"),
+            "Total Net Basic": st.column_config.NumberColumn(format="%.0f"),
+        },
+    )
 
 st.markdown("---")
 
