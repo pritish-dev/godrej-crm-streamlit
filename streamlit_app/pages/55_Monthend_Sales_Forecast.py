@@ -905,7 +905,9 @@ cat_df["CATEGORY"] = cat_df.apply(categorise_row, axis=1)
 summary_cols = st.columns(len(CATEGORY_OPTIONS) - 1)
 for col, cat in zip(summary_cols, CATEGORY_OPTIONS[1:]):
     cat_rows = cat_df[cat_df["CATEGORY"] == cat]
-    cat_val = cat_rows["TOTAL_NET_BASIC"].apply(_to_num).sum()
+    # .astype(float) guards the empty-category case: an empty object-dtype
+    # Series sums to "" (str), which would break to_indian_number_string.
+    cat_val = float(cat_rows["TOTAL_NET_BASIC"].apply(_to_num).astype(float).sum())
     col.metric(
         cat,
         f"{to_indian_number_string(len(cat_rows), 0)} items",
