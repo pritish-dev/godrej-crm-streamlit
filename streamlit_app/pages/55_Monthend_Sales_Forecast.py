@@ -481,11 +481,16 @@ def compute_mis_committed_value(mis_df: pd.DataFrame) -> float:
 def compute_forecast_breakdown(df: pd.DataFrame) -> dict[str, float]:
     """
     Returns a dict with keys:
-      agree, godown, partial, manual, total
+      agree, godown, partial, manual, committed_ns, total
     (committed_mis is computed separately from full MIS via compute_mis_committed_value)
+
+    committed_ns ("Committed (No Status)") is the total order value of orders
+    that are MIS-committed but have not yet been assigned any delivery status
+    and have no manually-committed items — i.e. the CAT_COMMITTED_NS bucket. It
+    is reported alongside the forecast sub-fields but is NOT part of ``total``.
     """
     if df.empty:
-        return dict(agree=0, godown=0, partial=0, manual=0, total=0)
+        return dict(agree=0, godown=0, partial=0, manual=0, committed_ns=0, total=0)
 
     # Track which items are already counted in agree/godown/partial buckets
     counted_idx: set = set()
@@ -494,6 +499,7 @@ def compute_forecast_breakdown(df: pd.DataFrame) -> dict[str, float]:
     godown_val = 0.0
     partial_val = 0.0
     manual_val = 0.0
+    committed_ns_val = 0.0
 
     for so_no, grp in df.groupby("SO_NO"):
         status = _delivery_status(grp.iloc[0])
@@ -514,6 +520,13 @@ def compute_forecast_breakdown(df: pd.DataFrame) -> dict[str, float]:
                     partial_val += _to_num(row.get("TOTAL_NET_BASIC", 0))
                     counted_idx.add(idx)
 
+        # No order-level status set: an order with MIS-committed items but no
+        # manually-committed items falls into "Committed (No Status)".
+        elif status not in ("Denied Delivery",):
+            if not grp.apply(_is_manual_committed, axis=1).any() and \
+                    grp.apply(_is_mis_committed, axis=1).any():
+                committed_ns_val += grp["TOTAL_NET_BASIC"].apply(_to_num).sum()
+
         # "Denied Delivery" → nothing counted, not added to counted_idx either
 
     # Manually committed: items not already in agree/godown/partial buckets
@@ -532,6 +545,7 @@ def compute_forecast_breakdown(df: pd.DataFrame) -> dict[str, float]:
         godown=godown_val,
         partial=partial_val,
         manual=manual_val,
+        committed_ns=committed_ns_val,
         total=total,
     )
 
@@ -869,7 +883,7 @@ st.markdown(
 )
 
 # Sub-fields below Forecast Value
-s1, s2, s3, s4 = st.columns(4)
+s1, s2, s3, s4, s5 = st.columns(5)
 s1.metric(
     "🤝 Agreed for Delivery",
     f"₹{to_indian_number_string(breakdown['agree'], 0)}",
@@ -889,6 +903,12 @@ s4.metric(
     "✏️ Manually Committed",
     f"₹{to_indian_number_string(breakdown['manual'], 0)}",
     help="Total value of items committed manually (not already in Agree/Godown/Partial buckets).",
+)
+s5.metric(
+    "🟢 Committed (No Status)",
+    f"₹{to_indian_number_string(breakdown['committed_ns'], 0)}",
+    help="Total order value of MIS-committed orders not yet assigned any delivery status "
+         "(no Agree/Partial/Godown/Manual decision). Not included in the Monthend Forecast Value.",
 )
 
 st.markdown("---")
@@ -1260,6 +1280,13 @@ st.markdown(
             <td style="font-weight:bold;">₹{to_indian_number_string(breakdown['godown'], 0)}</td>
             <td style="padding:4px 16px;color:#555;">✏️ Manually Committed</td>
             <td style="font-weight:bold;">₹{to_indian_number_string(breakdown['manual'], 0)}</td>
+          </tr>
+          <tr>
+            <td style="padding:4px 16px 4px 0;color:#555;">🟢 Committed (No Status)</td>
+            <td style="font-weight:bold;">₹{to_indian_number_string(breakdown['committed_ns'], 0)}</td>
+            <td colspan="6" style="padding:4px 16px;color:#888;font-style:italic;">
+              MIS-committed orders with no delivery status — not part of the Forecast Value above.
+            </td>
           </tr>
         </table>
     </div>
