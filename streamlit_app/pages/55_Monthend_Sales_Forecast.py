@@ -1035,6 +1035,29 @@ if not st.session_state.mef_loaded or refresh:
 # ─── Current working dataframe ───────────────────────────────────────────────
 df: pd.DataFrame = st.session_state.mef_df
 
+# Backward compat: a dataframe cached in session state from an earlier version
+# (e.g. before a redeploy) may be missing columns added later. Ensure every
+# state column exists so downstream access never raises KeyError.
+_COL_DEFAULTS = {
+    "DELIVERY_STATUS":     "",
+    "PARTIAL_SELECTED":    False,
+    "CAN_COMMIT_MANUALLY": False,
+    "APPROVED_BY":         "",
+    "COMMITTED_VIA":       "",
+    "DELIVER_SCOPE":       DELIVER_SCOPE_FULL,
+    "CANCEL_SCOPE":        CANCEL_SCOPE_ENTIRE,
+    "CANCEL_SELECTED":     False,
+    "STOCK_34S_MESSAGE":   "",
+}
+if not df.empty:
+    _added = False
+    for _col, _default in _COL_DEFAULTS.items():
+        if _col not in df.columns:
+            df[_col] = _default
+            _added = True
+    if _added:
+        st.session_state.mef_df = df
+
 if df.empty:
     st.warning(
         "No pending MIS records found. "
