@@ -402,7 +402,8 @@ def _partial_selected(row: pd.Series) -> bool:
 CAT_AGREED        = "✅ Agreed for Delivery"
 CAT_PARTIAL       = "📦 Partial Delivery"
 CAT_DENIED        = "🚫 Customer Denied Delivery"
-CAT_GODOWN_MANUAL = "🏬 Godown / Manually Committed"
+CAT_GODOWN        = "🏭 Godown Delivery"
+CAT_MANUAL        = "✏️ Manually Committed"
 CAT_NOT_COMMITTED = "⏳ Not Committed"
 
 # "All Pending" first so it is the default filter selection.
@@ -411,18 +412,21 @@ CATEGORY_OPTIONS = [
     CAT_AGREED,
     CAT_PARTIAL,
     CAT_DENIED,
-    CAT_GODOWN_MANUAL,
+    CAT_GODOWN,
+    CAT_MANUAL,
     CAT_NOT_COMMITTED,
 ]
 
 
-def categorise_row(row: pd.Series) -> str:
+def categorise_order(grp: pd.DataFrame) -> str:
     """
-    Classify a forecast line item into exactly one category based on the
-    delivery decision saved to the Ops sheet. Precedence:
+    Classify a whole order (all line items sharing one SO number) into exactly
+    one category based on the delivery decision saved to the Ops sheet. The
+    delivery status is per-order, so it decides the category for every item.
+    Precedence:
         Denied → Agree → Partial → Godown → Manually committed → Not committed.
     """
-    status = _delivery_status(row)
+    status = _delivery_status(grp.iloc[0])
     if status == "Denied Delivery":
         return CAT_DENIED
     if status == "Agree for Delivery":
@@ -430,9 +434,11 @@ def categorise_row(row: pd.Series) -> str:
     if status == "Partial Delivery":
         return CAT_PARTIAL
     if status == "Delivery to Godown":
-        return CAT_GODOWN_MANUAL
-    if _is_manual_committed(row):
-        return CAT_GODOWN_MANUAL
+        return CAT_GODOWN
+    # No order-level status set: an order with any manually-committed item is
+    # treated as Manually Committed, otherwise it is still Not Committed.
+    if grp.apply(_is_manual_committed, axis=1).any():
+        return CAT_MANUAL
     return CAT_NOT_COMMITTED
 
 
@@ -889,29 +895,39 @@ st.markdown("---")
 
 # ─── Orders by Category (read-only, filterable) ───────────────────────────────
 # Every forecast order classified by the delivery decision saved to the Ops
-# sheet (agreed / partial / customer-denied / godown-manual / not committed),
-# with a per-category filter. Defaults to "All Pending" — every order in the
-# window. The decisions themselves are set in the interactive section below.
+# sheet (agreed / partial / customer-denied / godown / manually committed /
+# not committed), with a per-category filter. Defaults to "All Pending" — every
+# order in the window. The decisions themselves are set in the interactive
+# section below. Items sharing one SO number are clubbed into a single order:
+# the order-level columns appear once and its items are listed beneath.
 st.subheader("📂 Orders by Category")
 st.caption(
     "Each order grouped by the delivery decision saved to the Ops sheet. "
+    "Items of the same SO are clubbed into one order. "
     "Use the filter to view a single category. **All Pending** (default) shows every order."
 )
 
 cat_df = df.copy()
-cat_df["CATEGORY"] = cat_df.apply(categorise_row, axis=1)
 
-# ── Per-category summary chips ────────────────────────────────────────────────
+# Assign one category per SO (order-level), then map it back onto every item.
+order_category: dict[str, str] = {}
+for _so, _grp in cat_df.groupby("SO_NO", sort=False):
+    order_category[str(_so)] = categorise_order(_grp)
+cat_df["CATEGORY"] = cat_df["SO_NO"].astype(str).map(order_category)
+
+# ── Per-category summary chips (orders + items + value) ───────────────────────
 summary_cols = st.columns(len(CATEGORY_OPTIONS) - 1)
 for col, cat in zip(summary_cols, CATEGORY_OPTIONS[1:]):
     cat_rows = cat_df[cat_df["CATEGORY"] == cat]
+    n_orders = cat_rows["SO_NO"].nunique()
+    n_items = len(cat_rows)
     # .astype(float) guards the empty-category case: an empty object-dtype
     # Series sums to "" (str), which would break to_indian_number_string.
     cat_val = float(cat_rows["TOTAL_NET_BASIC"].apply(_to_num).astype(float).sum())
     col.metric(
         cat,
-        f"{to_indian_number_string(len(cat_rows), 0)} items",
-        help=f"₹{to_indian_number_string(cat_val, 0)} (Total Net Basic)",
+        f"{to_indian_number_string(n_orders, 0)} orders",
+        help=f"{to_indian_number_string(n_items, 0)} items · ₹{to_indian_number_string(cat_val, 0)} (Total Net Basic)",
     )
 
 # ── Category filter ───────────────────────────────────────────────────────────
@@ -927,39 +943,60 @@ filtered = cat_df if selected_cat == "All Pending" else cat_df[cat_df["CATEGORY"
 if filtered.empty:
     st.info(f"No orders in category **{selected_cat}**.")
 else:
-    display = pd.DataFrame({
-        "Category":         filtered["CATEGORY"],
-        "SO No.":           filtered["SO_NO"].astype(str),
-        "Pos":              filtered["SO_POSITION"].astype(str),
-        "Item Code":        filtered["ITEM_CODE"].astype(str),
-        "Item Description": filtered["ITEM_DESCRIPTION"].astype(str),
-        "Customer Name":    filtered["CUSTOMER_NAME"].astype(str),
-        "SO Qty":           filtered["SO_QTY"].apply(_to_num),
-        "Committed Qty":    filtered["SO_COMMITTED_QTY"].apply(_to_num),
-        "Total Net Basic":  filtered["TOTAL_NET_BASIC"].apply(_to_num),
-        "Warehouse":        filtered["WAREHOUSE"].astype(str),
-        "City":             filtered["CITY"].astype(str),
-        "Delivery Date":    filtered["DELIVERY_DATE"].apply(_fmt_date),
-        "Sales Executive":  filtered["SALES_EXECUTIVE"].astype(str),
-        "Approved By":      filtered["APPROVED_BY"].astype(str),
-    })
-    display = display.sort_values(
-        ["Category", "Delivery Date", "SO No.", "Pos"]
-    ).reset_index(drop=True)
-    display.index = display.index + 1  # 1-based row numbers
+    # Order ordering: by category, then earliest delivery date, then SO number.
+    filtered = filtered.copy()
+    filtered["_sort_date"] = filtered["DELIVERY_DATE"].apply(
+        lambda v: v if pd.notna(v) else pd.Timestamp("9999-12-31")
+    )
+    grouped = filtered.groupby("SO_NO", sort=False)
+    order_keys = sorted(
+        ((grp["CATEGORY"].iloc[0], grp["_sort_date"].min(), str(so)) for so, grp in grouped),
+        key=lambda k: (k[0], k[1], k[2]),
+    )
 
-    total_val = filtered["TOTAL_NET_BASIC"].apply(_to_num).sum()
+    rows: list[dict] = []
+    for cat, _sort_date, so in order_keys:
+        grp = grouped.get_group(so).sort_values("SO_POSITION")
+        order_total = float(grp["TOTAL_NET_BASIC"].apply(_to_num).astype(float).sum())
+        first = grp.iloc[0]
+        for i, (_, item) in enumerate(grp.iterrows()):
+            head = (i == 0)  # order-level columns only on the first item row
+            rows.append({
+                "Category":         cat if head else "",
+                "SO No.":           so if head else "",
+                "Customer Name":    str(first["CUSTOMER_NAME"]) if head else "",
+                "Delivery Date":    _fmt_date(first["DELIVERY_DATE"]) if head else "",
+                "Sales Executive":  str(first["SALES_EXECUTIVE"]) if head else "",
+                "Order Value":      order_total if head else float("nan"),
+                "Pos":              str(item.get("SO_POSITION", "")),
+                "Item Code":        str(item.get("ITEM_CODE", "")),
+                "Item Description": str(item.get("ITEM_DESCRIPTION", "")),
+                "SO Qty":           _to_num(item.get("SO_QTY", 0)),
+                "Committed Qty":    _to_num(item.get("SO_COMMITTED_QTY", 0)),
+                "Item Net Basic":   _to_num(item.get("TOTAL_NET_BASIC", 0)),
+                "Warehouse":        str(item.get("WAREHOUSE", "")),
+                "City":             str(item.get("CITY", "")),
+                "Approved By":      str(item.get("APPROVED_BY", "")),
+            })
+
+    display = pd.DataFrame(rows)
+    display.index = range(1, len(display) + 1)  # 1-based row numbers
+
+    n_orders = len(order_keys)
+    total_val = float(filtered["TOTAL_NET_BASIC"].apply(_to_num).astype(float).sum())
     st.caption(
-        f"Showing **{to_indian_number_string(len(display), 0)}** line item(s)  ·  "
+        f"Showing **{to_indian_number_string(n_orders, 0)}** order(s) · "
+        f"**{to_indian_number_string(len(display), 0)}** line item(s)  ·  "
         f"Total Net Basic: **₹{to_indian_number_string(total_val, 0)}**"
     )
     st.dataframe(
         display,
         use_container_width=True,
         column_config={
-            "SO Qty":          st.column_config.NumberColumn(format="%d"),
-            "Committed Qty":   st.column_config.NumberColumn(format="%d"),
-            "Total Net Basic": st.column_config.NumberColumn(format="%.0f"),
+            "Order Value":   st.column_config.NumberColumn(format="%.0f"),
+            "SO Qty":        st.column_config.NumberColumn(format="%d"),
+            "Committed Qty": st.column_config.NumberColumn(format="%d"),
+            "Item Net Basic": st.column_config.NumberColumn(format="%.0f"),
         },
     )
 
