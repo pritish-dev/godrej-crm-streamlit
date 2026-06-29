@@ -926,19 +926,25 @@ for _so, _grp in cat_df.groupby("SO_NO", sort=False):
 cat_df["CATEGORY"] = cat_df["SO_NO"].astype(str).map(order_category)
 
 # ── Per-category summary chips (orders + items + value) ───────────────────────
-summary_cols = st.columns(len(CATEGORY_OPTIONS) - 1)
-for col, cat in zip(summary_cols, CATEGORY_OPTIONS[1:]):
-    cat_rows = cat_df[cat_df["CATEGORY"] == cat]
-    n_orders = cat_rows["SO_NO"].nunique()
-    n_items = len(cat_rows)
-    # .astype(float) guards the empty-category case: an empty object-dtype
-    # Series sums to "" (str), which would break to_indian_number_string.
-    cat_val = float(cat_rows["TOTAL_NET_BASIC"].apply(_to_num).astype(float).sum())
-    col.metric(
-        cat,
-        f"{to_indian_number_string(n_orders, 0)} orders",
-        help=f"{to_indian_number_string(n_items, 0)} items · ₹{to_indian_number_string(cat_val, 0)} (Total Net Basic)",
-    )
+# Lay the chips out in rows of 4 so the longer category labels stay readable
+# instead of being squeezed into a single cramped row.
+CHIPS_PER_ROW = 4
+cat_labels = CATEGORY_OPTIONS[1:]
+for start in range(0, len(cat_labels), CHIPS_PER_ROW):
+    row_cats = cat_labels[start:start + CHIPS_PER_ROW]
+    row_cols = st.columns(CHIPS_PER_ROW)
+    for col, cat in zip(row_cols, row_cats):
+        cat_rows = cat_df[cat_df["CATEGORY"] == cat]
+        n_orders = cat_rows["SO_NO"].nunique()
+        n_items = len(cat_rows)
+        # .astype(float) guards the empty-category case: an empty object-dtype
+        # Series sums to "" (str), which would break to_indian_number_string.
+        cat_val = float(cat_rows["TOTAL_NET_BASIC"].apply(_to_num).astype(float).sum())
+        col.metric(
+            cat,
+            f"{to_indian_number_string(n_orders, 0)} orders",
+            help=f"{to_indian_number_string(n_items, 0)} items · ₹{to_indian_number_string(cat_val, 0)} (Total Net Basic)",
+        )
 
 # ── Category filter ───────────────────────────────────────────────────────────
 selected_cat = st.selectbox(
