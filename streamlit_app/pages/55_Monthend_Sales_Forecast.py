@@ -490,16 +490,23 @@ def compute_mis_committed_value(mis_df: pd.DataFrame) -> float:
 def compute_forecast_breakdown(df: pd.DataFrame) -> dict[str, float]:
     """
     Returns a dict with keys:
-      agree, godown, partial, manual, committed_ns, total
+      agree, godown, partial, manual, committed_ns, denied, not_committed, total
     (committed_mis is computed separately from full MIS via compute_mis_committed_value)
 
-    committed_ns ("Committed (No Status)") is the total order value of orders
-    that are MIS-committed but have not yet been assigned any delivery status
-    and have no manually-committed items — i.e. the CAT_COMMITTED_NS bucket. It
-    is reported alongside the forecast sub-fields but is NOT part of ``total``.
+    The buckets mirror the "Orders by Category" classification one-to-one so the
+    sub-field values match the per-category chips:
+      • agree / godown          — full order value of those order-level statuses
+      • partial                 — only the ticked items of Partial Delivery orders
+      • manual                  — manually-committed items in undecided orders
+      • committed_ns            — MIS-committed (non-manual) items in undecided orders
+      • not_committed           — remaining items in undecided orders
+      • denied                  — full order value of Denied Delivery orders
+    ``total`` (the Monthend Forecast Value) is agree + godown + partial + manual
+    only; committed_ns, denied and not_committed are reported but excluded.
     """
     if df.empty:
-        return dict(agree=0, godown=0, partial=0, manual=0, committed_ns=0, total=0)
+        return dict(agree=0, godown=0, partial=0, manual=0, committed_ns=0,
+                    denied=0, not_committed=0, total=0)
 
     # Track which items are already counted in agree/godown/partial buckets
     counted_idx: set = set()
@@ -509,6 +516,8 @@ def compute_forecast_breakdown(df: pd.DataFrame) -> dict[str, float]:
     partial_val = 0.0
     manual_val = 0.0
     committed_ns_val = 0.0
+    denied_val = 0.0
+    not_committed_val = 0.0
 
     for so_no, grp in df.groupby("SO_NO"):
         status = _delivery_status(grp.iloc[0])
@@ -529,18 +538,22 @@ def compute_forecast_breakdown(df: pd.DataFrame) -> dict[str, float]:
                     partial_val += _to_num(row.get("TOTAL_NET_BASIC", 0))
                     counted_idx.add(idx)
 
-        # No order-level status set: count each MIS-committed item that is not
-        # manually committed into "Committed (No Status)". Classified per item
-        # so a part-committed order contributes only its committed items here
-        # (its remaining items stay Not Committed).
-        elif status != "Denied Delivery":
+        elif status == "Denied Delivery":
+            denied_val += grp["TOTAL_NET_BASIC"].apply(_to_num).sum()
+            # Not added to counted_idx — denied items stay out of every bucket.
+
+        # No order-level status set: classify each item individually so a
+        # part-committed order is split — MIS-committed (non-manual) items go to
+        # "Committed (No Status)", the rest to "Not Committed". (Manual items are
+        # counted in the Manually Committed loop below.)
+        else:
             for _, row in grp.iterrows():
                 if _is_manual_committed(row):
                     continue  # counted under Manually Committed below
                 if _is_mis_committed(row):
                     committed_ns_val += _to_num(row.get("TOTAL_NET_BASIC", 0))
-
-        # "Denied Delivery" → nothing counted, not added to counted_idx either
+                else:
+                    not_committed_val += _to_num(row.get("TOTAL_NET_BASIC", 0))
 
     # Manually committed: items not already in agree/godown/partial buckets
     # and not in "Denied Delivery" orders
@@ -559,6 +572,8 @@ def compute_forecast_breakdown(df: pd.DataFrame) -> dict[str, float]:
         partial=partial_val,
         manual=manual_val,
         committed_ns=committed_ns_val,
+        denied=denied_val,
+        not_committed=not_committed_val,
         total=total,
     )
 
@@ -895,34 +910,35 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Sub-fields below Forecast Value
-s1, s2, s3, s4, s5 = st.columns(5)
-s1.metric(
-    "🤝 Agreed for Delivery",
-    f"₹{to_indian_number_string(breakdown['agree'], 0)}",
-    help="Total order value for all orders marked 'Agree for Delivery'.",
-)
-s2.metric(
-    "📦 Partial Delivery",
-    f"₹{to_indian_number_string(breakdown['partial'], 0)}",
-    help="Sum of ticked items in orders marked 'Partial Delivery'.",
-)
-s3.metric(
-    "🏭 Godown Delivery",
-    f"₹{to_indian_number_string(breakdown['godown'], 0)}",
-    help="Total order value for all orders marked 'Delivery to Godown'.",
-)
-s4.metric(
-    "✏️ Manually Committed",
-    f"₹{to_indian_number_string(breakdown['manual'], 0)}",
-    help="Total value of items committed manually (not already in Agree/Godown/Partial buckets).",
-)
-s5.metric(
-    "🟢 Committed (No Status)",
-    f"₹{to_indian_number_string(breakdown['committed_ns'], 0)}",
-    help="Total order value of MIS-committed orders not yet assigned any delivery status "
-         "(no Agree/Partial/Godown/Manual decision). Not included in the Monthend Forecast Value.",
-)
+# Sub-fields below Forecast Value — every delivery category and its value.
+# The first four (Agreed / Partial / Godown / Manually Committed) make up the
+# Monthend Forecast Value; the last three (Committed (No Status), Customer
+# Denied, Not Committed) are shown for completeness but excluded from it.
+SUBFIELD_METRICS = [
+    ("🤝 Agreed for Delivery", breakdown["agree"],
+     "Total order value for all orders marked 'Agree for Delivery'."),
+    ("📦 Partial Delivery", breakdown["partial"],
+     "Sum of ticked items in orders marked 'Partial Delivery'."),
+    ("🏭 Godown Delivery", breakdown["godown"],
+     "Total order value for all orders marked 'Delivery to Godown'."),
+    ("✏️ Manually Committed", breakdown["manual"],
+     "Total value of items committed manually (not already in Agree/Godown/Partial buckets)."),
+    ("🟢 Committed (No Status)", breakdown["committed_ns"],
+     "MIS-committed items in orders not yet assigned any delivery status. "
+     "Not included in the Monthend Forecast Value."),
+    ("🚫 Customer Denied Delivery", breakdown["denied"],
+     "Total order value for all orders marked 'Denied Delivery'. "
+     "Not included in the Monthend Forecast Value."),
+    ("⏳ Not Committed", breakdown["not_committed"],
+     "Items in undecided orders that are neither MIS- nor manually-committed. "
+     "Not included in the Monthend Forecast Value."),
+]
+SUBFIELDS_PER_ROW = 4
+for _start in range(0, len(SUBFIELD_METRICS), SUBFIELDS_PER_ROW):
+    _row = SUBFIELD_METRICS[_start:_start + SUBFIELDS_PER_ROW]
+    _cols = st.columns(SUBFIELDS_PER_ROW)
+    for _col, (_label, _value, _help) in zip(_cols, _row):
+        _col.metric(_label, f"₹{to_indian_number_string(_value, 0)}", help=_help)
 
 st.markdown("---")
 
@@ -1317,8 +1333,16 @@ st.markdown(
           <tr>
             <td style="padding:4px 16px 4px 0;color:#555;">🟢 Committed (No Status)</td>
             <td style="font-weight:bold;">₹{to_indian_number_string(breakdown['committed_ns'], 0)}</td>
-            <td colspan="6" style="padding:4px 16px;color:#888;font-style:italic;">
-              MIS-committed orders with no delivery status — not part of the Forecast Value above.
+            <td style="padding:4px 16px;color:#555;">🚫 Customer Denied Delivery</td>
+            <td style="font-weight:bold;">₹{to_indian_number_string(breakdown['denied'], 0)}</td>
+            <td style="padding:4px 16px;color:#555;">⏳ Not Committed</td>
+            <td style="font-weight:bold;">₹{to_indian_number_string(breakdown['not_committed'], 0)}</td>
+            <td colspan="2"></td>
+          </tr>
+          <tr>
+            <td colspan="8" style="padding:6px 16px 0 0;color:#888;font-style:italic;">
+              Committed (No Status), Customer Denied and Not Committed are shown for
+              completeness — they are not part of the Forecast Value above.
             </td>
           </tr>
         </table>
