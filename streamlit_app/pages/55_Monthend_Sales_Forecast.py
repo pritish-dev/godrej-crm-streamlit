@@ -61,6 +61,15 @@ DELIVERY_OPTIONS = [
     "Delivery to Godown",
 ]
 
+# How a manually-committed item is sourced.
+COMMITTED_VIA_OPTIONS = ["", "RPL", "34S Stock"]
+
+# Delivery categories whose forecast value is full-order by default and can be
+# narrowed to committed items only when the order has uncommitted items.
+FULL_ORDER_STATUSES = ("Agree for Delivery", "Delivery to Godown")
+DELIVER_SCOPE_FULL = "FULL"
+DELIVER_SCOPE_COMMITTED = "COMMITTED_ONLY"
+
 # Columns fetched from MIS_Daily
 MIS_FETCH_COLS = [
     "Sales Order No.",
@@ -88,6 +97,8 @@ INTERNAL_COLS = [
     "PARTIAL_SELECTED",     # per item: True when DELIVERY_STATUS == "Partial Delivery"
     "CAN_COMMIT_MANUALLY",  # per item
     "APPROVED_BY",          # per item
+    "COMMITTED_VIA",        # per item: how a manually-committed item is sourced (RPL / 34S Stock)
+    "DELIVER_SCOPE",        # per order: FULL or COMMITTED_ONLY (for Agree / Godown with uncommitted items)
     "STOCK_34S_MESSAGE",    # per item
 ]
 
@@ -394,6 +405,17 @@ def _delivery_status(row: pd.Series) -> str:
     return str(row.get("DELIVERY_STATUS", "")).strip()
 
 
+def _deliver_scope(grp: pd.DataFrame) -> str:
+    """
+    Order-level delivery scope: FULL (whole order) or COMMITTED_ONLY (only the
+    committed items). Defaults to FULL when unset or column absent.
+    """
+    if "DELIVER_SCOPE" not in grp.columns:
+        return DELIVER_SCOPE_FULL
+    val = str(grp["DELIVER_SCOPE"].iloc[0]).strip().upper()
+    return DELIVER_SCOPE_COMMITTED if val == DELIVER_SCOPE_COMMITTED else DELIVER_SCOPE_FULL
+
+
 def _partial_selected(row: pd.Series) -> bool:
     return str(row.get("PARTIAL_SELECTED", "")).upper() in ("TRUE", "1", "YES")
 
@@ -420,7 +442,11 @@ CATEGORY_OPTIONS = [
 ]
 
 
-def categorise_item(row: pd.Series, order_status: str | None = None) -> str:
+def categorise_item(
+    row: pd.Series,
+    order_status: str | None = None,
+    order_scope: str = DELIVER_SCOPE_FULL,
+) -> str:
     """
     Classify a single line item into exactly one category.
 
@@ -430,6 +456,11 @@ def categorise_item(row: pd.Series, order_status: str | None = None) -> str:
     classified individually on their own commitment state. This lets one order
     span more than one bucket: its committed items fall under Manually Committed
     or Committed (No Status) while the rest fall under Not Committed.
+
+    ``order_scope`` (FULL / COMMITTED_ONLY) applies to the full-order categories
+    (Agree / Godown): under COMMITTED_ONLY only the committed items stay in the
+    category and the uncommitted ones drop to Not Committed — matching the
+    "Deliver committed items only" choice.
 
     Per-item precedence (no order status):
         Manually committed → Committed (no status) → Not committed.
@@ -442,10 +473,14 @@ def categorise_item(row: pd.Series, order_status: str | None = None) -> str:
     if status == "Denied Delivery":
         return CAT_DENIED
     if status == "Agree for Delivery":
+        if order_scope == DELIVER_SCOPE_COMMITTED and not _is_committed(row):
+            return CAT_NOT_COMMITTED
         return CAT_AGREED
     if status == "Partial Delivery":
         return CAT_PARTIAL
     if status == "Delivery to Godown":
+        if order_scope == DELIVER_SCOPE_COMMITTED and not _is_committed(row):
+            return CAT_NOT_COMMITTED
         return CAT_GODOWN
     # No order-level status set — classify this item on its own commitment:
     #   • manually-committed item → Manually Committed
@@ -523,13 +558,24 @@ def compute_forecast_breakdown(df: pd.DataFrame) -> dict[str, float]:
         status = _delivery_status(grp.iloc[0])
 
         if status == "Agree for Delivery":
-            v = grp["TOTAL_NET_BASIC"].apply(_to_num).sum()
-            agree_val += v
+            # Full order by default; only committed items when the order is set
+            # to "Deliver committed items only" — the uncommitted items are not
+            # delivered, so they drop to Not Committed.
+            if _deliver_scope(grp) == DELIVER_SCOPE_COMMITTED:
+                committed_mask = grp.apply(_is_committed, axis=1)
+                agree_val += grp.loc[committed_mask, "TOTAL_NET_BASIC"].apply(_to_num).sum()
+                not_committed_val += grp.loc[~committed_mask, "TOTAL_NET_BASIC"].apply(_to_num).sum()
+            else:
+                agree_val += grp["TOTAL_NET_BASIC"].apply(_to_num).sum()
             counted_idx.update(grp.index.tolist())
 
         elif status == "Delivery to Godown":
-            v = grp["TOTAL_NET_BASIC"].apply(_to_num).sum()
-            godown_val += v
+            if _deliver_scope(grp) == DELIVER_SCOPE_COMMITTED:
+                committed_mask = grp.apply(_is_committed, axis=1)
+                godown_val += grp.loc[committed_mask, "TOTAL_NET_BASIC"].apply(_to_num).sum()
+                not_committed_val += grp.loc[~committed_mask, "TOTAL_NET_BASIC"].apply(_to_num).sum()
+            else:
+                godown_val += grp["TOTAL_NET_BASIC"].apply(_to_num).sum()
             counted_idx.update(grp.index.tolist())
 
         elif status == "Partial Delivery":
@@ -589,16 +635,21 @@ def compute_committed_by_category(df: pd.DataFrame) -> tuple[dict[str, float], f
     out: dict[str, float] = {c: 0.0 for c in CATEGORY_OPTIONS[1:]}
     if df.empty:
         return out, 0.0
-    status_by_so = {
-        str(so): _delivery_status(grp.iloc[0])
-        for so, grp in df.groupby("SO_NO", sort=False)
-    }
+    status_by_so: dict[str, str] = {}
+    scope_by_so: dict[str, str] = {}
+    for so, grp in df.groupby("SO_NO", sort=False):
+        status_by_so[str(so)] = _delivery_status(grp.iloc[0])
+        scope_by_so[str(so)] = _deliver_scope(grp)
     total = 0.0
     for _, row in df.iterrows():
         if not _is_mis_committed(row):
             continue
         val = _to_num(row.get("TOTAL_NET_BASIC", 0))
-        cat = categorise_item(row, status_by_so.get(str(row["SO_NO"])))
+        cat = categorise_item(
+            row,
+            status_by_so.get(str(row["SO_NO"])),
+            scope_by_so.get(str(row["SO_NO"]), DELIVER_SCOPE_FULL),
+        )
         out[cat] = out.get(cat, 0.0) + val
         total += val
     return out, total
@@ -637,6 +688,12 @@ def load_saved_state(sheet_name: str) -> pd.DataFrame:
 
         if "PARTIAL_SELECTED" not in df.columns:
             df["PARTIAL_SELECTED"] = False
+
+        # Backward compat: columns added in later versions.
+        if "COMMITTED_VIA" not in df.columns:
+            df["COMMITTED_VIA"] = ""
+        if "DELIVER_SCOPE" not in df.columns:
+            df["DELIVER_SCOPE"] = DELIVER_SCOPE_FULL
 
         return df
     except Exception:
@@ -729,6 +786,8 @@ def build_forecast(
         ("PARTIAL_SELECTED",    False),
         ("CAN_COMMIT_MANUALLY", False),
         ("APPROVED_BY",         ""),
+        ("COMMITTED_VIA",       ""),
+        ("DELIVER_SCOPE",       DELIVER_SCOPE_FULL),
         ("STOCK_34S_MESSAGE",   ""),
     ]:
         if col not in df.columns:
@@ -749,7 +808,8 @@ def merge_state(fresh: pd.DataFrame, saved: pd.DataFrame) -> pd.DataFrame:
 
     state_flag_cols = [
         "DELIVERY_STATUS", "PARTIAL_SELECTED",
-        "CAN_COMMIT_MANUALLY", "APPROVED_BY", "STOCK_34S_MESSAGE",
+        "CAN_COMMIT_MANUALLY", "APPROVED_BY",
+        "COMMITTED_VIA", "DELIVER_SCOPE", "STOCK_34S_MESSAGE",
     ]
 
     saved_map = {}
@@ -1046,12 +1106,17 @@ cat_df = df.copy()
 # / Godown / Denied) applies to every item of the order; an undecided order is
 # classified item by item so it can span Committed (No Status) / Manually
 # Committed and Not Committed at once.
-order_status_by_so: dict[str, str] = {
-    str(_so): _delivery_status(_grp.iloc[0])
-    for _so, _grp in cat_df.groupby("SO_NO", sort=False)
-}
+order_status_by_so: dict[str, str] = {}
+order_scope_by_so: dict[str, str] = {}
+for _so, _grp in cat_df.groupby("SO_NO", sort=False):
+    order_status_by_so[str(_so)] = _delivery_status(_grp.iloc[0])
+    order_scope_by_so[str(_so)] = _deliver_scope(_grp)
 cat_df["CATEGORY"] = cat_df.apply(
-    lambda r: categorise_item(r, order_status_by_so.get(str(r["SO_NO"]))),
+    lambda r: categorise_item(
+        r,
+        order_status_by_so.get(str(r["SO_NO"])),
+        order_scope_by_so.get(str(r["SO_NO"]), DELIVER_SCOPE_FULL),
+    ),
     axis=1,
 )
 
@@ -1127,6 +1192,7 @@ else:
                 "Warehouse":        str(item.get("WAREHOUSE", "")),
                 "City":             str(item.get("CITY", "")),
                 "Approved By":      str(item.get("APPROVED_BY", "")),
+                "Committed Via":    str(item.get("COMMITTED_VIA", "")),
             })
 
     display = pd.DataFrame(rows)
@@ -1228,6 +1294,44 @@ for del_date_str, date_grp in df.groupby("_del_date_str", sort=False):
                 for idx in so_grp.index:
                     st.session_state.mef_df.at[idx, "DELIVERY_STATUS"] = new_status
 
+            # ── Delivery scope (Full order vs Committed items only) ────────────
+            # Shown only for full-order categories (Agree / Godown) where the
+            # order still has uncommitted items. The choice decides which items'
+            # value is counted when the order is moved to that category.
+            has_uncommitted = any(not _is_committed(r) for _, r in so_grp.iterrows())
+            if new_status in FULL_ORDER_STATUSES and has_uncommitted:
+                cur_scope = str(so_grp["DELIVER_SCOPE"].iloc[0]).strip().upper() or DELIVER_SCOPE_FULL
+                st.markdown("**Delivery scope** _(some items in this order are not committed):_")
+                sc1, sc2 = st.columns(2)
+                with sc1:
+                    full_checked = st.checkbox(
+                        "Deliver Full order",
+                        value=(cur_scope != DELIVER_SCOPE_COMMITTED),
+                        key=f"deliver_full_{so_no}",
+                    )
+                with sc2:
+                    committed_only_checked = st.checkbox(
+                        "Deliver committed items only",
+                        value=(cur_scope == DELIVER_SCOPE_COMMITTED),
+                        key=f"deliver_committed_{so_no}",
+                        disabled=full_checked,
+                    )
+                new_scope = (
+                    DELIVER_SCOPE_COMMITTED
+                    if (committed_only_checked and not full_checked)
+                    else DELIVER_SCOPE_FULL
+                )
+                if new_scope != cur_scope:
+                    changed = True
+                    for idx in so_grp.index:
+                        st.session_state.mef_df.at[idx, "DELIVER_SCOPE"] = new_scope
+            elif new_status in FULL_ORDER_STATUSES:
+                # Fully-committed order under a full-order category → always FULL.
+                if str(so_grp["DELIVER_SCOPE"].iloc[0]).strip().upper() == DELIVER_SCOPE_COMMITTED:
+                    changed = True
+                    for idx in so_grp.index:
+                        st.session_state.mef_df.at[idx, "DELIVER_SCOPE"] = DELIVER_SCOPE_FULL
+
             # ── Items mini-table ──────────────────────────────────────────────
             item_rows_html = []
             for _, item_row in so_grp.iterrows():
@@ -1238,7 +1342,12 @@ for del_date_str, date_grp in df.groupby("_del_date_str", sort=False):
                     status_badge_html = "<span style='color:#1a7a1a;'>✅ MIS</span>"
                 elif man_ok:
                     row_bg = "#d6eaf8"
-                    status_badge_html = f"<span style='color:#1a5276;'>✏️ Manual: {item_row.get('APPROVED_BY','')}</span>"
+                    _via = str(item_row.get("COMMITTED_VIA", "")).strip()
+                    _via_html = f" · via {_via}" if _via else ""
+                    status_badge_html = (
+                        f"<span style='color:#1a5276;'>✏️ Manual: "
+                        f"{item_row.get('APPROVED_BY','')}{_via_html}</span>"
+                    )
                 else:
                     row_bg = "#fff"
                     status_badge_html = "<span style='color:#888;'>⏳ Pending</span>"
@@ -1309,6 +1418,7 @@ for del_date_str, date_grp in df.groupby("_del_date_str", sort=False):
 
                     can_val     = str(item_row.get("CAN_COMMIT_MANUALLY", "")).upper() in ("TRUE", "1", "YES")
                     approved_val = str(item_row.get("APPROVED_BY", "")).strip()
+                    via_val      = str(item_row.get("COMMITTED_VIA", "")).strip()
 
                     st.markdown(
                         f"<div style='font-size:12px;padding:2px 0 1px;'>"
@@ -1337,24 +1447,39 @@ for del_date_str, date_grp in df.groupby("_del_date_str", sort=False):
                         )
 
                     new_approved = approved_val
+                    new_via = via_val
                     if new_can:
-                        approved_options = [""] + sales_persons
-                        cur_idx = approved_options.index(approved_val) if approved_val in approved_options else 0
-                        new_approved = st.selectbox(
-                            "Approved By (mandatory)",
-                            options=approved_options,
-                            index=cur_idx,
-                            key=f"approved_{idx}",
-                        )
+                        appr_col, via_col = st.columns(2)
+                        with appr_col:
+                            approved_options = [""] + sales_persons
+                            cur_idx = approved_options.index(approved_val) if approved_val in approved_options else 0
+                            new_approved = st.selectbox(
+                                "Approved By (mandatory)",
+                                options=approved_options,
+                                index=cur_idx,
+                                key=f"approved_{idx}",
+                            )
+                        with via_col:
+                            cur_via_idx = COMMITTED_VIA_OPTIONS.index(via_val) if via_val in COMMITTED_VIA_OPTIONS else 0
+                            new_via = st.selectbox(
+                                "Committed via",
+                                options=COMMITTED_VIA_OPTIONS,
+                                index=cur_via_idx,
+                                key=f"committed_via_{idx}",
+                                format_func=lambda x: x if x else "— Select source —",
+                            )
                         if not new_approved:
                             st.warning("⚠️ Select an approver to mark as manually committed.", icon="⚠️")
+                        if not new_via:
+                            st.info("ℹ️ Optionally choose how it is committed (RPL / 34S Stock).", icon="ℹ️")
 
-                    old_vals = (can_val, approved_val)
-                    new_vals = (new_can, new_approved if new_can else "")
+                    old_vals = (can_val, approved_val, via_val)
+                    new_vals = (new_can, new_approved if new_can else "", new_via if new_can else "")
                     if old_vals != new_vals:
                         changed = True
                         st.session_state.mef_df.at[idx, "CAN_COMMIT_MANUALLY"] = new_can
                         st.session_state.mef_df.at[idx, "APPROVED_BY"] = new_approved if new_can else ""
+                        st.session_state.mef_df.at[idx, "COMMITTED_VIA"] = new_via if new_can else ""
 
 # ─── Save button ─────────────────────────────────────────────────────────────
 if changed:
