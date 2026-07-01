@@ -149,7 +149,7 @@ def _ensure_sheet(sheet_name):
         elif sheet_name == "Service Request":
             ws.append_row(SERVICE_HEADERS)
         elif sheet_name == "comitted Delivery reminder email":
-            ws.append_row(["CC"])
+            ws.append_row(["Email", "CC"])
 
     return ws
 

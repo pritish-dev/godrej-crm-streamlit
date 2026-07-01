@@ -32,6 +32,10 @@ from services.delivery_readiness import (
     mis_commitment_date_map,
 )
 from services.mis_email_import import load_cached_mis
+from services.email_sender_mis_commitment import (
+    send_committed_delivery_reminder_email,
+    REMINDER_WINDOW_DAYS,
+)
 from services.email_sender_delivery_schedule import (
     send_schedule_delivery_email,
     compose_schedule_delivery_email,
@@ -836,6 +840,30 @@ if not overdue_grouped.empty:
     ).values
 
 
+def _build_committed_reminder_df() -> pd.DataFrame:
+    """
+    All PENDING orders (upcoming + overdue) that are fully committed in MIS —
+    i.e. every order carrying a non-blank "Mis Comittment Date". This is the
+    same scope the daily Committed Delivery Reminder job sends, and it keeps
+    including an order for as long as its Delivery Status stays PENDING —
+    an order drops out on its own the moment it's marked Delivered.
+    """
+    parts = [d for d in (pending_grouped, overdue_grouped) if not d.empty]
+    if not parts:
+        return pd.DataFrame()
+    combined = pd.concat(parts, ignore_index=True, sort=False)
+    if "MIS COMMITMENT DATE" not in combined.columns:
+        return pd.DataFrame()
+    mask = combined["MIS COMMITMENT DATE"].astype(str).str.strip() != ""
+    committed = combined[mask].copy()
+    if committed.empty:
+        return committed
+    committed["MIS_COMMIT_DATE"] = pd.to_datetime(
+        committed["MIS COMMITMENT DATE"], format="%d-%b-%Y", errors="coerce"
+    )
+    return committed
+
+
 # ─── Overdue editor helper ───────────────────────────────────────────────────
 # Only shown on the Overdue Delivery Orders table.
 # When a row is saved:
@@ -1030,11 +1058,32 @@ def _render_schedule_editor(grouped_df: pd.DataFrame,
     while len(ready_arr) < len(base):
         ready_arr.append(False)
 
+    # ── Committed-delivery SLA breach: Mis Comittment Date + 15 days < today ──
+    # Overrides every other colour — an order this late needs to go out NOW,
+    # regardless of whether it also happens to be MIS-ready.
+    _today_for_sla = datetime.now().date()
+    if "MIS COMMITMENT DATE" in base.columns:
+        _commit_dates = pd.to_datetime(
+            base["MIS COMMITMENT DATE"], format="%d-%b-%Y", errors="coerce"
+        )
+        over_threshold_arr = [
+            bool(pd.notna(d) and (d.date() + timedelta(days=REMINDER_WINDOW_DAYS)) < _today_for_sla)
+            for d in _commit_dates
+        ]
+    else:
+        over_threshold_arr = [False] * len(base)
+    while len(over_threshold_arr) < len(base):
+        over_threshold_arr.append(False)
+
     # ── 🚦 Traffic-light indicator column — the first column the user sees ──
-    # 🟢 = ready per MIS Update, 🟠/🔴 = not yet ready.
+    # 🔴 (SLA breach) takes priority, then 🟢 ready per MIS Update, else 🟠/🔴.
     base.insert(
         0, "🚦",
-        ["🟢" if r else ("🟠" if base_color == "orange" else "🔴") for r in ready_arr],
+        [
+            "🔴" if over_threshold_arr[i]
+            else ("🟢" if r else ("🟠" if base_color == "orange" else "🔴"))
+            for i, r in enumerate(ready_arr)
+        ],
     )
 
     # ── Insert editable columns ────────────────────────────────────────────
@@ -1054,7 +1103,8 @@ def _render_schedule_editor(grouped_df: pd.DataFrame,
                 "🚦",
                 help=("🟢 Ready for delivery (every line in MIS is fully "
                       "committed)  ·  🟠 Pending, not yet ready  ·  🔴 Overdue, "
-                      "not yet ready"),
+                      f"not yet ready, OR past the {REMINDER_WINDOW_DAYS}-day "
+                      "Mis Comittment Date deadline"),
                 disabled=True,
                 width="small",
             )
@@ -1095,6 +1145,9 @@ def _render_schedule_editor(grouped_df: pd.DataFrame,
             idx = int(row.name)
         except Exception:
             return [""] * len(row)
+        if idx < len(over_threshold_arr) and over_threshold_arr[idx]:
+            # Past the 15-day Mis Comittment Date deadline — strong red, overrides ready/green.
+            return ["background-color:#ffcdd2;color:#b71c1c;font-weight:700"] * len(row)
         is_ready = ready_arr[idx] if 0 <= idx < len(ready_arr) else False
         if is_ready:
             # Light green background + bold dark-green text
@@ -1400,6 +1453,36 @@ def _handle_schedule_delivery_button(edited_df: pd.DataFrame,
 st.divider()
 st.subheader("🚚 Pending Deliveries")
 st.info("🟢 Green = Tomorrow's deliveries  |  Upcoming orders only — overdue orders shown separately below")
+
+# ── Manual trigger — Comitted Delivery Reminder email ────────────────────────
+# Same email the daily 11 AM job sends: every PENDING order fully committed
+# in MIS, grouped by Sales Person, with the 15-day delivery deadline. Keeps
+# including an order until it's marked Delivered in the CRM. Recipients
+# (To/CC) come from the Ops sheet "comitted Delivery reminder email".
+if st.button(
+    "📧 Send Comitted Delivery Reminder Now",
+    key="send_commit_reminder_btn",
+    help="Manually sends the Comitted Delivery Reminder email — the same one sent automatically every day at 11 AM.",
+):
+    _committed_now_df = _build_committed_reminder_df()
+    if _committed_now_df.empty:
+        st.info("ℹ️ No comitted Delivery Orders.")
+    else:
+        try:
+            _reminder_res = send_committed_delivery_reminder_email(_committed_now_df)
+            if _reminder_res.get("sent"):
+                st.success(
+                    f"✅ Comitted Delivery Reminder sent — "
+                    f"To: {', '.join(_reminder_res.get('recipients', [])) or '—'}  ·  "
+                    f"CC: {', '.join(_reminder_res.get('cc', [])) or '—'}  ·  "
+                    f"{_reminder_res.get('records', 0)} order(s)."
+                )
+            elif _reminder_res.get("error") == "no_records":
+                st.info("ℹ️ No comitted Delivery Orders.")
+            else:
+                st.warning(f"⚠️ Email not sent: {_reminder_res.get('error', 'Unknown error')}")
+        except Exception as _e:
+            st.error(f"❌ Failed to send Comitted Delivery Reminder: {_e}")
 
 if not pending_grouped.empty:
 

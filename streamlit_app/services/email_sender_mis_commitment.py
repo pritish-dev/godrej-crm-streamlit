@@ -16,10 +16,18 @@ Status is updated to "Delivered" in the CRM sheet, since the job only ever
 looks at orders that are still PENDING.
 
 Recipients:
-  To  — the same EMAIL_RECIPIENTS used by every other automated CRM email.
-  CC  — read from the Ops sheet "comitted Delivery reminder email"
-        (a CC / EMAIL column, one or more addresses per row,
-        comma/semicolon separated).
+  To  — the "Email" column of the Ops sheet "comitted Delivery reminder email".
+  CC  — the "CC" column of that same sheet.
+  (Every row is read, so multiple To/CC addresses can be listed down the
+  sheet; duplicates across rows are removed.)
+
+Sheet layout:
+    Email                       | CC
+    4sinteriorsbbsr@gmail.com   | pritish.sec@gmail.com
+
+The Gmail account used to actually send (the "From" address / SMTP login)
+still comes from EMAIL_SENDER / EMAIL_PASSWORD (env vars → Streamlit
+secrets → .env), same as every other services/email_sender_*.py module.
 """
 import os
 import smtplib
@@ -31,22 +39,18 @@ from email.mime.multipart import MIMEMultipart
 from utils.helpers import to_indian_number_string
 
 REMINDER_WINDOW_DAYS = 15
-CC_SHEET = "comitted Delivery reminder email"
+RECIPIENTS_SHEET = "comitted Delivery reminder email"
 
-# ── Load credentials (env vars → Streamlit secrets → .env) — same pattern
-#    used across every other services/email_sender_*.py module. ──────────
+# ── Load sender credentials (env vars → Streamlit secrets → .env) ───────────
 SENDER_EMAIL = None
 SENDER_PASSWORD = None
-RECIPIENTS = None
 
 try:
     env_email    = os.getenv("EMAIL_SENDER", "").strip()
     env_password = os.getenv("EMAIL_PASSWORD", "").strip()
-    env_recip    = os.getenv("EMAIL_RECIPIENTS", "").strip()
-    if env_email and env_password and env_recip:
-        SENDER_EMAIL   = env_email
+    if env_email and env_password:
+        SENDER_EMAIL    = env_email
         SENDER_PASSWORD = env_password
-        RECIPIENTS     = [r.strip() for r in env_recip.split(",") if r.strip()]
 except Exception:
     pass
 
@@ -56,11 +60,9 @@ if SENDER_EMAIL is None:
         try:
             SENDER_EMAIL    = st.secrets["admin"]["EMAIL_SENDER"]
             SENDER_PASSWORD = st.secrets["admin"]["EMAIL_PASSWORD"]
-            RECIPIENTS      = [r.strip() for r in st.secrets["admin"]["EMAIL_RECIPIENTS"].split(",") if r.strip()]
         except Exception:
             SENDER_EMAIL    = st.secrets["EMAIL_SENDER"]
             SENDER_PASSWORD = st.secrets["EMAIL_PASSWORD"]
-            RECIPIENTS      = [r.strip() for r in st.secrets["EMAIL_RECIPIENTS"].split(",") if r.strip()]
     except Exception:
         pass
 
@@ -70,75 +72,81 @@ if SENDER_EMAIL is None:
         load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
         env_email    = os.getenv("EMAIL_SENDER", "").strip()
         env_password = os.getenv("EMAIL_PASSWORD", "").strip()
-        env_recip    = os.getenv("EMAIL_RECIPIENTS", "").strip()
-        if env_email and env_password and env_recip:
+        if env_email and env_password:
             SENDER_EMAIL    = env_email
             SENDER_PASSWORD = env_password
-            RECIPIENTS      = [r.strip() for r in env_recip.split(",") if r.strip()]
     except Exception:
         pass
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# CC list — read from the Ops sheet "comitted Delivery reminder email"
+# Recipients — read from the Ops sheet "comitted Delivery reminder email"
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def get_reminder_cc_list() -> list[str]:
+def get_reminder_recipients() -> dict:
     """
-    Read CC addresses from the Ops sheet 'comitted Delivery reminder email'.
-    Accepts a column named CC / EMAIL / CC EMAIL / CC EMAIL ADDRESS
-    (case-insensitive); each cell may hold one or more comma/semicolon
-    separated addresses. Returns [] (never raises) if the sheet is missing,
-    empty, or has no recognised column.
+    Read To (Email) / CC addresses from the Ops sheet
+    'comitted Delivery reminder email'. Every row is read (not just the
+    first), so multiple To/CC addresses can be listed down the sheet.
+
+    Returns {"to": [...], "cc": [...], "error": str}. "error" is populated
+    (and "to" is empty) when the sheet is missing/empty or has no
+    recognised Email/To column.
     """
     try:
         from services.sheets import get_df
-        df = get_df(CC_SHEET)
-    except Exception:
-        return []
+        df = get_df(RECIPIENTS_SHEET)
+    except Exception as e:
+        return {"to": [], "cc": [], "error": f"Could not read '{RECIPIENTS_SHEET}': {e}"}
     if df is None or df.empty:
-        return []
+        return {"to": [], "cc": [], "error": f"Sheet '{RECIPIENTS_SHEET}' is empty."}
 
     df = df.copy()
     df.columns = [str(c).strip().upper() for c in df.columns]
-    col = next(
-        (c for c in df.columns if c in ("CC", "EMAIL", "CC EMAIL", "CC EMAIL ADDRESS")),
-        None,
-    )
-    if not col:
-        return []
+    to_col = next((c for c in df.columns if c in ("EMAIL", "TO", "TO EMAIL", "TO EMAIL ADDRESS")), None)
+    cc_col = next((c for c in df.columns if c in ("CC", "CC EMAIL", "CC EMAIL ADDRESS")), None)
 
-    out: list[str] = []
-    for v in df[col].astype(str):
-        for part in v.replace(";", ",").split(","):
-            p = part.strip()
-            if p and p.lower() not in ("nan", "none") and p not in out:
-                out.append(p)
-    return out
+    def _collect(col):
+        out: list[str] = []
+        if not col:
+            return out
+        for v in df[col].astype(str):
+            for part in v.replace(";", ",").split(","):
+                p = part.strip()
+                if p and p.lower() not in ("nan", "none") and p not in out:
+                    out.append(p)
+        return out
+
+    to_list = _collect(to_col)
+    cc_list = _collect(cc_col)
+    err = "" if to_list else f"No 'Email' (To) recipient configured in '{RECIPIENTS_SHEET}'."
+    return {"to": to_list, "cc": cc_list, "error": err}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Low-level send
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _send_email(subject: str, html_body: str, cc: list[str],
+def _send_email(subject: str, html_body: str, to: list[str], cc: list[str],
                 job_name: str = "", records_count: int = 0) -> dict:
-    """Low-level Gmail SSL send. To = RECIPIENTS, Cc = supplied `cc` list."""
+    """Low-level Gmail SSL send. To/Cc come from the Ops sheet recipients."""
     if not SENDER_EMAIL or not SENDER_PASSWORD:
         raise ValueError("EMAIL_SENDER / EMAIL_PASSWORD not set in env vars or secrets.")
-    if not RECIPIENTS:
-        raise ValueError("EMAIL_RECIPIENTS not set in env vars or secrets.")
+    if not to:
+        raise ValueError(
+            f"No 'To' recipient configured in the '{RECIPIENTS_SHEET}' Ops sheet."
+        )
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"]    = SENDER_EMAIL
-    msg["To"]      = ", ".join(RECIPIENTS)
+    msg["To"]      = ", ".join(to)
     if cc:
         msg["Cc"] = ", ".join(cc)
     msg.attach(MIMEText(html_body, "html"))
 
-    all_rcpts = list(RECIPIENTS) + list(cc)
-    summary = {"sent": False, "recipients": list(RECIPIENTS), "cc": list(cc),
+    all_rcpts = list(to) + list(cc)
+    summary = {"sent": False, "recipients": list(to), "cc": list(cc),
                "subject": subject, "records": records_count, "error": ""}
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
@@ -146,7 +154,7 @@ def _send_email(subject: str, html_body: str, cc: list[str],
             server.sendmail(SENDER_EMAIL, all_rcpts, msg.as_string())
         summary["sent"] = True
         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] ✅ Committed Delivery Reminder sent "
-              f"→ To:{RECIPIENTS} Cc:{cc}")
+              f"→ To:{to} Cc:{cc}")
         try:
             from services.sheets import append_email_log
             append_email_log(job_name=job_name or subject[:60],
@@ -310,8 +318,13 @@ def send_committed_delivery_reminder_email(committed_df: pd.DataFrame) -> dict:
         f"{today.strftime('%d %b %Y')} — {total} Order(s)"
     )
 
-    cc_list = get_reminder_cc_list()
-    summary = _send_email(subject, body, cc_list,
+    rcpt = get_reminder_recipients()
+    if not rcpt["to"]:
+        print(f"  → {rcpt['error']}")
+        return {"sent": False, "error": rcpt["error"] or "no_recipients", "records": total}
+
+    summary = _send_email(subject, body, rcpt["to"], rcpt["cc"],
                           job_name="Committed Delivery Reminder", records_count=total)
-    print(f"  → Committed Delivery Reminder sent: {total} orders ({overdue_count} past deadline), CC={cc_list}")
+    print(f"  → Committed Delivery Reminder sent: {total} orders ({overdue_count} past deadline), "
+          f"To={rcpt['to']} CC={rcpt['cc']}")
     return summary
