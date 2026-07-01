@@ -876,11 +876,66 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                 _sr_ny += 1
             _sr_cur = date(_sr_ny, _sr_nm, 1)
 
-        st.caption(
-            "Achievement = total **Taxable Value (without GST)** of WFX invoices, "
-            "grouped by Sales Executive — same source as *Monthly Sales from "
-            "Invoices* above."
-        )
+        _sr_refresh_col, _sr_refresh_info = st.columns([1, 3])
+        with _sr_refresh_col:
+            _sr_refresh_ach_clicked = st.button(
+                "🔄 Refresh Achievement",
+                type="secondary",
+                use_container_width=True,
+                key="sr_refresh_achievement",
+                help=(
+                    "Reloads achievement from the SALE INVOICE- <Month> sheet for "
+                    "each selected month. If a month's sheet has no invoices yet, "
+                    "they are fetched from email first and saved to that month's "
+                    "sheet."
+                ),
+            )
+        with _sr_refresh_info:
+            st.caption(
+                "Achievement = total **Taxable Value (without GST)** of WFX invoices, "
+                "grouped by Sales Executive — same source as *Monthly Sales from "
+                "Invoices* above."
+            )
+
+        if _sr_refresh_ach_clicked:
+            with st.spinner("Refreshing achievement…"):
+                _sr_refresh_msgs = []
+                _sr_today_fetch = datetime.now().date()
+                for _sr_rm, _sr_ry in _sr_month_list:
+                    _sr_mname = calendar.month_name[_sr_rm]
+                    _sr_existing = _sr_load_invoice_sheet(_sr_mname)
+                    if _sr_existing is not None and not _sr_existing.empty:
+                        _sr_refresh_msgs.append(
+                            f"**{_sr_mname} {_sr_ry}**: already has "
+                            f"{len(_sr_existing)} invoice row(s) in the sheet — "
+                            "using existing data."
+                        )
+                        continue
+
+                    _sr_m_start = date(_sr_ry, _sr_rm, 1)
+                    _sr_m_last_day = calendar.monthrange(_sr_ry, _sr_rm)[1]
+                    _sr_m_end = min(date(_sr_ry, _sr_rm, _sr_m_last_day), _sr_today_fetch)
+                    if _sr_m_start > _sr_m_end:
+                        _sr_refresh_msgs.append(
+                            f"**{_sr_mname} {_sr_ry}**: month hasn't started yet — "
+                            "nothing to fetch."
+                        )
+                        continue
+
+                    _, _sr_fetch_msg = fetch_and_save_invoices_range(_sr_m_start, _sr_m_end)
+                    _sr_refresh_msgs.append(f"**{_sr_mname} {_sr_ry}**: {_sr_fetch_msg}")
+
+                try:
+                    get_df.clear()
+                    _sr_load_invoice_achievement.clear()
+                    _load_invoice_data_sr.clear()
+                except Exception:
+                    pass
+
+            st.success("✅ Achievement refreshed.")
+            for _sr_rm_msg in _sr_refresh_msgs:
+                st.write(_sr_rm_msg)
+            st.rerun()
 
         # Union of salespeople with a target set AND anyone who appears as a
         # Sales Executive on an invoice in the selected months, even if they
