@@ -842,17 +842,20 @@ if not overdue_grouped.empty:
 
 def _build_committed_reminder_df() -> pd.DataFrame:
     """
-    All PENDING orders (upcoming + overdue) that are fully committed in MIS —
-    i.e. every order carrying a non-blank "Mis Comittment Date". This is the
-    same scope the daily Committed Delivery Reminder job sends, and it keeps
-    including an order for as long as its Delivery Status stays PENDING —
-    an order drops out on its own the moment it's marked Delivered.
+    All PENDING FRANCHISE orders (upcoming + overdue) that are fully
+    committed in MIS — i.e. every order carrying a non-blank
+    "Mis Comittment Date". 4S orders are excluded — this reminder is
+    Franchise-only, matching the scheduled Committed Delivery Reminder job.
+    Keeps including an order for as long as its Delivery Status stays
+    PENDING — an order drops out on its own the moment it's marked Delivered.
     """
     parts = [d for d in (pending_grouped, overdue_grouped) if not d.empty]
     if not parts:
         return pd.DataFrame()
     combined = pd.concat(parts, ignore_index=True, sort=False)
-    if "MIS COMMITMENT DATE" not in combined.columns:
+    if "SOURCE" in combined.columns:
+        combined = combined[combined["SOURCE"].astype(str).str.strip() == "Franchise"].copy()
+    if combined.empty or "MIS COMMITMENT DATE" not in combined.columns:
         return pd.DataFrame()
     mask = combined["MIS COMMITMENT DATE"].astype(str).str.strip() != ""
     committed = combined[mask].copy()

@@ -3,11 +3,11 @@ streamlit_app/mis_commitment_reminder_job.py
 
 Committed Delivery Reminder Job — called by GitHub Actions.
 
-For every PENDING order (Franchise + 4S) whose GODREJ SO has been FULLY
-committed in MIS (every line item's Sales Order Qty == Sales Order
-Committed Qty), sends one email — sectioned by Sales Person — reminding
-that the order must be delivered within 15 days of the date it became
-fully committed in MIS.
+For every PENDING FRANCHISE order (4S orders are excluded) whose GODREJ SO
+has been FULLY committed in MIS (every line item's Sales Order Qty ==
+Sales Order Committed Qty), sends one email — sectioned by Sales Person —
+reminding that the order must be delivered within 15 days of the date it
+became fully committed in MIS.
 
 Runs daily at 11 AM IST, right after the scheduled MIS Daily Import
 (mis-daily-import.yaml, ~10:55/11:15 IST). Before computing anything this
@@ -164,11 +164,14 @@ def _group_by_order_no(df: pd.DataFrame) -> pd.DataFrame:
 
 def fetch_all_pending() -> pd.DataFrame:
     """
-    Load all PENDING delivery records from every Franchise + 4S sheet listed
-    in SHEET_DETAILS. Returns grouped-by-ORDER-NO DataFrame with GODREJ SO NO
-    retained so it can be cross-referenced against MIS.
+    Load all PENDING delivery records from every Franchise sheet listed in
+    SHEET_DETAILS. 4S orders are intentionally excluded — this reminder is
+    Franchise-only, since MIS commitment tracking applies to Franchise
+    orders (see services/delivery_readiness.py). Returns grouped-by-ORDER-NO
+    DataFrame with GODREJ SO NO retained so it can be cross-referenced
+    against MIS.
     """
-    print("  → Fetching delivery data from Google Sheets …")
+    print("  → Fetching Franchise delivery data from Google Sheets …")
     config_df = get_df("SHEET_DETAILS")
     if config_df is None or config_df.empty:
         print("  → SHEET_DETAILS not found.")
@@ -179,14 +182,9 @@ def fetch_all_pending() -> pd.DataFrame:
         .pipe(lambda s: s[s != ""].unique().tolist())
         if "Franchise_sheets" in config_df.columns else []
     )
-    fours_sheets = (
-        config_df["four_s_sheets"].dropna().astype(str).str.strip()
-        .pipe(lambda s: s[s != ""].unique().tolist())
-        if "four_s_sheets" in config_df.columns else []
-    )
 
     dfs = []
-    for label, sheet_list in [("Franchise", franchise_sheets), ("4S Interiors", fours_sheets)]:
+    for label, sheet_list in [("Franchise", franchise_sheets)]:
         for name in sheet_list:
             try:
                 df = get_df(name)
