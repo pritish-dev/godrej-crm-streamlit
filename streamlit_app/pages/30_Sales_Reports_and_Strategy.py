@@ -64,17 +64,6 @@ try:
 except Exception:
     _SR_IQ_AVAILABLE = False
 
-try:
-    from services.drive_invoice_achievement import (
-        get_drive_achievement as _sr_get_drive_achievement,
-        compute_drive_achievement_for_month as _sr_compute_drive_achievement_for_month,
-        load_achievement_from_sheet as _sr_load_achievement_from_sheet,
-        _MONTH_NUM_TO_NAME as _SR_DRIVE_MONTH_NAMES,
-    )
-    _SR_DRIVE_ACHIEVEMENT_AVAILABLE = True
-except Exception:
-    _SR_DRIVE_ACHIEVEMENT_AVAILABLE = False
-
 _SR_MONTH_NAMES = {
     1: "JANUARY", 2: "FEBRUARY", 3: "MARCH", 4: "APRIL",
     5: "MAY", 6: "JUNE", 7: "JULY", 8: "AUGUST",
@@ -173,11 +162,6 @@ def _sr_load_invoice_achievement(month_name: str) -> pd.DataFrame:
 
 
 def _sr_compute_achievement(sales_person: str, month: int, year: int) -> float:
-    if _SR_DRIVE_ACHIEVEMENT_AVAILABLE:
-        try:
-            return _sr_get_drive_achievement(sales_person, month, year)
-        except Exception:
-            pass
     grp = _sr_load_invoice_achievement(calendar.month_name[month])
     if grp is None or grp.empty:
         return 0.0
@@ -892,49 +876,27 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                 _sr_ny += 1
             _sr_cur = date(_sr_ny, _sr_nm, 1)
 
-        if _SR_DRIVE_ACHIEVEMENT_AVAILABLE:
-            _sr_ref_col, _sr_info_col = st.columns([1, 3])
-            with _sr_ref_col:
-                _sr_refresh_clicked = st.button(
-                    "🔄 Refresh Achievement from Drive",
-                    type="secondary",
-                    use_container_width=True,
-                    key="sr_refresh_drive_achievement",
-                    help=(
-                        "Re-reads all invoice PDFs from the '4s Delivery Invoices' "
-                        "Google Drive folder for the selected months."
-                    ),
-                )
-            with _sr_info_col:
-                st.caption(
-                    "Achievement = total invoice value **without GST** from Drive PDFs.  "
-                    "Data is cached in *Monthly Sales value without GST* sheet."
-                )
+        st.caption(
+            "Achievement = total **Taxable Value (without GST)** of WFX invoices, "
+            "grouped by Sales Executive — same source as *Monthly Sales from "
+            "Invoices* above."
+        )
 
-            if _sr_refresh_clicked:
-                with st.spinner("Scanning Drive invoices and updating achievement sheet…"):
-                    _sr_refresh_results = {}
-                    for _sr_rm2, _sr_ry2 in _sr_month_list:
-                        try:
-                            _sr_agg = _sr_compute_drive_achievement_for_month(_sr_rm2, _sr_ry2, write_to_sheet=True)
-                            _sr_refresh_results[f"{_SR_DRIVE_MONTH_NAMES.get(_sr_rm2, str(_sr_rm2))} {_sr_ry2}"] = _sr_agg
-                        except Exception as _sr_re:
-                            _sr_refresh_results[f"{_SR_DRIVE_MONTH_NAMES.get(_sr_rm2, str(_sr_rm2))} {_sr_ry2}"] = {"error": str(_sr_re)}
+        # Union of salespeople with a target set AND anyone who appears as a
+        # Sales Executive on an invoice in the selected months, even if they
+        # aren't in the Sales Team sheet / dropdown.
+        _sr_invoice_sp: set[str] = set()
+        _sr_seen_month_names: set[str] = set()
+        for _sr_m3, _sr_y3 in _sr_month_list:
+            _sr_mname = calendar.month_name[_sr_m3]
+            if _sr_mname in _sr_seen_month_names:
+                continue
+            _sr_seen_month_names.add(_sr_mname)
+            _sr_inv_grp = _sr_load_invoice_achievement(_sr_mname)
+            if _sr_inv_grp is not None and not _sr_inv_grp.empty:
+                _sr_invoice_sp.update(_sr_inv_grp["SALES PERSON"].tolist())
 
-                st.success("✅ Achievement refreshed from Drive invoices.")
-                for _sr_mkey, _sr_mdata in _sr_refresh_results.items():
-                    if "error" in _sr_mdata:
-                        st.warning(f"⚠️ {_sr_mkey}: {_sr_mdata['error']}")
-                    elif _sr_mdata:
-                        _sr_lines = [f"**{_sp}**: ₹{to_indian_number_string(_amt, 2)}" for _sp, _amt in sorted(_sr_mdata.items())]
-                        st.write(f"**{_sr_mkey}** — " + "  ·  ".join(_sr_lines))
-                    else:
-                        st.info(f"ℹ️ {_sr_mkey}: No invoices found in Drive.")
-
-                st.cache_data.clear()
-                st.rerun()
-
-        _sr_all_sp = sorted(set(s.strip().upper() for s in _sr_sales_people))
+        _sr_all_sp = sorted(set(s.strip().upper() for s in _sr_sales_people) | _sr_invoice_sp)
 
         _sr_rows = []
         for _sr_sp in _sr_all_sp:
@@ -1034,8 +996,9 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
             )
             st.caption(
                 "Target source: **Incentive_Quarterly_Targets** (Lakh).  "
-                "Achievement source: **bill sales (without GST)** from invoice PDFs "
-                "in the *4s Delivery Invoices* Google Drive folder."
+                "Achievement source: **Taxable Value (without GST)** of WFX "
+                "invoices from the *SALE INVOICE- <Month>* sheets, grouped by "
+                "Sales Executive."
             )
 
             _sr_cur_m, _sr_cur_y = _sr_today_tgt.month, _sr_today_tgt.year
