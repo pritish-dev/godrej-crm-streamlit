@@ -59,7 +59,7 @@ def sync_contacts_to_4s_sheet() -> dict:
         last_sync       – timestamp of previous sync (or None)
         current_sync    – timestamp of this sync
     """
-    from services.sheets import get_df, _get_spreadsheet  # local import avoids circular
+    from services.sheets import get_df, _get_sh  # local import avoids circular
     from utils.helpers import standardize_columns
 
     now_ist = datetime.now(IST).strftime("%Y-%m-%d %H:%M IST")
@@ -171,7 +171,7 @@ def sync_contacts_to_4s_sheet() -> dict:
     # ── Append new contacts to Google Sheet (single batched write) ───────────
     # append_rows() sends all rows in ONE API request, avoiding the 429 quota
     # error that occurs when looping append_row() once per contact.
-    sh = _get_spreadsheet()
+    sh = _get_sh(CONTACTS_SHEET)
     try:
         ws = sh.worksheet(CONTACTS_SHEET)
     except Exception:

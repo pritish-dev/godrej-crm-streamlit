@@ -1,4 +1,4 @@
-name: CRM Daily Backup
+name: CRM + OPS Daily Backup
 
 on:
   schedule:
@@ -34,11 +34,13 @@ jobs:
             pip install -r requirements.txt
           fi
 
-      - name: Run CRM daily backup
+      - name: Run CRM + OPS daily backup
         env:
-          GOOGLE_CREDENTIALS:          ${{ secrets.GOOGLE_CREDENTIALS }}
-          CRM_BACKUP_DRIVE_FOLDER_ID:  ${{ secrets.CRM_BACKUP_DRIVE_FOLDER_ID }}
-          OPS_SPREADSHEET_ID:          ${{ secrets.OPS_SPREADSHEET_ID }}
+          GOOGLE_CREDENTIALS:           ${{ secrets.GOOGLE_CREDENTIALS }}
+          CRM_BACKUP_DRIVE_FOLDER_ID:   ${{ secrets.CRM_BACKUP_DRIVE_FOLDER_ID }}
+          # Optional — defaults to CRM_BACKUP_DRIVE_FOLDER_ID when not set.
+          OPS_BACKUP_DRIVE_FOLDER_ID:   ${{ secrets.OPS_BACKUP_DRIVE_FOLDER_ID }}
+          OPS_SPREADSHEET_ID:           ${{ secrets.OPS_SPREADSHEET_ID }}
         run: |
           cd streamlit_app
           python backup_job.py
