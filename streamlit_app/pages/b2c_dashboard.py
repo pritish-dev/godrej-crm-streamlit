@@ -29,6 +29,7 @@ from services.dashboard_ticker import render_ticker
 from services.delivery_readiness import (
     customer_to_godrej_so,
     ready_so_set,
+    mis_commitment_date_map,
 )
 from services.mis_email_import import load_cached_mis
 from services.email_sender_delivery_schedule import (
@@ -49,6 +50,7 @@ COL_RENAME_DISPLAY = {
     "ORDER DATE":       "Order Date",
     "ORDER NO":         "Order No",
     "GODREJ SO NO":     "Godrej SO No",
+    "MIS COMMITMENT DATE": "Mis Comittment Date",
     "CUSTOMER NAME":    "Customer Name",
     "CONTACT NUMBER":   "Contact No",
     "EMAIL ADDRESS":    "Email",
@@ -79,6 +81,7 @@ SALES_DISPLAY_COLS = [
 # Columns shown in pending-delivery and payment-due tables
 PENDING_DISPLAY_COLS = [
     "DELIVERY DATE", "ORDER DATE", "ORDER NO", "GODREJ SO NO",
+    "MIS COMMITMENT DATE",
     "CUSTOMER NAME", "CONTACT NUMBER",
     "PRODUCT NAME", "QTY", "ORDER VALUE", "ADV RECEIVED", "PENDING DUE",
     "SALES PERSON", "DELIVERY STATUS", "REMARKS", "SOURCE",
@@ -523,6 +526,39 @@ except Exception as _mis_err:
 
 cust_so_map_global = customer_to_godrej_so(crm)
 ready_sos_global   = ready_so_set(mis_df_for_page) if not mis_df_for_page.empty else set()
+commit_date_map_global = (
+    mis_commitment_date_map(mis_df_for_page) if not mis_df_for_page.empty else {}
+)
+
+
+def _compute_commit_dates(grouped_df: pd.DataFrame,
+                          cust_so_map: dict,
+                          commit_map: dict) -> pd.Series:
+    """
+    Per-row 'Mis Comittment Date' — the last MIS commitment date for the
+    order's GODREJ SO, but ONLY populated once every item on that SO is
+    fully committed (i.e. the SO is a key in `commit_map`). Formatted as
+    DD-MMM-YYYY; blank when the order isn't (yet) fully committed.
+    """
+    if grouped_df is None or grouped_df.empty:
+        return pd.Series([], dtype=str)
+
+    values = []
+    for _, r in grouped_df.iterrows():
+        sos_for_row: list[str] = []
+        row_so = str(r.get("GODREJ SO NO", "")).strip()
+        if row_so and row_so.lower() not in ("nan", "none"):
+            sos_for_row.append(row_so)
+        cust_key = str(r.get("CUSTOMER NAME", "")).strip().upper()
+        if cust_key:
+            sos_for_row.extend(cust_so_map.get(cust_key, []))
+
+        commit_date = next(
+            (commit_map[so] for so in sos_for_row if so in commit_map), None
+        )
+        values.append(commit_date.strftime("%d-%b-%Y") if commit_date is not None else "")
+
+    return pd.Series(values, index=grouped_df.reset_index(drop=True).index)
 
 # ── Live attention ticker (right-to-left marquee) ────────────────────────────
 try:
@@ -787,6 +823,17 @@ overdue_grouped = (
     .sort_values("DELIVERY DATE", ascending=True)
     .reset_index(drop=True)
 ) if not pending_overdue_raw.empty else pd.DataFrame()
+
+# ── Attach "Mis Comittment Date" — the last MIS commitment date once every
+#    item of the order is fully committed (see delivery_readiness.mis_commitment_date_map).
+if not pending_grouped.empty:
+    pending_grouped["MIS COMMITMENT DATE"] = _compute_commit_dates(
+        pending_grouped, cust_so_map_global, commit_date_map_global
+    ).values
+if not overdue_grouped.empty:
+    overdue_grouped["MIS COMMITMENT DATE"] = _compute_commit_dates(
+        overdue_grouped, cust_so_map_global, commit_date_map_global
+    ).values
 
 
 # ─── Overdue editor helper ───────────────────────────────────────────────────

@@ -1,0 +1,40 @@
+name: CRM Committed Delivery Reminder
+
+on:
+  schedule:
+    # All times UTC. IST = UTC+5:30
+    - cron: '30 3 * * *'   # 09:00 AM IST → Committed Delivery Reminder (daily)
+
+  workflow_dispatch: {}
+
+jobs:
+  committed-delivery-reminder:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          if [ -f streamlit_app/requirements.txt ]; then
+            pip install -r streamlit_app/requirements.txt
+          else
+            pip install -r requirements.txt
+          fi
+
+      - name: Run MIS committed-delivery reminder job
+        env:
+          EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECIPIENTS:   ${{ secrets.EMAIL_RECIPIENTS }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: |
+          cd streamlit_app
+          python mis_commitment_reminder_job.py

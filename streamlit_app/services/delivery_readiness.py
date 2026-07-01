@@ -20,6 +20,8 @@ Helpers exposed
 - ready_so_set(mis_df)                  → set of SO numbers fully ready
 - ready_godrej_so_for_orders(...)       → for each order, return GODREJ SO NO + ready flag
 - ready_so_lookup(...)                  → dict { (customer, godrej_so) : True/False }
+- mis_commitment_date_map(mis_df)       → dict { SO No : last commitment date } for
+                                           SOs that are FULLY committed (every item ready)
 """
 from __future__ import annotations
 
@@ -143,6 +145,63 @@ def is_delivery_row_ready(
         return False, []
     ready = any(so in ready_set for so in sos)
     return ready, sos
+
+
+def _parse_date_series(s: pd.Series) -> pd.Series:
+    """
+    Robust multi-format date parser for MIS date columns (which are read as
+    plain strings). Tries common explicit formats first, then falls back to
+    pandas' day-first inference. Unparseable values become NaT.
+    """
+    s = s.astype(str).str.strip()
+    parsed = pd.Series([pd.NaT] * len(s), index=s.index)
+    for fmt in ("%d-%m-%Y", "%d-%b-%Y", "%d/%m/%Y", "%Y-%m-%d", "%Y-%m-%d %H:%M:%S"):
+        mask = parsed.isna()
+        if not mask.any():
+            break
+        parsed.loc[mask] = pd.to_datetime(s[mask], format=fmt, errors="coerce")
+    mask = parsed.isna()
+    if mask.any():
+        parsed.loc[mask] = pd.to_datetime(s[mask], dayfirst=True, errors="coerce")
+    return parsed
+
+
+def mis_commitment_date_map(mis_df: pd.DataFrame) -> dict[str, "pd.Timestamp"]:
+    """
+    Returns { GODREJ Sales Order No. : last commitment date } for every SO
+    that is FULLY committed (every line item's Sales Order Qty ==
+    Sales Order Committed Qty — i.e. the SO is in ready_so_set()).
+
+    "Last commitment date" = the MAX "Inventory Commitment Date" across all
+    line items belonging to that SO — i.e. the date the entire order finally
+    became fully committed, once every item had a commitment date recorded.
+
+    SOs that are not fully ready, or that have no parseable
+    "Inventory Commitment Date" values, are omitted from the result.
+    """
+    if mis_df is None or mis_df.empty:
+        return {}
+    if "Sales Order No." not in mis_df.columns or "Inventory Commitment Date" not in mis_df.columns:
+        return {}
+
+    ready = ready_so_set(mis_df)
+    if not ready:
+        return {}
+
+    df = mis_df.copy()
+    df["__so__"] = df["Sales Order No."].astype(str).str.strip()
+    df = df[df["__so__"].isin(ready)]
+    if df.empty:
+        return {}
+
+    df["__date__"] = _parse_date_series(df["Inventory Commitment Date"])
+
+    out: dict[str, "pd.Timestamp"] = {}
+    for so, sub in df.groupby("__so__"):
+        max_date = sub["__date__"].max()
+        if pd.notna(max_date):
+            out[so] = max_date
+    return out
 
 
 def ready_mis_row_mask(

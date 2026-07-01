@@ -58,6 +58,7 @@ _OPS_SHEETS: frozenset[str] = frozenset({
     "SHEET_DETAILS",
     "OLD_SHEET_DETAILS",
     "Stock",
+    "comitted Delivery reminder email",
 })
 
 # Sheet name prefixes that always belong to the OPS spreadsheet
