@@ -22,6 +22,47 @@ except Exception:
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
+# ==============================
+# API ERROR HANDLING / RETRY
+# ==============================
+# Streamlit Cloud hides the real exception message for uncaught errors
+# ("...redacted to prevent data leaks..."), which turns any gspread.APIError
+# (quota, permission, transient 5xx) into an opaque crash. We retry
+# transient errors ourselves and turn the rest into a clear, safe message
+# up front, so the real cause is visible without digging through cloud logs.
+
+def _api_error_detail(exc) -> tuple:
+    """Pull the (code, message) Google itself sent back — never secrets, just quota/permission text."""
+    try:
+        payload = exc.response.json().get("error", {})
+        return payload.get("code", exc.response.status_code), payload.get("message", str(exc))
+    except Exception:
+        return getattr(getattr(exc, "response", None), "status_code", 0), str(exc)
+
+
+def _call_with_retry(func, *args, max_retries=4, **kwargs):
+    """
+    Call a gspread API method, retrying transient errors (rate limit /
+    server hiccups) with exponential backoff. Non-transient errors
+    (permission denied, not found, bad auth) are re-raised immediately as a
+    RuntimeError carrying Google's own safe error text.
+    """
+    import time
+    import random
+
+    last_exc = None
+    for attempt in range(max_retries):
+        try:
+            return func(*args, **kwargs)
+        except gspread.exceptions.APIError as e:
+            code, message = _api_error_detail(e)
+            last_exc = e
+            if code in (429, 500, 502, 503) and attempt < max_retries - 1:
+                time.sleep((2 ** attempt) + random.random())
+                continue
+            raise RuntimeError(f"Google Sheets API error {code}: {message}") from None
+    raise RuntimeError(f"Google Sheets API error: {last_exc}")
+
 from services.sheet_config import (  # noqa: E402
     CRM_SPREADSHEET_ID,
     OPS_SPREADSHEET_ID,
@@ -138,9 +179,9 @@ def _ensure_sheet(sheet_name):
     sh = _get_sh(sheet_name)
 
     try:
-        ws = sh.worksheet(sheet_name)
-    except:
-        ws = sh.add_worksheet(title=sheet_name, rows=1000, cols=50)
+        ws = _call_with_retry(sh.worksheet, sheet_name)
+    except gspread.exceptions.WorksheetNotFound:
+        ws = _call_with_retry(sh.add_worksheet, title=sheet_name, rows=1000, cols=50)
 
         if sheet_name == "CRM":
             ws.append_row(CRM_HEADERS)
@@ -183,8 +224,16 @@ def _normalize(col, val):
 
 @st.cache_data(ttl=60)
 def get_df(sheet_name):
-    ws = _ensure_sheet(sheet_name)
-    data = ws.get_all_values()
+    try:
+        ws = _ensure_sheet(sheet_name)
+        data = _call_with_retry(ws.get_all_values)
+    except RuntimeError as e:
+        # Real, safe cause (quota / permission / not-found) — surfaced in
+        # both the UI and the Streamlit Cloud logs, instead of the whole
+        # page crashing behind a generic redacted error screen.
+        print(f"[get_df] Failed to load sheet '{sheet_name}': {e}")
+        st.error(f"Could not load sheet '{sheet_name}': {e}")
+        return pd.DataFrame()
 
     if not data:
         return pd.DataFrame()
@@ -233,8 +282,8 @@ def upsert_record(sheet_name, unique_fields, new_data):
         
 def get_sheet(sheet_name):
     try:
-        return _get_sh(sheet_name).worksheet(sheet_name)
-    except Exception:
+        return _call_with_retry(_get_sh(sheet_name).worksheet, sheet_name)
+    except gspread.exceptions.WorksheetNotFound:
         raise Exception(f"Sheet '{sheet_name}' not found in Google Sheets")
         
 def upsert_target_record(sheet_name: str, unique_fields: dict, new_data: dict):
