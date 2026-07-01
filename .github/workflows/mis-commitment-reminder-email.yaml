@@ -1,15 +1,34 @@
 name: CRM Committed Delivery Reminder
 
+# Runs daily at 11 AM IST, right after the scheduled MIS Daily Import
+# (mis-daily-import.yaml, ~10:55/11:15 IST). All times UTC; IST = UTC + 5:30.
+#
+# The job itself (mis_commitment_reminder_job.py):
+#   1. Checks whether today's MIS_Daily cache is actually fresh.
+#   2. If not, triggers the MIS fetch itself and retries once after a short
+#      wait if today's MIS email hasn't landed yet.
+#   3. Sends the Committed Delivery Reminder email using whatever MIS data
+#      it ends up with (fresh if available, else the last cached data).
+#
+# A same-day EMAIL_LOG guard inside the job prevents a duplicate send if
+# the drift-backup cron below also fires.
+
 on:
   schedule:
-    # All times UTC. IST = UTC+5:30
-    - cron: '30 3 * * *'   # 09:00 AM IST → Committed Delivery Reminder (daily)
+    - cron: '30 5 * * *'   # 05:30 UTC = 11:00 IST  (primary)
+    - cron: '55 5 * * *'   # 05:55 UTC = 11:25 IST  (drift backup)
 
   workflow_dispatch: {}
+
+# Cancel an older in-flight run if a new one is queued in the same window
+concurrency:
+  group: mis-commitment-reminder-email
+  cancel-in-progress: false
 
 jobs:
   committed-delivery-reminder:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout code

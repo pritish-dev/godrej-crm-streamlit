@@ -9,23 +9,37 @@ Committed Qty), sends one email — sectioned by Sales Person — reminding
 that the order must be delivered within 15 days of the date it became
 fully committed in MIS.
 
+Runs daily at 11 AM IST, right after the scheduled MIS Daily Import
+(mis-daily-import.yaml, ~10:55/11:15 IST). Before computing anything this
+job checks whether today's MIS_Daily cache is actually fresh:
+  • If the scheduled import already ran today  → uses the cached data.
+  • If it hasn't (import job skipped/failed/still pending) → this job
+    triggers the MIS fetch itself (fetch_and_cache_mis) and then proceeds
+    with the freshly fetched data.
+  • If a fresh fetch isn't possible either (e.g. no MIS email has been
+    sent yet today) → falls back to whatever is already cached so the
+    reminder still goes out using the latest known commitment state.
+
 Idempotent by design: the job re-evaluates every PENDING order on every
 run, so an order stops being mentioned (and the reminder stops) the
 moment its Delivery Status is updated to Delivered in the CRM sheet.
-No separate "already reminded" state needs to be tracked.
+No separate "already reminded" state needs to be tracked. A same-day
+send guard (EMAIL_LOG) prevents duplicate emails if the workflow's
+drift-backup cron also fires.
 
 Schedule (mis-commitment-reminder-email.yaml):
-  09:00 AM IST — daily
+  11:00 AM IST — daily
 """
 import sys
 import os
+import time
 from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pandas as pd
-from services.sheets import get_df
-from services.mis_email_import import load_cached_mis
+from services.sheets import get_df, was_email_sent_today
+from services.mis_email_import import load_cached_mis, fetch_and_cache_mis, MIS_CACHE_SHEET
 from services.delivery_readiness import customer_to_godrej_so, mis_commitment_date_map
 from services.email_sender_mis_commitment import send_committed_delivery_reminder_email
 
@@ -34,7 +48,70 @@ IST     = timezone(timedelta(hours=5, minutes=30))
 now_ist = datetime.now(IST)
 today   = now_ist.date()
 
-print(f"[MIS Commitment Reminder] IST: {now_ist.strftime('%Y-%m-%d %H:%M')}")
+JOB_NAME = "Committed Delivery Reminder"
+
+print(f"[MIS Commitment Reminder] Running at IST: {now_ist.strftime('%Y-%m-%d %H:%M')}")
+
+# ── Idempotency guard ─────────────────────────────────────────────────────────
+# The workflow fires a couple of times in the 11 AM window to absorb GitHub
+# Actions cron drift. Only the first successful run of the day should
+# actually send the email — every run after that would just re-send the
+# same reminder.
+if was_email_sent_today(JOB_NAME):
+    print(f"  → Already sent '{JOB_NAME}' today. Skipping duplicate trigger.")
+    sys.exit(0)
+
+
+# ── Ensure today's MIS is loaded — self-trigger the fetch if the scheduled
+#    11 AM import hasn't run / hasn't landed yet. ─────────────────────────────
+
+def _mis_cache_is_fresh(as_of_date) -> bool:
+    """True when MIS_Daily's 'Fetched On' timestamp is for `as_of_date`."""
+    try:
+        raw = get_df(MIS_CACHE_SHEET)
+    except Exception:
+        return False
+    if raw is None or raw.empty or "Fetched On" not in raw.columns:
+        return False
+    fetched_on = str(raw["Fetched On"].iloc[0]).strip()
+    if not fetched_on:
+        return False
+    parsed = pd.to_datetime(fetched_on, errors="coerce")
+    return bool(pd.notna(parsed) and parsed.date() == as_of_date)
+
+
+def _trigger_mis_fetch() -> pd.DataFrame:
+    """Fetch + cache today's MIS. Returns the fetched df (empty if unavailable)."""
+    fetched_df, fetch_status = fetch_and_cache_mis()
+    print(f"  → {fetch_status}")
+    return fetched_df if fetched_df is not None else pd.DataFrame()
+
+
+if _mis_cache_is_fresh(today):
+    print("  → MIS_Daily cache is already fresh for today — using it.")
+    mis_df, mis_status = load_cached_mis()
+    print(f"  → {mis_status}")
+else:
+    print("  → MIS_Daily cache is stale/missing for today — triggering MIS fetch now …")
+    fetched_df = _trigger_mis_fetch()
+
+    # Today's MIS email can land a few minutes late — retry once after a
+    # short wait before falling back to (possibly stale) cached data.
+    if fetched_df.empty:
+        print("  → MIS email not found yet — waiting 10 minutes before retrying …")
+        time.sleep(10 * 60)
+        fetched_df = _trigger_mis_fetch()
+
+    if not fetched_df.empty:
+        # Bust the get_df cache so the reload below picks up what we just wrote.
+        get_df.clear()
+        mis_df, mis_status = load_cached_mis()
+        print(f"  → {mis_status}")
+    else:
+        print("  → Still could not fetch today's MIS. Falling back to whatever is "
+              "already cached (may be from a previous day) …")
+        mis_df, mis_status = load_cached_mis()
+        print(f"  → {mis_status}")
 
 
 # ── Helpers (mirrors email_job.py's loader, with GODREJ SO NO retained) ───────
@@ -196,8 +273,6 @@ if pending.empty:
     print("[MIS Commitment Reminder] No pending orders found. Nothing to check.")
     sys.exit(0)
 
-mis_df, mis_status = load_cached_mis()
-print(f"  → {mis_status}")
 if mis_df.empty:
     print("[MIS Commitment Reminder] MIS_Daily is empty — cannot determine commitment. Exiting.")
     sys.exit(0)
