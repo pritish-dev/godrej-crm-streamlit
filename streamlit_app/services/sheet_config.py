@@ -59,6 +59,14 @@ _OPS_SHEETS: frozenset[str] = frozenset({
     "OLD_SHEET_DETAILS",
     "Stock",
     "comitted Delivery reminder email",
+    # Price-list ingestion output (Godrej Price-List PDF → sheets)
+    "Price_List",
+    "Price_List_Mattress",
+    "Price_List_Meta",
+    # Delivery-readiness automation log/cache
+    "Pending Delivery Updates",
+    # Customer-intelligence contact export
+    "CUSTOMER CONTACT LISTS",
 })
 
 # Sheet name prefixes that always belong to the OPS spreadsheet
@@ -67,6 +75,7 @@ _OPS_PREFIXES: tuple[str, ...] = (
     "34s Stock Register",
     "ARCHIVED 34S Stock",
     "Incentive_",  # Incentive_Users / Incentive_Quarterly_Targets / Incentive_Audit_Log
+    "MONTHEND SALES FORECAST- ",  # monthend forecast state persistence
 )
 
 

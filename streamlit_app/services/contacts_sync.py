@@ -171,7 +171,7 @@ def sync_contacts_to_4s_sheet() -> dict:
     # ── Append new contacts to Google Sheet (single batched write) ───────────
     # append_rows() sends all rows in ONE API request, avoiding the 429 quota
     # error that occurs when looping append_row() once per contact.
-    sh = _get_sh(CONTACTS_SHEET)
+    sh = _get_sh(CONTACTS_SHEET)  # routes "4sContacts" to the OPS spreadsheet
     try:
         ws = sh.worksheet(CONTACTS_SHEET)
     except Exception:
