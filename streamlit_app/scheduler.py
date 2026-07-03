@@ -207,6 +207,19 @@ def job_mis_daily_import():
         print(f"  ❌ MIS Daily Import failed: {e}")
 
 
+# ─── Discontinued Products import (11 AM) ────────────────────────────────────
+
+def job_discontinued_products_import():
+    """11:00 AM — Fetch today's Discontinuation Circular and update the sheet."""
+    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M')}] 🚫 Running Discontinued Products Import")
+    try:
+        from services.discontinued_email_import import fetch_and_save_discontinued
+        df, status = fetch_and_save_discontinued(today_only=True)
+        print(f"  → {status}")
+    except Exception as e:
+        print(f"  ❌ Discontinued Products Import failed: {e}")
+
+
 # ─── Schedule ────────────────────────────────────────────────────────────────
 
 schedule.every().day.at("10:00").do(job_email1)             # Email 1 — Morning
@@ -216,6 +229,9 @@ schedule.every().day.at("11:00").do(job_email2)             # Email 2 — once d
 # triggers within the same day are idempotent.
 schedule.every().day.at("11:00").do(job_mis_daily_import)
 schedule.every().day.at("11:15").do(job_mis_daily_import)
+# Discontinued Products import: 11:00 AM primary + 11:15 drift backup (idempotent)
+schedule.every().day.at("11:00").do(job_discontinued_products_import)
+schedule.every().day.at("11:15").do(job_discontinued_products_import)
 schedule.every().day.at("17:00").do(job_email1)             # Email 1 — Evening
 schedule.every().day.at("20:00").do(job_stock_34s_update)   # 34S Stock Update — 8 PM
 schedule.every().day.at("20:00").do(job_invoice_email_import)  # Invoice Import — 8 PM
@@ -233,6 +249,8 @@ print("  10:00 AM (local) → Email 1: Pending Delivery Report")
 print("  11:00 AM (local) → Email 2: Update Delivery Status Reminder")
 print("  11:00 AM (local) → MIS Daily Import (primary)")
 print("  11:15 AM (local) → MIS Daily Import (drift backup)")
+print("  11:00 AM (local) → Discontinued Products Import (primary)")
+print("  11:15 AM (local) → Discontinued Products Import (drift backup)")
 print("   5:00 PM (local) → Email 1: Pending Delivery Report (Evening)")
 print("   8:00 PM (local) → 34S Stock Update")
 print("   8:00 PM (local) → Invoice Email Import (primary)")

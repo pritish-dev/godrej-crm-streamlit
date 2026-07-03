@@ -11,6 +11,10 @@ st.set_page_config(page_title="Product Catalog", layout="wide")
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 import sys, os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from services.sheet_config import OPS_SPREADSHEET_ID as SPREADSHEET_ID
+from services.discontinued_email_import import (
+    fetch_and_save_discontinued,
+    DISCONTINUED_SUBJECT,
+)
 CATALOG_SHEET_NAME = "Product Catalog"
 DISCONTINUED_SHEET_NAME = "Discontinued Products"
 ITEMS_PER_PAGE = 10
@@ -46,11 +50,25 @@ def load_all_data():
     except Exception:
         df_disc = pd.DataFrame()
         
-    # Build a fast lookup dictionary for discontinued items
+    # Build a fast lookup dictionary for discontinued items.
+    # Supports both the legacy schema (Product Name / Discontinued Date) and the
+    # new automated import schema (Item Description / DATE OF DISCONTINUATION).
     disc_dict = {}
-    if not df_disc.empty and "Product Name" in df_disc.columns:
-        for _, row in df_disc.iterrows():
-            disc_dict[str(row["Product Name"]).strip().lower()] = str(row.get("Discontinued Date", "Unknown Date"))
+    if not df_disc.empty:
+        name_col = next(
+            (c for c in ("Product Name", "Item Description") if c in df_disc.columns),
+            None,
+        )
+        date_col = next(
+            (c for c in ("Discontinued Date", "DATE OF DISCONTINUATION") if c in df_disc.columns),
+            None,
+        )
+        if name_col:
+            for _, row in df_disc.iterrows():
+                key = str(row[name_col]).strip().lower()
+                if not key:
+                    continue
+                disc_dict[key] = str(row.get(date_col, "Unknown Date")) if date_col else "Unknown Date"
 
     return df_catalog, disc_dict
 
@@ -58,6 +76,30 @@ def load_all_data():
 # MAIN APP
 # ==============================
 st.title("🛋️ Godrej Interio Catalog")
+
+# --- DISCONTINUED PRODUCTS: manual email check ---
+# The 'Discontinued Products' sheet is refreshed automatically every day at
+# 11 AM IST from the "Product Discontinuation Circular" email. This button lets
+# staff pull the latest circular on demand (looks back over the last 30 days).
+_dcol1, _dcol2 = st.columns([2, 6])
+with _dcol1:
+    check_disc = st.button(
+        "🔄 check for Discontinued Products",
+        use_container_width=True,
+        help=f'Reads the latest "{DISCONTINUED_SUBJECT}" email and updates the '
+             f'Discontinued Products sheet.',
+    )
+if check_disc:
+    with st.spinner("Checking Gmail for the latest Product Discontinuation Circular…"):
+        try:
+            _df, _status = fetch_and_save_discontinued(today_only=False)
+        except Exception as e:
+            _df, _status = None, f"❌ Check failed: {e}"
+    if _df is not None and not _df.empty:
+        load_all_data.clear()   # bust the 5-min cache so the update shows immediately
+        st.success(_status)
+    else:
+        st.warning(_status)
 
 df_catalog, disc_dict = load_all_data()
 

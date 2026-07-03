@@ -1,0 +1,62 @@
+name: Discontinued Products Import (Daily, 11 AM IST)
+
+# Once a day, checks Gmail for a "Product Discontinuation Circular" email that
+# arrived today, reads the 'Consolidated' sheet tab of its Excel attachment, and
+# writes the cleaned product list to the 'Discontinued Products' Google Sheet.
+#
+# IST = UTC + 5:30  →  11:00 IST = 05:30 UTC
+#
+# GitHub Actions free-tier crons are best-effort (can be delayed 5–30 min), so
+# we fire twice around the 11 AM window. The job overwrites the sheet, so a
+# duplicate trigger on the same day is idempotent. On days with no circular the
+# job simply writes nothing and exits 0.
+
+on:
+  schedule:
+    - cron: '30 5 * * *'      # 05:30 UTC = 11:00 IST (primary)
+    - cron: '45 5 * * *'      # 05:45 UTC = 11:15 IST (drift backup)
+
+  # Manual trigger from the Actions UI for backfill / debugging
+  workflow_dispatch:
+
+concurrency:
+  group: discontinued-products-import
+  cancel-in-progress: false
+
+jobs:
+  discontinued-products-import:
+    name: Fetch Discontinuation Circular — import to Discontinued Products sheet
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f streamlit_app/requirements.txt ]; then
+            pip install -r streamlit_app/requirements.txt
+          else
+            pip install -r requirements.txt
+          fi
+
+      - name: Run Discontinued Products Import
+        env:
+          # Gmail IMAP — same credentials used by the other email-import jobs
+          EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
+
+          # Service-account JSON + OPS spreadsheet id for writing the sheet
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          OPS_SPREADSHEET_ID: ${{ secrets.OPS_SPREADSHEET_ID }}
+        run: |
+          cd streamlit_app
+          python discontinued_products_import_job.py
