@@ -67,6 +67,10 @@ _OPS_SHEETS: frozenset[str] = frozenset({
     "Pending Delivery Updates",
     # Customer-intelligence contact export
     "CUSTOMER CONTACT LISTS",
+    # 4S Godown undelivered items automation (item list + edit state + recipients)
+    "4s Godown Undelivered Items",
+    "Godown Undelivered State",
+    "Godown Undelivered reminder email",
 })
 
 # Sheet name prefixes that always belong to the OPS spreadsheet
