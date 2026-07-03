@@ -36,7 +36,7 @@ from services.godown_undelivered import (
     DISPLAY_COLS, SALES_PERSON_COL, DELIVERY_STATUS_COL,
     REMARKS_COL, FINAL_DATE_COL,
     REMINDER_WINDOW_DAYS, RECIPIENTS_SHEET,
-    parse_date, compute_stats, due_within_window,
+    parse_date, due_within_window,
 )
 
 SUBJECT = "4S Godown Undelivered Items Reminder"
@@ -233,24 +233,28 @@ def _sales_person_table_html(sp: str, sub: pd.DataFrame, today) -> str:
 # MAIN ENTRY-POINT
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def send_godown_undelivered_reminder_email(full_df: pd.DataFrame) -> dict:
+def send_godown_undelivered_reminder_email(pending_df: pd.DataFrame,
+                                           delivered_count: int = 0) -> dict:
     """
-    `full_df` is the fully enriched godown table (DISPLAY_COLS). Sends ONE email
-    listing every undelivered item due within 7 days (overdue included, in red),
-    grouped by Sales Person. Returns a status dict; when there is nothing due,
+    `pending_df` is the enriched PENDING godown table (delivered items already
+    moved out to the '4S Godown items Delivered' sheet). Sends ONE email listing
+    every pending item due within 7 days (overdue included, in red), grouped by
+    Sales Person. `delivered_count` is shown as "Delivered From This Queue".
+
+    Returns a status dict; when there is nothing due,
     {"sent": False, "error": "no_records"} and no email is sent.
     """
     today = datetime.now(IST).date()
 
-    if full_df is None or full_df.empty:
+    if pending_df is None or pending_df.empty:
         return {"sent": False, "error": "no_records", "records": 0}
 
-    df = full_df.copy()
+    df = pending_df.copy()
     for c in DISPLAY_COLS:
         if c not in df.columns:
             df[c] = ""
 
-    stats = compute_stats(df)
+    to_deliver = len(df)
     due = due_within_window(df, days=REMINDER_WINDOW_DAYS, as_of=today)
 
     if due.empty:
@@ -273,9 +277,9 @@ def send_godown_undelivered_reminder_email(full_df: pd.DataFrame) -> dict:
         f"<div style='color:#555;font-size:13px'>Due Within {REMINDER_WINDOW_DAYS} Days</div></div>"
         f"<div style='min-width:150px'><div style='font-size:28px;font-weight:bold;color:#c62828'>{overdue_count}</div>"
         f"<div style='color:#555;font-size:13px'>Overdue (Past Final Date)</div></div>"
-        f"<div style='min-width:150px'><div style='font-size:28px;font-weight:bold;color:#ef6c00'>{stats['to_deliver']}</div>"
+        f"<div style='min-width:150px'><div style='font-size:28px;font-weight:bold;color:#ef6c00'>{to_deliver}</div>"
         f"<div style='color:#555;font-size:13px'>Total Items Still To Deliver</div></div>"
-        f"<div style='min-width:150px'><div style='font-size:28px;font-weight:bold;color:#2e7d32'>{stats['delivered']}</div>"
+        f"<div style='min-width:150px'><div style='font-size:28px;font-weight:bold;color:#2e7d32'>{delivered_count}</div>"
         f"<div style='color:#555;font-size:13px'>Delivered From This Queue</div></div>"
     )
 

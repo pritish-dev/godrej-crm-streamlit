@@ -26,10 +26,10 @@ import streamlit as st
 
 from services.sheets import get_df
 from services.godown_undelivered import (
-    GODOWN_SHEET, DISPLAY_COLS, BASE_COLS,
+    GODOWN_SHEET, DELIVERED_SHEET, DISPLAY_COLS, DELIVERED_COLS,
     SALES_PERSON_COL, DELIVERY_STATUS_COL, REMARKS_COL, FINAL_DATE_COL,
-    REMINDER_WINDOW_DAYS,
-    refresh, save_edits, compute_stats, sort_by_final_date, parse_date, is_delivered,
+    DELIVERED_DATE_COL, REMINDER_WINDOW_DAYS,
+    refresh, save_edits, sort_by_final_date, parse_date,
 )
 from services.email_sender_godown_undelivered import (
     send_godown_undelivered_reminder_email,
@@ -47,21 +47,26 @@ st.caption(
 # ─── Session state ────────────────────────────────────────────────────────────
 if "godown_df" not in st.session_state:
     st.session_state.godown_df = pd.DataFrame()
+if "godown_delivered_df" not in st.session_state:
+    st.session_state.godown_delivered_df = pd.DataFrame()
+if "godown_stats" not in st.session_state:
+    st.session_state.godown_stats = {"total": 0, "to_deliver": 0, "delivered": 0}
 if "godown_loaded" not in st.session_state:
     st.session_state.godown_loaded = False
 
 
 def _load(force_refresh: bool = False):
+    # refresh() enriches from CRM, moves Delivered items to the delivered sheet,
+    # writes both sheets back, and returns (pending, delivered, stats).
     if force_refresh:
         try:
             get_df.clear()
         except Exception:
             pass
-        df, _ = refresh()
-    else:
-        # Enrich (which also writes back) so the page always shows fresh CRM state.
-        df, _ = refresh()
-    st.session_state.godown_df = df
+    pending, delivered, stats = refresh()
+    st.session_state.godown_df = pending
+    st.session_state.godown_delivered_df = delivered
+    st.session_state.godown_stats = stats
     st.session_state.godown_loaded = True
 
 
@@ -99,26 +104,34 @@ if not st.session_state.godown_loaded:
         _load()
 
 df: pd.DataFrame = st.session_state.godown_df
+delivered_df: pd.DataFrame = st.session_state.godown_delivered_df
+stats: dict = st.session_state.godown_stats
 
 if send_now:
     with st.spinner("Sending reminder email …"):
-        res = send_godown_undelivered_reminder_email(df)
+        res = send_godown_undelivered_reminder_email(df, delivered_count=stats.get("delivered", 0))
     if res.get("sent"):
         st.success(
             f"✅ Reminder email sent — {res.get('records', 0)} item(s) due within "
             f"{REMINDER_WINDOW_DAYS} days. To: {', '.join(res.get('recipients', []))}"
         )
     elif res.get("error") == "no_records":
-        st.info("No items are due within the next 7 days — nothing to send.")
+        st.info("No pending items are due within the next 7 days — nothing to send.")
     else:
         st.error(f"❌ Could not send reminder: {res.get('error')}")
 
+# ─── Counters (across pending + delivered) ────────────────────────────────────
+st.markdown("---")
+m1, m2, m3 = st.columns(3)
+m1.metric("📦 Total Item Count", stats.get("total", 0))
+m2.metric("🚚 No. of Items to be Delivered", stats.get("to_deliver", 0))
+m3.metric("✅ No. of Items Delivered", stats.get("delivered", 0))
+
 if df is None or df.empty:
-    st.warning(
-        f"No rows found in the '{GODOWN_SHEET}' sheet yet. Once items are added "
-        "there, click **Refresh from CRM**."
+    st.info(
+        f"No **pending** items in the '{GODOWN_SHEET}' sheet. Delivered items (if any) "
+        "are listed in the Delivered table below."
     )
-    st.stop()
 
 # Make sure every expected column exists.
 for c in DISPLAY_COLS:
@@ -126,34 +139,20 @@ for c in DISPLAY_COLS:
         df[c] = ""
 df = sort_by_final_date(df[DISPLAY_COLS].copy())
 
-# ─── Counters ─────────────────────────────────────────────────────────────────
-stats = compute_stats(df)
-st.markdown("---")
-m1, m2, m3 = st.columns(3)
-m1.metric("📦 Total Item Count", stats["total"])
-m2.metric("🚚 No. of Items to be Delivered", stats["to_deliver"])
-m3.metric("✅ No. of Items Delivered", stats["delivered"])
-
 # ─── Filters ──────────────────────────────────────────────────────────────────
 st.markdown("---")
-f1, f2, f3 = st.columns([2, 2, 2])
+f1, f2 = st.columns([2, 4])
 with f1:
     sp_options = ["All"] + sorted(
         [s for s in df[SALES_PERSON_COL].astype(str).str.strip().unique() if s]
     )
     sel_sp = st.selectbox("Filter by Sales Person", sp_options)
 with f2:
-    sel_status = st.selectbox("Filter by Delivery Status", ["All", "Pending", "Delivered"])
-with f3:
     search = st.text_input("Search (any column)", placeholder="SO No., customer, item …")
 
 view = df.copy()
 if sel_sp != "All":
     view = view[view[SALES_PERSON_COL].astype(str).str.strip() == sel_sp]
-if sel_status == "Delivered":
-    view = view[view[DELIVERY_STATUS_COL].apply(is_delivered)]
-elif sel_status == "Pending":
-    view = view[~view[DELIVERY_STATUS_COL].apply(is_delivered)]
 if search:
     mask = view.apply(
         lambda col: col.astype(str).str.contains(search, case=False, na=False)
@@ -241,11 +240,56 @@ if save:
     st.success(f"✅ Saved {n} row(s). Table re-sorted by nearest Final Delivery Date.")
     st.rerun()
 
-# ─── Download ─────────────────────────────────────────────────────────────────
+# ─── Download (pending) ───────────────────────────────────────────────────────
 st.markdown("---")
 st.download_button(
-    "⬇️ Download as CSV",
+    "⬇️ Download Pending Items as CSV",
     data=df.to_csv(index=False).encode("utf-8"),
     file_name="Godown_Undelivered_Items.csv",
     mime="text/csv",
 )
+
+# ─── Delivered items (read-only, auto-moved here once delivered) ───────────────
+st.markdown("---")
+st.markdown(f"## ✅ {DELIVERED_SHEET}")
+st.caption(
+    "Items are moved here automatically the moment their CRM Delivery Status reads "
+    "Delivered / Already Delivered. They no longer appear above and are excluded from "
+    "the daily reminder email. **Delivered Date** is when delivery was first detected."
+)
+
+if delivered_df is None or delivered_df.empty:
+    st.info("No delivered items yet.")
+else:
+    del_view = delivered_df.copy()
+    for c in DELIVERED_COLS:
+        if c not in del_view.columns:
+            del_view[c] = ""
+    del_view = del_view[DELIVERED_COLS].reset_index(drop=True)
+    del_view.index = range(1, len(del_view) + 1)
+    st.markdown(f"**{len(del_view)} delivered item(s)** — newest delivered on top")
+    st.dataframe(
+        del_view,
+        use_container_width=True,
+        height=400,
+        column_config={
+            "Sales Order No.":           st.column_config.TextColumn("SO No.", width="small"),
+            "Item Code":                 st.column_config.TextColumn("Item Code", width="small"),
+            "Item Description":          st.column_config.TextColumn("Item Description", width="medium"),
+            "Sales Order Qty":           st.column_config.TextColumn("SO Qty", width="small"),
+            "Total Net Basic":           st.column_config.TextColumn("Total Net Basic", width="small"),
+            "Sales Order Committed Qty": st.column_config.TextColumn("Committed Qty", width="small"),
+            "Customer Name":             st.column_config.TextColumn("Customer Name", width="small"),
+            "Contact Number":            st.column_config.TextColumn("Contact No", width="small"),
+            SALES_PERSON_COL:            st.column_config.TextColumn("Sales Person", width="small"),
+            REMARKS_COL:                 st.column_config.TextColumn("Remarks", width="large"),
+            FINAL_DATE_COL:              st.column_config.TextColumn("Final Delivery Date", width="small"),
+            DELIVERED_DATE_COL:          st.column_config.TextColumn("Delivered Date", width="small"),
+        },
+    )
+    st.download_button(
+        "⬇️ Download Delivered Items as CSV",
+        data=delivered_df.to_csv(index=False).encode("utf-8"),
+        file_name="Godown_Delivered_Items.csv",
+        mime="text/csv",
+    )

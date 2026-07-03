@@ -34,8 +34,9 @@ import pandas as pd
 from services.sheets import get_df, write_df
 
 # ── Sheet names (all live in the OPS spreadsheet) ────────────────────────────
-GODOWN_SHEET = "4s Godown Undelivered Items"
-STATE_SHEET  = "Godown Undelivered State"
+GODOWN_SHEET    = "4s Godown Undelivered Items"
+DELIVERED_SHEET = "4S Godown items Delivered"
+STATE_SHEET     = "Godown Undelivered State"
 RECIPIENTS_SHEET = "Godown Undelivered reminder email"
 
 # ── Column names ─────────────────────────────────────────────────────────────
@@ -47,9 +48,16 @@ SALES_PERSON_COL    = "Sales Person"
 DELIVERY_STATUS_COL = "Delivery Status"
 REMARKS_COL         = "Remarks"
 FINAL_DATE_COL      = "Final Delivery Date"
+DELIVERED_DATE_COL  = "Delivered Date"
 
 DISPLAY_COLS = BASE_COLS + [
     SALES_PERSON_COL, DELIVERY_STATUS_COL, REMARKS_COL, FINAL_DATE_COL,
+]
+
+# Columns of the separate "4S Godown items Delivered" sheet (no live Delivery
+# Status — every row is delivered — but with the date delivery was detected).
+DELIVERED_COLS = BASE_COLS + [
+    SALES_PERSON_COL, REMARKS_COL, FINAL_DATE_COL, DELIVERED_DATE_COL,
 ]
 
 STATE_HEADERS = [
@@ -390,19 +398,110 @@ def due_within_window(df: pd.DataFrame, days: int = REMINDER_WINDOW_DAYS,
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Public entry point — refresh the godown sheet in place
+# Delivered sheet ("4S Godown items Delivered")
 # ═════════════════════════════════════════════════════════════════════════════
 
-def refresh() -> tuple[pd.DataFrame, dict]:
+def load_delivered() -> pd.DataFrame:
+    """Load the accumulated '4S Godown items Delivered' sheet."""
+    try:
+        df = get_df(DELIVERED_SHEET)
+    except Exception:
+        df = None
+    if df is None or df.empty:
+        return pd.DataFrame(columns=DELIVERED_COLS)
+    df = df.copy()
+    df.columns = [str(c).strip() for c in df.columns]
+    for c in DELIVERED_COLS:
+        if c not in df.columns:
+            df[c] = ""
+    return df[DELIVERED_COLS]
+
+
+def _sort_delivered(df: pd.DataFrame) -> pd.DataFrame:
+    """Newest Delivered Date on top; blanks last."""
+    if df is None or df.empty:
+        return df
+    df = df.copy()
+    parsed = df[DELIVERED_DATE_COL].apply(parse_date)
+    df["_sortkey"] = [pd.Timestamp(d) if d else pd.Timestamp.min for d in parsed]
+    df = df.sort_values("_sortkey", ascending=False, kind="stable").drop(columns=["_sortkey"])
+    return df.reset_index(drop=True)
+
+
+def _merge_delivered(newly_delivered: pd.DataFrame) -> pd.DataFrame:
+    """
+    Append newly-delivered items (from the enriched godown table) to the
+    accumulated delivered sheet, keyed by Sales Order No. + Item Code. Items
+    already recorded keep their original Delivered Date; brand-new ones are
+    stamped with today's date (IST) — the date delivery was first detected.
+    """
+    existing = load_delivered()
+    existing_keys = {
+        _row_key(r.get("Sales Order No.", ""), r.get("Item Code", ""))
+        for _, r in existing.iterrows()
+    } if not existing.empty else set()
+
+    today_str = datetime.now(IST).strftime("%d-%m-%Y")
+    to_add = []
+    for _, r in newly_delivered.iterrows():
+        key = _row_key(r.get("Sales Order No.", ""), r.get("Item Code", ""))
+        if key in existing_keys:
+            continue
+        row = {c: _norm(r.get(c, "")) for c in DELIVERED_COLS if c != DELIVERED_DATE_COL}
+        row[DELIVERED_DATE_COL] = today_str
+        to_add.append(row)
+        existing_keys.add(key)
+
+    if to_add:
+        add_df = pd.DataFrame(to_add, columns=DELIVERED_COLS)
+        merged = add_df if existing.empty else pd.concat([existing, add_df], ignore_index=True)
+    else:
+        merged = existing
+    return _sort_delivered(merged)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Public entry point — refresh both sheets in place
+# ═════════════════════════════════════════════════════════════════════════════
+
+def refresh() -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     """
     Read the godown sheet, enrich it (Sales Person + Delivery Status from CRM,
-    Remarks + Final Delivery Date from state), sort it, write it back to the
-    '4s Godown Undelivered Items' sheet, and return (enriched_df, stats).
+    Remarks + Final Delivery Date from state), then split it:
+
+      • Delivered items are moved into the '4S Godown items Delivered' sheet
+        (accumulated, stamped with a Delivered Date) and removed from the
+        pending sheet.
+      • The remaining Pending items are written back to
+        '4s Godown Undelivered Items', sorted by nearest Final Delivery Date.
+
+    Returns (pending_df, delivered_df, stats) where stats counts across both
+    sheets: {"total", "to_deliver", "delivered"}.
     """
     raw = load_godown_raw()
     enriched = enrich(raw)
-    try:
-        write_df(GODOWN_SHEET, enriched)
-    except Exception as exc:
-        print(f"[Godown Undelivered] Warning — could not write back sheet: {exc}")
-    return enriched, compute_stats(enriched)
+
+    if enriched.empty:
+        pending  = pd.DataFrame(columns=DISPLAY_COLS)
+        delivered = load_delivered()
+    else:
+        delivered_mask   = enriched[DELIVERY_STATUS_COL].apply(is_delivered)
+        newly_delivered  = enriched[delivered_mask].copy()
+        pending          = sort_by_final_date(enriched[~delivered_mask].copy())
+        delivered        = _merge_delivered(newly_delivered)
+
+        try:
+            write_df(DELIVERED_SHEET, delivered)
+        except Exception as exc:
+            print(f"[Godown Undelivered] Warning — could not write delivered sheet: {exc}")
+        try:
+            write_df(GODOWN_SHEET, pending)
+        except Exception as exc:
+            print(f"[Godown Undelivered] Warning — could not write pending sheet: {exc}")
+
+    stats = {
+        "total":      len(pending) + len(delivered),
+        "to_deliver": len(pending),
+        "delivered":  len(delivered),
+    }
+    return pending, delivered, stats

@@ -41,18 +41,18 @@ if was_email_sent_today(JOB_NAME):
     print(f"  → Already sent '{JOB_NAME}' today. Skipping duplicate trigger.")
     sys.exit(0)
 
-# ── Refresh the godown sheet (enrich Sales Person + Delivery Status) ──────────
-print("  → Refreshing '4s Godown Undelivered Items' sheet from CRM …")
-enriched, stats = refresh()
-print(f"  → {stats['total']} item(s): {stats['to_deliver']} to deliver, "
+# ── Refresh both sheets (move Delivered items out; enrich Pending) ────────────
+print("  → Refreshing godown sheets from CRM (moving Delivered items out) …")
+pending, delivered, stats = refresh()
+print(f"  → {stats['total']} item(s): {stats['to_deliver']} pending, "
       f"{stats['delivered']} delivered.")
 
-if enriched.empty:
-    print("[Godown Undelivered Reminder] No items found. Nothing to remind about.")
+if pending.empty:
+    print("[Godown Undelivered Reminder] No pending items. Nothing to remind about.")
     sys.exit(0)
 
-# ── Send the reminder ─────────────────────────────────────────────────────────
-result = send_godown_undelivered_reminder_email(enriched)
+# ── Send the reminder (Pending items only) ────────────────────────────────────
+result = send_godown_undelivered_reminder_email(pending, delivered_count=stats["delivered"])
 if not result.get("sent"):
     print(f"[Godown Undelivered Reminder] Email not sent: {result.get('error')}")
 else:
