@@ -282,8 +282,6 @@ else:
             "Customer Name":             st.column_config.TextColumn("Customer Name", width="small"),
             "Contact Number":            st.column_config.TextColumn("Contact No", width="small"),
             SALES_PERSON_COL:            st.column_config.TextColumn("Sales Person", width="small"),
-            REMARKS_COL:                 st.column_config.TextColumn("Remarks", width="large"),
-            FINAL_DATE_COL:              st.column_config.TextColumn("Final Delivery Date", width="small"),
             DELIVERED_DATE_COL:          st.column_config.TextColumn("Delivered Date", width="small"),
         },
     )

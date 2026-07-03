@@ -54,10 +54,12 @@ DISPLAY_COLS = BASE_COLS + [
     SALES_PERSON_COL, DELIVERY_STATUS_COL, REMARKS_COL, FINAL_DATE_COL,
 ]
 
-# Columns of the separate "4S Godown items Delivered" sheet (no live Delivery
-# Status — every row is delivered — but with the date delivery was detected).
+# Columns of the separate "4S Godown items Delivered" sheet. No Delivery Status
+# (every row is delivered), and no Remarks / Final Delivery Date (only relevant
+# while an item is still pending) — just the item details plus the date delivery
+# was detected.
 DELIVERED_COLS = BASE_COLS + [
-    SALES_PERSON_COL, REMARKS_COL, FINAL_DATE_COL, DELIVERED_DATE_COL,
+    SALES_PERSON_COL, DELIVERED_DATE_COL,
 ]
 
 STATE_HEADERS = [
