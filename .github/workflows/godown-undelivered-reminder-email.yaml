@@ -54,6 +54,7 @@ jobs:
           EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_RECIPIENTS:   ${{ secrets.EMAIL_RECIPIENTS }}
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          OPS_SPREADSHEET_ID: ${{ secrets.OPS_SPREADSHEET_ID }}
         run: |
           cd streamlit_app
           python godown_undelivered_reminder_job.py

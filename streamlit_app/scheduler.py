@@ -157,19 +157,6 @@ def job_email2():
         print(f"  ❌ Email 2 failed: {e}")
 
 
-# ─── 34S Stock update (8 PM) ─────────────────────────────────────────────────
-
-def job_stock_34s_update():
-    """8:00 PM — Fetch Inward/Outward and update 34S Stock Register."""
-    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M')}] 📦 Running 34S Stock Update")
-    try:
-        from services.stock_34s_service import run_daily_update
-        df, status = run_daily_update()
-        print(f"  → {status}")
-    except Exception as e:
-        print(f"  ❌ 34S Stock Update failed: {e}")
-
-
 # ─── Invoice email import (8 PM) ─────────────────────────────────────────────
 
 def job_invoice_email_import():
@@ -233,7 +220,6 @@ schedule.every().day.at("11:15").do(job_mis_daily_import)
 schedule.every().day.at("11:00").do(job_discontinued_products_import)
 schedule.every().day.at("11:15").do(job_discontinued_products_import)
 schedule.every().day.at("17:00").do(job_email1)             # Email 1 — Evening
-schedule.every().day.at("20:00").do(job_stock_34s_update)   # 34S Stock Update — 8 PM
 schedule.every().day.at("20:00").do(job_invoice_email_import)  # Invoice Import — 8 PM
 schedule.every().day.at("20:15").do(job_invoice_email_import)  # Invoice Import — drift backup
 schedule.every().day.at("21:00").do(job_crm_backup)            # CRM Backup — 9 PM
@@ -252,7 +238,6 @@ print("  11:15 AM (local) → MIS Daily Import (drift backup)")
 print("  11:00 AM (local) → Discontinued Products Import (primary)")
 print("  11:15 AM (local) → Discontinued Products Import (drift backup)")
 print("   5:00 PM (local) → Email 1: Pending Delivery Report (Evening)")
-print("   8:00 PM (local) → 34S Stock Update")
 print("   8:00 PM (local) → Invoice Email Import (primary)")
 print("   8:15 PM (local) → Invoice Email Import (drift backup)")
 print("   9:00 PM (local) → CRM Daily Backup to Google Drive")
