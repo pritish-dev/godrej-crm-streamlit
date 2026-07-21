@@ -64,6 +64,9 @@ jobs:
 
           # Service-account JSON for writing the MIS_Daily sheet
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          # OPS spreadsheet id — without this MIS_Daily + Stock fall back to
+          # the CRM spreadsheet instead of being written to the OPS sheet.
+          OPS_SPREADSHEET_ID: ${{ secrets.OPS_SPREADSHEET_ID }}
         run: |
           cd streamlit_app
           python mis_daily_import_job.py

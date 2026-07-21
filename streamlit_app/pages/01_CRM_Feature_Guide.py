@@ -251,25 +251,43 @@ MODULES = [
         "gradient": "linear-gradient(135deg, #1a1a2e, #16213e)",
         "tags": ["daily", "sales"],
         "tagline": "Your complete view of every sale, delivery, and payment — all in one place.",
-        "what_it_does": "This is your main dashboard. It shows every order taken at the showroom — from the moment a customer places an order to delivery and final payment. You can see exactly what is pending, what is paid, and what needs follow-up.",
+        "what_it_does": "This is your main dashboard. It shows every order taken at the showroom — from the moment a customer places an order to delivery and final payment. Pending deliveries are split into Upcoming and Overdue, each with an editable grid where you can update delivery dates, send a delivery-schedule email (with the invoice pulled automatically from Drive), and fire WhatsApp alerts. You can see exactly what is pending, what is paid, and what needs follow-up.",
         "features": [
             {
                 "icon": "📋",
                 "name": "Live Order Table",
-                "desc": "See all current orders with customer name, product, quantity, value, and sales executive — updated in real time.",
+                "desc": "See all current orders with customer name, product, quantity, value, and sales executive — updated in real time, grouped by order number.",
                 "benefit": "Never miss an order",
             },
             {
-                "icon": "🚚",
-                "name": "Pending Delivery Tracker",
-                "desc": "Quickly see which customer orders are still waiting for delivery. Green highlights mean the item is ready to deliver now.",
+                "icon": "🚦",
+                "name": "Pending & Overdue Deliveries",
+                "desc": "Pending deliveries are split into Upcoming and Overdue tables with traffic-light colouring. Green rows are ready to deliver (Godrej-committed); overdue rows show in red.",
                 "benefit": "Faster delivery coordination",
             },
             {
+                "icon": "📧",
+                "name": "Schedule Delivery Email",
+                "desc": "Compose and preview a delivery-schedule email per order, with the sale invoice fetched automatically from Google Drive. Send it or save it as a Gmail draft.",
+                "benefit": "Professional delivery comms in seconds",
+            },
+            {
+                "icon": "⏰",
+                "name": "Committed Delivery Reminder",
+                "desc": "Trigger the Committed Delivery Reminder email on demand for Franchise orders. Orders past their MIS commitment date + 15-day SLA are highlighted as breaches.",
+                "benefit": "Hold delivery timelines accountable",
+            },
+            {
                 "icon": "💰",
-                "name": "Payment Due Summary",
-                "desc": "See how much payment is pending from each customer. One glance tells you who still owes money.",
+                "name": "Payment Due + Reminders",
+                "desc": "See pending payment per customer and send Tomorrow's Payment Due, All Payment Due, or Payment Update Reminder emails — plus one-click WhatsApp payment alerts.",
                 "benefit": "Better cash flow tracking",
+            },
+            {
+                "icon": "📱",
+                "name": "WhatsApp Alerts",
+                "desc": "Generate ready-to-send WhatsApp alerts for delivery, overdue, and payment follow-ups directly from the dashboard tables.",
+                "benefit": "Instant customer follow-up",
             },
             {
                 "icon": "📊",
@@ -284,9 +302,9 @@ MODULES = [
                 "benefit": "Stay on top of priorities",
             },
             {
-                "icon": "📧",
-                "name": "Delivery Readiness Updates",
-                "desc": "Automatically checks which items are committed and ready in the warehouse, so you know when to schedule customer delivery.",
+                "icon": "🟢",
+                "name": "Delivery Readiness (MIS-linked)",
+                "desc": "Cross-checks each pending order against the day's MIS commitment data, so you know which items Godrej has committed and are ready to schedule.",
                 "benefit": "No more guessing delivery dates",
             },
         ],
@@ -591,6 +609,45 @@ MODULES = [
             },
         ],
     },
+    # ── GODOWN UNDELIVERED ITEMS ──────────────────────────────────────────────
+    {
+        "id": "godown_undelivered",
+        "emoji": "📦",
+        "title": "4S Godown Undelivered Items",
+        "route": "pages/25_Godown_Undelivered_Items.py",
+        "category": "Operations",
+        "section": "Sales Handbook",
+        "gradient": "linear-gradient(135deg, #654ea3, #eaafc8)",
+        "tags": ["daily", "sales"],
+        "tagline": "Track items lying undelivered in the 4S godown and commit a final delivery date.",
+        "what_it_does": "This page lists every item that has reached the 4S godown but has not yet been delivered to the customer. Each row is enriched with the sales person and delivery status from the CRM, and the salesperson records why it is pending plus the final delivery date the customer has agreed to. Rows are sorted so the nearest due date is on top.",
+        "features": [
+            {
+                "icon": "📋",
+                "name": "Live Undelivered List",
+                "desc": "Reads the 4S godown sheet and shows each undelivered item with its sales person and current delivery status, refreshed from the CRM.",
+                "benefit": "One clear list of what's stuck",
+            },
+            {
+                "icon": "📝",
+                "name": "Remarks & Final Delivery Date",
+                "desc": "Record why each item is pending and set the date the customer has agreed to take delivery — saved back to the OPS sheet.",
+                "benefit": "Clear ownership and commitments",
+            },
+            {
+                "icon": "⏰",
+                "name": "Daily 10 AM Reminder Email",
+                "desc": "An automated email every morning lists every item whose final delivery date falls within 7 days, with overdue items in red. A button also triggers it on demand.",
+                "benefit": "Nothing sits in the godown forgotten",
+            },
+            {
+                "icon": "✅",
+                "name": "Delivered Move-Out",
+                "desc": "Once an item is delivered it moves to a separate 'Delivered' sheet and drops off the reminder list automatically.",
+                "benefit": "The active list stays clean",
+            },
+        ],
+    },
     # ── MIS UPDATE ────────────────────────────────────────────────────────────
     {
         "id": "mis_update",
@@ -618,8 +675,8 @@ MODULES = [
             },
             {
                 "icon": "🔄",
-                "name": "Auto-Refresh at 11 AM",
-                "desc": "MIS data is automatically pulled from Godrej's email system every morning at 11 AM without any manual work.",
+                "name": "Auto-Refresh (Mon–Sat)",
+                "desc": "MIS data is automatically pulled from Godrej's BR_MIS email twice a day (around 11 AM and 2 PM, Monday to Saturday) and saved to the OPS sheet — no manual work.",
                 "benefit": "Always up-to-date without effort",
             },
             {
@@ -669,8 +726,8 @@ MODULES = [
             },
             {
                 "icon": "🔄",
-                "name": "Daily Auto-Update",
-                "desc": "Stock data is automatically refreshed every day at 11 AM from Godrej's email system.",
+                "name": "Auto-Update (Mon–Sat)",
+                "desc": "Stock data is refreshed automatically from the same BR_MIS email twice a day (around 11 AM and 2 PM, Monday to Saturday) into the OPS sheet.",
                 "benefit": "Always current without manual work",
             },
             {
@@ -691,8 +748,8 @@ MODULES = [
         "section": "Inventory and Stocks",
         "gradient": "linear-gradient(135deg, #093028, #237a57)",
         "tags": ["daily"],
-        "tagline": "Physical stock register for your 34S store — daily inward, outward, and closing stock.",
-        "what_it_does": "This is the daily physical stock register for the 34S store location. It records stock received (In Ward), stock dispatched (Out Ward), and the closing stock for each day — just like a manual stock register, but digital.",
+        "tagline": "Read-only physical stock register for your 34S store — automation paused for a rebuild.",
+        "what_it_does": "This page shows the physical stock register for the 34S store location — daily inward, outward, opening, and closing stock. ⏸️ The old daily/monthly automation has been removed and will be replaced with new logic. Until then the page is read-only: you can browse and download previously recorded data, but the update and email actions are disabled so no new sheets are generated.",
         "features": [
             {
                 "icon": "📅",
@@ -707,22 +764,16 @@ MODULES = [
                 "benefit": "Spot gaps before customers ask",
             },
             {
-                "icon": "📤",
-                "name": "Setup Monthly Sheet",
-                "desc": "One-click setup creates the current month's stock register sheet with all date columns pre-filled.",
-                "benefit": "Zero manual spreadsheet setup",
+                "icon": "🔍",
+                "name": "Date & Category View",
+                "desc": "Pick any date in the current month and filter by category or search to inspect that day's recorded stock.",
+                "benefit": "Trace any day's stock quickly",
             },
             {
-                "icon": "🔄",
-                "name": "Auto-Update from Emails",
-                "desc": "Daily stock reports received via email are automatically parsed and filled into the register.",
-                "benefit": "Fully automated record keeping",
-            },
-            {
-                "icon": "📧",
-                "name": "Email Monthly Report",
-                "desc": "Send the complete monthly stock register as an Excel file to management with one click.",
-                "benefit": "Easy reporting to HO",
+                "icon": "⏸️",
+                "name": "Automation Paused",
+                "desc": "The scheduled daily update and monthly email jobs have been removed. Update, setup, and email buttons are disabled pending a new automation.",
+                "benefit": "No stray sheets while logic is rebuilt",
             },
             {
                 "icon": "⬇️",
@@ -1008,11 +1059,11 @@ st.markdown("""
   </div>
   <div class="hero-stats">
     <div class="hero-stat">
-      <span class="hero-stat-number">15</span>
+      <span class="hero-stat-number">16</span>
       <span class="hero-stat-label">Modules</span>
     </div>
     <div class="hero-stat">
-      <span class="hero-stat-number">70+</span>
+      <span class="hero-stat-number">80+</span>
       <span class="hero-stat-label">Features</span>
     </div>
     <div class="hero-stat">
@@ -1302,7 +1353,9 @@ faqs = [
     ("Who can see the Sales Manager Dashboard?",
      "Only users with Manager, Admin, Owner, or Proprietor roles can access the Sales Manager Dashboard. Regular sales executives cannot see incentive calculations."),
     ("How often is MIS and Stock data updated?",
-     "Both MIS and Stock data are automatically refreshed every day at 11 AM. You can also manually trigger a fresh pull anytime using the 'Force Fetch Now' button."),
+     "Both MIS and Stock data are automatically refreshed from the BR_MIS email twice a day — around 11 AM and 2 PM, Monday to Saturday — and written to the OPS sheet. You can also manually trigger a fresh pull anytime using the 'Force Fetch Now' button."),
+    ("Why is the 34S Stock page read-only right now?",
+     "The old 34S stock automation (the daily update and monthly email jobs) has been removed because it was creating unwanted sheets. It will be rebuilt with new logic. Until then the 34S Physical Stock Register page is read-only — you can view and download past data, but the update and email buttons are disabled."),
     ("Where do email leads come from?",
      "Leads sent via OneCRM or other configured sources are automatically pulled from a dedicated Gmail inbox and added to the Leads page every few hours."),
     ("Can I use this CRM on my phone?",

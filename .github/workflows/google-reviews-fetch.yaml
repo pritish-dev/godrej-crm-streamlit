@@ -43,6 +43,8 @@ jobs:
         env:
           # ── Sheets writes (service account JSON) ─────────────────────────
           GOOGLE_CREDENTIALS:    ${{ secrets.GOOGLE_CREDENTIALS }}
+          # OPS spreadsheet id — REVIEW_DETAILS / REVIEW_SYNC_LOG live here.
+          OPS_SPREADSHEET_ID:    ${{ secrets.OPS_SPREADSHEET_ID }}
 
           # ── PRIMARY: Google Places API (free, recommended) ───────────────
           # No allow-listing needed. Returns up to 5 most-recent reviews per

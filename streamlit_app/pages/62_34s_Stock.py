@@ -62,8 +62,20 @@ st.set_page_config(layout="wide", page_title="34S Stock Details", page_icon="�
 st.title("📦 34S Physical Stock Register")
 st.caption(
     f"Sheet: **{sheet_name_for(TODAY)}** · "
-    "Updated daily at **8 PM IST** · Use the buttons below to refresh or back-fill."
+    "Read-only view of previously recorded stock."
 )
+
+# ─── Automation paused ────────────────────────────────────────────────────────
+# The daily/monthly 34S stock automation has been removed pending a rebuild with
+# new logic. Until then all write/update/email actions on this page are disabled
+# so no new sheets or reports are generated. This page remains read-only.
+S34_AUTOMATION_PAUSED = True
+if S34_AUTOMATION_PAUSED:
+    st.warning(
+        "⏸️ **34S Stock automation is paused.** The scheduled daily & monthly jobs "
+        "have been removed and will be replaced with new logic. Update and email "
+        "actions are disabled for now — this page is read-only."
+    )
 
 # ─── Session state ─────────────────────────────────────────────────────────────
 for key, default in [
@@ -128,6 +140,7 @@ with col_setup:
     if st.button(
         "⚙️ Setup Sheet",
         use_container_width=True,
+        disabled=S34_AUTOMATION_PAUSED,
         help=(
             f"Create '{sheet_name_for(TODAY)}' with last 7 days of column headers. "
             "Item rows are auto-copied from the previous month if available."
@@ -149,6 +162,7 @@ with col_update:
         f"⚡ Update Sheet  ({_range_label})",
         type="primary",
         use_container_width=True,
+        disabled=S34_AUTOMATION_PAUSED,
         help=(
             f"Update every day from **{_update_start.strftime('%d %b')}** through "
             f"**{TODAY.strftime('%d %b')}**.  \n"
@@ -188,6 +202,7 @@ with col_rerun:
     if st.button(
         f"🔄 Force Re-run Today  ({TODAY.strftime('%d/%m')})",
         use_container_width=True,
+        disabled=S34_AUTOMATION_PAUSED,
         help="Re-fetch and overwrite **today's** columns only — useful when a delivery "
              "challan or outward entry arrives late in the day.",
     ):
@@ -212,6 +227,7 @@ with col_email_monthly:
     if st.button(
         "📧 Send Monthly Report",
         use_container_width=True,
+        disabled=S34_AUTOMATION_PAUSED,
         help=(
             f"Email the full **{sel_month_label}** stock as an Excel attachment, "
             "with the last recorded day's table in the email body. "
@@ -233,6 +249,7 @@ with col_email_daily:
     if st.button(
         "📧 Send Today's Report",
         use_container_width=True,
+        disabled=S34_AUTOMATION_PAUSED,
         help=(
             f"Email today's ({TODAY.strftime('%d %b %Y')}) stock snapshot "
             "as an HTML table in the email body. No attachment."
