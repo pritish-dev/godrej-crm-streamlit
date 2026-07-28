@@ -596,12 +596,16 @@ def _find_sp_col(cols: list[str]) -> "str | None":
     return None
 
 
-# Order sheets to always scan for the GODREJ SO NO -> salesperson lookup, in
-# addition to the Franchise/4S tabs listed in SHEET_DETAILS / OLD_SHEET_DETAILS.
-# These carry Godrej SO numbers (WON…) and their salesperson but are not part of
-# the franchise-tab config, so they must be named explicitly.
+# Order sheets to always scan for the GODREJ SO NO -> salesperson lookup, on top
+# of whatever is listed in SHEET_DETAILS / OLD_SHEET_DETAILS. These B2C order
+# sheets carry Godrej SO numbers (WON…) with their salesperson; naming them here
+# guarantees they are read even if a config edit ever drops them from the tab
+# lists. Duplicates with the configured tabs are de-duplicated, so nothing is
+# read twice.
 _EXTRA_ORDER_SHEETS: tuple[str, ...] = (
+    "B2C FRANCHISE ORDER 26-27",
     "B2C FRANCHISE APP ORDER DETAILS 26-27",
+    "B2C 4S ORDER DETAILS 26-27",
 )
 
 
