@@ -14,6 +14,12 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
 from services.sheets import get_df
+from services.delivery_status import (
+    completed_mask,
+    active_mask,
+    norm_status,
+    STATUS_RANK,
+)
 from utils.helpers import to_indian_number_string
 from services.automation4s import get_alerts, generate_whatsapp_group_link, generate_whatsapp_web_link
 from services.email_sender_4s import (
@@ -212,6 +218,35 @@ def apply_qty_fmt(df, col="QTY"):
     return df
 
 
+def _clean_numeric_series(s):
+    """Strip ₹ / commas / whitespace and coerce to numeric (NaN where blank)."""
+    if isinstance(s, pd.DataFrame):
+        s = s.bfill(axis=1).iloc[:, 0]
+    return pd.to_numeric(
+        s.astype(str).str.replace(r"[₹,\s]", "", regex=True),
+        errors="coerce",
+    )
+
+
+def _coalesce_numeric(df, cols):
+    """Row-wise coalesce across `cols` in priority order.
+
+    For each row, take the first column (in the given order) that carries a
+    non-zero numeric value. Missing columns are skipped. Returns a float Series
+    aligned to `df.index`, zero-filled where nothing matched.
+    """
+    result = pd.Series(0.0, index=df.index)
+    filled = pd.Series(False, index=df.index)
+    for c in cols:
+        if c not in df.columns:
+            continue
+        vals = _clean_numeric_series(df[c])
+        take = (~filled) & vals.notna() & (vals != 0)
+        result = result.where(~take, vals)
+        filled = filled | take
+    return result.fillna(0)
+
+
 # ── Data loader ───────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=60)
@@ -244,6 +279,13 @@ def load_b2c_data():
                 # multiple-spaces so "DELIVERY  REMARKS" == "DELIVERY REMARKS"
                 df.columns = [" ".join(str(c).split()).upper() for c in df.columns]
                 df = df.loc[:, ~df.columns.duplicated()]
+                # A dedicated "DELIVERY STATUS" column marks a new-format sheet
+                # (e.g. "B2C FRANCHISE APP ORDER DETAILS 26-27") that uses the
+                # extended lifecycle ending in "Installation Done". Flag it now,
+                # BEFORE any all-blank columns are dropped, so completion can be
+                # judged as "Installation Done" for these rows and "Delivered"
+                # for legacy rows.
+                is_new_format = "DELIVERY STATUS" in df.columns
                 # Some outlet tabs label the order-date column simply "DATE"
                 # (not "ORDER DATE"). Without this promotion those rows end up
                 # with a blank ORDER DATE, fail the date filter below, and the
@@ -255,6 +297,7 @@ def load_b2c_data():
                     df = df.rename(columns={"DATE": "ORDER DATE"})
                 df = df.dropna(axis=1, how="all")
                 df["SOURCE"] = source_label
+                df["IS_NEW_FORMAT"] = is_new_format
                 dfs.append(df)
             except Exception as e:
                 st.warning(f"Could not load sheet '{name}': {e}")
@@ -266,21 +309,10 @@ def load_b2c_data():
     crm = pd.concat(dfs, ignore_index=True, sort=False)
 
     # ── Rename verbose 26-27 column names → short working names ─────────────
-    # NOTE: "ORDER VALUE" represents the GROSS ORDER VALUE after discount + tax
-    # — i.e. the amount the customer actually pays. PENDING DUE is computed as
-    # (ORDER VALUE - ADV RECEIVED), so when the advance equals the gross order
-    # value, the row is excluded from the Payment Due table automatically.
+    # NOTE: "ORDER VALUE" and "DELIVERY STATUS" are built explicitly below (they
+    # have several competing source columns), so they are intentionally NOT in
+    # this straightforward-rename dict.
     crm = crm.rename(columns={
-        "GROSS ORDER VALUE":                               "ORDER VALUE",
-        "ORDER UNIT PRICE=(AFTER DISC + TAX)":             "ORDER VALUE",
-        "ORDER VALUE (AFTER DISC + TAX)":                  "ORDER VALUE",
-        "ORDER VALUE(AFTER DISC + TAX)":                   "ORDER VALUE",
-        "ORDER AMOUNT":                                    "ORDER VALUE",
-        "ORDER AMOUNT (WITH TAX AND AFTER DISC)":          "ORDER VALUE",
-        # All known variants of the delivery-status column
-        "DELIVERY REMARKS(DELIVERED/PENDING)":             "DELIVERY STATUS",
-        "DELIVERY REMARKS (DELIVERED/PENDING)":            "DELIVERY STATUS",
-        "DELIVERY REMARKS":                                "DELIVERY STATUS",
         "CUSTOMER DELIVERY DATE (TO BE)":                  "DELIVERY DATE",
         "CROSS CHECK GROSS AMT (ORDER VALUE WITHOUT TAX)": "GROSS AMT EX-TAX",
         "CUSTOMER DELIVERY DATE":                          "DELIVERY DATE",
@@ -297,6 +329,54 @@ def load_b2c_data():
         "GOOGLE RATING":                                   "REVIEW",
     })
 
+    # ── Build ORDER VALUE (the money the customer actually pays) ─────────────
+    # Several sheet formats spell this differently. Prefer the explicit
+    # line-total column; fall back through the historical variants; use the
+    # per-unit price only as a last resort (older sheets where that column
+    # actually held the line total). The 26-27 sheet's "GROSS ORDER VALUE(MRP)"
+    # is an MRP-before-discount figure and is deliberately NOT matched here.
+    # PENDING DUE is later computed as (ORDER VALUE - ADV RECEIVED).
+    _order_value_priority = [
+        "ORDER AMOUNT (WITH TAX AND AFTER DISC )",   # 26-27 total (note trailing space)
+        "ORDER AMOUNT (WITH TAX AND AFTER DISC)",
+        "ORDER AMOUNT",
+        "GROSS ORDER VALUE",
+        "ORDER VALUE (AFTER DISC + TAX)",
+        "ORDER VALUE(AFTER DISC + TAX)",
+        "ORDER VALUE",
+        "ORDER UNIT PRICE=(AFTER DISC + TAX)",        # per-unit — last resort
+    ]
+    crm["ORDER VALUE"] = _coalesce_numeric(crm, _order_value_priority)
+
+    # ── Build the authoritative DELIVERY STATUS column ───────────────────────
+    # New-format sheets carry a dedicated "DELIVERY STATUS" column holding the
+    # extended lifecycle (Scheduled for Delivery / Delivered / Installation
+    # Done). Legacy sheets only carry a delivery-remarks column. When a row has
+    # a native DELIVERY STATUS value it wins; blanks fall back to the remarks
+    # column so mixed (old + new) loads keep working.
+    _remarks_cols = [
+        c for c in crm.columns if c.replace(" ", "").startswith("DELIVERYREMARKS")
+    ]
+    _remarks_status = None
+    if _remarks_cols:
+        _remarks_status = pd.Series("", index=crm.index)
+        for c in _remarks_cols:
+            col = safe_col(crm, c, "").astype(str)
+            blank = _remarks_status.str.strip().str.lower().isin(["", "nan", "none"])
+            _remarks_status = _remarks_status.where(~blank, col)
+
+    if "DELIVERY STATUS" in crm.columns:
+        _native_status = safe_col(crm, "DELIVERY STATUS", "").astype(str)
+        if _remarks_status is not None:
+            blank = _native_status.str.strip().str.lower().isin(["", "nan", "none"])
+            _native_status = _native_status.where(~blank, _remarks_status)
+        crm["DELIVERY STATUS"] = _native_status
+        if _remarks_cols:
+            crm = crm.drop(columns=[c for c in _remarks_cols if c in crm.columns])
+    elif _remarks_status is not None:
+        crm["DELIVERY STATUS"] = _remarks_status
+        crm = crm.drop(columns=[c for c in _remarks_cols if c in crm.columns])
+
     # Coerce REVIEW to an integer 0-5 so styling / aggregation never silently
     # treats blank cells as NaN propagating through downstream metrics.
     if "REVIEW" in crm.columns:
@@ -305,22 +385,15 @@ def load_b2c_data():
         crm["REVIEW"] = 0
 
     # ── Exhaustive fallback: scan every column for a delivery-status candidate ─
-    # This runs only when none of the exact rename keys above matched, i.e. the
-    # sheet uses a column name we've never seen before.
+    # Runs only when no dedicated DELIVERY STATUS / remarks column was found.
     if "DELIVERY STATUS" not in crm.columns:
-        # Priority 1: any column whose normalised name starts with "DELIVERY REMARKS"
-        for col in crm.columns:
-            if col.replace(" ", "").startswith("DELIVERYREMARKS"):
-                crm = crm.rename(columns={col: "DELIVERY STATUS"})
-                break
-    if "DELIVERY STATUS" not in crm.columns:
-        # Priority 2: any column that contains "DELIVERY" but is NOT a date column
+        # Priority 1: any column that contains "DELIVERY" but is NOT a date column
         for col in crm.columns:
             if "DELIVERY" in col and "DATE" not in col:
                 crm = crm.rename(columns={col: "DELIVERY STATUS"})
                 break
     if "DELIVERY STATUS" not in crm.columns:
-        # Priority 3: a bare "REMARKS" column (old format)
+        # Priority 2: a bare "REMARKS" column (old format)
         if "REMARKS" in crm.columns:
             crm = crm.rename(columns={"REMARKS": "DELIVERY STATUS"})
 
@@ -404,33 +477,35 @@ def group_by_order_no(df):
             agg[col] = "sum"
 
     # String fields: take first non-null value
+    # IS_NEW_FORMAT is constant within an order (all its lines come from the
+    # same sheet), so "first" preserves the format flag for completion checks.
     for col in ["ORDER DATE", "GODREJ SO NO",
                 "CUSTOMER NAME", "CONTACT NUMBER", "EMAIL ADDRESS",
                 "CATEGORY", "SALES PERSON", "DELIVERY DATE",
-                "REVIEW", "REMARKS", "SOURCE"]:
+                "REVIEW", "REMARKS", "SOURCE", "IS_NEW_FORMAT"]:
         if col in has_no.columns:
             agg[col] = "first"
 
-    # Delivery status aggregation:
-    #   • Only "Delivered" if EVERY item in the order is explicitly "DELIVERED"
-    #   • If ANY item is "PENDING" or blank/unset                → "PENDING"
-    #   • Otherwise take the first non-empty value
+    # Delivery status aggregation — the order takes the status of its
+    # LEAST-progressed line item along the lifecycle
+    #     PENDING → Scheduled for Delivery → Delivered → Installation Done
+    # so an order is never shown as further along than its slowest item. Blank
+    # / unset lines count as PENDING (rank 0). Completion is judged later per
+    # format: legacy orders complete at "Delivered", new-format orders complete
+    # only at "Installation Done".
     if "DELIVERY STATUS" in has_no.columns:
         def _agg_delivery(x):
-            total = len(x)
-            vals = [str(v).strip() for v in x if str(v).strip() not in ("", "nan", "NaN", "None")]
-            if not vals:
+            items = []
+            for v in x:
+                norm = norm_status(v)
+                if norm in ("", "NAN", "NONE"):
+                    items.append(("PENDING", 0))          # blank ⇒ pending
+                else:
+                    items.append((str(v).strip(), STATUS_RANK.get(norm, 0)))
+            if not items:
                 return "PENDING"
-            upper_vals = [v.upper() for v in vals]
-            # Fully delivered only when every item (including blank ones) is marked DELIVERED
-            if all(v == "DELIVERED" for v in upper_vals) and len(vals) == total:
-                return vals[0]            # keep original casing e.g. "Delivered"
-            if any(v == "PENDING" for v in upper_vals):
-                return "PENDING"
-            # Some items delivered, some blank or other status → still pending
-            if any(v == "DELIVERED" for v in upper_vals):
-                return "PENDING"
-            return vals[0]
+            # keep original casing of the least-progressed line item
+            return min(items, key=lambda t: t[1])[0]
         agg["DELIVERY STATUS"] = _agg_delivery
 
     if not agg:
@@ -605,13 +680,15 @@ tomorrow = today + timedelta(days=1)
 total_orders    = crm["ORDER NO"].nunique() if "ORDER NO" in crm.columns else len(crm)
 total_value     = crm["ORDER VALUE"].sum()
 total_pending   = crm["PENDING DUE"].sum()
-# Count unique orders where delivery is pending — matches pending-delivery table logic
+# Count unique orders whose delivery is not yet completed — matches pending-
+# delivery table logic. An order is "completed" only at "Delivered" (legacy
+# sheets) or "Installation Done" (new-format sheets); everything before that
+# (Pending, Scheduled for Delivery, Delivered-awaiting-install) counts here.
+_active_crm = crm[active_mask(crm)]
 if "ORDER NO" in crm.columns:
-    pending_del_cnt = int(
-        crm[crm["DELIVERY STATUS"].astype(str).str.upper().str.strip() == "PENDING"]["ORDER NO"].nunique()
-    )
+    pending_del_cnt = int(_active_crm["ORDER NO"].nunique())
 else:
-    pending_del_cnt = int((crm["DELIVERY STATUS"].astype(str).str.upper().str.strip() == "PENDING").sum())
+    pending_del_cnt = int(len(_active_crm))
 
 k1, k2, k3, k4 = st.columns(4)
 k1.metric("📦 Total Orders",       total_orders)
@@ -762,12 +839,20 @@ s_idx = st.session_state.b2c_page * PAGE_SIZE
 _page_df = sales_display.iloc[s_idx : s_idx + PAGE_SIZE].copy()
 _page_df.index = range(1, len(_page_df) + 1)
 
-def _style_sales_row(row):
-    status = str(row.get("Delivery Status", "")).strip()
-    is_delivered = status.lower() == "delivered"
+# Completed-order flags, computed on the grouped source (which still carries
+# DELIVERY STATUS + IS_NEW_FORMAT) and sliced to the same page window so the
+# green highlight tracks true completion: "Delivered" for legacy sheets,
+# "Installation Done" for new-format sheets.
+_completed_all  = completed_mask(sales_grouped).reset_index(drop=True)
+_page_completed = _completed_all.iloc[s_idx : s_idx + PAGE_SIZE].reset_index(drop=True)
+_page_completed.index = range(1, len(_page_completed) + 1)
 
-    if is_delivered:
-        return ["background-color: green"] * len(row)
+def _style_sales_row(row):
+    try:
+        if bool(_page_completed.get(row.name, False)):
+            return ["background-color: green"] * len(row)
+    except Exception:
+        pass
     return [""] * len(row)
 
 _sales_table_styles = [
@@ -809,12 +894,16 @@ def _is_free_stock(df: pd.DataFrame) -> "pd.Series":
     return pd.Series(False, index=df.index)
 
 
-# All PENDING rows from CRM — free stock items excluded.
+# All not-yet-completed rows from CRM — free stock items excluded.
+# "Not completed" = anything before the order's terminal state: Delivered for
+# legacy sheets, Installation Done for new-format sheets. This keeps an order
+# in the delivery pipeline (Pending / Scheduled / Delivered-awaiting-install)
+# until it is fully installed.
 # Because free stock rows are removed BEFORE grouping, their QTY and ORDER VALUE
 # are never summed into the group totals. PENDING DUE = ORDER VALUE − ADV RECEIVED
 # is therefore already correct without any additional deduction step.
 _all_pending = crm[
-    (crm["DELIVERY STATUS"].astype(str).str.upper().str.strip() == "PENDING")
+    active_mask(crm)
     & ~_is_free_stock(crm)
 ].copy()
 

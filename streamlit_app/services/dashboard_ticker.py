@@ -18,6 +18,7 @@ import pandas as pd
 import streamlit as st
 
 from services.sheets import get_df
+from services.delivery_status import active_mask
 from utils.helpers import to_indian_number_string
 
 FY_START = date(2026, 4, 1)
@@ -30,7 +31,10 @@ FY_START = date(2026, 4, 1)
 def _metric_pending_deliveries(crm: pd.DataFrame, today: date) -> list[str]:
     if crm is None or crm.empty or "DELIVERY STATUS" not in crm.columns:
         return []
-    pending = crm[crm["DELIVERY STATUS"].astype(str).str.upper().str.strip() == "PENDING"]
+    # Not-yet-completed orders (Pending / Scheduled / Delivered-awaiting-install
+    # on new sheets). Completion = "Delivered" (legacy) or "Installation Done"
+    # (new-format).
+    pending = crm[active_mask(crm)]
     if pending.empty:
         return []
     if "DELIVERY DATE" not in pending.columns:
@@ -51,7 +55,7 @@ def _metric_missing_delivery_dates(crm: pd.DataFrame) -> list[str]:
         return []
     pending = crm.copy()
     if "DELIVERY STATUS" in pending.columns:
-        pending = pending[pending["DELIVERY STATUS"].astype(str).str.upper().str.strip() == "PENDING"]
+        pending = pending[active_mask(pending)]
     dd = pd.to_datetime(pending["DELIVERY DATE"], errors="coerce")
     missing = int(dd.isna().sum())
     return [f"❓ {missing} pending records have NO delivery date set"] if missing else []
