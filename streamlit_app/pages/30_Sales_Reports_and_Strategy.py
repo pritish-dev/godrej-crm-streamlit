@@ -605,11 +605,16 @@ else:
                 inv_display[display_col] = ""
 
         _sales_persons_sr = _load_sales_persons_sr()
-        _sp_options_sr = [""] + _sales_persons_sr
+
+        _team_hint = (
+            ("Sales Team names: " + ", ".join(_sales_persons_sr) + ". ")
+            if _sales_persons_sr else ""
+        )
 
         st.caption(
-            "✏️ **Sales Executive column is editable** — click a cell to pick a name from the dropdown, "
-            "then click **💾 Save Sales Executive** to write back to the sheet."
+            "✏️ **Sales Executive column is editable** — type any salesperson name "
+            "(names outside the Sales Team are allowed), then click "
+            "**💾 Save Sales Executive** to write back to the sheet."
         )
 
         edited_inv = st.data_editor(
@@ -630,12 +635,15 @@ else:
                 "Amount without GST": st.column_config.TextColumn(
                     "Amount without GST", disabled=True, width="small"
                 ),
-                "Sales Executive": st.column_config.SelectboxColumn(
+                "Sales Executive": st.column_config.TextColumn(
                     "Sales Executive",
-                    options=_sp_options_sr,
                     required=False,
                     width="medium",
-                    help="Select the Sales Executive responsible for this invoice.",
+                    help=(
+                        "Type the Sales Executive responsible for this invoice. "
+                        "Any name is allowed — the person need not be on the Sales "
+                        "Team. " + _team_hint
+                    ).strip(),
                 ),
             },
             hide_index=True,
