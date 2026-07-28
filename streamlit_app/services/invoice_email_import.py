@@ -613,6 +613,93 @@ def lookup_sales_executive(so_numbers: list[str]) -> dict[str, str]:
     return result
 
 
+def _fill_blank_sales_executives(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """
+    Fill only the *blank* "Sales Executive" cells in ``df`` by re-running the
+    GODREJ SO NO → salesperson lookup. Non-blank values (including names typed
+    in by hand) are never touched. Returns ``(df, filled_count)``.
+    """
+    if (
+        df is None or df.empty
+        or "Sales Executive" not in df.columns
+        or "Sales Order No" not in df.columns
+    ):
+        return df, 0
+
+    blank_mask = (
+        df["Sales Executive"].fillna("").astype(str).str.strip()
+        .str.lower().isin(["", "nan", "none"])
+    )
+    if not blank_mask.any():
+        return df, 0
+
+    exec_map = lookup_sales_executive(df.loc[blank_mask, "Sales Order No"].tolist())
+    if not exec_map:
+        return df, 0
+
+    filled_vals = df.loc[blank_mask, "Sales Order No"].map(
+        lambda s: exec_map.get(str(s).strip(), "")
+    )
+    df.loc[blank_mask, "Sales Executive"] = filled_vals.values
+    return df, int((filled_vals.astype(str).str.strip() != "").sum())
+
+
+def reenrich_sales_executives(month: str) -> str:
+    """
+    Re-run the salesperson lookup for every row in the month's SALE INVOICE
+    sheet whose "Sales Executive" is still blank, and write the filled values
+    back to the sheet. Existing (non-blank) values are preserved.
+
+    This exists because ``save_invoices_to_sheet`` never overwrites a row once
+    it is in the sheet — so an invoice first saved before its order's
+    salesperson was entered in the CRM would otherwise stay blank forever.
+    Returns a human-readable status message.
+    """
+    from services.sheets import get_df, write_df
+
+    sheet = invoice_sheet_name(month)
+    try:
+        df = get_df(sheet)
+    except Exception as e:
+        return f"❌ Could not read **{sheet}**: {e}"
+    if df is None or df.empty:
+        return "no invoice rows to enrich."
+
+    df.columns = [str(c).strip() for c in df.columns]
+    for c in SHEET_COLS:
+        if c not in df.columns:
+            df[c] = ""
+    df = df[SHEET_COLS].copy()
+
+    blank_before = int(
+        df["Sales Executive"].fillna("").astype(str).str.strip()
+        .str.lower().isin(["", "nan", "none"]).sum()
+    )
+    if blank_before == 0:
+        return "all rows already have a Sales Executive."
+
+    df, filled = _fill_blank_sales_executives(df)
+    if filled == 0:
+        return (
+            f"{blank_before} blank row(s) — none could be matched to a "
+            "salesperson in the order sheets."
+        )
+
+    try:
+        write_df(sheet, df)
+    except Exception as e:
+        return f"❌ Matched {filled} row(s) but writing **{sheet}** failed: {e}"
+
+    still_blank = blank_before - filled
+    msg = f"✅ back-filled Sales Executive on {filled} row(s)"
+    if still_blank:
+        msg += (
+            f" · {still_blank} still unmatched "
+            "(salesperson not found in the order sheets)"
+        )
+    return msg + "."
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # EMAIL FETCHER
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -890,11 +977,18 @@ def save_invoices_to_sheet(df: pd.DataFrame, month: str) -> str:
         else:
             merged = existing
 
+    # Back-fill any row (new or previously-saved) whose Sales Executive is still
+    # blank — e.g. an invoice saved before its order's salesperson was entered in
+    # the CRM. Non-blank values, including manual edits, are preserved.
+    merged, reenriched = _fill_blank_sales_executives(merged)
+
     try:
         write_df(sheet, merged)
         msg = f"✅ Added {added} new row(s) to sheet **{sheet}**"
         if skipped:
             msg += f" · {skipped} already present, left unchanged"
+        if reenriched:
+            msg += f" · back-filled Sales Executive on {reenriched} row(s)"
         return msg + "."
     except Exception as e:
         return f"❌ Save to sheet failed: {e}"

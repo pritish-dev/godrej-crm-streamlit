@@ -49,6 +49,7 @@ from services.invoice_email_import import (  # noqa: E402
     load_invoice_sheet,
     invoice_sheet_name,
     save_invoices_to_sheet,
+    reenrich_sales_executives,
     configured_invoice_inboxes,
 )
 
@@ -911,10 +912,14 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                     _sr_mname = calendar.month_name[_sr_rm]
                     _sr_existing = _sr_load_invoice_sheet(_sr_mname)
                     if _sr_existing is not None and not _sr_existing.empty:
+                        # Sheet already has invoices — don't refetch, but re-run
+                        # the salesperson lookup to back-fill any rows whose
+                        # Sales Executive is still blank (order entered into the
+                        # CRM after the invoice was first saved).
+                        _sr_enrich_msg = reenrich_sales_executives(_sr_mname)
                         _sr_refresh_msgs.append(
-                            f"**{_sr_mname} {_sr_ry}**: already has "
-                            f"{len(_sr_existing)} invoice row(s) in the sheet — "
-                            "using existing data."
+                            f"**{_sr_mname} {_sr_ry}**: {len(_sr_existing)} "
+                            f"invoice row(s) — {_sr_enrich_msg}"
                         )
                         continue
 
