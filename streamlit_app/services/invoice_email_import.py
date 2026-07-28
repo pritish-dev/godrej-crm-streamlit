@@ -516,11 +516,37 @@ def parse_attachment(att_bytes: bytes, filename: str) -> tuple[pd.DataFrame, str
 # SALES EXECUTIVE LOOKUP
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _normalize_so(value) -> str:
+    """
+    Normalize a Sales Order No so invoice values and sheet values match reliably.
+
+    Handles the common reasons a match would otherwise fail:
+      * case differences        (``wos013908`` vs ``WOS013908``)
+      * internal / edge spaces  (``WOS 013908`` vs ``WOS013908``)
+      * a trailing ``.0``       (a numeric SO read from Google Sheets as a float,
+                                 e.g. ``13908.0`` vs ``13908``)
+
+    Returns "" for blank / nan / none values.
+    """
+    s = str(value).strip()
+    if not s or s.lower() in ("nan", "none"):
+        return ""
+    # Drop a trailing ".0" that appears when a purely numeric SO is read as a float.
+    if re.fullmatch(r"\d+\.0+", s):
+        s = s.split(".", 1)[0]
+    # Remove all internal whitespace and upper-case for a case-insensitive match.
+    return re.sub(r"\s+", "", s).upper()
+
+
 def lookup_sales_executive(so_numbers: list[str]) -> dict[str, str]:
     """
     Match each Sales Order No against "GODREJ SO NO" in all Franchise/4S sheets
     from both SHEET_DETAILS (current FY) and OLD_SHEET_DETAILS (previous FY).
-    Returns {so_no: sales_person_name}.
+    Returns {so_no: sales_person_name}, keyed by the original invoice SO string.
+
+    Matching is done on a *normalized* form of the SO number (case-, whitespace-
+    and ``.0``-insensitive) so formatting differences between the invoice and the
+    order sheet do not cause the salesperson name to be dropped.
     """
     from services.sheets import get_df
 
@@ -528,7 +554,17 @@ def lookup_sales_executive(so_numbers: list[str]) -> dict[str, str]:
     if not so_numbers:
         return result
 
-    so_set = {str(s).strip() for s in so_numbers if str(s).strip()}
+    # Map normalized SO -> original invoice SO string (first occurrence wins), so
+    # the returned dict can be looked up against the invoice's raw "Sales Order No".
+    norm_to_original: dict[str, str] = {}
+    for s in so_numbers:
+        norm = _normalize_so(s)
+        if norm:
+            norm_to_original.setdefault(norm, str(s).strip())
+
+    pending = set(norm_to_original.keys())
+    if not pending:
+        return result
 
     # Collect sheet names from both current and old config sheets
     sheets: list[str] = []
@@ -548,7 +584,7 @@ def lookup_sales_executive(so_numbers: list[str]) -> dict[str, str]:
             continue
 
     for sname in sheets:
-        if not so_set:
+        if not pending:
             break
         try:
             raw = get_df(sname)
@@ -564,13 +600,13 @@ def lookup_sales_executive(so_numbers: list[str]) -> dict[str, str]:
                 continue
 
             for _, row in raw.iterrows():
-                so = str(row[so_col]).strip()
-                if so not in so_set or so in result:
+                norm_so = _normalize_so(row[so_col])
+                if not norm_so or norm_so not in pending:
                     continue
                 sp = str(row[sp_col]).strip()
                 if sp and sp.lower() not in ("nan", "none", ""):
-                    result[so] = sp
-                    so_set.discard(so)
+                    result[norm_to_original[norm_so]] = sp
+                    pending.discard(norm_so)
         except Exception:
             continue
 

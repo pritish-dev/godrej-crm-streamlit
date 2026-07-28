@@ -155,7 +155,13 @@ def _sr_load_invoice_achievement(month_name: str) -> pd.DataFrame:
         errors="coerce",
     ).fillna(0.0)
     df["SALES PERSON"] = df["Sales Executive"].astype(str).str.strip().str.upper()
-    df = df[df["SALES PERSON"] != ""]
+    # Every sales invoice belongs to an order that has a salesperson, so this
+    # branch should not normally trigger. As a worst-case safety net, any invoice
+    # whose Sales Executive is blank/nan is attributed to "UNKNOWN" rather than
+    # being dropped — that keeps the sum of achievement equal to the total sales
+    # invoice amount for the month (an exact match), and surfaces the gap so it
+    # can be fixed on the sheet.
+    df.loc[df["SALES PERSON"].isin(["", "NAN", "NONE"]), "SALES PERSON"] = "UNKNOWN"
     if df.empty:
         return empty
     return df.groupby("SALES PERSON", as_index=False)["AMOUNT"].sum()
