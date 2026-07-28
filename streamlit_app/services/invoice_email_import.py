@@ -518,13 +518,16 @@ def parse_attachment(att_bytes: bytes, filename: str) -> tuple[pd.DataFrame, str
 
 def _normalize_so(value) -> str:
     """
-    Normalize a Sales Order No so invoice values and sheet values match reliably.
+    Normalize a Sales Order No so invoice values and sheet values match reliably,
+    regardless of how the number was typed into the CRM sheet.
 
-    Handles the common reasons a match would otherwise fail:
-      * case differences        (``wos013908`` vs ``WOS013908``)
-      * internal / edge spaces  (``WOS 013908`` vs ``WOS013908``)
-      * a trailing ``.0``       (a numeric SO read from Google Sheets as a float,
-                                 e.g. ``13908.0`` vs ``13908``)
+    Handles every observed reason a match would otherwise fail:
+      * case differences        (``won043581`` vs ``WON043581``)
+      * spaces / punctuation     (``WON 043581``, ``WON-043581`` → ``WON043581``)
+      * a trailing ``.0``        (a numeric SO read from Google Sheets as a float,
+                                  e.g. ``43581.0`` → ``43581``)
+      * leading zeros in the      (``WON043581`` and ``WON43581`` both collapse to
+        numeric part               ``WON43581`` so either spelling matches)
 
     Returns "" for blank / nan / none values.
     """
@@ -534,39 +537,69 @@ def _normalize_so(value) -> str:
     # Drop a trailing ".0" that appears when a purely numeric SO is read as a float.
     if re.fullmatch(r"\d+\.0+", s):
         s = s.split(".", 1)[0]
-    # Remove all internal whitespace and upper-case for a case-insensitive match.
-    return re.sub(r"\s+", "", s).upper()
+    # Keep only alphanumerics (drops spaces, apostrophes, dashes, slashes, nbsp…)
+    # and upper-case for a case-insensitive match.
+    s = re.sub(r"[^A-Za-z0-9]", "", s).upper()
+    if not s:
+        return ""
+    # Collapse leading zeros in the trailing digit run: WON043581 -> WON43581.
+    m = re.match(r"^([A-Z]*?)0*(\d+)$", s)
+    if m:
+        s = m.group(1) + m.group(2)
+    return s
 
 
-def lookup_sales_executive(so_numbers: list[str]) -> dict[str, str]:
-    """
-    Match each Sales Order No against "GODREJ SO NO" in all Franchise/4S sheets
-    from both SHEET_DETAILS (current FY) and OLD_SHEET_DETAILS (previous FY).
-    Returns {so_no: sales_person_name}, keyed by the original invoice SO string.
+# Order-number tokens inside a GODREJ SO NO cell — a letter prefix + digits, or a
+# bare digit run. Lets a cell that holds more than one SO (or an SO plus a note)
+# still match, e.g. "WON043581 / WON043582" or "WON043581 (part)".
+_SO_TOKEN_RE = re.compile(r"[A-Za-z]{0,4}\d{3,}")
 
-    Matching is done on a *normalized* form of the SO number (case-, whitespace-
-    and ``.0``-insensitive) so formatting differences between the invoice and the
-    order sheet do not cause the salesperson name to be dropped.
-    """
+
+def _so_tokens(value) -> set[str]:
+    """Return the set of normalized SO tokens found in a cell value."""
+    tokens = {_normalize_so(t) for t in _SO_TOKEN_RE.findall(str(value))}
+    return {t for t in tokens if t}
+
+
+def _canon_col(name) -> str:
+    """Canonical column-header form: upper-case, alphanumerics only."""
+    return re.sub(r"[^A-Z0-9]", "", str(name).upper())
+
+
+# Salesperson column headers (canonical form). Franchise/4S tabs are hand-made,
+# so the header varies from tab to tab — accept every known spelling.
+_SP_COL_CANON = {
+    "SALESPERSON", "SALESPERSONNAME", "SALESPERSONS", "SALESREP",
+    "SALESREPRESENTATIVE", "SALESEXECUTIVE", "SALESEXEC", "SALESEXECUTIVENAME",
+    "SALESMAN", "SALESPERSONSNAME", "SPNAME", "SENAME", "SALESPERSN",
+}
+
+
+def _find_so_col(cols: list[str]) -> "str | None":
+    """Pick the GODREJ SO NO column, tolerating header spelling differences."""
+    # Prefer a header that mentions GODREJ + SO (e.g. "GODREJ SO NO", "GODREJ SO NO.")
+    for c in cols:
+        cc = _canon_col(c)
+        if "GODREJSO" in cc:
+            return c
+    # Fall back to a plain SO-number header.
+    for c in cols:
+        if _canon_col(c) in ("SONO", "SONUMBER", "SALESORDERNO", "GODREJSONO"):
+            return c
+    return None
+
+
+def _find_sp_col(cols: list[str]) -> "str | None":
+    for c in cols:
+        if _canon_col(c) in _SP_COL_CANON:
+            return c
+    return None
+
+
+def _iter_order_sheets():
+    """Yield (sheet_name, DataFrame) for every configured Franchise/4S sheet."""
     from services.sheets import get_df
 
-    result: dict[str, str] = {}
-    if not so_numbers:
-        return result
-
-    # Map normalized SO -> original invoice SO string (first occurrence wins), so
-    # the returned dict can be looked up against the invoice's raw "Sales Order No".
-    norm_to_original: dict[str, str] = {}
-    for s in so_numbers:
-        norm = _normalize_so(s)
-        if norm:
-            norm_to_original.setdefault(norm, str(s).strip())
-
-    pending = set(norm_to_original.keys())
-    if not pending:
-        return result
-
-    # Collect sheet names from both current and old config sheets
     sheets: list[str] = []
     seen_sheets: set[str] = set()
     for config_name in ("SHEET_DETAILS", "OLD_SHEET_DETAILS"):
@@ -584,33 +617,122 @@ def lookup_sales_executive(so_numbers: list[str]) -> dict[str, str]:
             continue
 
     for sname in sheets:
+        try:
+            raw = get_df(sname)
+        except Exception:
+            continue
+        if raw is None or raw.empty:
+            continue
+        yield sname, raw
+
+
+def lookup_sales_executive(so_numbers: list[str]) -> dict[str, str]:
+    """
+    For each invoice Sales Order No (Godrej SO No, e.g. ``WON043581``), find the
+    matching row in the Franchise/4S CRM sheets and return its salesperson.
+
+    Both the SO column and the salesperson column are located by tolerant header
+    matching, and both sides of the value comparison are normalized (case-,
+    space-, punctuation- and leading-zero-insensitive), so differences in how a
+    franchise tab was filled in do not cause the name to be dropped.
+
+    Returns ``{original_invoice_so: sales_person_name}``.
+    """
+    result: dict[str, str] = {}
+    if not so_numbers:
+        return result
+
+    # Map normalized SO -> original invoice SO string (first occurrence wins).
+    norm_to_original: dict[str, str] = {}
+    for s in so_numbers:
+        norm = _normalize_so(s)
+        if norm:
+            norm_to_original.setdefault(norm, str(s).strip())
+
+    pending = set(norm_to_original.keys())
+    if not pending:
+        return result
+
+    for _sname, raw in _iter_order_sheets():
         if not pending:
             break
         try:
-            raw = get_df(sname)
-            if raw is None or raw.empty:
-                continue
+            raw = raw.copy()
             raw.columns = [str(c).strip().upper() for c in raw.columns]
-
-            so_col = next((c for c in raw.columns if c == "GODREJ SO NO"), None)
-            sp_col = next(
-                (c for c in raw.columns if c in ("SALES PERSON", "SALES REP")), None
-            )
+            so_col = _find_so_col(list(raw.columns))
+            sp_col = _find_sp_col(list(raw.columns))
             if so_col is None or sp_col is None:
                 continue
 
             for _, row in raw.iterrows():
-                norm_so = _normalize_so(row[so_col])
-                if not norm_so or norm_so not in pending:
+                matched = _so_tokens(row[so_col]) & pending
+                if not matched:
                     continue
                 sp = str(row[sp_col]).strip()
                 if sp and sp.lower() not in ("nan", "none", ""):
-                    result[norm_to_original[norm_so]] = sp
-                    pending.discard(norm_so)
+                    for norm_so in matched:
+                        result[norm_to_original[norm_so]] = sp
+                        pending.discard(norm_so)
         except Exception:
             continue
 
     return result
+
+
+def diagnose_sales_executive_lookup(so_numbers: list[str]) -> pd.DataFrame:
+    """
+    Explain, per SO, why the salesperson was or wasn't resolved. Returns a
+    DataFrame with columns: SO No, Status, Sheet, Sales Person.
+
+    Statuses:
+      * "matched"            — found with a salesperson name
+      * "found, name blank"  — SO located but its salesperson cell is empty
+      * "not found"          — SO not present in any Franchise/4S sheet
+    """
+    rows: list[dict] = []
+    wanted: dict[str, str] = {}
+    for s in so_numbers:
+        norm = _normalize_so(s)
+        if norm:
+            wanted.setdefault(norm, str(s).strip())
+
+    found_name: dict[str, tuple[str, str]] = {}   # norm -> (sheet, sp)
+    found_blank: dict[str, str] = {}              # norm -> sheet
+
+    for sname, raw in _iter_order_sheets():
+        try:
+            raw = raw.copy()
+            raw.columns = [str(c).strip().upper() for c in raw.columns]
+            so_col = _find_so_col(list(raw.columns))
+            sp_col = _find_sp_col(list(raw.columns))
+            if so_col is None:
+                continue
+            for _, row in raw.iterrows():
+                matched = _so_tokens(row[so_col]) & set(wanted.keys())
+                if not matched:
+                    continue
+                sp = str(row[sp_col]).strip() if sp_col else ""
+                for norm_so in matched:
+                    if sp and sp.lower() not in ("nan", "none", ""):
+                        found_name.setdefault(norm_so, (sname, sp))
+                    else:
+                        found_blank.setdefault(norm_so, sname)
+        except Exception:
+            continue
+
+    for norm, original in wanted.items():
+        if norm in found_name:
+            sheet, sp = found_name[norm]
+            rows.append({"SO No": original, "Status": "matched",
+                         "Sheet": sheet, "Sales Person": sp})
+        elif norm in found_blank:
+            rows.append({"SO No": original, "Status": "found, name blank",
+                         "Sheet": found_blank[norm], "Sales Person": ""})
+        else:
+            rows.append({"SO No": original, "Status": "not found",
+                         "Sheet": "", "Sales Person": ""})
+
+    return pd.DataFrame(rows, columns=["SO No", "Status", "Sheet", "Sales Person"])
 
 
 def _fill_blank_sales_executives(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:

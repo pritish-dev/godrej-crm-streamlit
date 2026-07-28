@@ -50,6 +50,7 @@ from services.invoice_email_import import (  # noqa: E402
     invoice_sheet_name,
     save_invoices_to_sheet,
     reenrich_sales_executives,
+    diagnose_sales_executive_lookup,
     configured_invoice_inboxes,
 )
 
@@ -690,6 +691,73 @@ else:
             """,
             unsafe_allow_html=True,
         )
+
+        # ── Diagnostic: why a Sales Executive is / isn't resolved ──────────────
+        _blank_exec_mask = (
+            edited_inv["Sales Executive"].fillna("").astype(str).str.strip() == ""
+        )
+        _blank_exec_count = int(_blank_exec_mask.sum())
+        with st.expander(
+            f"🔍 Salesperson lookup diagnostics"
+            + (f" — {_blank_exec_count} invoice(s) still missing a name" if _blank_exec_count else ""),
+            expanded=bool(_blank_exec_count),
+        ):
+            st.caption(
+                "Matches each invoice's **So No (Godrej SO No)** against the "
+                "**GODREJ SO NO** column in the Franchise/4S sheets and shows "
+                "where the salesperson came from — or why it couldn't be found."
+            )
+            _diag_col1, _diag_col2 = st.columns([1, 3])
+            with _diag_col1:
+                _run_diag = st.button(
+                    "🔎 Run lookup diagnostics",
+                    key="inv_diag_run_sr",
+                    use_container_width=True,
+                )
+            if _run_diag:
+                _diag_sos = (
+                    edited_inv["So No"].fillna("").astype(str).str.strip().tolist()
+                    if "So No" in edited_inv.columns else []
+                )
+                _diag_sos = [s for s in _diag_sos if s]
+                with st.spinner("Checking Franchise/4S sheets…"):
+                    _diag_df = diagnose_sales_executive_lookup(_diag_sos)
+                if _diag_df.empty:
+                    st.info("No Sales Order numbers to diagnose.")
+                else:
+                    _n_not_found = int((_diag_df["Status"] == "not found").sum())
+                    _n_blank = int((_diag_df["Status"] == "found, name blank").sum())
+                    _n_ok = int((_diag_df["Status"] == "matched").sum())
+                    st.markdown(
+                        f"**{_n_ok}** matched  ·  **{_n_blank}** found but salesperson "
+                        f"cell blank  ·  **{_n_not_found}** not found in any sheet."
+                    )
+
+                    def _diag_style(row):
+                        if row["Status"] == "matched":
+                            return ["background-color:#c8e6c9"] * len(row)
+                        if row["Status"] == "found, name blank":
+                            return ["background-color:#fff3e0"] * len(row)
+                        return ["background-color:#ffcdd2"] * len(row)
+
+                    st.dataframe(
+                        _diag_df.style.apply(_diag_style, axis=1),
+                        use_container_width=True, hide_index=True,
+                    )
+                    if _n_not_found:
+                        st.warning(
+                            "🔴 **Not found** — this Godrej SO No is not present in any "
+                            "Franchise/4S sheet configured in SHEET_DETAILS / "
+                            "OLD_SHEET_DETAILS. Add the order (with its GODREJ SO NO "
+                            "and SALES PERSON) to the correct franchise tab, then click "
+                            "**🔄 Refresh Achievement** to back-fill."
+                        )
+                    if _n_blank:
+                        st.warning(
+                            "🟠 **Found but blank** — the order row exists but its "
+                            "salesperson cell is empty. Fill the SALES PERSON on that "
+                            "franchise tab, then click **🔄 Refresh Achievement**."
+                        )
 
 st.divider()
 
