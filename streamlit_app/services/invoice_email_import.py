@@ -596,8 +596,21 @@ def _find_sp_col(cols: list[str]) -> "str | None":
     return None
 
 
+# Order sheets to always scan for the GODREJ SO NO -> salesperson lookup, in
+# addition to the Franchise/4S tabs listed in SHEET_DETAILS / OLD_SHEET_DETAILS.
+# These carry Godrej SO numbers (WON…) and their salesperson but are not part of
+# the franchise-tab config, so they must be named explicitly.
+_EXTRA_ORDER_SHEETS: tuple[str, ...] = (
+    "B2C FRANCHISE APP ORDER DETAILS 26-27",
+)
+
+
 def _iter_order_sheets():
-    """Yield (sheet_name, DataFrame) for every configured Franchise/4S sheet."""
+    """
+    Yield (sheet_name, DataFrame) for every order sheet that maps a Godrej SO No
+    to a salesperson: the configured Franchise/4S tabs plus any explicitly-named
+    extra order sheets (``_EXTRA_ORDER_SHEETS``).
+    """
     from services.sheets import get_df
 
     sheets: list[str] = []
@@ -615,6 +628,11 @@ def _iter_order_sheets():
                             seen_sheets.add(s)
         except Exception:
             continue
+
+    for s in _EXTRA_ORDER_SHEETS:
+        if s and s not in seen_sheets:
+            sheets.append(s)
+            seen_sheets.add(s)
 
     for sname in sheets:
         try:
