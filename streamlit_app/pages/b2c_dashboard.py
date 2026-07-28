@@ -244,6 +244,15 @@ def load_b2c_data():
                 # multiple-spaces so "DELIVERY  REMARKS" == "DELIVERY REMARKS"
                 df.columns = [" ".join(str(c).split()).upper() for c in df.columns]
                 df = df.loc[:, ~df.columns.duplicated()]
+                # Some outlet tabs label the order-date column simply "DATE"
+                # (not "ORDER DATE"). Without this promotion those rows end up
+                # with a blank ORDER DATE, fail the date filter below, and the
+                # whole order never appears in the CRM even though it exists in
+                # the sheet. Only promote when the tab has no dedicated
+                # ORDER DATE column, so tabs where "DATE" means something else
+                # (e.g. the Godrej purchase-bill date) are left untouched.
+                if "ORDER DATE" not in df.columns and "DATE" in df.columns:
+                    df = df.rename(columns={"DATE": "ORDER DATE"})
                 df = df.dropna(axis=1, how="all")
                 df["SOURCE"] = source_label
                 dfs.append(df)
