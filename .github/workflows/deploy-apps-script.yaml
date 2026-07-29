@@ -5,6 +5,9 @@ name: Deploy WhatsApp Bot to Apps Script
 # is set, it also redeploys that SAME Web App deployment so the webhook URL
 # never changes.
 #
+# Until the repo secrets below are added, this workflow SKIPS (stays green with
+# a notice) instead of failing — so it never blocks a normal push.
+#
 # One-time setup (see whatsapp_bot/SETUP_GUIDE.md, "Part D"):
 #   Repo Secrets required:
 #     CLASPRC_JSON   – contents of your local ~/.clasprc.json after `clasp login`
@@ -22,34 +25,49 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
+      CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
       SCRIPT_ID: ${{ secrets.SCRIPT_ID }}
       DEPLOYMENT_ID: ${{ secrets.DEPLOYMENT_ID }}
     steps:
+      - name: Check for clasp secrets
+        id: check
+        run: |
+          if [ -n "$CLASPRC_JSON" ] && [ -n "$SCRIPT_ID" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Apps Script deploy skipped::Auto-deploy is not configured yet. Add the CLASPRC_JSON and SCRIPT_ID repository secrets to enable it (see whatsapp_bot/SETUP_GUIDE.md, Part D)."
+          fi
+
       - name: Checkout
+        if: steps.check.outputs.configured == 'true'
         uses: actions/checkout@v4
 
       - name: Set up Node.js
+        if: steps.check.outputs.configured == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       - name: Install clasp
+        if: steps.check.outputs.configured == 'true'
         run: npm install -g @google/clasp@2.4.2
 
       - name: Write clasp credentials
-        env:
-          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+        if: steps.check.outputs.configured == 'true'
         run: printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
 
       - name: Write .clasp.json project config
+        if: steps.check.outputs.configured == 'true'
         working-directory: whatsapp_bot
         run: printf '{"scriptId":"%s","rootDir":"."}' "$SCRIPT_ID" > .clasp.json
 
       - name: Push code to Apps Script
+        if: steps.check.outputs.configured == 'true'
         working-directory: whatsapp_bot
         run: clasp push -f
 
       - name: Redeploy Web App (keep same URL)
-        if: ${{ env.DEPLOYMENT_ID != '' }}
+        if: ${{ steps.check.outputs.configured == 'true' && env.DEPLOYMENT_ID != '' }}
         working-directory: whatsapp_bot
         run: clasp deploy -i "$DEPLOYMENT_ID" -d "Auto-deploy ${{ github.sha }}"
