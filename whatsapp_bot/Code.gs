@@ -159,10 +159,17 @@ function handleMessage(from, text) {
     return;
   }
 
-  // We have a language and are expecting an order query
+  // Step 1: expecting an order identifier (Order No / Name) or a contact number
   if (s.step === 'await_query') {
     if (!text) { sendText(from, t(s.lang, 'ask_query')); return; }
-    lookupAndReply(from, s.lang, text);
+    startLookup(from, s, text);
+    return;
+  }
+
+  // Step 2: expecting the registered contact number to verify identity
+  if (s.step === 'await_verify') {
+    if (!text) { sendText(from, t(s.lang, 'ask_verify')); return; }
+    verifyAndReply(from, s, text);
     return;
   }
 
@@ -203,17 +210,92 @@ function askLanguage(from) {
 // LOOKUP: order -> Godrej SO -> MIS committed status
 // ═══════════════════════════════════════════════════════════════════════════
 
-function lookupAndReply(from, lang, query) {
+/**
+ * Step 1. The customer sent an Order No / Name, or a contact number.
+ *
+ * - If the query is a phone number (>=10 digits), it IS the verification:
+ *   match it against CONTACT NUMBER and reveal directly.
+ * - Otherwise it's an identifier (order no / Godrej SO / name): find the
+ *   candidate orders but DO NOT reveal anything yet — ask for the registered
+ *   contact number first (two-factor). Candidates are stashed in the session.
+ */
+function startLookup(from, s, query) {
+  var lang = s.lang;
   var q = String(query || '').trim();
-  var orders = searchOrders(q);
 
-  if (!orders.length) {
-    sendText(from, t(lang, 'not_found'));
-    // stay in await_query so they can try again
+  // Path A — customer typed a phone number: self-verifying lookup.
+  if (digits10(q).length >= 10) {
+    var byContact = searchOrders(q, 'contact');
+    if (!byContact.length) {
+      sendText(from, t(lang, 'not_found'));
+      return; // stay in await_query
+    }
+    revealOrders(from, lang, byContact);
     return;
   }
 
-  // If the customer's name/number matched many distinct SOs, answer each.
+  // Path B — identifier lookup. Find candidates, then require verification.
+  var candidates = searchOrders(q, 'identifier');
+  if (!candidates.length) {
+    sendText(from, t(lang, 'not_found'));
+    return; // stay in await_query
+  }
+
+  // Stash a compact copy of candidates (avoid re-scanning + avoid revealing).
+  s.pending = candidates.map(function (o) {
+    return { orderNo: o.orderNo, godrejSO: o.godrejSO, customer: o.customer,
+             contact: o.contact, delivery: o.delivery };
+  });
+  s.attempts = 0;
+  s.step = 'await_verify';
+  saveSession(from, s);
+  sendText(from, t(lang, 'ask_verify'));
+}
+
+/**
+ * Step 2. The customer sent a contact number to verify. Only orders whose
+ * CONTACT NUMBER matches the number they entered are revealed.
+ */
+function verifyAndReply(from, s, entered) {
+  var lang = s.lang;
+  var enteredDigits = digits10(entered);
+  var pending = s.pending || [];
+
+  if (enteredDigits.length < 10) {
+    sendText(from, t(lang, 'ask_verify'));
+    return;
+  }
+
+  var matched = pending.filter(function (o) {
+    return digits10(o.contact) === enteredDigits;
+  });
+
+  if (!matched.length) {
+    s.attempts = (s.attempts || 0) + 1;
+    if (s.attempts >= 3) {
+      // Give up on this identifier; reset to a fresh query.
+      s.step = 'await_query';
+      s.pending = null;
+      s.attempts = 0;
+      saveSession(from, s);
+      sendText(from, t(lang, 'verify_giveup'));
+      return;
+    }
+    saveSession(from, s);
+    sendText(from, t(lang, 'verify_fail'));
+    return; // stay in await_verify for another attempt
+  }
+
+  // Verified — reveal, then reset for the next query.
+  s.step = 'await_query';
+  s.pending = null;
+  s.attempts = 0;
+  saveSession(from, s);
+  revealOrders(from, lang, matched);
+}
+
+/** Compose and send the committed-status reply for a set of orders. */
+function revealOrders(from, lang, orders) {
   var replies = [];
   var seenSO = {};
   for (var i = 0; i < orders.length && replies.length < 5; i++) {
@@ -231,15 +313,20 @@ function lookupAndReply(from, lang, query) {
 }
 
 /**
- * Search all order tabs for a row matching the query on ORDER NO (exact,
- * case-insensitive), CONTACT NUMBER (digits match), or CUSTOMER NAME
- * (substring, case-insensitive). Returns array of
+ * Scan all order tabs and return candidate rows as
  * {orderNo, godrejSO, customer, contact, delivery}.
+ *
+ * mode:
+ *   'contact'    — match rows whose CONTACT NUMBER equals `query` (digit match).
+ *                  This path is self-verifying: the customer supplied the number.
+ *   'identifier' — match rows on ORDER NO (exact), GODREJ SO (exact) or
+ *                  CUSTOMER NAME (substring). These are NOT revealed until the
+ *                  customer also passes contact-number verification.
  */
-function searchOrders(query) {
+function searchOrders(query, mode) {
   var q = String(query || '').trim();
   var qUpper = q.toUpperCase();
-  var qDigits = q.replace(/\D/g, '');
+  var qDigits = digits10(q);
   var results = [];
 
   var tabs = getOrderTabNames();
@@ -267,11 +354,15 @@ function searchOrders(query) {
       var del     = iDel   !== undefined ? String(row[iDel]   || '').trim() : '';
 
       var match = false;
-      if (orderNo && orderNo.toUpperCase() === qUpper) match = true;
-      else if (qDigits.length >= 6 && cont.replace(/\D/g, '').indexOf(qDigits) >= 0) match = true;
-      else if (q.length >= 3 && cust && cust.toUpperCase().indexOf(qUpper) >= 0) match = true;
-      // Allow querying directly by the Godrej SO number too.
-      else if (so && so.toUpperCase() === qUpper) match = true;
+      if (mode === 'contact') {
+        // Self-verifying lookup by registered contact number.
+        if (qDigits && digits10(cont) === qDigits) match = true;
+      } else {
+        // Identifier lookup (order no / Godrej SO / name). Contact NOT used here.
+        if (orderNo && orderNo.toUpperCase() === qUpper) match = true;
+        else if (so && so.toUpperCase() === qUpper) match = true;
+        else if (q.length >= 3 && cust && cust.toUpperCase().indexOf(qUpper) >= 0) match = true;
+      }
 
       if (match) {
         results.push({
@@ -404,8 +495,11 @@ function buildStatusReply(lang, order) {
 
 var STR = {
   en: {
-    ask_query:  'Welcome to Interio by Godrej (Patia) 🛋️\n\nTo check your order status, please send *any one* of:\n• Order Number\n• Registered Contact Number\n• Customer Name',
-    not_found:  "Sorry, I couldn't find any order matching that. Please check and resend your Order Number, Contact Number, or Name — or type *hi* to restart.",
+    ask_query:  'Welcome to Interio by Godrej (Patia) 🛋️\n\nTo check your order status, please send *any one* of:\n• Registered Contact Number\n• Order Number\n• Customer Name',
+    ask_verify: 'For your privacy, please enter the *mobile number registered with this order* to confirm it is you.',
+    verify_fail:'That number does not match the mobile number registered with this order. Please enter the correct *registered mobile number*.',
+    verify_giveup:'Sorry, I could not verify the registered mobile number for that order. Please contact the showroom, or type *hi* to start again.',
+    not_found:  "Sorry, I couldn't find any order matching that. Please check and resend your Registered Contact Number, Order Number, or Name — or type *hi* to restart.",
     no_so:      'Your order was found but the Godrej SO number is not yet recorded. Please contact the showroom.',
     status_committed:  '✅ *Order {order}* (Godrej SO {so})\nYour order is *fully committed* by Godrej as of *{date}*. It will be scheduled for delivery shortly.',
     status_pending:    '🕒 *Order {order}* (Godrej SO {so})\nStatus: *In process* — {committed} of {total} committed so far.\nExpected full commitment date: *{date}*{days}.',
@@ -417,8 +511,11 @@ var STR = {
     footer:     'To check another order, send its Order/Contact/Name. Type *hi* to change language.'
   },
   hi: {
-    ask_query:  'Interio by Godrej (Patia) में आपका स्वागत है 🛋️\n\nअपने ऑर्डर की स्थिति जानने के लिए, कृपया इनमें से *कोई एक* भेजें:\n• ऑर्डर नंबर\n• रजिस्टर्ड मोबाइल नंबर\n• ग्राहक का नाम',
-    not_found:  'क्षमा करें, इससे मेल खाता कोई ऑर्डर नहीं मिला। कृपया अपना ऑर्डर नंबर, मोबाइल नंबर या नाम दोबारा भेजें — या फिर से शुरू करने के लिए *hi* लिखें।',
+    ask_query:  'Interio by Godrej (Patia) में आपका स्वागत है 🛋️\n\nअपने ऑर्डर की स्थिति जानने के लिए, कृपया इनमें से *कोई एक* भेजें:\n• रजिस्टर्ड मोबाइल नंबर\n• ऑर्डर नंबर\n• ग्राहक का नाम',
+    ask_verify: 'आपकी गोपनीयता के लिए, कृपया इस ऑर्डर के साथ *रजिस्टर्ड मोबाइल नंबर* दर्ज करें ताकि पुष्टि हो सके कि यह आप ही हैं।',
+    verify_fail:'यह नंबर इस ऑर्डर के रजिस्टर्ड मोबाइल नंबर से मेल नहीं खाता। कृपया सही *रजिस्टर्ड मोबाइल नंबर* दर्ज करें।',
+    verify_giveup:'क्षमा करें, इस ऑर्डर का रजिस्टर्ड मोबाइल नंबर सत्यापित नहीं हो सका। कृपया शोरूम से संपर्क करें, या फिर से शुरू करने के लिए *hi* लिखें।',
+    not_found:  'क्षमा करें, इससे मेल खाता कोई ऑर्डर नहीं मिला। कृपया अपना रजिस्टर्ड मोबाइल नंबर, ऑर्डर नंबर या नाम दोबारा भेजें — या फिर से शुरू करने के लिए *hi* लिखें।',
     no_so:      'आपका ऑर्डर मिल गया, लेकिन Godrej SO नंबर अभी दर्ज नहीं है। कृपया शोरूम से संपर्क करें।',
     status_committed:  '✅ *ऑर्डर {order}* (Godrej SO {so})\nआपका ऑर्डर *{date}* को Godrej द्वारा *पूरी तरह कमिटेड* हो चुका है। जल्द ही डिलीवरी शेड्यूल की जाएगी।',
     status_pending:    '🕒 *ऑर्डर {order}* (Godrej SO {so})\nस्थिति: *प्रक्रिया में* — अब तक {total} में से {committed} कमिटेड।\nपूर्ण कमिटमेंट की अनुमानित तारीख: *{date}*{days}।',
@@ -430,8 +527,11 @@ var STR = {
     footer:     'दूसरा ऑर्डर देखने के लिए उसका ऑर्डर/मोबाइल/नाम भेजें। भाषा बदलने के लिए *hi* लिखें।'
   },
   or: {
-    ask_query:  'Interio by Godrej (Patia) କୁ ସ୍ୱାଗତ 🛋️\n\nଆପଣଙ୍କ ଅର୍ଡରର ସ୍ଥିତି ଜାଣିବା ପାଇଁ, ଦୟାକରି ଏଥିମଧ୍ୟରୁ *ଯେକୌଣସି ଗୋଟିଏ* ପଠାନ୍ତୁ:\n• ଅର୍ଡର ନମ୍ବର\n• ପଞ୍ଜୀକୃତ ମୋବାଇଲ ନମ୍ବର\n• ଗ୍ରାହକଙ୍କ ନାମ',
-    not_found:  'କ୍ଷମା କରନ୍ତୁ, ସେଥିସହ ମେଳ ଖାଉଥିବା କୌଣସି ଅର୍ଡର ମିଳିଲା ନାହିଁ। ଦୟାକରି ଆପଣଙ୍କ ଅର୍ଡର ନମ୍ବର, ମୋବାଇଲ ନମ୍ବର କିମ୍ବା ନାମ ପୁଣି ପଠାନ୍ତୁ — କିମ୍ବା ପୁନଃ ଆରମ୍ଭ ପାଇଁ *hi* ଲେଖନ୍ତୁ।',
+    ask_query:  'Interio by Godrej (Patia) କୁ ସ୍ୱାଗତ 🛋️\n\nଆପଣଙ୍କ ଅର୍ଡରର ସ୍ଥିତି ଜାଣିବା ପାଇଁ, ଦୟାକରି ଏଥିମଧ୍ୟରୁ *ଯେକୌଣସି ଗୋଟିଏ* ପଠାନ୍ତୁ:\n• ପଞ୍ଜୀକୃତ ମୋବାଇଲ ନମ୍ବର\n• ଅର୍ଡର ନମ୍ବର\n• ଗ୍ରାହକଙ୍କ ନାମ',
+    ask_verify: 'ଆପଣଙ୍କ ଗୋପନୀୟତା ପାଇଁ, ଏହା ଆପଣ ହିଁ ବୋଲି ନିଶ୍ଚିତ କରିବାକୁ ଦୟାକରି ଏହି ଅର୍ଡର ସହ *ପଞ୍ଜୀକୃତ ମୋବାଇଲ ନମ୍ବର* ଦିଅନ୍ତୁ।',
+    verify_fail:'ଏହି ନମ୍ବର ଏହି ଅର୍ଡରର ପଞ୍ଜୀକୃତ ମୋବାଇଲ ନମ୍ବର ସହ ମେଳ ଖାଉନାହିଁ। ଦୟାକରି ସଠିକ୍ *ପଞ୍ଜୀକୃତ ମୋବାଇଲ ନମ୍ବର* ଦିଅନ୍ତୁ।',
+    verify_giveup:'କ୍ଷମା କରନ୍ତୁ, ଏହି ଅର୍ଡରର ପଞ୍ଜୀକୃତ ମୋବାଇଲ ନମ୍ବର ଯାଞ୍ଚ ହୋଇପାରିଲା ନାହିଁ। ଦୟାକରି ଶୋରୁମ ସହ ଯୋଗାଯୋଗ କରନ୍ତୁ, କିମ୍ବା ପୁନଃ ଆରମ୍ଭ ପାଇଁ *hi* ଲେଖନ୍ତୁ।',
+    not_found:  'କ୍ଷମା କରନ୍ତୁ, ସେଥିସହ ମେଳ ଖାଉଥିବା କୌଣସି ଅର୍ଡର ମିଳିଲା ନାହିଁ। ଦୟାକରି ଆପଣଙ୍କ ପଞ୍ଜୀକୃତ ମୋବାଇଲ ନମ୍ବର, ଅର୍ଡର ନମ୍ବର କିମ୍ବା ନାମ ପୁଣି ପଠାନ୍ତୁ — କିମ୍ବା ପୁନଃ ଆରମ୍ଭ ପାଇଁ *hi* ଲେଖନ୍ତୁ।',
     no_so:      'ଆପଣଙ୍କ ଅର୍ଡର ମିଳିଲା, କିନ୍ତୁ Godrej SO ନମ୍ବର ଏବେ ରେକର୍ଡ ହୋଇନାହିଁ। ଦୟାକରି ଶୋରୁମ ସହ ଯୋଗାଯୋଗ କରନ୍ତୁ।',
     status_committed:  '✅ *ଅର୍ଡର {order}* (Godrej SO {so})\nଆପଣଙ୍କ ଅର୍ଡର *{date}* ରେ Godrej ଦ୍ୱାରା *ସମ୍ପୂର୍ଣ୍ଣ କମିଟେଡ୍* ହୋଇଛି। ଶୀଘ୍ର ଡେଲିଭରି ସିଡ୍ୟୁଲ ହେବ।',
     status_pending:    '🕒 *ଅର୍ଡର {order}* (Godrej SO {so})\nସ୍ଥିତି: *ପ୍ରକ୍ରିୟାରେ* — ଏପର୍ଯ୍ୟନ୍ତ {total} ମଧ୍ୟରୁ {committed} କମିଟେଡ୍।\nସମ୍ପୂର୍ଣ୍ଣ କମିଟମେଣ୍ଟର ଆନୁମାନିକ ତାରିଖ: *{date}*{days}।',
@@ -530,6 +630,12 @@ function toNum(v) {
   if (v === null || v === undefined) return NaN;
   if (typeof v === 'number') return v;
   return parseFloat(String(v).replace(/[, ]/g, ''));
+}
+
+/** Last 10 digits of a phone value (drops +91 / spaces / leading 0). */
+function digits10(v) {
+  var d = String(v == null ? '' : v).replace(/\D/g, '');
+  return d.length > 10 ? d.slice(-10) : d;
 }
 
 /** Parse a Google Sheets Date object or a d-m-y / d-b-y string. Returns Date|null. */

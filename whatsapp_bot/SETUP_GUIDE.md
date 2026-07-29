@@ -21,13 +21,27 @@ ever shown.
 Customer msg ─▶ Meta Cloud API ─▶ (webhook) Apps Script doPost
                                       │
                                       ├─ ask language (English / हिंदी / ଓଡ଼ିଆ)
-                                      ├─ ask Order No / Contact / Name
+                                      ├─ ask Contact No / Order No / Name
+                                      ├─ VERIFY: reveal only after the *registered
+                                      │   contact number* is matched (see below)
                                       ├─ find row in CRM order tabs → GODREJ SO NO
                                       ├─ look up SO in MIS_Daily:
                                       │     all lines  Qty == Committed Qty ? → COMMITTED
                                       │     else → expected date = max Inventory Commitment Date
                                       └─ reply in chosen language
 ```
+
+**Identity verification (two-factor).** A customer may message from *any* WhatsApp
+number, and the number that placed the order is often not the one on WhatsApp — so
+the bot never trusts the sender's WhatsApp number. Order details are revealed only
+after the **registered contact number** is matched:
+
+- If the customer's first message is a **phone number**, that *is* the check —
+  it's matched against `CONTACT NUMBER` and matching orders are shown.
+- If they search by **Order No or Name**, the bot then asks for the **registered
+  mobile number** and reveals nothing until it matches (last-10-digit compare,
+  so `+91`/spaces don't matter). After 3 wrong attempts it stops and suggests
+  contacting the showroom.
 
 **Committed logic** mirrors `services/delivery_readiness.py`: an SO is *fully
 committed* only when **every** line item has `Sales Order Qty == Sales Order
@@ -127,10 +141,12 @@ Everything is in `Code.gs`:
 | Session length | `CONFIG.SESSION_TTL` (seconds) |
 
 ### Privacy note
-The bot matches on Order No, Contact Number, or Name as the customer types them.
-If you want stricter privacy (only reveal an order to the phone that placed it),
-we can match the sender's WhatsApp number against `CONTACT NUMBER` before
-replying — say the word and we'll add it.
+Order details are gated behind the **registered contact number** (two-factor,
+see above) — a name or order number alone never reveals anything until the
+matching mobile number is entered. To make it stricter or looser, edit
+`startLookup` / `verifyAndReply` in `Code.gs` (e.g. change the 3-attempt limit,
+or require the contact number even when the customer already typed a phone
+number).
 
 ---
 
