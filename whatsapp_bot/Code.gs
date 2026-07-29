@@ -75,6 +75,11 @@ function _prop(key, fallback) {
 function waToken()  { return _prop('WHATSAPP_TOKEN',  CONFIG.WHATSAPP_TOKEN); }
 function phoneId()  { return _prop('PHONE_NUMBER_ID', CONFIG.PHONE_NUMBER_ID); }
 function verifyTok(){ return _prop('VERIFY_TOKEN',    CONFIG.VERIFY_TOKEN); }
+// Order tabs live in the CRM sheet; MIS_Daily + SHEET_DETAILS live in the OPS
+// sheet. Set OPS_SPREADSHEET_ID as a Script Property (same value your Streamlit
+// app uses); it falls back to the CRM sheet only if left unset.
+function crmSheetId() { return _prop('CRM_SPREADSHEET_ID', CONFIG.CRM_SPREADSHEET_ID); }
+function opsSheetId() { return _prop('OPS_SPREADSHEET_ID', CONFIG.OPS_SPREADSHEET_ID); }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // WEBHOOK ENTRY POINTS
@@ -330,7 +335,7 @@ function searchOrders(query, mode) {
   var results = [];
 
   var tabs = getOrderTabNames();
-  var ss = SpreadsheetApp.openById(CONFIG.CRM_SPREADSHEET_ID);
+  var ss = SpreadsheetApp.openById(crmSheetId());
 
   for (var ti = 0; ti < tabs.length; ti++) {
     var sheet = ss.getSheetByName(tabs[ti]);
@@ -383,7 +388,7 @@ function getOrderTabNames() {
 
   var names = [];
   try {
-    var ss = SpreadsheetApp.openById(CONFIG.OPS_SPREADSHEET_ID);
+    var ss = SpreadsheetApp.openById(opsSheetId());
     var sheet = ss.getSheetByName(CONFIG.SHEET_DETAILS_TAB);
     if (sheet) {
       var values = sheet.getDataRange().getValues();
@@ -416,7 +421,7 @@ function getCommitment(soNo) {
   var out = { found: false, allReady: false, totalQty: 0, committedQty: 0, commitDate: null };
   if (!target) return out;
 
-  var ss = SpreadsheetApp.openById(CONFIG.OPS_SPREADSHEET_ID);
+  var ss = SpreadsheetApp.openById(opsSheetId());
   var sheet = ss.getSheetByName(CONFIG.MIS_TAB);
   if (!sheet) return out;
   var values = sheet.getDataRange().getValues();
@@ -695,6 +700,6 @@ function testLookup() {
 /** Verify both spreadsheets + key tabs are reachable. */
 function testConfig() {
   console.log('Order tabs from SHEET_DETAILS: ' + JSON.stringify(getOrderTabNames()));
-  var mis = SpreadsheetApp.openById(CONFIG.OPS_SPREADSHEET_ID).getSheetByName(CONFIG.MIS_TAB);
+  var mis = SpreadsheetApp.openById(opsSheetId()).getSheetByName(CONFIG.MIS_TAB);
   console.log('MIS tab found: ' + (mis ? 'yes, ' + mis.getLastRow() + ' rows' : 'NO'));
 }

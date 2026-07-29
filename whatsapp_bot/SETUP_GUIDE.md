@@ -56,15 +56,18 @@ across that SO's items.
 2. Go to <https://script.google.com> → **New project**.
 3. Delete the default `Code.gs` content and paste the contents of
    [`Code.gs`](./Code.gs).
-4. (Recommended) Project Settings ⚙ → **Script Properties** → add:
+4. Project Settings ⚙ → **Script Properties** → add:
    - `WHATSAPP_TOKEN` = *(fill after Part B)*
    - `PHONE_NUMBER_ID` = *(fill after Part B)*
    - `VERIFY_TOKEN` = any string you invent, e.g. `interio4s-verify`
-   (If you skip this, fill the same values in the `CONFIG` block at the top of `Code.gs`.)
-5. Check the spreadsheet IDs in `CONFIG`:
-   - `CRM_SPREADSHEET_ID` — already set to your CRM sheet.
-   - `OPS_SPREADSHEET_ID` — set to the file that holds `MIS_Daily` and
-     `SHEET_DETAILS`. If everything is in one file, keep it the same as the CRM ID.
+   - **`OPS_SPREADSHEET_ID`** = the ID of the **OPS** spreadsheet that holds
+     `MIS_Daily` and `SHEET_DETAILS` (the same value your Streamlit app / GitHub
+     Actions use for `OPS_SPREADSHEET_ID`). **Required** here, because MIS lives
+     in the OPS sheet, not the CRM sheet.
+   - `CRM_SPREADSHEET_ID` = *(optional)* only if your order tabs are not in the
+     default CRM sheet already set in `Code.gs`.
+   (You can instead hard-code these in the `CONFIG` block at the top of `Code.gs`,
+   but Script Properties keep them out of the repo.)
 6. In the editor, select the function **`testConfig`** and click **Run**.
    Approve the permissions prompt (it needs Sheets + external requests).
    The Execution Log should list your order tabs and confirm `MIS_Daily` is found.
