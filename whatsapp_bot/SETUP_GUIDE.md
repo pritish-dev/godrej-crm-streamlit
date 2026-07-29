@@ -128,6 +128,51 @@ currently registered on any WhatsApp / WhatsApp Business app.
 
 ---
 
+## Part D — Automatic deploys from GitHub (no more manual copy-paste)
+
+The workflow `.github/workflows/deploy-apps-script.yaml` pushes `Code.gs` to your
+Apps Script project every time it changes on the **master** branch, using Google's
+`clasp`. Do this one-time setup so future edits deploy themselves.
+
+**1. Turn on the Apps Script API** (once): open
+<https://script.google.com/home/usersettings> and set **Google Apps Script API =
+ON**.
+
+**2. Get a clasp login token on your computer** (once):
+```bash
+npm install -g @google/clasp@2.4.2
+clasp login          # opens a browser; sign in as the Sheets-owner account
+```
+This creates `~/.clasprc.json` (Mac/Linux) or `C:\Users\<you>\.clasprc.json`
+(Windows). Open that file and copy its **entire** contents.
+
+**3. Find your two IDs:**
+- **Script ID** — Apps Script editor → Project Settings ⚙ → *IDs* → **Script ID**.
+- **Deployment ID** — the long `AKfyc...` segment in your Web App URL
+  `https://script.google.com/macros/s/`**`AKfyc...`**`/exec`
+  (Deploy → Manage deployments shows it too). Optional, but set it so the
+  webhook URL stays fixed on every auto-deploy.
+
+**4. Add repository secrets** in GitHub → this repo → **Settings → Secrets and
+variables → Actions → New repository secret**:
+
+| Secret name | Value |
+|---|---|
+| `CLASPRC_JSON` | the full contents of `~/.clasprc.json` from step 2 |
+| `SCRIPT_ID` | the Script ID from step 3 |
+| `DEPLOYMENT_ID` | the `AKfyc...` deployment ID from step 3 (optional) |
+
+**5. Done.** Now editing `whatsapp_bot/Code.gs` and pushing to `master` (or
+running the workflow manually from the **Actions** tab) updates the live bot
+automatically. You can watch each run under the repo's **Actions** tab.
+
+> First-time note: the Web App still has to be **created and authorized once by
+> hand** in Part A (Google needs a human to approve the Sheets/network
+> permissions). After that first manual deploy, every future code change deploys
+> through this Action — you never touch the editor again.
+
+---
+
 ## Customising
 
 Everything is in `Code.gs`:
