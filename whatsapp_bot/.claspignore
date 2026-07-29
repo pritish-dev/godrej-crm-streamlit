@@ -1,0 +1,7 @@
+# Only Code.gs and appsscript.json are pushed to Apps Script.
+# Everything listed here is kept out of the push.
+README.md
+SETUP_GUIDE.md
+.clasp.json
+.claspignore
+.gitignore

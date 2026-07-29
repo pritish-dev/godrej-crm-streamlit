@@ -1,0 +1,55 @@
+name: Deploy WhatsApp Bot to Apps Script
+
+# Auto-pushes whatsapp_bot/Code.gs (and appsscript.json) to the Google Apps
+# Script project whenever they change on the default branch. If DEPLOYMENT_ID
+# is set, it also redeploys that SAME Web App deployment so the webhook URL
+# never changes.
+#
+# One-time setup (see whatsapp_bot/SETUP_GUIDE.md, "Part D"):
+#   Repo Secrets required:
+#     CLASPRC_JSON   – contents of your local ~/.clasprc.json after `clasp login`
+#     SCRIPT_ID      – the Apps Script project's Script ID
+#     DEPLOYMENT_ID  – (optional) the Web App deployment ID (keeps the URL stable)
+
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - 'whatsapp_bot/**'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      SCRIPT_ID: ${{ secrets.SCRIPT_ID }}
+      DEPLOYMENT_ID: ${{ secrets.DEPLOYMENT_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install clasp
+        run: npm install -g @google/clasp@2.4.2
+
+      - name: Write clasp credentials
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+        run: printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+
+      - name: Write .clasp.json project config
+        working-directory: whatsapp_bot
+        run: printf '{"scriptId":"%s","rootDir":"."}' "$SCRIPT_ID" > .clasp.json
+
+      - name: Push code to Apps Script
+        working-directory: whatsapp_bot
+        run: clasp push -f
+
+      - name: Redeploy Web App (keep same URL)
+        if: ${{ env.DEPLOYMENT_ID != '' }}
+        working-directory: whatsapp_bot
+        run: clasp deploy -i "$DEPLOYMENT_ID" -d "Auto-deploy ${{ github.sha }}"

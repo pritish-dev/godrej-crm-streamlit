@@ -1,0 +1,3 @@
+# clasp local files (generated in CI / local; never commit)
+.clasp.json
+.clasprc.json
