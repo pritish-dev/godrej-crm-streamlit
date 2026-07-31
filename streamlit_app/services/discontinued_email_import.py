@@ -2,8 +2,10 @@
 services/discontinued_email_import.py
 
 Fetches the "Product Discontinuation Circular" Excel attachment from Gmail via
-IMAP, reads the first sheet tab named 'Consolidated', and writes the cleaned
-product list to the 'Discontinued Products' Google Sheet tab (OPS spreadsheet).
+IMAP, reads the first sheet tab named 'Consolidated', and appends any
+newly-added products to the 'Discontinued Products' Google Sheet tab (OPS
+spreadsheet). Items already present in the sheet are skipped, so the daily cron
+and the manual dashboard toggle can re-run without ever duplicating a row.
 
 Mirrors the pattern of mis_email_import.py / stock_email_import.py — reuses the
 same credential loading and IMAP helpers, just a different subject, a different
@@ -276,16 +278,145 @@ def fetch_discontinued_data(
 # GOOGLE SHEET WRITE
 # ═════════════════════════════════════════════════════════════════════════════
 
+def _normalize_to_output(df: pd.DataFrame) -> pd.DataFrame:
+    """Return df restricted/ordered to OUTPUT_COLUMNS, missing cols filled blank."""
+    out = df.copy()
+    for col in OUTPUT_COLUMNS:
+        if col not in out.columns:
+            out[col] = ""
+    return out[OUTPUT_COLUMNS].fillna("").astype(str)
+
+
+def _row_key(item_code, item_desc) -> str:
+    """
+    Dedup key for a discontinued row. Primary key is the Item Code; when the
+    Item Code is blank we fall back to the Item Description so genuinely-new
+    blank-code rows still register while exact repeats don't.
+    """
+    code = " ".join(str(item_code).strip().upper().split())
+    if code:
+        return f"CODE::{code}"
+    desc = " ".join(str(item_desc).strip().upper().split())
+    return f"DESC::{desc}"
+
+
 def save_discontinued_to_sheet(df: pd.DataFrame) -> str:
-    """Overwrite the 'Discontinued Products' Google Sheet tab with df."""
+    """
+    Append ONLY newly-added discontinued items to the 'Discontinued Products'
+    Google Sheet tab.
+
+    Existing rows are never touched or reordered — any item whose Item Code
+    (or, for blank-code rows, Item Description) already appears in the sheet is
+    skipped, so the daily cron and the manual toggle can both re-run safely
+    without ever duplicating a row.
+    """
     if df is None or df.empty:
         return "⚠️ Nothing to save — DataFrame is empty."
+
+    from services.sheets import get_df, write_df, get_sheet
+
+    incoming = _normalize_to_output(df)
+
+    # Drop within-circular duplicates first (keep first occurrence).
+    incoming = incoming.assign(
+        __key__=[
+            _row_key(c, d)
+            for c, d in zip(incoming["Item Code"], incoming["Item Description"])
+        ]
+    )
+    incoming = incoming[incoming["__key__"] != "DESC::"]  # drop fully-empty rows
+    incoming = incoming.drop_duplicates(subset="__key__", keep="first")
+
+    # Read what's already stored.
     try:
-        from services.sheets import write_df
-        write_df(DISCONTINUED_CACHE_SHEET, df.fillna("").astype(str))
-        return f"✅ Wrote {len(df)} rows to '{DISCONTINUED_CACHE_SHEET}'."
+        existing = get_df(DISCONTINUED_CACHE_SHEET)
+    except Exception:
+        existing = pd.DataFrame()
+
+    fresh_sheet = (
+        existing is None
+        or existing.empty
+        or "Item Code" not in existing.columns
+    )
+
+    if fresh_sheet:
+        # No usable existing data — write header + every item in the circular.
+        to_write = incoming.drop(columns="__key__")
+        try:
+            write_df(DISCONTINUED_CACHE_SHEET, to_write)
+        except Exception as e:
+            return f"❌ Failed to write '{DISCONTINUED_CACHE_SHEET}': {e}"
+        try:
+            get_df.clear()
+        except Exception:
+            pass
+        return (
+            f"✅ Added {len(to_write)} discontinued item(s) to "
+            f"'{DISCONTINUED_CACHE_SHEET}' (sheet was empty)."
+        )
+
+    # Build the set of keys already present in the sheet.
+    existing_desc = (
+        existing["Item Description"]
+        if "Item Description" in existing.columns
+        else [""] * len(existing)
+    )
+    existing_keys = {
+        _row_key(c, d) for c, d in zip(existing["Item Code"], existing_desc)
+    }
+
+    new_rows = incoming[~incoming["__key__"].isin(existing_keys)].drop(columns="__key__")
+
+    total_in_circular = len(incoming)
+    if new_rows.empty:
+        return (
+            f"✅ No new items — all {total_in_circular} item(s) in the circular "
+            f"are already in '{DISCONTINUED_CACHE_SHEET}'. Nothing appended."
+        )
+
+    # Append only the new rows beneath the existing data (existing rows untouched).
+    try:
+        ws = get_sheet(DISCONTINUED_CACHE_SHEET)
+        ws.append_rows(
+            new_rows.values.tolist(),
+            value_input_option="USER_ENTERED",
+        )
     except Exception as e:
-        return f"❌ Failed to write '{DISCONTINUED_CACHE_SHEET}': {e}"
+        return f"❌ Failed to append to '{DISCONTINUED_CACHE_SHEET}': {e}"
+
+    try:
+        get_df.clear()
+    except Exception:
+        pass
+
+    skipped = total_in_circular - len(new_rows)
+    return (
+        f"✅ Added {len(new_rows)} new discontinued item(s) to "
+        f"'{DISCONTINUED_CACHE_SHEET}'"
+        + (f" ({skipped} already present, skipped)." if skipped else ".")
+    )
+
+
+def load_cached_discontinued() -> tuple[pd.DataFrame, str]:
+    """
+    Read the current 'Discontinued Products' Google Sheet tab for display on
+    the CRM dashboard page. Returns (df, status_msg).
+    """
+    try:
+        from services.sheets import get_df
+        df = get_df(DISCONTINUED_CACHE_SHEET)
+    except Exception as exc:
+        return pd.DataFrame(), f"❌ Could not read '{DISCONTINUED_CACHE_SHEET}': {exc}"
+
+    if df is None or df.empty:
+        return pd.DataFrame(), (
+            f"⚠️ '{DISCONTINUED_CACHE_SHEET}' sheet is empty. "
+            "Wait for the 11 AM scheduled sync or flip the sync switch to pull "
+            "the latest circular from Gmail now."
+        )
+
+    df = df.replace("", pd.NA).dropna(how="all").fillna("").reset_index(drop=True)
+    return df, f"✅ Loaded {len(df)} discontinued item(s) from the sheet."
 
 
 def fetch_and_save_discontinued(today_only: bool = False) -> tuple[pd.DataFrame, str]:
@@ -295,10 +426,12 @@ def fetch_and_save_discontinued(today_only: bool = False) -> tuple[pd.DataFrame,
     Parameters
     ----------
     today_only : if True (11 AM cron), only look at today's email. If False
-                 (manual button), look back over the last 30 days for the most
-                 recent circular.
+                 (manual button / dashboard toggle), look back over the last
+                 30 days for the most recent circular.
 
-    Returns (df, combined_status).
+    Returns (df, combined_status). The returned df is the full circular
+    (whether or not any rows were newly appended); the status describes how
+    many items were actually added to the sheet.
     """
     df, status = fetch_discontinued_data(
         days_back=30,
