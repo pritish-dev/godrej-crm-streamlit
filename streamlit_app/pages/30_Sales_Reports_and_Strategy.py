@@ -967,10 +967,11 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                 use_container_width=True,
                 key="sr_refresh_achievement",
                 help=(
-                    "Reloads achievement from the SALE INVOICE- <Month> sheet for "
-                    "each selected month. If a month's sheet has no invoices yet, "
-                    "they are fetched from email first and saved to that month's "
-                    "sheet."
+                    "Reloads achievement directly from the SALE INVOICE- <Month> "
+                    "sheet (OPS) for each selected month and re-sums the Taxable "
+                    "Value (without GST) per salesperson. Invoices are populated "
+                    "into that sheet by the daily invoice fetch — this button only "
+                    "re-reads and re-totals what is already stored there."
                 ),
             )
         with _sr_refresh_info:
@@ -981,37 +982,35 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
             )
 
         if _sr_refresh_ach_clicked:
-            with st.spinner("Refreshing achievement…"):
-                _sr_refresh_msgs = []
-                _sr_today_fetch = datetime.now().date()
+            with st.spinner(
+                "Refreshing achievement from the SALE INVOICE- <Month> sheet(s)…"
+            ):
+                # Read the achievement DIRECTLY from each month's
+                # "SALE INVOICE- <Month>" sheet in OPS. Those sheets are already
+                # populated by the daily invoice fetch, so this button never
+                # touches email — it only re-reads the stored invoices and
+                # re-sums the Taxable Value (without GST) per salesperson.
+
+                # 1) Drop the Google-Sheet cache so we read the latest rows.
+                try:
+                    get_df.clear()
+                except Exception:
+                    pass
+
+                # 2) Back-fill any blank Sales Executive from the OPS order
+                #    sheets so every invoice is attributed to the salesperson
+                #    whose name belongs to it (never lost as "UNKNOWN").
+                _sr_enrich_by_month: dict[str, str] = {}
+                _sr_seen_refresh: set[str] = set()
                 for _sr_rm, _sr_ry in _sr_month_list:
                     _sr_mname = calendar.month_name[_sr_rm]
-                    _sr_existing = _sr_load_invoice_sheet(_sr_mname)
-                    if _sr_existing is not None and not _sr_existing.empty:
-                        # Sheet already has invoices — don't refetch, but re-run
-                        # the salesperson lookup to back-fill any rows whose
-                        # Sales Executive is still blank (order entered into the
-                        # CRM after the invoice was first saved).
-                        _sr_enrich_msg = reenrich_sales_executives(_sr_mname)
-                        _sr_refresh_msgs.append(
-                            f"**{_sr_mname} {_sr_ry}**: {len(_sr_existing)} "
-                            f"invoice row(s) — {_sr_enrich_msg}"
-                        )
+                    if _sr_mname in _sr_seen_refresh:
                         continue
+                    _sr_seen_refresh.add(_sr_mname)
+                    _sr_enrich_by_month[_sr_mname] = reenrich_sales_executives(_sr_mname)
 
-                    _sr_m_start = date(_sr_ry, _sr_rm, 1)
-                    _sr_m_last_day = calendar.monthrange(_sr_ry, _sr_rm)[1]
-                    _sr_m_end = min(date(_sr_ry, _sr_rm, _sr_m_last_day), _sr_today_fetch)
-                    if _sr_m_start > _sr_m_end:
-                        _sr_refresh_msgs.append(
-                            f"**{_sr_mname} {_sr_ry}**: month hasn't started yet — "
-                            "nothing to fetch."
-                        )
-                        continue
-
-                    _, _sr_fetch_msg = fetch_and_save_invoices_range(_sr_m_start, _sr_m_end)
-                    _sr_refresh_msgs.append(f"**{_sr_mname} {_sr_ry}**: {_sr_fetch_msg}")
-
+                # 3) Clear the derived caches so the re-sum reads the freshly
+                #    back-filled sheet.
                 try:
                     get_df.clear()
                     _sr_load_invoice_achievement.clear()
@@ -1019,7 +1018,26 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                 except Exception:
                     pass
 
-            st.success("✅ Achievement refreshed.")
+                # 4) Re-sum achievement per salesperson straight from the sheet.
+                _sr_refresh_msgs = []
+                for _sr_rm, _sr_ry in _sr_month_list:
+                    _sr_mname = calendar.month_name[_sr_rm]
+                    _sr_grp = _sr_load_invoice_achievement(_sr_mname)
+                    _sr_enrich_msg = _sr_enrich_by_month.get(_sr_mname, "")
+                    if _sr_grp is None or _sr_grp.empty:
+                        _sr_refresh_msgs.append(
+                            f"**{_sr_mname} {_sr_ry}**: no WFX invoices stored in "
+                            f"the SALE INVOICE- {_sr_mname} sheet yet."
+                        )
+                    else:
+                        _sr_month_total = float(_sr_grp["AMOUNT"].sum())
+                        _sr_refresh_msgs.append(
+                            f"**{_sr_mname} {_sr_ry}**: {len(_sr_grp)} salesperson(s) · "
+                            f"₹{_sr_fmt_money(_sr_month_total)} total achievement"
+                            + (f" — {_sr_enrich_msg}" if _sr_enrich_msg else "")
+                        )
+
+            st.success("✅ Achievement refreshed from the SALE INVOICE- <Month> sheet(s).")
             for _sr_rm_msg in _sr_refresh_msgs:
                 st.write(_sr_rm_msg)
             st.rerun()

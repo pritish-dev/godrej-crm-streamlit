@@ -17,6 +17,7 @@ from services.sheets import get_df
 from services.delivery_status import (
     completed_mask,
     active_mask,
+    cancelled_mask,
     norm_status,
     STATUS_RANK,
 )
@@ -679,7 +680,9 @@ tomorrow = today + timedelta(days=1)
 
 total_orders    = crm["ORDER NO"].nunique() if "ORDER NO" in crm.columns else len(crm)
 total_value     = crm["ORDER VALUE"].sum()
-total_pending   = crm["PENDING DUE"].sum()
+# Cancelled orders carry no real outstanding balance — exclude them so the
+# headline "Pending Due" ties out with the Payment Due table below.
+total_pending   = crm.loc[~cancelled_mask(crm), "PENDING DUE"].sum()
 # Count unique orders whose delivery is not yet completed — matches pending-
 # delivery table logic. An order is "completed" only at "Delivered" (legacy
 # sheets) or "Installation Done" (new-format sheets); everything before that
@@ -1796,7 +1799,9 @@ st.subheader("💰 Payment Due")
 # advance and order value for multi-line orders. We must aggregate at the
 # ORDER NO level first so the sums cover every line of the order, then keep
 # only orders that still have an outstanding balance.
-_crm_no_freestock = crm[~_is_free_stock(crm)].copy()
+# Cancelled orders (Delivery Status CANCEL / CANCELLED / CANCELED) are dropped
+# so a cancelled item never shows as an outstanding payment.
+_crm_no_freestock = crm[~_is_free_stock(crm) & ~cancelled_mask(crm)].copy()
 payment_grouped = group_by_order_no(_crm_no_freestock)
 payment_grouped = payment_grouped[payment_grouped["PENDING DUE"] > 0].copy()
 payment_grouped = payment_grouped.sort_values(

@@ -33,10 +33,40 @@ STATUS_RANK = {
 
 BLANK_TOKENS = {"", "NAN", "NONE", "NAT"}
 
+# Cancelled orders are neither "active" (still in the delivery pipeline) nor
+# "completed" — they are dropped entirely from the Pending Delivery and Payment
+# Due tables. Any of the common spellings counts, and a status that merely
+# *starts with* "CANCEL" (e.g. "CANCELLED BY CUSTOMER") is treated as cancelled
+# too, so a trailing note never lets a cancelled order slip back in.
+CANCELLED_TOKENS = {"CANCEL", "CANCELLED", "CANCELED"}
+
 
 def norm_status(val) -> str:
     """Whitespace-collapsed, upper-cased status string."""
     return " ".join(str(val).split()).upper().strip()
+
+
+def is_cancelled(status) -> bool:
+    """True when this row/order has been cancelled."""
+    s = norm_status(status)
+    return s in CANCELLED_TOKENS or s.startswith("CANCEL")
+
+
+def cancelled_mask(df: pd.DataFrame) -> pd.Series:
+    """Row-wise boolean Series: the line item's delivery status is cancelled."""
+    if df is None or len(df) == 0 or "DELIVERY STATUS" not in df.columns:
+        idx = df.index if df is not None else None
+        n = 0 if df is None else len(df)
+        return pd.Series([False] * n, index=idx, dtype=bool)
+
+    status = df["DELIVERY STATUS"]
+    if isinstance(status, pd.DataFrame):          # collapse duplicate columns
+        status = status.bfill(axis=1).iloc[:, 0]
+
+    return pd.Series(
+        [is_cancelled(s) for s in status.tolist()],
+        index=df.index, dtype=bool,
+    )
 
 
 def is_completed(status, is_new_format: bool) -> bool:
@@ -82,8 +112,10 @@ def active_mask(df: pd.DataFrame) -> pd.Series:
 
     Everything that has not reached its terminal state — PENDING, Scheduled for
     Delivery, Delivered-but-not-installed on new sheets, blanks — is "active".
+    Cancelled orders are explicitly excluded: they are neither completed nor
+    active, so they drop out of the pending-delivery pipeline entirely.
     """
     comp = completed_mask(df)
     if len(comp) == 0:
         return comp
-    return ~comp
+    return ~comp & ~cancelled_mask(df)
