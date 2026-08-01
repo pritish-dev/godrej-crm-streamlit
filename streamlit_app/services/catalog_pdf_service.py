@@ -42,9 +42,21 @@ Required configuration
      - .streamlit/secrets.toml -> ANTHROPIC_API_KEY = "..."  (or [anthropic] api_key)
      - env var -> ANTHROPIC_API_KEY
   Google service-account    same [google] secret / GOOGLE_CREDENTIALS the rest
-                            of the CRM uses. It MUST have Editor access to the
-                            image folder (CATALOG_IMAGE_FOLDER_ID) so uploaded
-                            images can be made link-viewable.
+                            of the CRM uses. Used to READ the catalogue PDFs and
+                            to write the Google Sheet.
+  Drive OAuth (for uploads) A service account has NO Drive storage quota, so it
+                            cannot own/upload files — image uploads 403 with
+                            'storageQuotaExceeded'. Uploads therefore run as a
+                            real user via OAuth. Configure once:
+                              [drive_oauth] client_id / client_secret /
+                              refresh_token  (or DRIVE_OAUTH_CLIENT_ID /
+                              DRIVE_OAUTH_CLIENT_SECRET / DRIVE_OAUTH_REFRESH_TOKEN
+                              env vars for the scheduled job).
+                            Mint the refresh token once with
+                              streamlit_app/tools/generate_drive_oauth_token.py
+                            The OAuth user must have Editor access to the image
+                            folder (CATALOG_IMAGE_FOLDER_ID). Without OAuth the
+                            text still syncs; only images fail.
 
 Optional configuration
 ----------------------
@@ -179,9 +191,86 @@ def _get_drive_creds():
     )
 
 
+def _get_drive_oauth_config() -> dict:
+    """Return {client_id, client_secret, refresh_token} for OAuth Drive uploads.
+
+    A Google **service account has no Drive storage quota of its own**, so it
+    cannot create/own files in a normal (My Drive) folder — every upload fails
+    with 403 storageQuotaExceeded. To upload into the existing image folder we
+    act as a real Google user via OAuth; the files are then owned by that user
+    and draw on their 15 GB quota.
+
+    Looked up (first hit wins):
+      * secrets.toml -> [drive_oauth] client_id / client_secret / refresh_token
+      * env DRIVE_OAUTH_TOKEN = '{"client_id":..,"client_secret":..,"refresh_token":..}'
+      * env DRIVE_OAUTH_CLIENT_ID / DRIVE_OAUTH_CLIENT_SECRET / DRIVE_OAUTH_REFRESH_TOKEN
+
+    Returns {} when OAuth is not configured (caller falls back to the service
+    account, which is still fine for read-only listing/downloading).
+    """
+    # 1. Streamlit secrets table
+    try:
+        import streamlit as st
+        node = dict(st.secrets["drive_oauth"])
+        cfg = {
+            "client_id": str(node.get("client_id", "")).strip(),
+            "client_secret": str(node.get("client_secret", "")).strip(),
+            "refresh_token": str(node.get("refresh_token", "")).strip(),
+        }
+        if all(cfg.values()):
+            return cfg
+    except Exception:
+        pass
+    # 2. Single JSON env blob
+    raw = os.getenv("DRIVE_OAUTH_TOKEN", "").strip()
+    if raw:
+        try:
+            node = json.loads(raw)
+            cfg = {
+                "client_id": str(node.get("client_id", "")).strip(),
+                "client_secret": str(node.get("client_secret", "")).strip(),
+                "refresh_token": str(node.get("refresh_token", "")).strip(),
+            }
+            if all(cfg.values()):
+                return cfg
+        except Exception:
+            pass
+    # 3. Individual env vars
+    cfg = {
+        "client_id": os.getenv("DRIVE_OAUTH_CLIENT_ID", "").strip(),
+        "client_secret": os.getenv("DRIVE_OAUTH_CLIENT_SECRET", "").strip(),
+        "refresh_token": os.getenv("DRIVE_OAUTH_REFRESH_TOKEN", "").strip(),
+    }
+    if all(cfg.values()):
+        return cfg
+    return {}
+
+
+def _get_drive_oauth_creds():
+    """Build refreshable OAuth user credentials for Drive, or None if unset."""
+    cfg = _get_drive_oauth_config()
+    if not cfg:
+        return None
+    from google.oauth2.credentials import Credentials as UserCredentials
+    from google.auth.transport.requests import Request
+    creds = UserCredentials(
+        None,
+        refresh_token=cfg["refresh_token"],
+        client_id=cfg["client_id"],
+        client_secret=cfg["client_secret"],
+        token_uri="https://oauth2.googleapis.com/token",
+        scopes=["https://www.googleapis.com/auth/drive"],
+    )
+    creds.refresh(Request())   # mint an access token now; raises clearly if bad
+    return creds
+
+
 def _build_drive_service():
     from googleapiclient.discovery import build
-    return build("drive", "v3", credentials=_get_drive_creds(), cache_discovery=False)
+    # Prefer OAuth user creds for writes (service accounts can't own files);
+    # fall back to the service account (fine for read-only listing/download).
+    creds = _get_drive_oauth_creds() or _get_drive_creds()
+    return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 
 def _get_anthropic_client():
@@ -236,6 +325,8 @@ def _list_pdfs_in_folder(folder_id: str) -> list:
             fields="nextPageToken, files(id, name)",
             pageSize=100,
             pageToken=page_token,
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
         ).execute()
         files.extend(resp.get("files", []))
         page_token = resp.get("nextPageToken")
@@ -248,7 +339,7 @@ def _list_pdfs_in_folder(folder_id: str) -> list:
 def _download_pdf_bytes(file_id: str) -> bytes:
     from googleapiclient.http import MediaIoBaseDownload
     service = _build_drive_service()
-    request = service.files().get_media(fileId=file_id)
+    request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
     buf = io.BytesIO()
     downloader = MediaIoBaseDownload(buf, request)
     done = False
@@ -275,6 +366,8 @@ def _find_image_by_name(service, folder_id: str, name: str):
         ),
         fields="files(id)",
         pageSize=1,
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
     ).execute()
     files = resp.get("files", [])
     return files[0]["id"] if files else None
@@ -296,6 +389,7 @@ def _upload_image(service, folder_id: str, name: str, data: bytes, mime: str) ->
             body={"name": name, "parents": [folder_id]},
             media_body=media,
             fields="id",
+            supportsAllDrives=True,
         ).execute()
         file_id = created["id"]
 
@@ -304,6 +398,7 @@ def _upload_image(service, folder_id: str, name: str, data: bytes, mime: str) ->
         service.permissions().create(
             fileId=file_id,
             body={"type": "anyone", "role": "reader"},
+            supportsAllDrives=True,
         ).execute()
     except Exception:
         pass  # already shared, or shared-drive policy — thumbnail still works
@@ -857,6 +952,17 @@ def fetch_and_sync_catalog_from_drive(progress=None, page_start=1, page_end=None
         import fitz  # noqa: F401  (PyMuPDF — imported for the clear error if missing)
     except Exception:
         return 0, 0, "❌ PyMuPDF (fitz) is required. Add 'PyMuPDF' to requirements.txt."
+
+    # Uploads need a real user identity — a service account has no Drive quota
+    # and every image upload will 403 (storageQuotaExceeded). Warn up front so
+    # the run doesn't just produce a wall of failed-upload lines.
+    if not _get_drive_oauth_config():
+        _say(
+            "⚠️ Drive OAuth is NOT configured — image uploads will fail "
+            "(service accounts have no Drive storage). Set [drive_oauth] "
+            "client_id/client_secret/refresh_token in secrets (see "
+            "generate_drive_oauth_token.py). Text will still sync."
+        )
 
     try:
         pdf_files = _list_pdfs_in_folder(folder_id)
