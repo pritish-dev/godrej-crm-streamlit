@@ -121,12 +121,27 @@ with _dcol2:
              "folder, extracts each product with AI, and adds new/changed "
              "products to this sheet. Existing rows are preserved.",
     )
-with _dcol3:
-    _cat_test_pages = st.number_input(
-        "Test: pages/catalogue (0 = all)",
-        min_value=0, max_value=500, value=0, step=1,
-        help="Cap how many pages per catalogue are sent to the AI. Use a small "
-             "value (e.g. 2) for a cheap diagnostic run before scanning everything.",
+# --- Catalogue extraction options (page window + update policy) ---
+_ocol1, _ocol2, _ocol3 = st.columns([3, 3, 4])
+with _ocol1:
+    _cat_from = st.number_input(
+        "From page", min_value=1, max_value=2000, value=1, step=1,
+        help="1-based first page to read in each catalogue PDF.",
+    )
+with _ocol2:
+    _cat_to = st.number_input(
+        "To page (0 = end)", min_value=0, max_value=2000, value=0, step=1,
+        help="1-based last page to read (inclusive). Use a moving window "
+             "(e.g. 1–20, then 21–40) so re-runs never re-read or re-bill the "
+             "pages you already processed.",
+    )
+with _ocol3:
+    _cat_update = st.checkbox(
+        "Update existing products if changed",
+        value=False,
+        help="Off (recommended): products already in the sheet are never "
+             "touched — only new products are added. On: also rewrite an "
+             "existing product when its text actually changed.",
     )
 
 if run_catalog:
@@ -144,7 +159,9 @@ if run_catalog:
         try:
             _added, _updated, _cat_status = fetch_and_sync_catalog_from_drive(
                 progress=_catalog_progress,
-                max_pages=(int(_cat_test_pages) or None),
+                page_start=int(_cat_from),
+                page_end=(int(_cat_to) or None),
+                update_existing=bool(_cat_update),
             )
         except Exception as e:
             import traceback

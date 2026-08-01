@@ -676,7 +676,37 @@ def _upload_product_images(service, image_folder_id, product) -> tuple[str, str]
     return ", ".join(main_urls), ", ".join(swatch_urls)
 
 
-def fetch_and_sync_catalog_from_drive(progress=None, max_pages=None):
+def _sheets_retry(fn, *args, **kwargs):
+    """Call a gspread write and retry on transient rate-limit / server errors.
+
+    The Sheets API caps writes per minute per user; batching plus this backoff
+    keeps a big catalogue sync from tripping the 429 'Write requests per minute'
+    quota.
+    """
+    import time as _time
+    try:
+        from gspread.exceptions import APIError
+    except Exception:                       # gspread always present in this app
+        APIError = Exception               # noqa: N806
+    delay = 2.0
+    last = None
+    for attempt in range(6):
+        try:
+            return fn(*args, **kwargs)
+        except APIError as exc:
+            last = exc
+            code = getattr(getattr(exc, "response", None), "status_code", None)
+            if code in (429, 500, 503) and attempt < 5:
+                _time.sleep(delay)
+                delay = min(delay * 2, 30.0)
+                continue
+            raise
+    if last:
+        raise last
+
+
+def fetch_and_sync_catalog_from_drive(progress=None, page_start=1, page_end=None,
+                                      update_existing=False):
     """Scan the B2C_CATALOGUE Drive folder, parse every catalogue PDF, and
     upsert the products into the 'Product Catalog' sheet.
 
@@ -684,8 +714,14 @@ def fetch_and_sync_catalog_from_drive(progress=None, max_pages=None):
     ----------
     progress : optional callable(str) invoked with human-readable status lines
                (e.g. a Streamlit ``st.write`` / status callback).
-    max_pages : optional int — cap pages sent to the model per catalogue for a
-               cheap diagnostic run (None = whole catalogue).
+    page_start : 1-based first page to read per catalogue (default 1).
+    page_end   : 1-based last page to read (inclusive); None = to the end.
+                 Pass a window (e.g. 11..20) so re-runs don't re-read/re-bill
+                 the pages you already processed.
+    update_existing : when False (default) products already in the sheet are
+                 left untouched — only genuinely new products are appended.
+                 Set True to also rewrite an existing product when its text
+                 content actually changed.
 
     Returns (added_count, updated_count, status_message).
     """
@@ -746,7 +782,8 @@ def fetch_and_sync_catalog_from_drive(progress=None, max_pages=None):
 
         try:
             products = _extract_products_from_pdf(
-                client, model, pdf_bytes, hint, _say, max_pages=max_pages
+                client, model, pdf_bytes, hint, _say,
+                page_start=page_start, page_end=page_end,
             )
         except Exception as exc:
             _say(f"   ⚠️ parse failed: {exc}")
@@ -773,6 +810,14 @@ def fetch_and_sync_catalog_from_drive(progress=None, max_pages=None):
             )
 
             if key in existing_keys:
+                # Product already in the sheet. By default we never touch it —
+                # this avoids churn (and wasted Sheets writes) from harmless LLM
+                # wording drift, and re-uploading images. Only when the caller
+                # opts in do we rewrite a row, and only if its text truly changed.
+                if not update_existing:
+                    skipped += 1
+                    continue
+
                 row_idx = existing_keys[key]
                 ex = existing.iloc[row_idx]
                 # Preserve the hand-curated / previously-generated image URLs.
@@ -832,18 +877,25 @@ def fetch_and_sync_catalog_from_drive(progress=None, max_pages=None):
         from services.sheets import get_sheet, get_df
         ws = get_sheet(CATALOG_SHEET_NAME)
 
-        # Ensure the header row exists (fresh/empty sheet).
+        # Ensure the header row exists (fresh/empty sheet) — one call.
         if existing.empty:
             header = ws.row_values(1)
             if [h.strip() for h in header][: len(CATALOG_COLUMNS)] != CATALOG_COLUMNS:
-                ws.update("A1", [CATALOG_COLUMNS])
+                _sheets_retry(ws.update, "A1", [CATALOG_COLUMNS])
 
-        for row_number, values in sorted(to_update.items()):
-            ws.update(f"A{row_number}:H{row_number}", [values],
-                      value_input_option="USER_ENTERED")
+        # Batch ALL updated rows into a single Sheets write instead of one call
+        # per row — this is what previously tripped the "Write requests per
+        # minute" 429 quota.
+        if to_update:
+            batch = [
+                {"range": f"A{row_number}:H{row_number}", "values": [values]}
+                for row_number, values in sorted(to_update.items())
+            ]
+            _sheets_retry(ws.batch_update, batch, value_input_option="USER_ENTERED")
 
+        # All new rows in a single append call.
         if to_append:
-            ws.append_rows(to_append, value_input_option="USER_ENTERED")
+            _sheets_retry(ws.append_rows, to_append, value_input_option="USER_ENTERED")
 
         try:
             get_df.clear()  # bust the sheets cache so the page shows updates
@@ -876,13 +928,14 @@ def _filename_to_room_hint(filename: str) -> str:
 
 
 def _extract_products_from_pdf(client, model, pdf_bytes, hint, say,
-                               max_pages=None) -> list:
+                               page_start=1, page_end=None) -> list:
     """Render each page, ask Claude for the products, and attach the page's
     raster images to the right product. Returns a flat list of product dicts,
     each carrying main_images / swatch_images (raw bytes) + main_category.
 
-    ``max_pages`` (int) caps how many pages are sent to the model — use a small
-    value for a cheap diagnostic run before paying for the whole catalogue.
+    Only pages in the inclusive 1-based window ``page_start``..``page_end`` are
+    sent to the model. Pass a moving window across runs so you never re-read
+    (or re-bill) pages you already processed. ``page_end=None`` reads to the end.
     """
     import fitz
 
@@ -890,8 +943,9 @@ def _extract_products_from_pdf(client, model, pdf_bytes, hint, say,
     pages_with_products = 0
     with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
         n_pages = doc.page_count
-        limit = min(n_pages, max_pages) if max_pages else n_pages
-        for pno in range(limit):
+        start0 = max(0, int(page_start) - 1)                 # 0-based, inclusive
+        end0 = n_pages if not page_end else min(n_pages, int(page_end))  # exclusive
+        for pno in range(start0, end0):
             page = doc[pno]
             label = f"page {pno + 1}"
             try:
@@ -918,7 +972,7 @@ def _extract_products_from_pdf(client, model, pdf_bytes, hint, say,
                 all_products.append(p)
 
         say(
-            f"   scanned {limit}/{n_pages} page(s) → "
+            f"   scanned pages {start0 + 1}-{end0} of {n_pages} → "
             f"{len(all_products)} product block(s) on {pages_with_products} page(s)"
         )
     return all_products

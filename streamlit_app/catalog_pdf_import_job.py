@@ -11,7 +11,8 @@ are rewritten; existing rows (and their curated image URLs) are preserved.
 
 Run it manually or from a scheduler:
     python streamlit_app/catalog_pdf_import_job.py
-    python streamlit_app/catalog_pdf_import_job.py --max-pages 2   # cheap test run
+    python streamlit_app/catalog_pdf_import_job.py --start-page 1 --end-page 20
+    python streamlit_app/catalog_pdf_import_job.py --start-page 21 --end-page 40 --update-existing
 
 Required environment / secrets:
     GOOGLE_CREDENTIALS   service-account JSON (Editor on the image folder)
@@ -40,20 +41,31 @@ def main() -> int:
     import argparse
     parser = argparse.ArgumentParser(description="Import catalogue PDFs into the Product Catalog sheet.")
     parser.add_argument(
-        "--max-pages", type=int, default=0,
-        help="Cap pages per catalogue sent to the AI (0 = all). Use e.g. 2 for a cheap test.",
+        "--start-page", type=int, default=1,
+        help="1-based first page to read per catalogue (default 1).",
+    )
+    parser.add_argument(
+        "--end-page", type=int, default=0,
+        help="1-based last page to read, inclusive (0 = to the end).",
+    )
+    parser.add_argument(
+        "--update-existing", action="store_true",
+        help="Also rewrite existing products whose text changed (default: leave them).",
     )
     args = parser.parse_args()
 
     print("=" * 60)
     print(f"  Product Catalogue Import — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"  Target sheet : {CATALOG_SHEET_NAME}")
-    if args.max_pages:
-        print(f"  TEST MODE    : first {args.max_pages} page(s) per catalogue")
+    print(f"  Page window  : {args.start_page}..{args.end_page or 'end'}"
+          + ("  (update existing: on)" if args.update_existing else ""))
     print("=" * 60)
 
     added, updated, status = fetch_and_sync_catalog_from_drive(
-        progress=print, max_pages=(args.max_pages or None)
+        progress=print,
+        page_start=args.start_page,
+        page_end=(args.end_page or None),
+        update_existing=args.update_existing,
     )
 
     print("\n" + "=" * 60)
