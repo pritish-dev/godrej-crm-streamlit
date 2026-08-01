@@ -322,6 +322,71 @@ def _render_page_png(page) -> bytes:
     return pix.tobytes("png")
 
 
+# DPI used when cropping a product photo out of the page. Higher than the
+# vision-parse DPI so the saved product image is crisp in the catalogue UI.
+_CROP_DPI = 220
+# Padding (page fractions) added around the model's photo box before cropping,
+# so a slightly-tight box doesn't clip the edges of the furniture.
+_CROP_PAD = 0.012
+# A photo box smaller than this on either side is treated as degenerate/unusable.
+_CROP_MIN_SIDE = 0.03
+
+
+def _norm_box(region):
+    """Return (x0, y0, x1, y1) as ordered floats in 0..1, or None if unusable."""
+    try:
+        x0, y0 = float(region["x0"]), float(region["y0"])
+        x1, y1 = float(region["x1"]), float(region["y1"])
+    except (TypeError, KeyError, ValueError):
+        return None
+    if x1 < x0:
+        x0, x1 = x1, x0
+    if y1 < y0:
+        y0, y1 = y1, y0
+    # Some models emit 0..100 instead of 0..1 — normalise if clearly out of range.
+    if max(x1, y1) > 1.5:
+        x0, y0, x1, y1 = x0 / 100.0, y0 / 100.0, x1 / 100.0, y1 / 100.0
+    x0 = min(max(x0, 0.0), 1.0)
+    y0 = min(max(y0, 0.0), 1.0)
+    x1 = min(max(x1, 0.0), 1.0)
+    y1 = min(max(y1, 0.0), 1.0)
+    if (x1 - x0) < _CROP_MIN_SIDE or (y1 - y0) < _CROP_MIN_SIDE:
+        return None
+    return x0, y0, x1, y1
+
+
+def _crop_region_png(page, region, dpi: int = _CROP_DPI, pad: float = _CROP_PAD):
+    """Render just ``region`` (normalised box) of the page to PNG bytes.
+
+    This crops the product photo straight out of the rendered page, so it works
+    no matter how the PDF embeds its art (flattened full-page raster, placed
+    vector, or individual images) — unlike raster extraction, which misses
+    flattened/vector layouts entirely. Returns None on any unusable box.
+    """
+    import fitz
+    box = _norm_box(region)
+    if not box:
+        return None
+    x0, y0, x1, y1 = box
+    pw = float(page.rect.width) or 1.0
+    ph = float(page.rect.height) or 1.0
+    cx0 = max(0.0, x0 - pad) * pw
+    cy0 = max(0.0, y0 - pad) * ph
+    cx1 = min(1.0, x1 + pad) * pw
+    cy1 = min(1.0, y1 + pad) * ph
+    clip = fitz.Rect(cx0, cy0, cx1, cy1)
+    if clip.is_empty or clip.is_infinite:
+        return None
+    zoom = dpi / 72.0
+    try:
+        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), clip=clip)
+        if pix.width < 8 or pix.height < 8:
+            return None
+        return pix.tobytes("png")
+    except Exception:
+        return None
+
+
 def _extract_page_images(doc, page) -> list:
     """Return a list of placed raster images on the page.
 
@@ -414,10 +479,21 @@ _PAGE_SCHEMA = {
                         },
                         "required": ["x0", "y0", "x1", "y1"],
                     },
+                    "photo_region": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "x0": {"type": "number"},
+                            "y0": {"type": "number"},
+                            "x1": {"type": "number"},
+                            "y1": {"type": "number"},
+                        },
+                        "required": ["x0", "y0", "x1", "y1"],
+                    },
                 },
                 "required": [
                     "product_name", "sub_category", "features",
-                    "measurements", "colour", "material", "region",
+                    "measurements", "colour", "material", "region", "photo_region",
                 ],
             },
         },
@@ -443,6 +519,7 @@ For each product return:
 - colour: the colour option name(s) shown, comma separated (e.g. "Fab Grey" or "Brown, Black").
 - material: the upholstery / material text (e.g. "Fabric", "Pure Leather", "Fabric & Leatherette", "Glass + Metal").
 - region: the normalised bounding box (x0,y0,x1,y1 each between 0 and 1, origin top-left) of the area on THIS page occupied by this product's photo(s), name, and specs. Be generous so it covers the product's photos.
+- photo_region: the normalised bounding box (x0,y0,x1,y1 each between 0 and 1, origin top-left) of JUST the main/hero PRODUCT PHOTO for this product — the large lifestyle image of the furniture itself. Draw it as tightly as you can around only the photo: EXCLUDE the product name, the feature text, the dimension/specs text, page numbers, logos, and the small colour swatch chips. If the product has several photos, pick the single largest hero shot. This box is used to crop the product image out of the page, so accuracy matters.
 
 Return ONLY the structured JSON."""
 
@@ -657,24 +734,44 @@ def _load_existing():
 
 
 def _upload_product_images(service, image_folder_id, product, *,
-                           want_main=True, want_swatch=True) -> tuple[str, str]:
+                           want_main=True, want_swatch=True, say=None) -> tuple[str, str]:
     """Upload a product's main + swatch images; return (main_urls, swatch_urls).
 
     ``want_main`` / ``want_swatch`` let a caller upload only one kind — used by
     the backfill path, which needs to fill a missing product photo on a row
     whose swatch URLs are already present (so it must not re-upload swatches).
+
+    The MAIN product image is the photo cropped straight off the rendered page
+    (``product["main_crop"]``); if that isn't present we fall back to any raster
+    images extracted from the PDF (``product["main_images"]``). Upload failures
+    are logged via ``say`` rather than swallowed, so a broken run is diagnosable.
     """
     slug = _slug(product["product_name"])
     main_urls, swatch_urls = [], []
 
+    def _warn(msg):
+        if say:
+            say(f"      ⚠️ image upload: {msg}")
+
     if want_main:
-        for i, img in enumerate(product.get("main_images", []), start=1):
-            name = f"{slug}_main_{i}.png"
-            mime = f"image/{'jpeg' if img['ext'] in ('jpg', 'jpeg') else 'png'}"
+        crop = product.get("main_crop")
+        if crop and crop.get("bytes"):
             try:
-                main_urls.append(_upload_image(service, image_folder_id, name, img["bytes"], mime))
-            except Exception:
-                pass
+                main_urls.append(_upload_image(
+                    service, image_folder_id, f"{slug}_main_1.png",
+                    crop["bytes"], "image/png",
+                ))
+            except Exception as exc:
+                _warn(f"{slug} main crop failed: {exc}")
+        else:
+            # Fallback: raster images extracted from the PDF (older path).
+            for i, img in enumerate(product.get("main_images", []), start=1):
+                name = f"{slug}_main_{i}.png"
+                mime = f"image/{'jpeg' if img['ext'] in ('jpg', 'jpeg') else 'png'}"
+                try:
+                    main_urls.append(_upload_image(service, image_folder_id, name, img["bytes"], mime))
+                except Exception as exc:
+                    _warn(f"{name} failed: {exc}")
 
     if want_swatch:
         for i, img in enumerate(product.get("swatch_images", []), start=1):
@@ -682,8 +779,8 @@ def _upload_product_images(service, image_folder_id, product, *,
             mime = f"image/{'jpeg' if img['ext'] in ('jpg', 'jpeg') else 'png'}"
             try:
                 swatch_urls.append(_upload_image(service, image_folder_id, name, img["bytes"], mime))
-            except Exception:
-                pass
+            except Exception as exc:
+                _warn(f"{name} failed: {exc}")
 
     return ", ".join(main_urls), ", ".join(swatch_urls)
 
@@ -837,10 +934,10 @@ def fetch_and_sync_catalog_from_drive(progress=None, page_start=1, page_end=None
                 # image cell(s) (all text columns are preserved verbatim). If
                 # the product has no extractable photo, the cell is left blank.
                 did_backfill = False
-                if not main_urls and product.get("main_images"):
+                if not main_urls and (product.get("main_crop") or product.get("main_images")):
                     new_main, _ = _upload_product_images(
                         drive_service, image_folder_id, product,
-                        want_main=True, want_swatch=False,
+                        want_main=True, want_swatch=False, say=_say,
                     )
                     if new_main:
                         main_urls = new_main
@@ -866,7 +963,7 @@ def fetch_and_sync_catalog_from_drive(progress=None, page_start=1, page_end=None
                     if not swatch_urls:
                         _, swatch_urls = _upload_product_images(
                             drive_service, image_folder_id, product,
-                            want_main=False, want_swatch=True,
+                            want_main=False, want_swatch=True, say=_say,
                         )
                     to_update[row_idx + 2] = [
                         main_cat, sub_cat, name, features, measurements,
@@ -893,14 +990,15 @@ def fetch_and_sync_catalog_from_drive(progress=None, page_start=1, page_end=None
                     skipped += 1
             else:
                 main_urls, swatch_urls = _upload_product_images(
-                    drive_service, image_folder_id, product
+                    drive_service, image_folder_id, product, say=_say
                 )
                 to_append.append([
                     main_cat, sub_cat, name, features, measurements,
                     colour_material, main_urls, swatch_urls,
                 ])
                 added += 1
-                _say(f"   ➕ new: {name}")
+                _img_note = "" if main_urls else "  (no product image found)"
+                _say(f"   ➕ new: {name}{_img_note}")
 
     # -- write back ----------------------------------------------------------
     if not to_append and not to_update:
@@ -1009,11 +1107,27 @@ def _extract_products_from_pdf(client, model, pdf_bytes, hint, say,
 
             pages_with_products += 1
             page_main = _clean_line(parsed.get("main_category") or hint)
+            # Raster extraction (best-effort) still feeds swatch detection.
             images = _extract_page_images(doc, page)
             _assign_images(products, images)
+            crops_ok = 0
             for p in products:
                 p["main_category"] = page_main
+                # PRIMARY product photo: crop the model's photo box straight out
+                # of the rendered page. Robust to flattened/vector PDFs where
+                # raster extraction finds nothing. Falls back to the raster
+                # region box if photo_region is missing/degenerate.
+                crop = _crop_region_png(page, p.get("photo_region") or {})
+                if not crop:
+                    crop = _crop_region_png(page, p.get("region") or {})
+                if crop:
+                    p["main_crop"] = {"bytes": crop, "ext": "png"}
+                    crops_ok += 1
                 all_products.append(p)
+            say(
+                f"   {label}: {len(products)} product(s), "
+                f"{crops_ok} photo crop(s), {len(images)} raster image(s)"
+            )
 
         say(
             f"   scanned pages {start0 + 1}-{end0} of {n_pages} → "
