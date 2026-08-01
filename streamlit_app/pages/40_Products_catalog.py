@@ -15,6 +15,7 @@ from services.discontinued_email_import import (
     fetch_and_save_discontinued,
     DISCONTINUED_SUBJECT,
 )
+from services.catalog_pdf_service import fetch_and_sync_catalog_from_drive
 CATALOG_SHEET_NAME = "Product Catalog"
 DISCONTINUED_SHEET_NAME = "Discontinued Products"
 ITEMS_PER_PAGE = 10
@@ -50,10 +51,10 @@ def load_all_data():
     except Exception:
         df_disc = pd.DataFrame()
         
-    # Build a fast lookup dictionary for discontinued items.
+    # Build a list of (normalized_name, discontinued_date) entries.
     # Supports both the legacy schema (Product Name / Discontinued Date) and the
     # new automated import schema (Item Description / DATE OF DISCONTINUATION).
-    disc_dict = {}
+    disc_entries = []
     if not df_disc.empty:
         name_col = next(
             (c for c in ("Product Name", "Item Description") if c in df_disc.columns),
@@ -65,12 +66,35 @@ def load_all_data():
         )
         if name_col:
             for _, row in df_disc.iterrows():
-                key = str(row[name_col]).strip().lower()
+                key = " ".join(str(row[name_col]).strip().lower().split())
                 if not key:
                     continue
-                disc_dict[key] = str(row.get(date_col, "Unknown Date")) if date_col else "Unknown Date"
+                date = str(row.get(date_col, "Unknown Date")) if date_col else "Unknown Date"
+                disc_entries.append((key, date))
 
-    return df_catalog, disc_dict
+    return df_catalog, disc_entries
+
+
+def match_discontinued(product_name, disc_entries):
+    """Return the discontinuation date if `product_name` is discontinued, else None.
+
+    Catalogue product names are marketing names (e.g. "Nebula V3") while the
+    Discontinued Products sheet lists Godrej item descriptions, so an exact
+    match is rare. We fall back to a word-safe substring match in either
+    direction so a product whose name appears inside a discontinued item's
+    description is still flagged.
+    """
+    key = " ".join(str(product_name or "").strip().lower().split())
+    if not key:
+        return None
+    for name, date in disc_entries:            # exact match first
+        if name == key:
+            return date
+    if len(key) >= 4:                          # substring match (guard tiny names)
+        for name, date in disc_entries:
+            if name and (key in name or name in key):
+                return date
+    return None
 
 # ==============================
 # MAIN APP
@@ -81,7 +105,7 @@ st.title("🛋️ Godrej Interio Catalog")
 # The 'Discontinued Products' sheet is refreshed automatically every day at
 # 11 AM IST from the "Product Discontinuation Circular" email. This button lets
 # staff pull the latest circular on demand (looks back over the last 30 days).
-_dcol1, _dcol2 = st.columns([2, 6])
+_dcol1, _dcol2, _dcol3 = st.columns([3, 3, 4])
 with _dcol1:
     check_disc = st.button(
         "🔄 check for Discontinued Products",
@@ -89,6 +113,41 @@ with _dcol1:
         help=f'Reads the latest "{DISCONTINUED_SUBJECT}" email and updates the '
              f'Discontinued Products sheet.',
     )
+with _dcol2:
+    run_catalog = st.button(
+        "🛠️ Extract products from Catalogue PDFs",
+        use_container_width=True,
+        help="Reads the catalogue PDFs from the B2C_CATALOGUE Google Drive "
+             "folder, extracts each product with AI, and adds new/changed "
+             "products to this sheet. Existing rows are preserved.",
+    )
+
+if run_catalog:
+    _ph = st.empty()
+    _log_lines = []
+
+    def _catalog_progress(msg):
+        _log_lines.append(msg)
+        _ph.text("\n".join(_log_lines[-14:]))
+
+    with st.spinner(
+        "Reading catalogue PDFs and extracting products with AI… "
+        "this can take several minutes for large catalogues."
+    ):
+        try:
+            _added, _updated, _cat_status = fetch_and_sync_catalog_from_drive(
+                progress=_catalog_progress
+            )
+        except Exception as e:
+            _added, _updated, _cat_status = 0, 0, f"❌ Extraction failed: {e}"
+    _ph.empty()
+
+    load_all_data.clear()  # bust the 5-min cache so new products show immediately
+    _headline = _cat_status.split("\n", 1)[0]
+    (st.success if _cat_status.startswith("✅") else st.warning)(_headline)
+    with st.expander("Extraction details"):
+        st.text(_cat_status)
+
 if check_disc:
     with st.spinner("Checking Gmail for the latest Product Discontinuation Circular…"):
         try:
@@ -101,7 +160,7 @@ if check_disc:
     else:
         st.warning(_status)
 
-df_catalog, disc_dict = load_all_data()
+df_catalog, disc_entries = load_all_data()
 
 if df_catalog.empty:
     st.warning("Catalog is empty or could not be loaded.")
@@ -162,12 +221,12 @@ page_df = filtered_df.iloc[start_idx:end_idx]
 # --- RENDER PRODUCTS ---
 for _, product in page_df.iterrows():
     p_name = product.get('Product Name', 'Unknown Product')
-    is_discontinued = p_name.lower() in disc_dict
-    
+    disc_date = match_discontinued(p_name, disc_entries)
+    is_discontinued = disc_date is not None
+
     with st.container():
         # Discontinued Marquee Alert
         if is_discontinued:
-            disc_date = disc_dict[p_name.lower()]
             st.markdown(
                 f"""
                 <marquee style="color: white; background-color: #d9534f; padding: 5px; font-weight: bold; border-radius: 4px;">

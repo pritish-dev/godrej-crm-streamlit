@@ -1,0 +1,848 @@
+"""
+services/catalog_pdf_service.py
+
+Standalone automation that reads the B2C product catalogue PDFs from a Google
+Drive folder, extracts one structured record per product using Claude vision,
+extracts + uploads each product's photos and colour swatches to a Google Drive
+folder, and UPSERTS the result into the "Product Catalog" Google Sheet (OPS
+spreadsheet) that the Product Catalogue dashboard page reads.
+
+The output columns match the existing sheet exactly:
+
+    Main Category | Sub Category | Product Name | Features |
+    Measurements | Colour & Material | Product Image URLs | Swatch Image URLs
+
+Idempotency contract (as requested):
+  * New products are APPENDED beneath the existing rows — existing rows and
+    their order are never disturbed.
+  * An existing product is only re-written when its text content actually
+    changed (compared on a punctuation/whitespace-insensitive signature so
+    harmless LLM wording drift does not cause churn).
+  * Unchanged products are left completely untouched — no writes.
+  * Images are only extracted + uploaded for NEW products (or existing products
+    whose image columns are blank). The hand-curated image URLs already in the
+    sheet are always preserved, and images are never re-uploaded on a re-run.
+
+WHY Claude vision: the catalogue PDFs are two-column marketing layouts whose
+plain-text extraction is badly interleaved between the two columns. A rendered
+page image sent to Claude yields clean, per-product fields plus a bounding box
+for each product's block, which we use to associate the raster images extracted
+from the PDF with the right product.
+
+Required configuration
+----------------------
+  B2C_CATALOGUE            Drive folder ID holding the catalogue PDFs.
+     - .streamlit/secrets.toml -> [drive] B2C_CATALOGUE = "..."
+     - GitHub Secret / env var -> B2C_CATALOGUE
+  ANTHROPIC_API_KEY        Anthropic API key for the vision parse.
+     - .streamlit/secrets.toml -> ANTHROPIC_API_KEY = "..."  (or [anthropic] api_key)
+     - env var -> ANTHROPIC_API_KEY
+  Google service-account    same [google] secret / GOOGLE_CREDENTIALS the rest
+                            of the CRM uses. It MUST have Editor access to the
+                            image folder (CATALOG_IMAGE_FOLDER_ID) so uploaded
+                            images can be made link-viewable.
+
+Optional configuration
+----------------------
+  CATALOG_IMAGE_FOLDER_ID  Drive folder that hosts the extracted images.
+                           Defaults to the existing folder used by the current
+                           rows. ([drive] CATALOG_IMAGE_FOLDER_ID or env)
+  CATALOG_LLM_MODEL        Claude model id (default "claude-opus-5"). Set to
+                           "claude-sonnet-5" for a cheaper/faster scan.
+"""
+from __future__ import annotations
+
+import base64
+import io
+import json
+import os
+import re
+
+import pandas as pd
+
+# ── Sheet + column config ────────────────────────────────────────────────────
+CATALOG_SHEET_NAME = "Product Catalog"
+
+CATALOG_COLUMNS = [
+    "Main Category",
+    "Sub Category",
+    "Product Name",
+    "Features",
+    "Measurements",
+    "Colour & Material",
+    "Product Image URLs",
+    "Swatch Image URLs",
+]
+
+# Drive folder that already hosts the catalogue images referenced by the current
+# rows (files named like "Nebula_V3_main_1.png" / "Nebula_V3_swatch_1.png").
+DEFAULT_IMAGE_FOLDER_ID = "1PGdL47AQXliSpX9i8MIQz3oeAknxJM8I"
+
+# Thumbnail URL scheme used by every existing image cell in the sheet.
+_THUMB_URL = "https://drive.google.com/thumbnail?id={id}&sz=w1000"
+
+DEFAULT_LLM_MODEL = "claude-opus-5"
+
+# Drive write access is required to upload images and make them link-viewable.
+_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
+
+# Feature bullets are prefixed with this sparkle to match the existing rows.
+_BULLET = "✨ "  # "✨ "
+
+# Render pages at ~130 DPI — enough for the model to read the text cleanly while
+# staying under the model's long-edge image limit.
+_RENDER_DPI = 130
+
+# A raster placement smaller than this fraction of the page (per side) is treated
+# as a colour swatch rather than a product photo.
+_SWATCH_MAX_SIDE_FRAC = 0.10
+# A placement larger than this fraction of the page area is treated as a
+# full-bleed background and ignored.
+_BACKGROUND_MIN_AREA_FRAC = 0.85
+# A placement smaller than this fraction of the page area is treated as an icon
+# / rule / logo and ignored.
+_MIN_AREA_FRAC = 0.0008
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# CONFIG / CREDENTIAL HELPERS
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _secret(*path):
+    """Read a nested Streamlit secret, returning "" on any miss."""
+    try:
+        import streamlit as st
+        node = st.secrets
+        for key in path:
+            node = node[key]
+        return str(node).strip()
+    except Exception:
+        return ""
+
+
+def _get_catalog_folder_id() -> str:
+    fid = _secret("drive", "B2C_CATALOGUE") or os.getenv("B2C_CATALOGUE", "").strip()
+    if fid:
+        return fid
+    raise RuntimeError(
+        "B2C_CATALOGUE not set.\n"
+        "  - secrets.toml -> [drive] B2C_CATALOGUE = 'your-folder-id'\n"
+        "  - GitHub secret / env var -> B2C_CATALOGUE"
+    )
+
+
+def _get_image_folder_id() -> str:
+    return (
+        _secret("drive", "CATALOG_IMAGE_FOLDER_ID")
+        or os.getenv("CATALOG_IMAGE_FOLDER_ID", "").strip()
+        or DEFAULT_IMAGE_FOLDER_ID
+    )
+
+
+def _get_model() -> str:
+    return (
+        _secret("anthropic", "model")
+        or _secret("CATALOG_LLM_MODEL")
+        or os.getenv("CATALOG_LLM_MODEL", "").strip()
+        or DEFAULT_LLM_MODEL
+    )
+
+
+def _get_drive_creds():
+    from google.oauth2.service_account import Credentials
+    # 1. Streamlit secrets
+    try:
+        import streamlit as st
+        return Credentials.from_service_account_info(dict(st.secrets["google"]), scopes=_SCOPES)
+    except Exception:
+        pass
+    # 2. GOOGLE_CREDENTIALS env (JSON blob — GitHub Actions)
+    raw = os.getenv("GOOGLE_CREDENTIALS", "").strip()
+    if raw:
+        return Credentials.from_service_account_info(json.loads(raw), scopes=_SCOPES)
+    # 3. GOOGLE_APPLICATION_CREDENTIALS path
+    path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+    if path and os.path.exists(path):
+        return Credentials.from_service_account_file(path, scopes=_SCOPES)
+    # 4. Local file
+    if os.path.exists("config/credentials.json"):
+        return Credentials.from_service_account_file("config/credentials.json", scopes=_SCOPES)
+    raise RuntimeError(
+        "No valid Google credentials. Set [google] in secrets.toml or GOOGLE_CREDENTIALS."
+    )
+
+
+def _build_drive_service():
+    from googleapiclient.discovery import build
+    return build("drive", "v3", credentials=_get_drive_creds(), cache_discovery=False)
+
+
+def _get_anthropic_client():
+    try:
+        import anthropic
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError(
+            "The 'anthropic' package is required for catalogue extraction. "
+            "Add it to requirements.txt and redeploy."
+        ) from exc
+
+    api_key = (
+        _secret("ANTHROPIC_API_KEY")
+        or _secret("anthropic", "api_key")
+        or os.getenv("ANTHROPIC_API_KEY", "").strip()
+    )
+    if not api_key:
+        raise RuntimeError(
+            "ANTHROPIC_API_KEY not set.\n"
+            "  - secrets.toml -> ANTHROPIC_API_KEY = '...'  (or [anthropic] api_key)\n"
+            "  - env var -> ANTHROPIC_API_KEY"
+        )
+    return anthropic.Anthropic(api_key=api_key)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# DRIVE — LIST / DOWNLOAD PDFs
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _sort_key(name: str):
+    """Sort catalogue PDFs so the LIVING ROOM catalogue is processed first.
+
+    The initial sheet rows came from the living-room catalogue, so we start
+    there for continuity; everything else follows alphabetically.
+    """
+    lowered = name.lower()
+    return (0 if "living" in lowered else 1, lowered)
+
+
+def _list_pdfs_in_folder(folder_id: str) -> list:
+    service = _build_drive_service()
+    query = (
+        f"'{folder_id}' in parents "
+        "and mimeType='application/pdf' "
+        "and trashed=false"
+    )
+    files = []
+    page_token = None
+    while True:
+        resp = service.files().list(
+            q=query,
+            fields="nextPageToken, files(id, name)",
+            pageSize=100,
+            pageToken=page_token,
+        ).execute()
+        files.extend(resp.get("files", []))
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+    files.sort(key=lambda f: _sort_key(f.get("name", "")))
+    return files
+
+
+def _download_pdf_bytes(file_id: str) -> bytes:
+    from googleapiclient.http import MediaIoBaseDownload
+    service = _build_drive_service()
+    request = service.files().get_media(fileId=file_id)
+    buf = io.BytesIO()
+    downloader = MediaIoBaseDownload(buf, request)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    return buf.getvalue()
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# DRIVE — UPLOAD IMAGES (idempotent) + MAKE LINK-VIEWABLE
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _find_image_by_name(service, folder_id: str, name: str):
+    """Return an existing file id for `name` in the folder, else None.
+
+    Makes re-runs idempotent — if a previous run already uploaded an image with
+    this deterministic name we reuse it instead of creating a duplicate.
+    """
+    safe = name.replace("'", "\\'")
+    resp = service.files().list(
+        q=(
+            f"'{folder_id}' in parents and name = '{safe}' "
+            "and trashed = false"
+        ),
+        fields="files(id)",
+        pageSize=1,
+    ).execute()
+    files = resp.get("files", [])
+    return files[0]["id"] if files else None
+
+
+def _upload_image(service, folder_id: str, name: str, data: bytes, mime: str) -> str:
+    """Upload one image, make it link-viewable, and return its thumbnail URL.
+
+    Reuses an existing file of the same name (idempotent re-runs).
+    """
+    from googleapiclient.http import MediaIoBaseUpload
+
+    existing = _find_image_by_name(service, folder_id, name)
+    if existing:
+        file_id = existing
+    else:
+        media = MediaIoBaseUpload(io.BytesIO(data), mimetype=mime, resumable=False)
+        created = service.files().create(
+            body={"name": name, "parents": [folder_id]},
+            media_body=media,
+            fields="id",
+        ).execute()
+        file_id = created["id"]
+
+    # Ensure "anyone with the link can view" so the thumbnail URL renders.
+    try:
+        service.permissions().create(
+            fileId=file_id,
+            body={"type": "anyone", "role": "reader"},
+        ).execute()
+    except Exception:
+        pass  # already shared, or shared-drive policy — thumbnail still works
+
+    return _THUMB_URL.format(id=file_id)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PDF — RENDER PAGES + EXTRACT RASTER IMAGES (PyMuPDF / fitz)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _render_page_png(page) -> bytes:
+    import fitz
+    zoom = _RENDER_DPI / 72.0
+    pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+    return pix.tobytes("png")
+
+
+def _extract_page_images(doc, page) -> list:
+    """Return a list of placed raster images on the page.
+
+    Each item: {bytes, ext, cx, cy, area_frac, side_frac} where cx/cy are the
+    placement centre normalised to the page (0..1), area_frac is the placement
+    area / page area, and side_frac is max(width,height)/page-side.
+    """
+    pw = float(page.rect.width) or 1.0
+    ph = float(page.rect.height) or 1.0
+    page_area = pw * ph
+
+    out = []
+    seen = set()
+    for img in page.get_images(full=True):
+        xref = img[0]
+        try:
+            rects = page.get_image_rects(xref)
+        except Exception:
+            rects = []
+        if not rects:
+            continue
+
+        raw = None  # extracted lazily once we know a placement is worth keeping
+        for rect in rects:
+            w = float(rect.width)
+            h = float(rect.height)
+            if w <= 0 or h <= 0:
+                continue
+            area_frac = (w * h) / page_area
+            side_frac = max(w / pw, h / ph)
+            if area_frac > _BACKGROUND_MIN_AREA_FRAC or area_frac < _MIN_AREA_FRAC:
+                continue
+
+            cx = (float(rect.x0) + float(rect.x1)) / 2.0 / pw
+            cy = (float(rect.y0) + float(rect.y1)) / 2.0 / ph
+            key = (xref, round(cx, 3), round(cy, 3))
+            if key in seen:
+                continue
+            seen.add(key)
+
+            if raw is None:
+                try:
+                    raw = doc.extract_image(xref)
+                except Exception:
+                    raw = {}
+            data = raw.get("image")
+            if not data:
+                continue
+
+            out.append({
+                "bytes": data,
+                "ext": (raw.get("ext") or "png").lower(),
+                "cx": cx,
+                "cy": cy,
+                "area_frac": area_frac,
+                "side_frac": side_frac,
+            })
+    return out
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# CLAUDE VISION — PARSE ONE PAGE INTO PRODUCT RECORDS
+# ═════════════════════════════════════════════════════════════════════════════
+
+_PAGE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "main_category": {"type": "string"},
+        "products": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "product_name": {"type": "string"},
+                    "sub_category": {"type": "string"},
+                    "features": {"type": "array", "items": {"type": "string"}},
+                    "measurements": {"type": "string"},
+                    "colour": {"type": "string"},
+                    "material": {"type": "string"},
+                    "region": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "x0": {"type": "number"},
+                            "y0": {"type": "number"},
+                            "x1": {"type": "number"},
+                            "y1": {"type": "number"},
+                        },
+                        "required": ["x0", "y0", "x1", "y1"],
+                    },
+                },
+                "required": [
+                    "product_name", "sub_category", "features",
+                    "measurements", "colour", "material", "region",
+                ],
+            },
+        },
+    },
+    "required": ["main_category", "products"],
+}
+
+_PAGE_PROMPT = """You are reading ONE page from a Godrej Interio furniture catalogue (a two-column marketing layout). Extract every distinct PRODUCT shown on this page as structured data.
+
+If this page is a cover, index, contents, care-booklet, or a page with no actual product (name + specs), return an empty products list.
+
+Room hint for this catalogue: "{hint}". Use it as the main_category (e.g. "Living Room", "Dining Room", "Bedroom") unless the page clearly indicates a different room.
+
+For each product return:
+- product_name: the model name exactly as printed (e.g. "Harmony V2", "Orlando Plus", "Salt & Pepper Dining Table"). Do NOT include the category words.
+- sub_category: the specific product type shown near the name (e.g. "Sofa", "Recliner", "Coffee Table", "HEC & TV Unit", "Dining Table", "Wardrobe"). Keep it short.
+- features: each bullet under "Features" / "Details" as ONE clean, complete sentence. Remove bullet symbols and fix words split across line breaks. Keep the original wording.
+- measurements: combine the dimensions into a single string using centimetres.
+    * If the product has seater / size variants, put each on its own line like:
+      "1 Seater: Width: 101cm | Depth: 97.5cm | Height: 93cm | Seat Height: 46cm\\n3 Seater: Width: 231cm | Depth: 97.5cm | Height: 93cm | Seat Height: 46cm"
+    * Otherwise use a single line like "Width: 174cm | Depth: 98cm | Height: 93cm".
+    * If only loose numbers are shown, join them with " | ". Omit values you cannot read.
+- colour: the colour option name(s) shown, comma separated (e.g. "Fab Grey" or "Brown, Black").
+- material: the upholstery / material text (e.g. "Fabric", "Pure Leather", "Fabric & Leatherette", "Glass + Metal").
+- region: the normalised bounding box (x0,y0,x1,y1 each between 0 and 1, origin top-left) of the area on THIS page occupied by this product's photo(s), name, and specs. Be generous so it covers the product's photos.
+
+Return ONLY the structured JSON."""
+
+
+def _parse_page(client, model: str, png_bytes: bytes, hint: str) -> dict:
+    b64 = base64.standard_b64encode(png_bytes).decode("utf-8")
+    prompt = _PAGE_PROMPT.format(hint=hint)
+    resp = client.messages.create(
+        model=model,
+        max_tokens=8000,
+        thinking={"type": "disabled"},
+        output_config={"format": {"type": "json_schema", "schema": _PAGE_SCHEMA}},
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {
+                    "type": "base64", "media_type": "image/png", "data": b64,
+                }},
+                {"type": "text", "text": prompt},
+            ],
+        }],
+    )
+    if resp.stop_reason == "refusal":
+        return {"main_category": hint, "products": []}
+    text = next((b.text for b in resp.content if b.type == "text"), "")
+    if not text:
+        return {"main_category": hint, "products": []}
+    try:
+        data = json.loads(text)
+    except Exception:
+        return {"main_category": hint, "products": []}
+    if not isinstance(data.get("products"), list):
+        data["products"] = []
+    return data
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ASSOCIATE EXTRACTED IMAGES WITH PARSED PRODUCTS
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _point_in_region(cx, cy, region) -> bool:
+    try:
+        x0, y0 = float(region["x0"]), float(region["y0"])
+        x1, y1 = float(region["x1"]), float(region["y1"])
+    except Exception:
+        return False
+    if x1 < x0:
+        x0, x1 = x1, x0
+    if y1 < y0:
+        y0, y1 = y1, y0
+    # small tolerance so images that overhang the model's box still match
+    pad = 0.03
+    return (x0 - pad) <= cx <= (x1 + pad) and (y0 - pad) <= cy <= (y1 + pad)
+
+
+def _assign_images(products: list, images: list) -> list:
+    """Attach {main_images, swatch_images} (lists of raw image dicts) to each
+    product based on the model's per-product region boxes.
+
+    Fallback when regions don't line up: split the images across products in
+    reading order (left-to-right, top-to-bottom) so nothing is silently lost.
+    """
+    for p in products:
+        p["main_images"] = []
+        p["swatch_images"] = []
+
+    if not products:
+        return products
+
+    matched_any = False
+    for img in images:
+        target = None
+        for p in products:
+            if _point_in_region(img["cx"], img["cy"], p.get("region", {})):
+                target = p
+                break
+        if target is None:
+            continue
+        matched_any = True
+        if img["side_frac"] <= _SWATCH_MAX_SIDE_FRAC:
+            target["swatch_images"].append(img)
+        else:
+            target["main_images"].append(img)
+
+    if not matched_any and images:
+        # Regions unusable — distribute by reading order across products.
+        ordered = sorted(images, key=lambda i: (round(i["cy"], 2), i["cx"]))
+        n = len(products)
+        for idx, img in enumerate(ordered):
+            target = products[min(idx * n // max(len(ordered), 1), n - 1)]
+            if img["side_frac"] <= _SWATCH_MAX_SIDE_FRAC:
+                target["swatch_images"].append(img)
+            else:
+                target["main_images"].append(img)
+
+    # Stable ordering within each product: top-to-bottom, left-to-right.
+    for p in products:
+        p["main_images"].sort(key=lambda i: (round(i["cy"], 2), i["cx"]))
+        p["swatch_images"].sort(key=lambda i: (round(i["cy"], 2), i["cx"]))
+    return products
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# FORMAT FIELDS TO MATCH THE SHEET
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _clean_line(s: str) -> str:
+    return re.sub(r"\s+", " ", str(s or "").strip())
+
+
+def _format_features(features) -> str:
+    lines = []
+    for f in features or []:
+        c = _clean_line(f)
+        if c:
+            lines.append(_BULLET + c)
+    return "\n".join(lines)
+
+
+def _format_colour_material(colour: str, material: str) -> str:
+    colour = _clean_line(colour)
+    material = _clean_line(material)
+    if colour and material:
+        return f"{colour}\n{material}"
+    return colour or material
+
+
+def _slug(name: str) -> str:
+    s = re.sub(r"[^A-Za-z0-9]+", "_", str(name or "").strip())
+    return s.strip("_") or "Product"
+
+
+def _norm_key(name: str) -> str:
+    return " ".join(str(name or "").strip().lower().split())
+
+
+def _sig(text: str) -> str:
+    """Punctuation/whitespace/case-insensitive signature used to decide whether
+    an existing product's text truly changed (ignores harmless LLM drift)."""
+    return re.sub(r"[^a-z0-9]+", "", str(text or "").lower())
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PUBLIC API — SCAN DRIVE, UPSERT SHEET
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _empty_df():
+    return pd.DataFrame(columns=CATALOG_COLUMNS)
+
+
+def _load_existing():
+    """Return the current 'Product Catalog' sheet as a DataFrame (8 columns)."""
+    try:
+        from services.sheets import get_df
+        df = get_df(CATALOG_SHEET_NAME)
+    except Exception:
+        return _empty_df()
+    if df is None or df.empty:
+        return _empty_df()
+    for col in CATALOG_COLUMNS:
+        if col not in df.columns:
+            df[col] = ""
+    return df[CATALOG_COLUMNS].fillna("")
+
+
+def _upload_product_images(service, image_folder_id, product) -> tuple[str, str]:
+    """Upload a NEW product's main + swatch images; return (main_urls, swatch_urls)."""
+    slug = _slug(product["product_name"])
+    main_urls, swatch_urls = [], []
+
+    for i, img in enumerate(product.get("main_images", []), start=1):
+        name = f"{slug}_main_{i}.png"
+        mime = f"image/{'jpeg' if img['ext'] in ('jpg', 'jpeg') else 'png'}"
+        try:
+            main_urls.append(_upload_image(service, image_folder_id, name, img["bytes"], mime))
+        except Exception:
+            pass
+
+    for i, img in enumerate(product.get("swatch_images", []), start=1):
+        name = f"{slug}_swatch_{i}.png"
+        mime = f"image/{'jpeg' if img['ext'] in ('jpg', 'jpeg') else 'png'}"
+        try:
+            swatch_urls.append(_upload_image(service, image_folder_id, name, img["bytes"], mime))
+        except Exception:
+            pass
+
+    return ", ".join(main_urls), ", ".join(swatch_urls)
+
+
+def fetch_and_sync_catalog_from_drive(progress=None):
+    """Scan the B2C_CATALOGUE Drive folder, parse every catalogue PDF, and
+    upsert the products into the 'Product Catalog' sheet.
+
+    Parameters
+    ----------
+    progress : optional callable(str) invoked with human-readable status lines
+               (e.g. a Streamlit ``st.write`` / status callback).
+
+    Returns (added_count, updated_count, status_message).
+    """
+    log = []
+
+    def _say(msg):
+        log.append(msg)
+        if progress:
+            try:
+                progress(msg)
+            except Exception:
+                pass
+
+    # -- resolve config early so failures are clear --------------------------
+    try:
+        folder_id = _get_catalog_folder_id()
+        image_folder_id = _get_image_folder_id()
+        model = _get_model()
+        client = _get_anthropic_client()
+    except RuntimeError as exc:
+        return 0, 0, f"❌ {exc}"
+
+    try:
+        import fitz  # noqa: F401  (PyMuPDF — imported for the clear error if missing)
+    except Exception:
+        return 0, 0, "❌ PyMuPDF (fitz) is required. Add 'PyMuPDF' to requirements.txt."
+
+    try:
+        pdf_files = _list_pdfs_in_folder(folder_id)
+    except Exception as exc:
+        return 0, 0, f"❌ Failed to list the B2C_CATALOGUE folder: {exc}"
+    if not pdf_files:
+        return 0, 0, (
+            "⚠️ No PDF files found in the B2C_CATALOGUE folder. Check the folder "
+            "ID and that the service account has Viewer access."
+        )
+
+    existing = _load_existing()
+    existing_keys = {_norm_key(n): idx for idx, n in enumerate(existing["Product Name"])}
+
+    drive_service = _build_drive_service()
+
+    to_append = []          # list[list[str]]  new rows
+    to_update = {}          # sheet_row_number(int) -> list[str] full row
+    seen_this_run = set()   # products already handled this run (dedupe across pages)
+    added = updated = skipped = 0
+
+    for file_info in pdf_files:
+        fname = file_info["name"]
+        hint = _filename_to_room_hint(fname)
+        _say(f"📄 {fname} …")
+        try:
+            pdf_bytes = _download_pdf_bytes(file_info["id"])
+        except Exception as exc:
+            _say(f"   ⚠️ download failed: {exc}")
+            continue
+
+        try:
+            products = _extract_products_from_pdf(client, model, pdf_bytes, hint, _say)
+        except Exception as exc:
+            _say(f"   ⚠️ parse failed: {exc}")
+            continue
+
+        _say(f"   → {len(products)} product(s) parsed")
+
+        for product in products:
+            name = _clean_line(product.get("product_name"))
+            if not name:
+                continue
+            key = _norm_key(name)
+            if key in seen_this_run:
+                continue
+            seen_this_run.add(key)
+
+            main_cat = _clean_line(product.get("main_category") or hint)
+            sub_cat = _clean_line(product.get("sub_category"))
+            features = _format_features(product.get("features"))
+            measurements = _clean_line_multiline(product.get("measurements"))
+            colour_material = _format_colour_material(
+                product.get("colour"), product.get("material")
+            )
+
+            if key in existing_keys:
+                row_idx = existing_keys[key]
+                ex = existing.iloc[row_idx]
+                # Preserve the hand-curated / previously-generated image URLs.
+                main_urls = ex["Product Image URLs"]
+                swatch_urls = ex["Swatch Image URLs"]
+
+                changed = (
+                    _sig(ex["Main Category"]) != _sig(main_cat)
+                    or _sig(ex["Sub Category"]) != _sig(sub_cat)
+                    or _sig(ex["Features"]) != _sig(features)
+                    or _sig(ex["Measurements"]) != _sig(measurements)
+                    or _sig(ex["Colour & Material"]) != _sig(colour_material)
+                )
+                if not changed:
+                    skipped += 1
+                    continue
+
+                # If the existing row has no images yet, generate them now.
+                if not str(main_urls).strip() and not str(swatch_urls).strip():
+                    main_urls, swatch_urls = _upload_product_images(
+                        drive_service, image_folder_id, product
+                    )
+
+                to_update[row_idx + 2] = [
+                    main_cat, sub_cat, name, features, measurements,
+                    colour_material, main_urls, swatch_urls,
+                ]
+                updated += 1
+                _say(f"   ✏️  updated: {name}")
+            else:
+                main_urls, swatch_urls = _upload_product_images(
+                    drive_service, image_folder_id, product
+                )
+                to_append.append([
+                    main_cat, sub_cat, name, features, measurements,
+                    colour_material, main_urls, swatch_urls,
+                ])
+                added += 1
+                _say(f"   ➕ new: {name}")
+
+    # -- write back ----------------------------------------------------------
+    if not to_append and not to_update:
+        return 0, 0, (
+            "✅ Catalogue scan complete — no new products and no changes.\n"
+            + "\n".join(log)
+        )
+
+    try:
+        from services.sheets import get_sheet, get_df
+        ws = get_sheet(CATALOG_SHEET_NAME)
+
+        # Ensure the header row exists (fresh/empty sheet).
+        if existing.empty:
+            header = ws.row_values(1)
+            if [h.strip() for h in header][: len(CATALOG_COLUMNS)] != CATALOG_COLUMNS:
+                ws.update("A1", [CATALOG_COLUMNS])
+
+        for row_number, values in sorted(to_update.items()):
+            ws.update(f"A{row_number}:H{row_number}", [values],
+                      value_input_option="USER_ENTERED")
+
+        if to_append:
+            ws.append_rows(to_append, value_input_option="USER_ENTERED")
+
+        try:
+            get_df.clear()  # bust the sheets cache so the page shows updates
+        except Exception:
+            pass
+    except Exception as exc:
+        return added, updated, (
+            f"⚠️ Parsed products but writing to the sheet failed: {exc}\n"
+            + "\n".join(log)
+        )
+
+    summary = (
+        f"✅ Catalogue sync complete — {added} added, {updated} updated, "
+        f"{skipped} unchanged."
+    )
+    return added, updated, summary + "\n" + "\n".join(log)
+
+
+def _clean_line_multiline(s: str) -> str:
+    """Collapse whitespace but keep intentional newlines (seater variants)."""
+    lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in str(s or "").split("\n")]
+    return "\n".join(ln for ln in lines if ln)
+
+
+def _filename_to_room_hint(filename: str) -> str:
+    name = filename[:-4] if filename.lower().endswith(".pdf") else filename
+    name = re.sub(r"(?i)\b(cataloue|catalouge|catalogue|catalog|range|b2c)\b", "", name)
+    name = re.sub(r"[_\-]+", " ", name)
+    return re.sub(r"\s+", " ", name).strip() or "Furniture"
+
+
+def _extract_products_from_pdf(client, model, pdf_bytes, hint, say) -> list:
+    """Render each page, ask Claude for the products, and attach the page's
+    raster images to the right product. Returns a flat list of product dicts,
+    each carrying main_images / swatch_images (raw bytes) + main_category."""
+    import fitz
+
+    all_products = []
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+        n_pages = doc.page_count
+        for pno in range(n_pages):
+            page = doc[pno]
+            try:
+                png = _render_page_png(page)
+            except Exception:
+                continue
+            try:
+                parsed = _parse_page(client, model, png, hint)
+            except Exception as exc:
+                say(f"   ⚠️ page {pno + 1}: vision error: {exc}")
+                continue
+
+            products = parsed.get("products") or []
+            if not products:
+                continue
+
+            page_main = _clean_line(parsed.get("main_category") or hint)
+            images = _extract_page_images(doc, page)
+            _assign_images(products, images)
+            for p in products:
+                p["main_category"] = page_main
+                all_products.append(p)
+
+    return all_products

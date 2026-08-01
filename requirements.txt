@@ -16,5 +16,6 @@ webdriver-manager
 schedule
 PyMuPDF
 pdfplumber
+anthropic
 openpyxl
 xlsxwriter
