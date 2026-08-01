@@ -7,7 +7,9 @@ with Claude vision, uploads each product's photos/swatches to Drive, and
 UPSERTS them into the "Product Catalog" Google Sheet.
 
 Idempotent: only new products are appended and only genuinely-changed products
-are rewritten; existing rows (and their curated image URLs) are preserved.
+are rewritten; existing rows (and their curated image URLs) are preserved. A row
+that is missing its Product Image is backfilled — the catalogue photo is uploaded
+to Drive and the link filled in — without touching any other column.
 
 Run it manually or from a scheduler:
     python streamlit_app/catalog_pdf_import_job.py

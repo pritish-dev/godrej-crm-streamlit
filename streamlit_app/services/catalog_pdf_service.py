@@ -19,9 +19,13 @@ Idempotency contract (as requested):
     changed (compared on a punctuation/whitespace-insensitive signature so
     harmless LLM wording drift does not cause churn).
   * Unchanged products are left completely untouched — no writes.
-  * Images are only extracted + uploaded for NEW products (or existing products
-    whose image columns are blank). The hand-curated image URLs already in the
-    sheet are always preserved, and images are never re-uploaded on a re-run.
+  * Images are extracted + uploaded for NEW products, and a MISSING product
+    image is backfilled onto an existing row (its "Product Image URLs" cell is
+    blank) by extracting the catalogue photo, uploading it to Drive, and filling
+    in the link — without touching any other column. This backfill runs on every
+    scan (it does not require the "update existing" switch). The hand-curated
+    image URLs already in the sheet are always preserved, and images are never
+    re-uploaded on a re-run (uploads are idempotent by deterministic filename).
 
 WHY Claude vision: the catalogue PDFs are two-column marketing layouts whose
 plain-text extraction is badly interleaved between the two columns. A rendered
@@ -652,26 +656,34 @@ def _load_existing():
     return df[CATALOG_COLUMNS].fillna("")
 
 
-def _upload_product_images(service, image_folder_id, product) -> tuple[str, str]:
-    """Upload a NEW product's main + swatch images; return (main_urls, swatch_urls)."""
+def _upload_product_images(service, image_folder_id, product, *,
+                           want_main=True, want_swatch=True) -> tuple[str, str]:
+    """Upload a product's main + swatch images; return (main_urls, swatch_urls).
+
+    ``want_main`` / ``want_swatch`` let a caller upload only one kind — used by
+    the backfill path, which needs to fill a missing product photo on a row
+    whose swatch URLs are already present (so it must not re-upload swatches).
+    """
     slug = _slug(product["product_name"])
     main_urls, swatch_urls = [], []
 
-    for i, img in enumerate(product.get("main_images", []), start=1):
-        name = f"{slug}_main_{i}.png"
-        mime = f"image/{'jpeg' if img['ext'] in ('jpg', 'jpeg') else 'png'}"
-        try:
-            main_urls.append(_upload_image(service, image_folder_id, name, img["bytes"], mime))
-        except Exception:
-            pass
+    if want_main:
+        for i, img in enumerate(product.get("main_images", []), start=1):
+            name = f"{slug}_main_{i}.png"
+            mime = f"image/{'jpeg' if img['ext'] in ('jpg', 'jpeg') else 'png'}"
+            try:
+                main_urls.append(_upload_image(service, image_folder_id, name, img["bytes"], mime))
+            except Exception:
+                pass
 
-    for i, img in enumerate(product.get("swatch_images", []), start=1):
-        name = f"{slug}_swatch_{i}.png"
-        mime = f"image/{'jpeg' if img['ext'] in ('jpg', 'jpeg') else 'png'}"
-        try:
-            swatch_urls.append(_upload_image(service, image_folder_id, name, img["bytes"], mime))
-        except Exception:
-            pass
+    if want_swatch:
+        for i, img in enumerate(product.get("swatch_images", []), start=1):
+            name = f"{slug}_swatch_{i}.png"
+            mime = f"image/{'jpeg' if img['ext'] in ('jpg', 'jpeg') else 'png'}"
+            try:
+                swatch_urls.append(_upload_image(service, image_folder_id, name, img["bytes"], mime))
+            except Exception:
+                pass
 
     return ", ".join(main_urls), ", ".join(swatch_urls)
 
@@ -767,7 +779,7 @@ def fetch_and_sync_catalog_from_drive(progress=None, page_start=1, page_end=None
     to_append = []          # list[list[str]]  new rows
     to_update = {}          # sheet_row_number(int) -> list[str] full row
     seen_this_run = set()   # products already handled this run (dedupe across pages)
-    added = updated = skipped = 0
+    added = updated = skipped = backfilled = 0
     total_parsed = 0        # product blocks the model returned across all PDFs
 
     for file_info in pdf_files:
@@ -810,43 +822,75 @@ def fetch_and_sync_catalog_from_drive(progress=None, page_start=1, page_end=None
             )
 
             if key in existing_keys:
-                # Product already in the sheet. By default we never touch it —
-                # this avoids churn (and wasted Sheets writes) from harmless LLM
-                # wording drift, and re-uploading images. Only when the caller
-                # opts in do we rewrite a row, and only if its text truly changed.
-                if not update_existing:
-                    skipped += 1
-                    continue
-
+                # Product already in the sheet.
                 row_idx = existing_keys[key]
                 ex = existing.iloc[row_idx]
                 # Preserve the hand-curated / previously-generated image URLs.
-                main_urls = ex["Product Image URLs"]
-                swatch_urls = ex["Swatch Image URLs"]
+                main_urls = str(ex["Product Image URLs"]).strip()
+                swatch_urls = str(ex["Swatch Image URLs"]).strip()
 
-                changed = (
-                    _sig(ex["Main Category"]) != _sig(main_cat)
-                    or _sig(ex["Sub Category"]) != _sig(sub_cat)
-                    or _sig(ex["Features"]) != _sig(features)
-                    or _sig(ex["Measurements"]) != _sig(measurements)
-                    or _sig(ex["Colour & Material"]) != _sig(colour_material)
-                )
-                if not changed:
-                    skipped += 1
-                    continue
+                # ── Backfill a MISSING product image ────────────────────────
+                # If the row has no Product Image URL yet, extract the main
+                # catalogue photo, upload it to Drive, and fill in the link.
+                # This runs regardless of `update_existing`, never disturbs a
+                # row that already has a product image, and touches ONLY the
+                # image cell(s) (all text columns are preserved verbatim). If
+                # the product has no extractable photo, the cell is left blank.
+                did_backfill = False
+                if not main_urls and product.get("main_images"):
+                    new_main, _ = _upload_product_images(
+                        drive_service, image_folder_id, product,
+                        want_main=True, want_swatch=False,
+                    )
+                    if new_main:
+                        main_urls = new_main
+                        did_backfill = True
 
-                # If the existing row has no images yet, generate them now.
-                if not str(main_urls).strip() and not str(swatch_urls).strip():
-                    main_urls, swatch_urls = _upload_product_images(
-                        drive_service, image_folder_id, product
+                # By default we never rewrite an existing product's TEXT — this
+                # avoids churn (and wasted Sheets writes) from harmless LLM
+                # wording drift. Only when the caller opts in do we refresh a
+                # row's text, and only if it truly changed.
+                changed = False
+                if update_existing:
+                    changed = (
+                        _sig(ex["Main Category"]) != _sig(main_cat)
+                        or _sig(ex["Sub Category"]) != _sig(sub_cat)
+                        or _sig(ex["Features"]) != _sig(features)
+                        or _sig(ex["Measurements"]) != _sig(measurements)
+                        or _sig(ex["Colour & Material"]) != _sig(colour_material)
                     )
 
-                to_update[row_idx + 2] = [
-                    main_cat, sub_cat, name, features, measurements,
-                    colour_material, main_urls, swatch_urls,
-                ]
-                updated += 1
-                _say(f"   ✏️  updated: {name}")
+                if changed:
+                    # Refreshing the text. If the row still has no swatches,
+                    # generate them now too (main photo already handled above).
+                    if not swatch_urls:
+                        _, swatch_urls = _upload_product_images(
+                            drive_service, image_folder_id, product,
+                            want_main=False, want_swatch=True,
+                        )
+                    to_update[row_idx + 2] = [
+                        main_cat, sub_cat, name, features, measurements,
+                        colour_material, main_urls, swatch_urls,
+                    ]
+                    updated += 1
+                    _say(f"   ✏️  updated: {name}")
+                elif did_backfill:
+                    # Text unchanged (or refresh disabled) — write back only the
+                    # newly filled image cell, preserving every other column.
+                    to_update[row_idx + 2] = [
+                        str(ex["Main Category"]),
+                        str(ex["Sub Category"]),
+                        str(ex["Product Name"]),
+                        str(ex["Features"]),
+                        str(ex["Measurements"]),
+                        str(ex["Colour & Material"]),
+                        main_urls,
+                        swatch_urls,
+                    ]
+                    backfilled += 1
+                    _say(f"   🖼️  backfilled product image: {name}")
+                else:
+                    skipped += 1
             else:
                 main_urls, swatch_urls = _upload_product_images(
                     drive_service, image_folder_id, product
@@ -909,7 +953,7 @@ def fetch_and_sync_catalog_from_drive(progress=None, page_start=1, page_end=None
 
     summary = (
         f"✅ Catalogue sync complete — {added} added, {updated} updated, "
-        f"{skipped} unchanged."
+        f"{backfilled} product image(s) backfilled, {skipped} unchanged."
     )
     return added, updated, summary + "\n" + "\n".join(log)
 

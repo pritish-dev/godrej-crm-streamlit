@@ -118,8 +118,10 @@ with _dcol2:
         "🛠️ Extract products from Catalogue PDFs",
         use_container_width=True,
         help="Reads the catalogue PDFs from the B2C_CATALOGUE Google Drive "
-             "folder, extracts each product with AI, and adds new/changed "
-             "products to this sheet. Existing rows are preserved.",
+             "folder, extracts each product with AI, and adds new products to "
+             "this sheet. Existing rows are preserved — but any row missing its "
+             "Product Image is backfilled: the catalogue photo is uploaded to "
+             "Drive and the link filled in automatically.",
     )
 # --- Catalogue extraction options (page window + update policy) ---
 _ocol1, _ocol2, _ocol3 = st.columns([3, 3, 4])
@@ -139,9 +141,10 @@ with _ocol3:
     _cat_update = st.checkbox(
         "Update existing products if changed",
         value=False,
-        help="Off (recommended): products already in the sheet are never "
-             "touched — only new products are added. On: also rewrite an "
-             "existing product when its text actually changed.",
+        help="Off (recommended): an existing product's text is never touched — "
+             "only new products are added (a missing Product Image is still "
+             "backfilled either way). On: also rewrite an existing product's "
+             "text when it actually changed.",
     )
 
 if run_catalog:
