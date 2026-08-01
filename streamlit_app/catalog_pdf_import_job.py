@@ -11,6 +11,7 @@ are rewritten; existing rows (and their curated image URLs) are preserved.
 
 Run it manually or from a scheduler:
     python streamlit_app/catalog_pdf_import_job.py
+    python streamlit_app/catalog_pdf_import_job.py --max-pages 2   # cheap test run
 
 Required environment / secrets:
     GOOGLE_CREDENTIALS   service-account JSON (Editor on the image folder)
@@ -36,12 +37,24 @@ from services.catalog_pdf_service import (
 
 
 def main() -> int:
+    import argparse
+    parser = argparse.ArgumentParser(description="Import catalogue PDFs into the Product Catalog sheet.")
+    parser.add_argument(
+        "--max-pages", type=int, default=0,
+        help="Cap pages per catalogue sent to the AI (0 = all). Use e.g. 2 for a cheap test.",
+    )
+    args = parser.parse_args()
+
     print("=" * 60)
     print(f"  Product Catalogue Import — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"  Target sheet : {CATALOG_SHEET_NAME}")
+    if args.max_pages:
+        print(f"  TEST MODE    : first {args.max_pages} page(s) per catalogue")
     print("=" * 60)
 
-    added, updated, status = fetch_and_sync_catalog_from_drive(progress=print)
+    added, updated, status = fetch_and_sync_catalog_from_drive(
+        progress=print, max_pages=(args.max_pages or None)
+    )
 
     print("\n" + "=" * 60)
     print(status)

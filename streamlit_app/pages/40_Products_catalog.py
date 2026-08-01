@@ -121,6 +121,13 @@ with _dcol2:
              "folder, extracts each product with AI, and adds new/changed "
              "products to this sheet. Existing rows are preserved.",
     )
+with _dcol3:
+    _cat_test_pages = st.number_input(
+        "Test: pages/catalogue (0 = all)",
+        min_value=0, max_value=500, value=0, step=1,
+        help="Cap how many pages per catalogue are sent to the AI. Use a small "
+             "value (e.g. 2) for a cheap diagnostic run before scanning everything.",
+    )
 
 if run_catalog:
     _ph = st.empty()
@@ -136,15 +143,27 @@ if run_catalog:
     ):
         try:
             _added, _updated, _cat_status = fetch_and_sync_catalog_from_drive(
-                progress=_catalog_progress
+                progress=_catalog_progress,
+                max_pages=(int(_cat_test_pages) or None),
             )
         except Exception as e:
-            _added, _updated, _cat_status = 0, 0, f"❌ Extraction failed: {e}"
+            import traceback
+            _added, _updated, _cat_status = 0, 0, (
+                f"❌ Extraction failed: {e}\n\n{traceback.format_exc()}"
+            )
     _ph.empty()
 
     load_all_data.clear()  # bust the 5-min cache so new products show immediately
     _headline = _cat_status.split("\n", 1)[0]
     (st.success if _cat_status.startswith("✅") else st.warning)(_headline)
+
+    # Always surface the full per-page log so a billed-but-empty run is debuggable
+    # instead of silently reporting "nothing happened".
+    with st.expander(
+        "🔎 Extraction log / diagnostics",
+        expanded=not _cat_status.startswith("✅"),
+    ):
+        st.code(_cat_status or "(no output)")
     with st.expander("Extraction details"):
         st.text(_cat_status)
 

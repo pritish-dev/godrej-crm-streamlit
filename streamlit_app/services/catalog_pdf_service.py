@@ -81,7 +81,7 @@ DEFAULT_IMAGE_FOLDER_ID = "1PGdL47AQXliSpX9i8MIQz3oeAknxJM8I"
 # Thumbnail URL scheme used by every existing image cell in the sheet.
 _THUMB_URL = "https://drive.google.com/thumbnail?id={id}&sz=w1000"
 
-DEFAULT_LLM_MODEL = "claude-opus-5"
+DEFAULT_LLM_MODEL = "claude-sonnet-5"
 
 # Drive write access is required to upload images and make them link-viewable.
 _SCOPES = [
@@ -443,9 +443,46 @@ For each product return:
 Return ONLY the structured JSON."""
 
 
-def _parse_page(client, model: str, png_bytes: bytes, hint: str) -> dict:
+def _loads_lenient(text: str):
+    """Parse JSON from a model reply, tolerating markdown fences / stray prose.
+
+    Returns the parsed object, or None if no JSON object can be recovered.
+    """
+    t = str(text or "").strip()
+    if not t:
+        return None
+    if t.startswith("```"):                      # ```json … ``` fences
+        t = re.sub(r"^```[a-zA-Z0-9]*\s*", "", t)
+        t = re.sub(r"\s*```$", "", t).strip()
+    try:
+        return json.loads(t)
+    except Exception:
+        pass
+    m = re.search(r"\{.*\}", t, re.DOTALL)       # first {...} block anywhere
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except Exception:
+            return None
+    return None
+
+
+def _resp_text(resp) -> str:
+    """Concatenate all text blocks of a Messages response (order preserved)."""
+    parts = []
+    for b in getattr(resp, "content", None) or []:
+        if getattr(b, "type", None) == "text" and getattr(b, "text", None):
+            parts.append(b.text)
+    return "".join(parts)
+
+
+def _parse_page(client, model: str, png_bytes: bytes, hint: str,
+                say=None, label: str = "") -> dict:
     b64 = base64.standard_b64encode(png_bytes).decode("utf-8")
     prompt = _PAGE_PROMPT.format(hint=hint)
+    # NB: client.messages.create() may raise (e.g. 400/timeout). We let it
+    # propagate so the caller logs it — a swallowed error is exactly what made
+    # the previous version bill the API yet report "no products".
     resp = client.messages.create(
         model=model,
         max_tokens=8000,
@@ -461,15 +498,26 @@ def _parse_page(client, model: str, png_bytes: bytes, hint: str) -> dict:
             ],
         }],
     )
-    if resp.stop_reason == "refusal":
+
+    def _diag(msg):
+        if say:
+            say(f"   ⚠️ {label}: {msg}")
+
+    if getattr(resp, "stop_reason", None) == "refusal":
+        _diag("model refused this page (skipped)")
         return {"main_category": hint, "products": []}
-    text = next((b.text for b in resp.content if b.type == "text"), "")
-    if not text:
+
+    text = _resp_text(resp)
+    if not text.strip():
+        _diag(f"empty response (stop_reason={getattr(resp, 'stop_reason', '?')})")
         return {"main_category": hint, "products": []}
-    try:
-        data = json.loads(text)
-    except Exception:
+
+    data = _loads_lenient(text)
+    if not isinstance(data, dict):
+        snippet = text.strip().replace("\n", " ")[:200]
+        _diag(f"could not read product JSON from {len(text)} chars: {snippet!r}")
         return {"main_category": hint, "products": []}
+
     if not isinstance(data.get("products"), list):
         data["products"] = []
     return data
@@ -628,7 +676,7 @@ def _upload_product_images(service, image_folder_id, product) -> tuple[str, str]
     return ", ".join(main_urls), ", ".join(swatch_urls)
 
 
-def fetch_and_sync_catalog_from_drive(progress=None):
+def fetch_and_sync_catalog_from_drive(progress=None, max_pages=None):
     """Scan the B2C_CATALOGUE Drive folder, parse every catalogue PDF, and
     upsert the products into the 'Product Catalog' sheet.
 
@@ -636,6 +684,8 @@ def fetch_and_sync_catalog_from_drive(progress=None):
     ----------
     progress : optional callable(str) invoked with human-readable status lines
                (e.g. a Streamlit ``st.write`` / status callback).
+    max_pages : optional int — cap pages sent to the model per catalogue for a
+               cheap diagnostic run (None = whole catalogue).
 
     Returns (added_count, updated_count, status_message).
     """
@@ -682,6 +732,7 @@ def fetch_and_sync_catalog_from_drive(progress=None):
     to_update = {}          # sheet_row_number(int) -> list[str] full row
     seen_this_run = set()   # products already handled this run (dedupe across pages)
     added = updated = skipped = 0
+    total_parsed = 0        # product blocks the model returned across all PDFs
 
     for file_info in pdf_files:
         fname = file_info["name"]
@@ -694,12 +745,15 @@ def fetch_and_sync_catalog_from_drive(progress=None):
             continue
 
         try:
-            products = _extract_products_from_pdf(client, model, pdf_bytes, hint, _say)
+            products = _extract_products_from_pdf(
+                client, model, pdf_bytes, hint, _say, max_pages=max_pages
+            )
         except Exception as exc:
             _say(f"   ⚠️ parse failed: {exc}")
             continue
 
         _say(f"   → {len(products)} product(s) parsed")
+        total_parsed += len(products)
 
         for product in products:
             name = _clean_line(product.get("product_name"))
@@ -761,10 +815,18 @@ def fetch_and_sync_catalog_from_drive(progress=None):
 
     # -- write back ----------------------------------------------------------
     if not to_append and not to_update:
-        return 0, 0, (
-            "✅ Catalogue scan complete — no new products and no changes.\n"
-            + "\n".join(log)
-        )
+        if total_parsed == 0:
+            headline = (
+                "⚠️ Catalogue scan finished but the AI returned 0 products from "
+                "any page — nothing to write. Check the log below for the reason "
+                "(refusal / unreadable JSON / wrong folder)."
+            )
+        else:
+            headline = (
+                f"✅ Catalogue scan complete — {total_parsed} product(s) read, all "
+                f"already present and unchanged ({skipped} matched). Nothing to write."
+            )
+        return 0, 0, headline + "\n" + "\n".join(log)
 
     try:
         from services.sheets import get_sheet, get_df
@@ -813,31 +875,41 @@ def _filename_to_room_hint(filename: str) -> str:
     return re.sub(r"\s+", " ", name).strip() or "Furniture"
 
 
-def _extract_products_from_pdf(client, model, pdf_bytes, hint, say) -> list:
+def _extract_products_from_pdf(client, model, pdf_bytes, hint, say,
+                               max_pages=None) -> list:
     """Render each page, ask Claude for the products, and attach the page's
     raster images to the right product. Returns a flat list of product dicts,
-    each carrying main_images / swatch_images (raw bytes) + main_category."""
+    each carrying main_images / swatch_images (raw bytes) + main_category.
+
+    ``max_pages`` (int) caps how many pages are sent to the model — use a small
+    value for a cheap diagnostic run before paying for the whole catalogue.
+    """
     import fitz
 
     all_products = []
+    pages_with_products = 0
     with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
         n_pages = doc.page_count
-        for pno in range(n_pages):
+        limit = min(n_pages, max_pages) if max_pages else n_pages
+        for pno in range(limit):
             page = doc[pno]
+            label = f"page {pno + 1}"
             try:
                 png = _render_page_png(page)
-            except Exception:
+            except Exception as exc:
+                say(f"   ⚠️ {label}: render failed: {exc}")
                 continue
             try:
-                parsed = _parse_page(client, model, png, hint)
+                parsed = _parse_page(client, model, png, hint, say=say, label=label)
             except Exception as exc:
-                say(f"   ⚠️ page {pno + 1}: vision error: {exc}")
+                say(f"   ⚠️ {label}: vision error: {exc}")
                 continue
 
             products = parsed.get("products") or []
             if not products:
                 continue
 
+            pages_with_products += 1
             page_main = _clean_line(parsed.get("main_category") or hint)
             images = _extract_page_images(doc, page)
             _assign_images(products, images)
@@ -845,4 +917,8 @@ def _extract_products_from_pdf(client, model, pdf_bytes, hint, say) -> list:
                 p["main_category"] = page_main
                 all_products.append(p)
 
+        say(
+            f"   scanned {limit}/{n_pages} page(s) → "
+            f"{len(all_products)} product block(s) on {pages_with_products} page(s)"
+        )
     return all_products
