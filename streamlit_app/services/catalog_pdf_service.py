@@ -44,19 +44,25 @@ Required configuration
   Google service-account    same [google] secret / GOOGLE_CREDENTIALS the rest
                             of the CRM uses. Used to READ the catalogue PDFs and
                             to write the Google Sheet.
-  Drive OAuth (for uploads) A service account has NO Drive storage quota, so it
-                            cannot own/upload files — image uploads 403 with
-                            'storageQuotaExceeded'. Uploads therefore run as a
-                            real user via OAuth. Configure once:
-                              [drive_oauth] client_id / client_secret /
-                              refresh_token  (or DRIVE_OAUTH_CLIENT_ID /
-                              DRIVE_OAUTH_CLIENT_SECRET / DRIVE_OAUTH_REFRESH_TOKEN
-                              env vars for the scheduled job).
-                            Mint the refresh token once with
-                              streamlit_app/tools/generate_drive_oauth_token.py
-                            The OAuth user must have Editor access to the image
-                            folder (CATALOG_IMAGE_FOLDER_ID). Without OAuth the
-                            text still syncs; only images fail.
+  Drive uploads             A service account has NO Drive storage quota, so it
+                            cannot own/upload files in My Drive — image uploads
+                            403 with 'storageQuotaExceeded'. Pick ONE identity
+                            that CAN own files (in priority order):
+                              1. Service account + Shared Drive — put the image
+                                 folder on a Shared Drive and add the SA as a
+                                 member. No extra config; files are owned by the
+                                 drive. (Needs Google Workspace.)
+                              2. Service account + domain-wide delegation —
+                                 [drive] impersonate_user = "user@yourdomain"
+                                 (or env DRIVE_IMPERSONATE_USER). Uploads run as
+                                 that real user; files use their quota.
+                              3. OAuth user credentials —
+                                 [drive_oauth] client_id / client_secret /
+                                 refresh_token (or DRIVE_OAUTH_* env). Mint once
+                                 with tools/generate_drive_oauth_token.py.
+                            The owning identity must have Editor access to the
+                            image folder (CATALOG_IMAGE_FOLDER_ID). With none of
+                            these, text still syncs; only images fail.
 
 Optional configuration
 ----------------------
@@ -167,28 +173,58 @@ def _get_model() -> str:
     )
 
 
+def _get_impersonate_user() -> str:
+    """Return the Workspace user the service account should impersonate, if any.
+
+    Set this when the service account has **domain-wide delegation**: uploads
+    then run as this real user, so the created files are owned by them (with
+    their storage quota) instead of the quota-less service account.
+      * secrets.toml -> [drive] impersonate_user  (or [google] impersonate_user)
+      * env var       -> DRIVE_IMPERSONATE_USER
+    """
+    return (
+        _secret("drive", "impersonate_user")
+        or _secret("google", "impersonate_user")
+        or os.getenv("DRIVE_IMPERSONATE_USER", "").strip()
+    )
+
+
 def _get_drive_creds():
     from google.oauth2.service_account import Credentials
+    creds = None
     # 1. Streamlit secrets
     try:
         import streamlit as st
-        return Credentials.from_service_account_info(dict(st.secrets["google"]), scopes=_SCOPES)
+        creds = Credentials.from_service_account_info(dict(st.secrets["google"]), scopes=_SCOPES)
     except Exception:
-        pass
+        creds = None
     # 2. GOOGLE_CREDENTIALS env (JSON blob — GitHub Actions)
-    raw = os.getenv("GOOGLE_CREDENTIALS", "").strip()
-    if raw:
-        return Credentials.from_service_account_info(json.loads(raw), scopes=_SCOPES)
+    if creds is None:
+        raw = os.getenv("GOOGLE_CREDENTIALS", "").strip()
+        if raw:
+            creds = Credentials.from_service_account_info(json.loads(raw), scopes=_SCOPES)
     # 3. GOOGLE_APPLICATION_CREDENTIALS path
-    path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
-    if path and os.path.exists(path):
-        return Credentials.from_service_account_file(path, scopes=_SCOPES)
+    if creds is None:
+        path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+        if path and os.path.exists(path):
+            creds = Credentials.from_service_account_file(path, scopes=_SCOPES)
     # 4. Local file
-    if os.path.exists("config/credentials.json"):
-        return Credentials.from_service_account_file("config/credentials.json", scopes=_SCOPES)
-    raise RuntimeError(
-        "No valid Google credentials. Set [google] in secrets.toml or GOOGLE_CREDENTIALS."
-    )
+    if creds is None and os.path.exists("config/credentials.json"):
+        creds = Credentials.from_service_account_file("config/credentials.json", scopes=_SCOPES)
+    if creds is None:
+        raise RuntimeError(
+            "No valid Google credentials. Set [google] in secrets.toml or GOOGLE_CREDENTIALS."
+        )
+    # Domain-wide delegation: act as a real user so uploaded files are owned by
+    # them (a bare service account has no Drive storage quota and can't own
+    # files in My Drive — every upload would 403 storageQuotaExceeded).
+    subject = _get_impersonate_user()
+    if subject:
+        try:
+            creds = creds.with_subject(subject)
+        except Exception:
+            pass
+    return creds
 
 
 def _get_drive_oauth_config() -> dict:
@@ -953,15 +989,23 @@ def fetch_and_sync_catalog_from_drive(progress=None, page_start=1, page_end=None
     except Exception:
         return 0, 0, "❌ PyMuPDF (fitz) is required. Add 'PyMuPDF' to requirements.txt."
 
-    # Uploads need a real user identity — a service account has no Drive quota
-    # and every image upload will 403 (storageQuotaExceeded). Warn up front so
-    # the run doesn't just produce a wall of failed-upload lines.
-    if not _get_drive_oauth_config():
+    # Report which identity uploads will run as, so a quota failure is easy to
+    # diagnose. A bare service account cannot own files in My Drive (it will 403
+    # storageQuotaExceeded) — it only works when the image folder is on a Shared
+    # Drive, or when domain-wide delegation impersonates a real user, or when
+    # OAuth user credentials are configured.
+    if _get_drive_oauth_config():
+        _say("🔑 Drive uploads: OAuth user credentials.")
+    elif _get_impersonate_user():
+        _say(f"🔑 Drive uploads: service account impersonating {_get_impersonate_user()}.")
+    else:
         _say(
-            "⚠️ Drive OAuth is NOT configured — image uploads will fail "
-            "(service accounts have no Drive storage). Set [drive_oauth] "
-            "client_id/client_secret/refresh_token in secrets (see "
-            "generate_drive_oauth_token.py). Text will still sync."
+            "🔑 Drive uploads: service account (no impersonation). This only "
+            "works if the image folder is on a Shared Drive; a plain service "
+            "account cannot own files in My Drive and will 403 "
+            "(storageQuotaExceeded). If uploads fail, set [drive] "
+            "impersonate_user (domain-wide delegation) or move the folder to a "
+            "Shared Drive. Text still syncs regardless."
         )
 
     try:
