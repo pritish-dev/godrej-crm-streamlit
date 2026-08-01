@@ -189,7 +189,15 @@ def _get_impersonate_user() -> str:
     )
 
 
-def _get_drive_creds():
+def _get_drive_creds(subject: str = ""):
+    """Service-account credentials for Drive.
+
+    ``subject`` (optional) turns on domain-wide delegation — the SA acts as that
+    real user, so uploaded files are owned by them (a bare service account has no
+    Drive storage quota and can't own files in My Drive). Impersonation is ONLY
+    applied when a subject is passed, so read paths keep using the plain SA and
+    a mis-configured delegation can never break listing/downloading.
+    """
     from google.oauth2.service_account import Credentials
     creds = None
     # 1. Streamlit secrets
@@ -215,10 +223,6 @@ def _get_drive_creds():
         raise RuntimeError(
             "No valid Google credentials. Set [google] in secrets.toml or GOOGLE_CREDENTIALS."
         )
-    # Domain-wide delegation: act as a real user so uploaded files are owned by
-    # them (a bare service account has no Drive storage quota and can't own
-    # files in My Drive — every upload would 403 storageQuotaExceeded).
-    subject = _get_impersonate_user()
     if subject:
         try:
             creds = creds.with_subject(subject)
@@ -302,10 +306,25 @@ def _get_drive_oauth_creds():
 
 
 def _build_drive_service():
+    """READ service — plain service account. Used for listing/downloading the
+    catalogue PDFs. Never uses impersonation, so a mis-configured delegation
+    can't break reads (this worked before and must keep working)."""
     from googleapiclient.discovery import build
-    # Prefer OAuth user creds for writes (service accounts can't own files);
-    # fall back to the service account (fine for read-only listing/download).
-    creds = _get_drive_oauth_creds() or _get_drive_creds()
+    return build("drive", "v3", credentials=_get_drive_creds(), cache_discovery=False)
+
+
+def _build_write_drive_service():
+    """WRITE service — the identity that will OWN uploaded images.
+
+    Priority: OAuth user creds → service account with domain-wide delegation
+    (impersonate_user) → plain service account (only works against a Shared
+    Drive). Kept separate from the read service so an upload-identity failure
+    (e.g. delegation not authorised) surfaces only on uploads, not on listing.
+    """
+    from googleapiclient.discovery import build
+    creds = _get_drive_oauth_creds()
+    if creds is None:
+        creds = _get_drive_creds(subject=_get_impersonate_user())
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 
@@ -877,6 +896,9 @@ def _upload_product_images(service, image_folder_id, product, *,
     images extracted from the PDF (``product["main_images"]``). Upload failures
     are logged via ``say`` rather than swallowed, so a broken run is diagnosable.
     """
+    if service is None:          # upload identity unavailable — skip cleanly
+        return "", ""
+
     slug = _slug(product["product_name"])
     main_urls, swatch_urls = [], []
 
@@ -1021,7 +1043,14 @@ def fetch_and_sync_catalog_from_drive(progress=None, page_start=1, page_end=None
     existing = _load_existing()
     existing_keys = {_norm_key(n): idx for idx, n in enumerate(existing["Product Name"])}
 
-    drive_service = _build_drive_service()
+    # Uploads use the WRITE identity (OAuth / delegated SA / SA). Building it is
+    # deferred to per-image calls, but if the identity is entirely broken we
+    # still want reads to have already succeeded — hence the read/write split.
+    try:
+        drive_service = _build_write_drive_service()
+    except Exception as exc:
+        drive_service = None
+        _say(f"⚠️ upload identity unavailable ({exc}); images will be skipped, text still syncs.")
 
     to_append = []          # list[list[str]]  new rows
     to_update = {}          # sheet_row_number(int) -> list[str] full row
