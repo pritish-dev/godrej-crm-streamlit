@@ -64,15 +64,15 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: android-latest
-          name: "Godrej CRM Android App (latest)"
+          name: "4S CRM Android App (latest)"
           body: |
-            Latest Godrej Interio CRM Android app.
+            Latest 4S CRM Android app.
 
             This APK opens the live Streamlit dashboard, so it always shows the
             same features as the web app. Download `app-release.apk` below.
 
             **Install:** on your phone, open this APK and allow "install from
             unknown sources" if prompted (Settings are one-time). Then open the
-            "Godrej Interio CRM" app from your home screen.
+            "4S CRM" app from your home screen.
           files: ${{ steps.apk.outputs.path }}
           fail_on_unmatched_files: true

@@ -1,4 +1,4 @@
-# Godrej Interio CRM — Android App
+# 4S CRM — Android App
 
 A lightweight Android app that wraps the **live Streamlit CRM dashboard** in a
 native shell. It opens the same web dashboard full-screen with a home-screen
@@ -30,7 +30,7 @@ builds and signs the APK on GitHub's free runners.
 1. Go to the repo's **Actions** tab → **Build Android APK** → **Run workflow**
    (or just push a change to `android_app/` on `master`).
 2. When it finishes, download it from either:
-   - the **Releases** page → *Godrej CRM Android App (latest)* → `app-release.apk`
+   - the **Releases** page → *4S CRM Android App (latest)* → `app-release.apk`
      (a stable link that always points at the newest build), or
    - the workflow run's **Artifacts** section.
 
@@ -39,7 +39,7 @@ builds and signs the APK on GitHub's free runners.
 1. Copy `app-release.apk` to the phone (WhatsApp/Drive/email link all work).
 2. Tap it. If Android warns about "unknown sources," allow it for your
    file manager or browser (a one-time setting).
-3. Open **Godrej Interio CRM** from the home screen.
+3. Open **4S CRM** from the home screen.
 
 The app is debug-signed, which is why it installs without a Google Play account
 — perfect for internal team distribution.
