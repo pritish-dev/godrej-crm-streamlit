@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="brand_primary">#B8232F</color>       <!-- Godrej red -->
+    <color name="brand_primary_dark">#8E1A23</color>
+    <color name="white">#FFFFFF</color>
+    <color name="icon_bg">#B8232F</color>
+</resources>
