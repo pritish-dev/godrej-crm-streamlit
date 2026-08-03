@@ -36,9 +36,12 @@ BLANK_TOKENS = {"", "NAN", "NONE", "NAT"}
 # Cancelled orders are neither "active" (still in the delivery pipeline) nor
 # "completed" — they are dropped entirely from the Pending Delivery and Payment
 # Due tables. Any of the common spellings counts, and a status that merely
-# *starts with* "CANCEL" (e.g. "CANCELLED BY CUSTOMER") is treated as cancelled
-# too, so a trailing note never lets a cancelled order slip back in.
-CANCELLED_TOKENS = {"CANCEL", "CANCELLED", "CANCELED"}
+# *starts with* "CANCEL" or "REFUND" (e.g. "CANCELLED BY CUSTOMER",
+# "REFUNDED") is treated as cancelled too, so a trailing note never lets a
+# cancelled/refunded order slip back in. Refunds are treated exactly like
+# cancellations: the order is dead and must not appear in the delivery or
+# payment-due tables.
+CANCELLED_TOKENS = {"CANCEL", "CANCELLED", "CANCELED", "REFUND", "REFUNDED"}
 
 
 def norm_status(val) -> str:
@@ -47,9 +50,9 @@ def norm_status(val) -> str:
 
 
 def is_cancelled(status) -> bool:
-    """True when this row/order has been cancelled."""
+    """True when this row/order has been cancelled or refunded."""
     s = norm_status(status)
-    return s in CANCELLED_TOKENS or s.startswith("CANCEL")
+    return s in CANCELLED_TOKENS or s.startswith("CANCEL") or s.startswith("REFUND")
 
 
 def cancelled_mask(df: pd.DataFrame) -> pd.Series:
