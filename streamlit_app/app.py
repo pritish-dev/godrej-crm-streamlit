@@ -5,12 +5,18 @@ The first page listed is shown by default when the app loads.
 """
 import streamlit as st
 
+from services.mobile import apply_mobile_optimizations
+
 st.set_page_config(
     layout="wide",
     page_title="4sInteriors B2C Sales Dashboard",
     page_icon="🛋",
     initial_sidebar_state="expanded",
 )
+
+# Phone-only responsive polish for the mobile app / small screens.
+# Purely additive CSS — desktop layout is unchanged. See services/mobile.py.
+apply_mobile_optimizations()
 
 if "show_old_data_dashboard" not in st.session_state:
     st.session_state.show_old_data_dashboard = False

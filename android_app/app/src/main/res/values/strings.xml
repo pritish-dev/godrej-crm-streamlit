@@ -1,0 +1,12 @@
+<resources>
+    <string name="app_name">Godrej Interio CRM</string>
+
+    <!-- ================================================================= -->
+    <!--  👇  THIS IS THE ONLY LINE YOU NEED TO CHANGE                     -->
+    <!--  Paste your live Streamlit dashboard URL here (keep the https://). -->
+    <!--  Example: https://godrej-interio-patia-crm.streamlit.app          -->
+    <!--  After changing it, the next CI build produces an APK that opens   -->
+    <!--  this exact site — so the app always mirrors your web dashboard.   -->
+    <!-- ================================================================= -->
+    <string name="crm_url" translatable="false">https://godrej-crm-app-4sinteriors.streamlit.app</string>
+</resources>
