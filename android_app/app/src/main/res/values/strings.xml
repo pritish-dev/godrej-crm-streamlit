@@ -8,5 +8,5 @@
     <!--  After changing it, the next CI build produces an APK that opens   -->
     <!--  this exact site — so the app always mirrors your web dashboard.   -->
     <!-- ================================================================= -->
-    <string name="crm_url" translatable="false">https://your-crm.streamlit.app</string>
+    <string name="crm_url" translatable="false">https://godrej-crm-app-4sinteriors.streamlit.app</string>
 </resources>
