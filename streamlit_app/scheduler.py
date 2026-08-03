@@ -82,6 +82,13 @@ def fetch_pending_grouped():
     print(f"  → Fetching data from Google Sheets...")
 
     config_df = get_df("SHEET_DETAILS")
+    if config_df is None or config_df.empty or "Franchise_sheets" not in config_df.columns:
+        # Matches the defensive pattern used across the pages/services: a flaky or
+        # empty SHEET_DETAILS read (expired token, quota, renamed header) should
+        # degrade gracefully instead of raising KeyError.
+        print("  → SHEET_DETAILS config unavailable or missing 'Franchise_sheets'; skipping this run.")
+        return pd.DataFrame()
+
     dfs = []
     for name in config_df["Franchise_sheets"].dropna().unique():
         df = get_df(name)
