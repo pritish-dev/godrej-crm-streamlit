@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="brand_primary">#B8232F</color>       <!-- Godrej red -->
-    <color name="brand_primary_dark">#8E1A23</color>
+    <color name="brand_primary">#F08C1E</color>       <!-- 4s Interiors orange -->
+    <color name="brand_primary_dark">#C9700F</color>
     <color name="white">#FFFFFF</color>
-    <color name="icon_bg">#B8232F</color>
+    <!-- Adaptive-icon background: matches the logo's orange so its edges blend in -->
+    <color name="ic_launcher_background">#F08C1E</color>
 </resources>
