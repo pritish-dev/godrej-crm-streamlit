@@ -929,6 +929,18 @@ overdue_grouped = (
     .reset_index(drop=True)
 ) if not pending_overdue_raw.empty else pd.DataFrame()
 
+# ── Overdue table = PENDING orders only ──────────────────────────────────────
+# The Overdue Delivery Orders table must show ONLY orders whose delivery status
+# is still PENDING. Orders that have moved further along the lifecycle
+# (Scheduled for Delivery, Delivered-awaiting-install, …) are no longer treated
+# as overdue and drop out of this table. group_by_order_no already rolls each
+# order up to its least-progressed line-item status, so a group tagged PENDING
+# means the order still has at least one un-progressed item.
+if not overdue_grouped.empty and "DELIVERY STATUS" in overdue_grouped.columns:
+    overdue_grouped = overdue_grouped[
+        overdue_grouped["DELIVERY STATUS"].map(norm_status) == "PENDING"
+    ].reset_index(drop=True)
+
 # ── Attach "Mis Comittment Date" — the last MIS commitment date once every
 #    item of the order is fully committed (see delivery_readiness.mis_commitment_date_map).
 if not pending_grouped.empty:
