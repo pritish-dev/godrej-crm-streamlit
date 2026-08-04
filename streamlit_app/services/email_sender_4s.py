@@ -15,6 +15,7 @@ import os
 import pandas as pd
 
 from utils.helpers import to_indian_number_string
+from services.payment_utils import MONEY_RECEIPTS_COL
 from datetime import datetime, timedelta, date
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -987,7 +988,18 @@ def _compute_pending_due(df: pd.DataFrame) -> pd.DataFrame:
             d[col].astype(str).str.replace(r"[₹,\s]", "", regex=True),
             errors="coerce"
         ).fillna(0)
-    diff = (d[COL_ORDER_AMOUNT] - d[COL_ADV_RECEIVED]).round(2)
+    # Balance money receipts (B2C Franchise app). The upstream loader sums the
+    # "MONEY RECEIPT AMT n" columns into MONEY_RECEIPTS_COL before grouping; when
+    # it is absent (other sheets) the credit is zero and the legacy
+    # ORDER VALUE − ADV RECEIVED rule stands.
+    if MONEY_RECEIPTS_COL in d.columns:
+        money_receipts = pd.to_numeric(
+            d[MONEY_RECEIPTS_COL].astype(str).str.replace(r"[₹,\s]", "", regex=True),
+            errors="coerce"
+        ).fillna(0)
+    else:
+        money_receipts = 0
+    diff = (d[COL_ORDER_AMOUNT] - d[COL_ADV_RECEIVED] - money_receipts).round(2)
     # Treat tiny rounding residue as zero (advance exactly matches gross)
     diff = diff.where(diff.abs() > 1.0, 0.0)
     d[COL_PENDING_DUE] = diff.clip(lower=0)

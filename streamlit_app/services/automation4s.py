@@ -2,6 +2,8 @@ import urllib.parse
 import pandas as pd
 from datetime import datetime, timedelta
 
+from services.payment_utils import money_receipt_total, MONEY_RECEIPTS_COL
+
 
 def clean_headers(df):
     df.columns = [str(c).strip().upper() for c in df.columns]
@@ -91,7 +93,12 @@ def get_alerts(df, team_df, alert_type="delivery"):
             df["ORDER AMOUNT"] = 0
         df[adv_col] = pd.to_numeric(df[adv_col], errors="coerce").fillna(0)
 
-        df["PENDING AMOUNT"] = df["ORDER AMOUNT"] - df[adv_col]
+        # Balance money receipts (B2C Franchise app): credit MONEY RECEIPT AMT n
+        # against the order value alongside the advance. Zero on sheets without
+        # those columns, preserving the plain ORDER AMOUNT − advance behaviour.
+        df[MONEY_RECEIPTS_COL] = money_receipt_total(df)
+
+        df["PENDING AMOUNT"] = df["ORDER AMOUNT"] - df[adv_col] - df[MONEY_RECEIPTS_COL]
         mask = (df[adv_col] > 0) & (df["PENDING AMOUNT"] > 0)
 
     filtered_df = df[
@@ -111,14 +118,19 @@ def get_alerts(df, team_df, alert_type="delivery"):
     if alert_type == "delivery":
         group_cols.append(order_col)
 
-    grouped_df = filtered_df.groupby(group_cols, as_index=False).agg({
+    agg_map = {
         "PRODUCT NAME": lambda x: ", ".join(x.astype(str).unique()),
         "ORDER AMOUNT": "sum",
-        adv_col: "sum"
-    })
+        adv_col: "sum",
+    }
+    if alert_type == "payment" and MONEY_RECEIPTS_COL in filtered_df.columns:
+        agg_map[MONEY_RECEIPTS_COL] = "sum"
+
+    grouped_df = filtered_df.groupby(group_cols, as_index=False).agg(agg_map)
 
     if alert_type == "payment":
-        grouped_df["PENDING AMOUNT"] = grouped_df["ORDER AMOUNT"] - grouped_df[adv_col]
+        _mr = grouped_df[MONEY_RECEIPTS_COL] if MONEY_RECEIPTS_COL in grouped_df.columns else 0
+        grouped_df["PENDING AMOUNT"] = grouped_df["ORDER AMOUNT"] - grouped_df[adv_col] - _mr
 
     alerts = []
 

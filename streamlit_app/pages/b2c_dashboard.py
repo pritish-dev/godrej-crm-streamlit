@@ -33,6 +33,7 @@ from services.delivery_updates import (
     update_source_delivery_date,
 )
 from services.dashboard_ticker import render_ticker
+from services.payment_utils import add_money_receipts_column, MONEY_RECEIPTS_COL
 from services.delivery_readiness import (
     customer_to_godrej_so,
     ready_so_set,
@@ -468,10 +469,22 @@ def load_b2c_data():
         empty_mask = crm["DELIVERY STATUS"].isin(["", "nan", "NaN", "None", "none"])
         crm.loc[empty_mask, "DELIVERY STATUS"] = "PENDING"
 
+    # ── Balance money receipts (B2C Franchise app sheet) ─────────────────────
+    # The franchise ordering app records the advance in ADV RECEIVED and every
+    # later balance payment in its own "MONEY RECEIPT AMT n" column. Sum those
+    # into a single working column so the pending-due calc below can credit them
+    # against the order value. On every other sheet (no such columns) this is
+    # all zeros, leaving the legacy "ORDER VALUE − ADV RECEIVED" behaviour intact.
+    add_money_receipts_column(crm)
+
     # ── Calculated column ────────────────────────────────────────────────────
-    # Pending due = Gross Order Value (after discount + tax) − Advance Received.
-    # Negative values (over-payment) are clipped to 0.
-    crm["PENDING DUE"] = (crm["ORDER VALUE"] - crm["ADV RECEIVED"]).round(2).clip(lower=0)
+    # Pending due = Gross Order Value (after discount + tax) − Advance Received
+    #               − balance money receipts. Negative values (over-payment) are
+    # clipped to 0, so an order whose advance + money receipts equal the order
+    # value correctly reads as fully paid.
+    crm["PENDING DUE"] = (
+        crm["ORDER VALUE"] - crm["ADV RECEIVED"] - crm[MONEY_RECEIPTS_COL]
+    ).round(2).clip(lower=0)
 
     return crm, team, franchise_sheets, fours_sheets
 
@@ -505,8 +518,11 @@ def group_by_order_no(df):
         )
 
     # Numeric: sum across all line items in the order
-    # NOTE: PENDING DUE will be recalculated below, not summed
-    for col in ["QTY", "ORDER VALUE", "GROSS AMT EX-TAX", "ADV RECEIVED"]:
+    # NOTE: PENDING DUE will be recalculated below, not summed. MONEY RECEIPTS
+    # (balance payments) are summed too so the order-level pending-due credits
+    # every receipt, whichever line item recorded it.
+    for col in ["QTY", "ORDER VALUE", "GROSS AMT EX-TAX", "ADV RECEIVED",
+                MONEY_RECEIPTS_COL]:
         if col in has_no.columns:
             agg[col] = "sum"
 
@@ -547,11 +563,15 @@ def group_by_order_no(df):
 
     grouped = has_no.groupby("ORDER NO", sort=False, as_index=False).agg(agg)
 
-    # ── Recalculate PENDING DUE from summed ORDER VALUE and ADV RECEIVED ─────
-    # PENDING DUE must be calculated as (sum of ORDER VALUES) - (sum of ADV RECEIVED),
+    # ── Recalculate PENDING DUE from summed ORDER VALUE, ADV RECEIVED and ────
+    # balance MONEY RECEIPTS. PENDING DUE must be calculated as
+    # (sum of ORDER VALUES) − (sum of ADV RECEIVED) − (sum of MONEY RECEIPTS),
     # NOT as the sum of individual PENDING DUE values.
     if "ORDER VALUE" in grouped.columns and "ADV RECEIVED" in grouped.columns:
-        grouped["PENDING DUE"] = (grouped["ORDER VALUE"] - grouped["ADV RECEIVED"]).round(2).clip(lower=0)
+        _mr = grouped[MONEY_RECEIPTS_COL] if MONEY_RECEIPTS_COL in grouped.columns else 0
+        grouped["PENDING DUE"] = (
+            grouped["ORDER VALUE"] - grouped["ADV RECEIVED"] - _mr
+        ).round(2).clip(lower=0)
 
     return pd.concat([grouped, no_no], ignore_index=True)
 
