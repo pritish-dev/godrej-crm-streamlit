@@ -28,6 +28,7 @@ from services.email_sender_4s import (
     send_payment_due_morning_email_4s,
     send_payment_due_reminder_email_4s,
 )
+from services.payment_utils import add_money_receipts_column, MONEY_RECEIPTS_COL
 
 # ── IST time ──────────────────────────────────────────────────────────────────
 IST          = timezone(timedelta(hours=5, minutes=30))
@@ -76,7 +77,8 @@ def _group_by_order_no(df: pd.DataFrame) -> pd.DataFrame:
     if "PRODUCT NAME" in has_no.columns:
         agg["PRODUCT NAME"] = lambda x: ",\n".join(
             x.dropna().astype(str).str.strip().unique())
-    for col in ["QTY", "ORDER VALUE", "GROSS AMT EX-TAX", "ADV RECEIVED"]:
+    for col in ["QTY", "ORDER VALUE", "GROSS AMT EX-TAX", "ADV RECEIVED",
+                MONEY_RECEIPTS_COL]:
         if col in has_no.columns:
             agg[col] = "sum"
     for col in ["ORDER DATE", "CUSTOMER NAME", "CONTACT NUMBER", "EMAIL ADDRESS",
@@ -172,6 +174,11 @@ def fetch_all_crm():
     # Exclude free stock items (FREE STOCK == "FREE STOCK")
     if "FREE STOCK" in crm.columns:
         crm = crm[crm["FREE STOCK"].astype(str).str.strip().str.upper() != "FREE STOCK"].copy()
+
+    # Sum the B2C Franchise app's balance money receipts (MONEY RECEIPT AMT n)
+    # into a single column BEFORE grouping, so the per-order total carries every
+    # balance payment into the pending-due check. Zero on sheets without them.
+    add_money_receipts_column(crm)
 
     crm = _group_by_order_no(crm)
     print(f"  → {len(crm)} orders loaded after grouping.")
