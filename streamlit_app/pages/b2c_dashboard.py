@@ -349,15 +349,16 @@ def load_b2c_data():
     ]
     crm["ORDER VALUE"] = _coalesce_numeric(crm, _order_value_priority)
 
-    # ── Guard: rebuild ORDER VALUE per-line on new-format (26-27) sheets ──────
-    # On the 26-27 franchise sheet the whole-order total (and the advance) are
-    # often written on a SINGLE line item — the one where the advance is
-    # recorded — while the other lines leave the "ORDER AMOUNT" / "GROSS ORDER
-    # VALUE" columns blank. The row-wise coalesce above then reads that grand
-    # total for one line and a genuine per-line figure for the others, so when
-    # group_by_order_no() sums the order's lines the ORDER VALUE is inflated
-    # (grand total + the other lines' values) and the order shows a phantom
-    # PENDING DUE even though its advance already equals the true order value.
+    # ── Guard: rebuild ORDER VALUE per-line from the per-unit price column ────
+    # On the new franchise / 4S "26-27" sheets the WHOLE-ORDER total (and the
+    # advance) are often written on a SINGLE line item — the one where the
+    # advance is recorded — while the other lines leave the "ORDER AMOUNT" /
+    # "GROSS ORDER VALUE" columns blank. The row-wise coalesce above then reads
+    # that grand total for one line and a genuine per-line figure for the
+    # others, so when group_by_order_no() sums the order's lines the ORDER VALUE
+    # is inflated (grand total + the other lines' values) and the order shows a
+    # phantom PENDING DUE even though its advance already covers the true order
+    # value.
     #
     # Example (Order 26): chair 13448 + table 18299 = 31747, advance 31747 on
     # the table line. Coalesced per-line values become [13448, 31747] → sum
@@ -365,16 +366,20 @@ def load_b2c_data():
     # genuinely per-line, so unit_price × qty reconstructs the true line total
     # ([13448, 18299] → 31747) and the order correctly reads as fully paid.
     #
-    # Scoped to IS_NEW_FORMAT rows so legacy sheets (where the unit-price column
-    # sometimes actually held the line total) are left untouched.
+    # Keyed on the presence of the new-format per-unit column (per row), NOT on
+    # IS_NEW_FORMAT: 4S Interiors tabs carry this column but flag their delivery
+    # state via "DELIVERY REMARKS" rather than a native "DELIVERY STATUS"
+    # column, so IS_NEW_FORMAT is False for them even though they share the same
+    # grand-total-on-one-line data entry. Legacy sheets use the shorter
+    # "UNIT PRICE=(AFTER DISC + TAX)" header (no "ORDER" prefix) and are left
+    # untouched.
     _unit_col = "ORDER UNIT PRICE=(AFTER DISC + TAX)"
-    if _unit_col in crm.columns and "IS_NEW_FORMAT" in crm.columns:
+    if _unit_col in crm.columns:
         _unit = _clean_numeric_series(crm[_unit_col]).fillna(0)
         _qty  = _clean_numeric_series(safe_col(crm, "QTY", "1")).fillna(0)
         _qty  = _qty.where(_qty > 0, 1)            # blank / zero qty ⇒ treat as 1
         _line_total = (_unit * _qty).round(2)
-        _new_fmt = crm["IS_NEW_FORMAT"].fillna(False).astype(bool)
-        _use_line = _new_fmt & (_line_total > 0)
+        _use_line = _line_total > 0                # only where a real per-unit price exists
         crm["ORDER VALUE"] = crm["ORDER VALUE"].where(~_use_line, _line_total)
 
     # ── Build the authoritative DELIVERY STATUS column ───────────────────────
