@@ -349,6 +349,34 @@ def load_b2c_data():
     ]
     crm["ORDER VALUE"] = _coalesce_numeric(crm, _order_value_priority)
 
+    # ── Guard: rebuild ORDER VALUE per-line on new-format (26-27) sheets ──────
+    # On the 26-27 franchise sheet the whole-order total (and the advance) are
+    # often written on a SINGLE line item — the one where the advance is
+    # recorded — while the other lines leave the "ORDER AMOUNT" / "GROSS ORDER
+    # VALUE" columns blank. The row-wise coalesce above then reads that grand
+    # total for one line and a genuine per-line figure for the others, so when
+    # group_by_order_no() sums the order's lines the ORDER VALUE is inflated
+    # (grand total + the other lines' values) and the order shows a phantom
+    # PENDING DUE even though its advance already equals the true order value.
+    #
+    # Example (Order 26): chair 13448 + table 18299 = 31747, advance 31747 on
+    # the table line. Coalesced per-line values become [13448, 31747] → sum
+    # 45195 → PENDING DUE 13448 (wrong). The per-unit price column is always
+    # genuinely per-line, so unit_price × qty reconstructs the true line total
+    # ([13448, 18299] → 31747) and the order correctly reads as fully paid.
+    #
+    # Scoped to IS_NEW_FORMAT rows so legacy sheets (where the unit-price column
+    # sometimes actually held the line total) are left untouched.
+    _unit_col = "ORDER UNIT PRICE=(AFTER DISC + TAX)"
+    if _unit_col in crm.columns and "IS_NEW_FORMAT" in crm.columns:
+        _unit = _clean_numeric_series(crm[_unit_col]).fillna(0)
+        _qty  = _clean_numeric_series(safe_col(crm, "QTY", "1")).fillna(0)
+        _qty  = _qty.where(_qty > 0, 1)            # blank / zero qty ⇒ treat as 1
+        _line_total = (_unit * _qty).round(2)
+        _new_fmt = crm["IS_NEW_FORMAT"].fillna(False).astype(bool)
+        _use_line = _new_fmt & (_line_total > 0)
+        crm["ORDER VALUE"] = crm["ORDER VALUE"].where(~_use_line, _line_total)
+
     # ── Build the authoritative DELIVERY STATUS column ───────────────────────
     # New-format sheets carry a dedicated "DELIVERY STATUS" column holding the
     # extended lifecycle (Scheduled for Delivery / Delivered / Installation
@@ -678,11 +706,25 @@ tomorrow = today + timedelta(days=1)
 
 # ── KPI metrics ───────────────────────────────────────────────────────────────
 
+def _is_free_stock(df: pd.DataFrame) -> "pd.Series":
+    """Return a boolean mask for rows marked as free stock."""
+    if "FREE STOCK" in df.columns:
+        return df["FREE STOCK"].astype(str).str.strip().str.upper() == "FREE STOCK"
+    return pd.Series(False, index=df.index)
+
+
 total_orders    = crm["ORDER NO"].nunique() if "ORDER NO" in crm.columns else len(crm)
 total_value     = crm["ORDER VALUE"].sum()
-# Cancelled orders carry no real outstanding balance — exclude them so the
-# headline "Pending Due" ties out with the Payment Due table below.
-total_pending   = crm.loc[~cancelled_mask(crm), "PENDING DUE"].sum()
+# Headline "Pending Due" must tie out with the Payment Due table below, which
+# aggregates by ORDER NO first (so an advance recorded on a single line item
+# offsets the whole order's value) and only then keeps orders with a positive
+# balance. Summing the raw per-line PENDING DUE here would instead leave a
+# phantom balance whenever the advance sits on a different line than the item
+# it paid for. Group first — excluding cancelled and free-stock rows exactly as
+# the Payment Due table does — then sum the per-order outstanding balances.
+total_pending   = group_by_order_no(
+    crm[~cancelled_mask(crm) & ~_is_free_stock(crm)]
+)["PENDING DUE"].sum()
 # Count unique orders whose delivery is not yet completed — matches pending-
 # delivery table logic. An order is "completed" only at "Delivered" (legacy
 # sheets) or "Installation Done" (new-format sheets); everything before that
@@ -889,13 +931,6 @@ st.dataframe(_styled_sales, use_container_width=True, height=600)
 # ── Pending Deliveries — split into UPCOMING and OVERDUE ─────────────────────
 
 # ── Free stock helpers ────────────────────────────────────────────────────────
-
-def _is_free_stock(df: pd.DataFrame) -> "pd.Series":
-    """Return a boolean mask for rows marked as free stock."""
-    if "FREE STOCK" in df.columns:
-        return df["FREE STOCK"].astype(str).str.strip().str.upper() == "FREE STOCK"
-    return pd.Series(False, index=df.index)
-
 
 # All not-yet-completed rows from CRM — free stock items excluded.
 # "Not completed" = anything before the order's terminal state: Delivered for
