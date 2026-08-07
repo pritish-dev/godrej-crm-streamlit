@@ -616,6 +616,21 @@ def load_flat_snapshot(name: str) -> tuple[pd.DataFrame, date | None, dict[str, 
         rows.append([raw[j] if j < len(raw) else "" for j in range(len(cols))])
 
     df = pd.DataFrame(rows, columns=cols)
+
+    # Closing stock is, by definition, Op + In − Out. Always show the derived
+    # value so the dashboard/emails never surface a stale or mis-typed Cl cell.
+    op_c, in_c, out_c, cl_c = (
+        move_map.get("Op Stock"), move_map.get("In Ward"),
+        move_map.get("Out Ward"), move_map.get("Cl Stock"),
+    )
+    if cl_c and op_c and op_c in df.columns and not df.empty:
+        opn  = pd.to_numeric(df[op_c], errors="coerce")
+        inn  = pd.to_numeric(df[in_c],  errors="coerce") if in_c  in df.columns else pd.Series(0, index=df.index)
+        outn = pd.to_numeric(df[out_c], errors="coerce") if out_c in df.columns else pd.Series(0, index=df.index)
+        computed = opn.fillna(0) + inn.fillna(0) - outn.fillna(0)
+        mask = opn.notna()  # only recompute genuine (numeric) item rows
+        df.loc[mask, cl_c] = computed[mask].round().astype(int).astype(str)
+
     return df, as_of, move_map
 
 
@@ -759,6 +774,81 @@ def run_flat_update(target_date: date | None = None) -> tuple[pd.DataFrame, str]
     status = (
         f"✅ '{name}' updated for {target_date.strftime('%d %b %Y')} — {n_items} items "
         f"(Op Stock {mode}). Inward matched: {matched_in} | Outward matched: {matched_out}."
+    )
+    print(f"[STOCK 34S] {status}")
+    df, _, _ = load_flat_snapshot(name)
+    return df, status
+
+
+def recalc_flat_cl(target_date: date | None = None) -> tuple[pd.DataFrame, str]:
+    """
+    Recompute Cl Stock = Op Stock + In Ward − Out Ward for every item row from
+    the sheet's OWN current values and write only the Cl column back in place.
+
+    Pure arithmetic — no email/Drive/delivery-sheet fetch, so it needs no extra
+    credentials and never changes Op/In/Out or the sheet structure. Use this to
+    fix stale/mis-typed closing-stock cells.
+    """
+    if target_date is None:
+        target_date = datetime.now(IST).date()
+    name = sheet_name_for(target_date)
+
+    ws, values = _read_raw_values(name)
+    if ws is None:
+        return pd.DataFrame(), f"❌ Sheet '{name}' not found."
+    if not values:
+        return pd.DataFrame(), f"⚠️ Sheet '{name}' is empty."
+
+    h = _find_header_row(values)
+    if h < 0:
+        return pd.DataFrame(), f"❌ Could not find a header row in '{name}'."
+    header = [str(c).strip() for c in values[h]]
+    colmap = _flat_col_map(header)
+    if "Op Stock" not in colmap or "Cl Stock" not in colmap:
+        return pd.DataFrame(), f"❌ '{name}' is missing Op Stock / Cl Stock. Headers: {header}."
+
+    op_i, cl_i = colmap["Op Stock"], colmap["Cl Stock"]
+    in_i, out_i = colmap.get("In Ward"), colmap.get("Out Ward")
+    code_col = _detect_item_code_col(values, h)
+    if code_col < 0:
+        code_col = colmap.get("Item Code", -1)
+
+    def cell(row, i):
+        return row[i] if (i is not None and i < len(row)) else ""
+
+    cl_out, changed, n_items = [], 0, 0
+    for r in range(h + 1, len(values)):
+        row = values[r]
+        code = str(cell(row, code_col)).strip().upper()
+        is_item = _ITEM_CODE_RE.search(code) if code_col >= 0 else bool(str(cell(row, op_i)).strip())
+        if not is_item:
+            cl_out.append(cell(row, cl_i))
+            continue
+        n_items += 1
+        cl = _num(cell(row, op_i)) + _num(cell(row, in_i)) - _num(cell(row, out_i))
+        new_val = _fmt_int(cl)
+        if str(new_val) != str(cell(row, cl_i)).strip():
+            changed += 1
+        cl_out.append(new_val)
+
+    if n_items == 0:
+        return pd.DataFrame(), f"❌ No item rows found in '{name}'."
+
+    from gspread.utils import rowcol_to_a1
+    first = h + 2
+    a = rowcol_to_a1(first, cl_i + 1)
+    b = rowcol_to_a1(first + len(cl_out) - 1, cl_i + 1)
+    try:
+        ws.batch_update(
+            [{"range": f"{a}:{b}", "values": [[v] for v in cl_out]}],
+            value_input_option="USER_ENTERED",
+        )
+    except Exception as e:
+        return pd.DataFrame(), f"❌ Write failed: {e}"
+
+    status = (
+        f"✅ Cl Stock recalculated in '{name}' — {n_items} items checked, "
+        f"{changed} corrected (Cl = Op + In − Out)."
     )
     print(f"[STOCK 34S] {status}")
     df, _, _ = load_flat_snapshot(name)
