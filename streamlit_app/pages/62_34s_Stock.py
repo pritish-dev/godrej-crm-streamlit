@@ -45,6 +45,9 @@ from services.stock_34s_service import (
     sheet_name_for,
     send_monthly_stock_email,
     send_daily_stock_email,
+    is_flat_sheet,
+    load_flat_snapshot,
+    run_flat_update,
     FIXED_COLS,
     DATE_SUB_COLS,
 )
@@ -77,6 +80,201 @@ if S34_AUTOMATION_PAUSED:
         "⏸️ **34S Stock automation is paused.** Update and email actions are "
         "disabled — this page is read-only."
     )
+
+# ─── Flat single-day register mode ────────────────────────────────────────────
+# The live OPS tab is a flat register (title row + header row + one Op/In/Out/Cl
+# block, overwritten in place). Detect it and render a snapshot view; the older
+# horizontal date-pivot code below only runs for legacy/pivot tabs.
+_flat_name = sheet_name_for(TODAY)
+for _k, _v in [
+    ("s34f_is_flat", None), ("s34f_loaded", False), ("s34f_df", pd.DataFrame()),
+    ("s34f_asof", None), ("s34f_move", {}), ("s34f_status", ""),
+]:
+    st.session_state.setdefault(_k, _v)
+
+if st.session_state.s34f_is_flat is None:
+    with st.spinner("Detecting sheet format…"):
+        st.session_state.s34f_is_flat = is_flat_sheet(_flat_name)
+
+if st.session_state.s34f_is_flat:
+    with st.sidebar:
+        st.markdown("### 🔍 Filters")
+        search_text = st.text_input("Search (any column)", placeholder="e.g. Wardrobe, 5610…")
+        st.markdown("---")
+        if st.button("🔁 Reload Sheet", use_container_width=True):
+            st.session_state.s34f_loaded  = False
+            st.session_state.s34f_is_flat = None
+            st.rerun()
+
+    if not st.session_state.s34f_loaded:
+        with st.spinner(f"Loading {_flat_name}…"):
+            _fdf, _asof, _move = load_flat_snapshot(_flat_name)
+        st.session_state.s34f_df     = _fdf
+        st.session_state.s34f_asof   = _asof
+        st.session_state.s34f_move   = _move
+        st.session_state.s34f_loaded = True
+
+    fdf   = st.session_state.s34f_df
+    asof  = st.session_state.s34f_asof
+    move  = st.session_state.s34f_move
+    cl_col   = move.get("Cl Stock")
+    in_col   = move.get("In Ward")
+    out_col  = move.get("Out Ward")
+    code_col = move.get("Item Code")
+    asof_str = asof.strftime("%d %b %Y") if asof else "—"
+
+    st.info(
+        f"🗓️ Register as of **{asof_str}** · {len(fdf)} item rows · "
+        f"in-place daily register (no per-day history columns)."
+    )
+
+    _s = st.session_state.s34f_status
+    if _s.startswith("✅"):
+        st.success(_s)
+    elif _s.startswith("❌"):
+        st.error(_s)
+    elif _s:
+        st.warning(_s)
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        if st.button(
+            f"⚡ Update Today  ({TODAY.strftime('%d/%m')})",
+            type="primary", use_container_width=True, disabled=S34_AUTOMATION_PAUSED,
+            help="Fetch today's inward (challans) + outward (delivery/return sheets) and "
+                 "update Op / In ward / Out ward / Cl Stock in place. No new columns or tabs.",
+        ):
+            with st.spinner("Updating today's stock in place…"):
+                _, _msg = run_flat_update(TODAY)
+            st.session_state.s34f_status = _msg
+            st.session_state.s34f_loaded = False
+            st.rerun()
+    with c2:
+        if st.button(
+            "🔄 Force Re-run Today",
+            use_container_width=True, disabled=S34_AUTOMATION_PAUSED,
+            help="Re-run today's update (idempotent) — useful when a challan or outward "
+                 "entry arrives late in the day.",
+        ):
+            with st.spinner("Re-running today's update…"):
+                _, _msg = run_flat_update(TODAY)
+            st.session_state.s34f_status = _msg
+            st.session_state.s34f_loaded = False
+            st.rerun()
+    with c3:
+        if st.button(
+            "📧 Send Today's Report",
+            use_container_width=True, disabled=S34_AUTOMATION_PAUSED,
+            help="Email today's stock snapshot as an HTML table (no attachment).",
+        ):
+            with st.spinner("Sending today's stock report…"):
+                _res = send_daily_stock_email(TODAY)
+            if _res.get("sent"):
+                st.success(f"✅ Sent — {', '.join(_res['recipients'])}")
+            else:
+                st.error(f"❌ {_res.get('error', 'Unknown error')}")
+
+    e1, _e2, _e3 = st.columns(3)
+    with e1:
+        if st.button(
+            "📧 Send Monthly Report",
+            use_container_width=True, disabled=S34_AUTOMATION_PAUSED,
+            help="Email the current stock snapshot as an Excel attachment. Does NOT archive.",
+        ):
+            with st.spinner("Sending monthly stock report…"):
+                _res = send_monthly_stock_email(sel_year, sel_month, archive=False)
+            if _res.get("sent"):
+                st.success(f"✅ Sent — {', '.join(_res['recipients'])}")
+            else:
+                st.error(f"❌ {_res.get('error', 'Unknown error')}")
+
+    st.markdown("---")
+
+    if fdf.empty:
+        st.info("📭 No item rows found in this sheet yet.")
+        st.stop()
+
+    def _numcol(c):
+        if not c or c not in fdf.columns:
+            return pd.Series(dtype=float)
+        return pd.to_numeric(fdf[c], errors="coerce")
+
+    cl_s, in_s, out_s = _numcol(cl_col), _numcol(in_col), _numcol(out_col)
+    if code_col and code_col in fdf.columns:
+        total_skus = int(fdf[code_col].astype(str).str.contains(r"\d{8}[A-Z]{2}\d{5}", na=False).sum())
+    else:
+        total_skus = len(fdf)
+
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Total SKUs",       to_indian_number_string(total_skus, 0))
+    m2.metric("Total Cl Stock",   to_indian_number_string(int(cl_s.fillna(0).sum()), 0))
+    m3.metric("In Ward Today",    to_indian_number_string(int(in_s.fillna(0).sum()), 0))
+    m4.metric("Out Ward Today",   to_indian_number_string(int(out_s.fillna(0).sum()), 0))
+    m5.metric("Zero Stock Items", to_indian_number_string(int((cl_s.fillna(0) == 0).sum()), 0))
+
+    filtered = fdf.copy()
+    if search_text:
+        _mask = filtered.apply(
+            lambda col: col.astype(str).str.contains(search_text, case=False, na=False)
+        ).any(axis=1)
+        filtered = filtered[_mask]
+
+    st.markdown(
+        f"### 📋 Stock — as of {asof_str}  ·  {to_indian_number_string(len(filtered), 0)} items"
+    )
+    st.caption("🔴 Red rows = zero closing stock")
+
+    disp = filtered.reset_index(drop=True)
+    disp.index = range(1, len(disp) + 1)
+
+    def _row_style(row):
+        try:
+            if cl_col and pd.to_numeric(row.get(cl_col, 1), errors="coerce") == 0:
+                return ["background-color:#FFCDD2"] * len(row)
+        except Exception:
+            pass
+        return [""] * len(row)
+
+    try:
+        if cl_col and pd.to_numeric(disp.get(cl_col, pd.Series()), errors="coerce").notna().any():
+            st.dataframe(disp.style.apply(_row_style, axis=1), use_container_width=True, height=520)
+        else:
+            st.dataframe(disp, use_container_width=True, height=520)
+    except Exception:
+        st.dataframe(disp, use_container_width=True, height=520)
+
+    st.markdown("---")
+    _dl_col, _ = st.columns([1, 3])
+    with _dl_col:
+        st.download_button(
+            label="⬇️ Download as CSV",
+            data=filtered.to_csv(index=False).encode("utf-8"),
+            file_name=f"34S_Stock_{(asof or TODAY).strftime('%d-%m-%Y')}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+    st.markdown("---")
+    with st.expander("📥 Items with Inward Today"):
+        if in_col and in_col in fdf.columns:
+            _ind = fdf[pd.to_numeric(fdf[in_col], errors="coerce").fillna(0) > 0]
+            if _ind.empty:
+                st.info("No inward movement recorded.")
+            else:
+                st.dataframe(_ind.reset_index(drop=True), use_container_width=True, hide_index=True)
+        else:
+            st.info("No 'In ward' column found in the sheet.")
+    with st.expander("📤 Items with Outward Today"):
+        if out_col and out_col in fdf.columns:
+            _outd = fdf[pd.to_numeric(fdf[out_col], errors="coerce").fillna(0) > 0]
+            if _outd.empty:
+                st.info("No outward movement recorded.")
+            else:
+                st.dataframe(_outd.reset_index(drop=True), use_container_width=True, hide_index=True)
+        else:
+            st.info("No 'Out ward' column found in the sheet.")
+
+    st.stop()
 
 # ─── Session state ─────────────────────────────────────────────────────────────
 for key, default in [
