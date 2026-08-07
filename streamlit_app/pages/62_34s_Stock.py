@@ -65,16 +65,17 @@ st.caption(
     "Read-only view of previously recorded stock."
 )
 
-# ─── Automation paused ────────────────────────────────────────────────────────
-# The daily/monthly 34S stock automation has been removed pending a rebuild with
-# new logic. Until then all write/update/email actions on this page are disabled
-# so no new sheets or reports are generated. This page remains read-only.
-S34_AUTOMATION_PAUSED = True
+# ─── Automation ───────────────────────────────────────────────────────────────
+# The 34S stock automation is live again and follows the existing month tab in
+# the OPS spreadsheet (e.g. "34s Stock Register- August 2026"). Update/email
+# actions read from and write to that tab only — no new month tabs are created
+# for months whose sheet already exists. Set this back to True to pause all
+# write/update/email actions and make the page read-only again.
+S34_AUTOMATION_PAUSED = False
 if S34_AUTOMATION_PAUSED:
     st.warning(
-        "⏸️ **34S Stock automation is paused.** The scheduled daily & monthly jobs "
-        "have been removed and will be replaced with new logic. Update and email "
-        "actions are disabled for now — this page is read-only."
+        "⏸️ **34S Stock automation is paused.** Update and email actions are "
+        "disabled — this page is read-only."
     )
 
 # ─── Session state ─────────────────────────────────────────────────────────────

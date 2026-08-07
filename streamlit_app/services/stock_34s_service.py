@@ -182,6 +182,28 @@ def _get_spreadsheet():
     return gspread.authorize(creds).open_by_key(OPS_SPREADSHEET_ID)
 
 
+def _worksheet_exists(sheet_name: str) -> bool:
+    """
+    Return True if the worksheet already exists in the OPS spreadsheet.
+
+    This is a READ-ONLY check — unlike services.sheets.get_df (which calls
+    _ensure_sheet and silently CREATES a missing tab), this never mutates the
+    spreadsheet.  It guards load_month_df so that reading a month tab that
+    doesn't exist yet (e.g. the previous month during carry-forward look-ups)
+    can never leave behind a stray empty "34s Stock Register- <month>" sheet.
+    """
+    try:
+        sh = _get_spreadsheet()
+        sh.worksheet(sheet_name)
+        return True
+    except gspread.exceptions.WorksheetNotFound:
+        return False
+    except Exception:
+        # On a transient/auth error, assume it exists so we don't mask real
+        # data with a false "not found"; the subsequent read will surface it.
+        return True
+
+
 def _read_sheet_direct(sheet_name: str) -> pd.DataFrame:
     """
     Read a worksheet directly via gspread, bypassing the st.cache_data cache.
@@ -253,6 +275,13 @@ def load_month_df(year: int, month: int, direct: bool = False) -> tuple[pd.DataF
         if df.empty:
             return df, f"⚠️ Sheet '{name}' is empty or does not exist."
         return df, f"✅ {len(df)} items loaded (direct read)."
+
+    # Guard: never let a read create the tab.  services.sheets.get_df routes
+    # through _ensure_sheet, which auto-creates a missing worksheet — that would
+    # spawn stray empty month tabs (e.g. when looking up the previous month for
+    # Op Stock carry-forward).  Check existence first and bail out cleanly.
+    if not _worksheet_exists(name):
+        return pd.DataFrame(), f"⚠️ Sheet '{name}' does not exist yet."
 
     from services.sheets import get_df
     try:
