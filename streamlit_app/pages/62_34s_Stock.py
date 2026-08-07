@@ -48,6 +48,7 @@ from services.stock_34s_service import (
     is_flat_sheet,
     load_flat_snapshot,
     run_flat_update,
+    recalc_flat_cl,
     FIXED_COLS,
     DATE_SUB_COLS,
 )
@@ -125,7 +126,8 @@ if st.session_state.s34f_is_flat:
 
     st.info(
         f"🗓️ Register as of **{asof_str}** · {len(fdf)} item rows · "
-        f"in-place daily register (no per-day history columns)."
+        f"in-place daily register. Cl Stock shown as **Op + In − Out**; use "
+        f"**🧮 Recalculate Cl** to write it back to the sheet."
     )
 
     _s = st.session_state.s34f_status
@@ -174,8 +176,21 @@ if st.session_state.s34f_is_flat:
             else:
                 st.error(f"❌ {_res.get('error', 'Unknown error')}")
 
-    e1, _e2, _e3 = st.columns(3)
+    e1, e2, _e3 = st.columns(3)
     with e1:
+        if st.button(
+            "🧮 Recalculate Cl",
+            use_container_width=True, disabled=S34_AUTOMATION_PAUSED,
+            help="Recompute Cl Stock = Op + In − Out for every row from the sheet's own "
+                 "values and write it back. No inward/outward fetch — fixes stale closing "
+                 "stock even without email/delivery data.",
+        ):
+            with st.spinner("Recalculating closing stock…"):
+                _, _msg = recalc_flat_cl(TODAY)
+            st.session_state.s34f_status = _msg
+            st.session_state.s34f_loaded = False
+            st.rerun()
+    with e2:
         if st.button(
             "📧 Send Monthly Report",
             use_container_width=True, disabled=S34_AUTOMATION_PAUSED,
