@@ -14,66 +14,72 @@ import streamlit as st
 
 def apply_mobile_optimizations() -> None:
     """Inject responsive CSS + PWA-friendly meta tags. Phone-only styling."""
+    # NOTE: keep this HTML flush-left (no leading indentation). Streamlit's
+    # markdown renderer follows CommonMark: a <style> block is only treated as
+    # raw HTML when it begins in the first column. Indented, it gets swallowed
+    # into the preceding <meta> block, which then ends at the first blank line
+    # inside the CSS — leaking the trailing "}" as a stray "}" at the top of
+    # every page. Flush-left keeps <style>…</style> as one raw-HTML block.
     st.markdown(
         """
-        <meta name="apple-mobile-web-app-capable" content="yes">
-        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-        <meta name="apple-mobile-web-app-title" content="Godrej CRM">
-        <meta name="theme-color" content="#B8232F">
-        <style>
-        /* ===== Phone-only tweaks. Desktop (>768px) is untouched. ===== */
-        @media (max-width: 768px) {
-            /* Reclaim vertical space that desktop padding wastes on a phone. */
-            .block-container {
-                padding-top: 1.2rem !important;
-                padding-bottom: 3rem !important;
-                padding-left: 0.7rem !important;
-                padding-right: 0.7rem !important;
-            }
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Godrej CRM">
+<meta name="theme-color" content="#B8232F">
+<style>
+/* ===== Phone-only tweaks. Desktop (>768px) is untouched. ===== */
+@media (max-width: 768px) {
+    /* Reclaim vertical space that desktop padding wastes on a phone. */
+    .block-container {
+        padding-top: 1.2rem !important;
+        padding-bottom: 3rem !important;
+        padding-left: 0.7rem !important;
+        padding-right: 0.7rem !important;
+    }
 
-            /* Bigger, thumb-friendly tap targets for buttons and inputs. */
-            .stButton > button,
-            .stDownloadButton > button {
-                min-height: 44px;
-                font-size: 0.95rem;
-            }
-            .stTextInput input,
-            .stNumberInput input,
-            .stDateInput input,
-            .stSelectbox div[data-baseweb="select"] {
-                min-height: 44px;
-                font-size: 16px; /* 16px stops iOS from auto-zooming on focus */
-            }
+    /* Bigger, thumb-friendly tap targets for buttons and inputs. */
+    .stButton > button,
+    .stDownloadButton > button {
+        min-height: 44px;
+        font-size: 0.95rem;
+    }
+    .stTextInput input,
+    .stNumberInput input,
+    .stDateInput input,
+    .stSelectbox div[data-baseweb="select"] {
+        min-height: 44px;
+        font-size: 16px; /* 16px stops iOS from auto-zooming on focus */
+    }
 
-            /* Let wide tables/dataframes scroll horizontally instead of squishing. */
-            [data-testid="stDataFrame"],
-            [data-testid="stTable"] {
-                overflow-x: auto !important;
-            }
+    /* Let wide tables/dataframes scroll horizontally instead of squishing. */
+    [data-testid="stDataFrame"],
+    [data-testid="stTable"] {
+        overflow-x: auto !important;
+    }
 
-            /* Stack st.columns vertically so nothing gets crushed off-screen. */
-            [data-testid="stHorizontalBlock"] {
-                flex-wrap: wrap !important;
-            }
-            [data-testid="stHorizontalBlock"] > div {
-                min-width: 100% !important;
-            }
+    /* Stack st.columns vertically so nothing gets crushed off-screen. */
+    [data-testid="stHorizontalBlock"] {
+        flex-wrap: wrap !important;
+    }
+    [data-testid="stHorizontalBlock"] > div {
+        min-width: 100% !important;
+    }
 
-            /* Compact metric cards so 2 fit per row nicely. */
-            [data-testid="stMetric"] {
-                padding: 0.4rem 0.6rem;
-            }
-            [data-testid="stMetricValue"] {
-                font-size: 1.35rem !important;
-            }
+    /* Compact metric cards so 2 fit per row nicely. */
+    [data-testid="stMetric"] {
+        padding: 0.4rem 0.6rem;
+    }
+    [data-testid="stMetricValue"] {
+        font-size: 1.35rem !important;
+    }
 
-            /* Make Plotly charts fill the phone width. */
-            .js-plotly-plot,
-            .stPlotlyChart {
-                width: 100% !important;
-            }
-        }
-        </style>
-        """,
+    /* Make Plotly charts fill the phone width. */
+    .js-plotly-plot,
+    .stPlotlyChart {
+        width: 100% !important;
+    }
+}
+</style>
+""",
         unsafe_allow_html=True,
     )
