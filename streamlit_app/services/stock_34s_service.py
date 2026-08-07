@@ -58,6 +58,46 @@ CHALLAN_SUBJECT = "Delivery Challan Information"
 DELIVERY_SHEET  = "34S PHYSICAL DELIVERY CHALLAN"
 RETURN_SHEET    = "34S RETURN RPL"
 
+# ─── Flat single-day register format ──────────────────────────────────────────
+# The live OPS tab ("34s Stock Register- August 2026") is a *flat* register, not
+# the horizontal date-pivot this module was originally written for:
+#
+#   Row 1 : title banner            "PHYSICAL STOCK REGISTER 34S … 07 August 2026"
+#   Row 2 : column headers          Sl No | Item code | Item Description |
+#                                    Product Category | Op Stock | In ward |
+#                                    Out ward | Cl Stock
+#   Row 3+: one row per item, a single Op/In/Out/Cl block (no date prefixes,
+#           no DC No column), overwritten in place each day.
+#
+# The four movement columns are matched by header label; the *item code* used to
+# match inward/outward is detected by CONTENT (the column whose cells match the
+# Godrej item-code pattern), because on the live sheet the "Item code" header
+# actually sits over the warehouse code (ZBF34S) while the real code lives under
+# the "Item Description" header.
+FLAT_MOVE_COLS  = ["Op Stock", "In Ward", "Out Ward", "Cl Stock"]
+_ITEM_CODE_RE   = re.compile(r"\d{8}[A-Z]{2}\d{5}")
+
+# Header-variant → canonical name, for BOTH the fixed and the movement columns
+# of the flat register.  Compared case-insensitively with whitespace collapsed.
+_FLAT_SYNONYMS: dict[str, str] = {
+    # fixed
+    "sl no": "Sl No", "sl. no": "Sl No", "sl.no": "Sl No", "slno": "Sl No",
+    "s no": "Sl No", "sr no": "Sl No", "serial no": "Sl No", "sno": "Sl No",
+    "item code": "Item Code", "itemcode": "Item Code", "item no": "Item Code",
+    "material code": "Item Code", "product code": "Item Code", "sku": "Item Code",
+    "item description": "Item Description", "description": "Item Description",
+    "item desc": "Item Description", "item name": "Item Description",
+    "product category": "Product Category", "category": "Product Category",
+    "prod category": "Product Category", "item category": "Product Category",
+    # movement
+    "op stock": "Op Stock", "opening stock": "Op Stock", "opening": "Op Stock",
+    "in ward": "In Ward", "inward": "In Ward", "in-ward": "In Ward",
+    "in word": "In Ward", "received": "In Ward",
+    "out ward": "Out Ward", "outward": "Out Ward", "out-ward": "Out Ward",
+    "out word": "Out Ward", "issued": "Out Ward", "dispatched": "Out Ward",
+    "cl stock": "Cl Stock", "closing stock": "Cl Stock", "closing": "Cl Stock",
+}
+
 # ─── Sheet naming ─────────────────────────────────────────────────────────────
 
 def sheet_name_for(d: date) -> str:
@@ -413,6 +453,316 @@ def get_last_updated_date(year: int, month: int) -> date | None:
             dates_with_data.append(d)
 
     return max(dates_with_data) if dates_with_data else None
+
+
+# ─── Flat register: read/write engine ─────────────────────────────────────────
+
+def _num(v) -> float:
+    try:
+        return float(str(v).replace(",", "").strip() or 0)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def _fmt_int(x) -> int:
+    try:
+        return int(round(float(x)))
+    except (ValueError, TypeError):
+        return 0
+
+
+def _read_raw_values(name: str):
+    """Return (worksheet, all_values) for a tab, or (None, []) if it doesn't exist."""
+    try:
+        sh = _get_spreadsheet()
+        ws = sh.worksheet(name)
+    except gspread.exceptions.WorksheetNotFound:
+        return None, []
+    except Exception as e:
+        print(f"[STOCK 34S] _read_raw_values open error for '{name}': {e}")
+        return None, []
+    try:
+        return ws, ws.get_all_values()
+    except Exception as e:
+        print(f"[STOCK 34S] _read_raw_values read error for '{name}': {e}")
+        return ws, []
+
+
+def _find_header_row(values: list[list[str]]) -> int:
+    """
+    Return the 0-based index of the column-header row (the one carrying
+    Item Code / Op Stock / Cl Stock labels), scanning past any title/banner row.
+    Returns -1 if not found.
+    """
+    for i, row in enumerate(values[:15]):
+        canon = {_FLAT_SYNONYMS.get(_norm_key(c)) for c in row}
+        canon.discard(None)
+        if "Item Code" in canon or {"Op Stock", "Cl Stock"} <= canon:
+            return i
+    return -1
+
+
+def _flat_col_map(header: list[str]) -> dict[str, int]:
+    """Map canonical column name → 0-based index using the flat synonym table."""
+    colmap: dict[str, int] = {}
+    for idx, cell in enumerate(header):
+        canon = _FLAT_SYNONYMS.get(_norm_key(cell))
+        if canon and canon not in colmap:
+            colmap[canon] = idx
+    return colmap
+
+
+def _detect_item_code_col(values: list[list[str]], header_idx: int) -> int:
+    """
+    Return the 0-based index of the column that actually holds Godrej item codes,
+    detected by content (majority of cells match _ITEM_CODE_RE).  Falls back to
+    -1 when no column matches, so the caller can use the labelled column instead.
+    """
+    data = values[header_idx + 1: header_idx + 60]
+    if not data:
+        return -1
+    ncol = max((len(r) for r in data), default=0)
+    best_idx, best_hits = -1, 0
+    for c in range(ncol):
+        hits = sum(1 for row in data if c < len(row) and _ITEM_CODE_RE.search(str(row[c])))
+        if hits > best_hits:
+            best_idx, best_hits = c, hits
+    return best_idx if best_hits > 0 else -1
+
+
+def _parse_title_date(row: list[str]) -> tuple[date | None, int | None]:
+    """Find a date in a title/banner row → (date, col_index) or (None, None)."""
+    for j, cell in enumerate(row):
+        s = str(cell).strip()
+        if not s:
+            continue
+        for fmt in ("%d %B %Y", "%d %b %Y", "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y"):
+            try:
+                return datetime.strptime(s, fmt).date(), j
+            except ValueError:
+                continue
+    return None, None
+
+
+def is_flat_sheet(name: str) -> bool:
+    """
+    True if the tab uses the flat single-day register layout (title row + header
+    row + one Op/In/Out/Cl block) rather than the horizontal date-pivot layout.
+    """
+    _, values = _read_raw_values(name)
+    if not values:
+        return False
+    # Any date-prefixed column ("07/08 Op Stock") in the first rows ⇒ pivot layout
+    for row in values[:3]:
+        if any(_parse_col(str(cell).strip()) for cell in row):
+            return False
+    return _find_header_row(values) >= 0
+
+
+def flat_as_of(name: str) -> date | None:
+    """Return the register's current 'as of' date from its title banner, if any."""
+    _, values = _read_raw_values(name)
+    if not values:
+        return None
+    h = _find_header_row(values)
+    if h < 1:
+        return None
+    d, _ = _parse_title_date(values[h - 1])
+    return d
+
+
+def load_flat_snapshot(name: str) -> tuple[pd.DataFrame, date | None, dict[str, str]]:
+    """
+    Load the flat register as a display DataFrame (exactly the user's own columns
+    and header labels), plus the banner 'as of' date and a movement-column map
+    {canonical_name: actual_header_label} so callers can locate Op/In/Out/Cl and
+    the item-code column regardless of the sheet's exact wording.
+    """
+    _, values = _read_raw_values(name)
+    if not values:
+        return pd.DataFrame(), None, {}
+    h = _find_header_row(values)
+    if h < 0:
+        return pd.DataFrame(), None, {}
+
+    header = [str(c).strip() for c in values[h]]
+    # De-duplicate blank / repeated header labels so pandas can build the frame
+    counts: dict[str, int] = {}
+    cols: list[str] = []
+    for j, c in enumerate(header):
+        base = c or f"Column {j + 1}"
+        n = counts.get(base, 0)
+        counts[base] = n + 1
+        cols.append(base if n == 0 else f"{base} ({n + 1})")
+
+    colmap_idx = _flat_col_map(header)
+    code_idx = _detect_item_code_col(values, h)
+    move_map: dict[str, str] = {}
+    for canon, idx in colmap_idx.items():
+        if canon in FLAT_MOVE_COLS and idx < len(cols):
+            move_map[canon] = cols[idx]
+    if code_idx >= 0 and code_idx < len(cols):
+        move_map["Item Code"] = cols[code_idx]
+    elif "Item Code" in colmap_idx:
+        move_map["Item Code"] = cols[colmap_idx["Item Code"]]
+
+    as_of, _ = _parse_title_date(values[h - 1]) if h >= 1 else (None, None)
+
+    rows = []
+    for r in range(h + 1, len(values)):
+        raw = values[r]
+        if not any(str(x).strip() for x in raw):
+            continue
+        rows.append([raw[j] if j < len(raw) else "" for j in range(len(cols))])
+
+    df = pd.DataFrame(rows, columns=cols)
+    return df, as_of, move_map
+
+
+def run_flat_update(target_date: date | None = None) -> tuple[pd.DataFrame, str]:
+    """
+    Update the flat register IN PLACE for target_date (default: today IST).
+
+    Non-destructive by design — only the four movement columns and the title
+    date cell are rewritten (via targeted range updates); the sheet is never
+    cleared, no columns or tabs are added.
+
+      • New day  (banner date < target): Op Stock ← previous Cl Stock (carry
+        forward); In/Out reset then filled from challan/delivery sources.
+      • Same day (banner date == target): Op Stock kept as entered; In/Out taken
+        from sources where found, otherwise the existing cell is preserved.
+      • Cl Stock is always recomputed as Op + In − Out.
+    """
+    if target_date is None:
+        target_date = datetime.now(IST).date()
+    name = sheet_name_for(target_date)
+
+    ws, values = _read_raw_values(name)
+    if ws is None:
+        return pd.DataFrame(), (
+            f"❌ Sheet '{name}' not found. Create the month tab first — "
+            "no new sheet was created."
+        )
+    if not values:
+        return pd.DataFrame(), f"⚠️ Sheet '{name}' is empty."
+
+    h = _find_header_row(values)
+    if h < 0:
+        return pd.DataFrame(), (
+            f"❌ Could not find a header row (with Item Code / Op Stock / Cl Stock) "
+            f"in '{name}'."
+        )
+    header = [str(c).strip() for c in values[h]]
+    colmap = _flat_col_map(header)
+    for req in ("Op Stock", "Cl Stock"):
+        if req not in colmap:
+            return pd.DataFrame(), f"❌ '{name}' has no '{req}' column. Headers: {header}."
+
+    op_i, cl_i = colmap["Op Stock"], colmap["Cl Stock"]
+    in_i, out_i = colmap.get("In Ward"), colmap.get("Out Ward")
+
+    code_col = _detect_item_code_col(values, h)
+    if code_col < 0:
+        code_col = colmap.get("Item Code", -1)
+    if code_col < 0:
+        return pd.DataFrame(), (
+            f"❌ Could not locate the item-code column in '{name}' "
+            "(no column matches the Godrej item-code pattern)."
+        )
+
+    title_idx = h - 1 if h >= 1 else None
+    as_of, date_col = (_parse_title_date(values[title_idx]) if title_idx is not None else (None, None))
+    new_day = (as_of is None) or (as_of < target_date)
+
+    # Movement sources (same as the pivot path)
+    email_in = _fetch_inward_from_email(target_date)
+    drive_in = _fetch_inward_from_drive(target_date)
+    inward: dict[str, float] = {}
+    for code, info in {**email_in, **drive_in}.items():
+        code = code.upper()
+        inward[code] = inward.get(code, 0.0) + float(info.get("qty", 0.0))
+    outward = {k.upper(): v for k, v in _fetch_outward(target_date).items()}
+
+    def cell(row: list[str], i: int | None) -> str:
+        return row[i] if (i is not None and i < len(row)) else ""
+
+    op_out, in_out, out_out, cl_out = [], [], [], []
+    n_items = 0
+    matched_in = matched_out = 0
+
+    for r in range(h + 1, len(values)):
+        row = values[r]
+        code = str(cell(row, code_col)).strip().upper()
+        cur_op, cur_cl = _num(cell(row, op_i)), _num(cell(row, cl_i))
+        cur_in = _num(cell(row, in_i)) if in_i is not None else 0.0
+        cur_out = _num(cell(row, out_i)) if out_i is not None else 0.0
+
+        if not _ITEM_CODE_RE.search(code):
+            # Not an item row (blank / subtotal / stray) — preserve existing cells
+            op_out.append(cell(row, op_i))
+            in_out.append(cell(row, in_i) if in_i is not None else "")
+            out_out.append(cell(row, out_i) if out_i is not None else "")
+            cl_out.append(cell(row, cl_i))
+            continue
+
+        n_items += 1
+        op = cur_cl if new_day else cur_op
+        if new_day:
+            iw = inward.get(code, 0.0)
+            ow = outward.get(code, 0.0)
+        else:
+            iw = inward.get(code, cur_in)
+            ow = outward.get(code, cur_out)
+        if code in inward:
+            matched_in += 1
+        if code in outward:
+            matched_out += 1
+        cl = op + iw - ow
+
+        op_out.append(_fmt_int(op))
+        in_out.append(_fmt_int(iw) if in_i is not None else "")
+        out_out.append(_fmt_int(ow) if out_i is not None else "")
+        cl_out.append(_fmt_int(cl))
+
+    if n_items == 0:
+        return pd.DataFrame(), (
+            f"❌ No item rows found under the header in '{name}' "
+            "(no cell matches the Godrej item-code pattern)."
+        )
+
+    # Targeted, non-destructive writes — only the movement columns + date cell
+    from gspread.utils import rowcol_to_a1
+    first = h + 2  # 1-based row number of the first data row
+
+    def col_range(idx: int, vals: list) -> dict:
+        a = rowcol_to_a1(first, idx + 1)
+        b = rowcol_to_a1(first + len(vals) - 1, idx + 1)
+        return {"range": f"{a}:{b}", "values": [[v] for v in vals]}
+
+    updates = [col_range(op_i, op_out), col_range(cl_i, cl_out)]
+    if in_i is not None:
+        updates.append(col_range(in_i, in_out))
+    if out_i is not None:
+        updates.append(col_range(out_i, out_out))
+    if title_idx is not None and date_col is not None:
+        updates.append({
+            "range": rowcol_to_a1(title_idx + 1, date_col + 1),
+            "values": [[target_date.strftime("%d %B %Y")]],
+        })
+
+    try:
+        ws.batch_update(updates, value_input_option="USER_ENTERED")
+    except Exception as e:
+        return pd.DataFrame(), f"❌ Write failed: {e}"
+
+    mode = "carried forward from previous Cl Stock" if new_day else "kept as entered"
+    status = (
+        f"✅ '{name}' updated for {target_date.strftime('%d %b %Y')} — {n_items} items "
+        f"(Op Stock {mode}). Inward matched: {matched_in} | Outward matched: {matched_out}."
+    )
+    print(f"[STOCK 34S] {status}")
+    df, _, _ = load_flat_snapshot(name)
+    return df, status
 
 
 # ─── Sheet setup ──────────────────────────────────────────────────────────────
@@ -883,6 +1233,11 @@ def run_daily_update(
     name = sheet_name_for(target_date)
     print(f"[STOCK 34S] === Daily update for {target_date} ({name}) ===")
 
+    # Flat single-day register (the live OPS layout) → update in place, never
+    # touching column structure or creating anything.
+    if df_in is None and is_flat_sheet(name):
+        return run_flat_update(target_date)
+
     # 1. Ensure month sheet exists (creates it + copies previous month items if new)
     try:
         setup_msg = ensure_month_sheet(year, month, seed_days=0)
@@ -977,6 +1332,13 @@ def run_update_range(start_date: date, end_date: date) -> tuple[list[str], str]:
 
     Returns (list_of_per_day_status_lines, summary_message).
     """
+    # Flat single-day register keeps no per-day history — a "range" update just
+    # refreshes today's in-place snapshot once.
+    if is_flat_sheet(sheet_name_for(end_date)):
+        _, status = run_flat_update(end_date)
+        line = f"{end_date.strftime('%d/%m/%Y')}: {status}"
+        return [line], status
+
     results: list[str] = []
     d       = start_date
     # Cache the current month DataFrame across days for performance
@@ -1139,6 +1501,63 @@ def _build_stock_html_table(flat: pd.DataFrame) -> str:
     )
 
 
+def _build_generic_html_table(df: pd.DataFrame, cl_col: str | None = None) -> str:
+    """
+    Build a styled HTML table from any DataFrame, keeping its own columns/labels
+    (used for the flat register, whose headers differ from FIXED/DATE_SUB_COLS).
+    Rows whose `cl_col` value is 0 are highlighted.
+    """
+    th_style = "padding:8px 10px;background:#1F4E79;color:#fff;border:1px solid #ccc;white-space:nowrap;"
+    td_style = "padding:6px 10px;border:1px solid #ddd;"
+    cols     = list(df.columns)
+    ths      = "".join(f"<th style='{th_style}'>{c}</th>" for c in cols)
+    rows_html = ""
+    for _, r in df.iterrows():
+        row_bg = ""
+        if cl_col and cl_col in df.columns:
+            try:
+                if float(str(r.get(cl_col, 1)).replace(",", "") or 1) == 0:
+                    row_bg = "background:#FFEBEE;"
+            except (ValueError, TypeError):
+                row_bg = ""
+        cells = "".join(f"<td style='{td_style}{row_bg}'>{r.get(c, '')}</td>" for c in cols)
+        rows_html += f"<tr>{cells}</tr>"
+    return (
+        f"<table style='border-collapse:collapse;font-family:Arial,sans-serif;"
+        f"font-size:12px;width:100%'>"
+        f"<thead><tr>{ths}</tr></thead><tbody>{rows_html}</tbody></table>"
+    )
+
+
+def _build_flat_excel(name: str, df: pd.DataFrame) -> bytes:
+    """Export the flat register snapshot as a simple styled .xlsx."""
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = name[len(SHEET_PREFIX):] if name.startswith(SHEET_PREFIX) else "Stock"
+    if df.empty:
+        ws.append(["No data found."])
+    else:
+        ws.append(list(df.columns))
+        fill = PatternFill("solid", fgColor="1F4E79")
+        font = Font(color="FFFFFF", bold=True, size=10)
+        for ci, _ in enumerate(df.columns, 1):
+            c = ws.cell(1, ci)
+            c.fill, c.font = fill, font
+            c.alignment = Alignment(horizontal="center", wrap_text=True)
+        for _, row in df.iterrows():
+            ws.append(row.tolist())
+        for ci, h in enumerate(df.columns, 1):
+            ws.column_dimensions[openpyxl.utils.get_column_letter(ci)].width = 16
+        ws.row_dimensions[1].height = 28
+        ws.freeze_panes = "A2"
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def build_last_day_html_table(year: int, month: int) -> tuple[str, date | None]:
     """Return (html_table_string, last_date) for the last recorded day of the month."""
     df, _ = load_month_df(year, month)
@@ -1170,8 +1589,19 @@ def send_monthly_stock_email(year: int, month: int, archive: bool = True) -> dic
 
     month_label = date(year, month, 1).strftime("%B %Y")
     subject     = f"Monthly 34S Stock Details- {month_label}"
+    name        = sheet_name_for(date(year, month, 1))
 
-    html_table, last_day = build_last_day_html_table(year, month)
+    # Flat register → build report from the in-place snapshot.
+    if is_flat_sheet(name):
+        flat_df, as_of, move_map = load_flat_snapshot(name)
+        if flat_df.empty:
+            return {"sent": False, "error": f"No data found in '{name}'."}
+        html_table   = _build_generic_html_table(flat_df, move_map.get("Cl Stock"))
+        last_day     = as_of
+        excel_bytes  = _build_flat_excel(name, flat_df)
+    else:
+        html_table, last_day = build_last_day_html_table(year, month)
+        excel_bytes  = _build_monthly_excel(year, month)
     last_day_str = last_day.strftime("%d %b %Y") if last_day else "—"
 
     recipients = _email_recipients()
@@ -1181,8 +1611,6 @@ def send_monthly_stock_email(year: int, month: int, archive: bool = True) -> dic
     email_addr, password = _imap_creds()
     if not email_addr or not password:
         return {"sent": False, "error": "Email credentials not configured."}
-
-    excel_bytes = _build_monthly_excel(year, month)
 
     html_body = (
         f"<html><body style='font-family:Arial,sans-serif;color:#222'>"
@@ -1257,8 +1685,18 @@ def send_daily_stock_email(target_date: date) -> dict:
     date_label  = target_date.strftime("%d %B %Y")
     day_name    = target_date.strftime("%A")
     subject     = f"34S Stock Report — {date_label}"
+    name        = sheet_name_for(target_date)
 
-    flat, load_status = load_stock_for_date(year, month, target_date)
+    # Flat register → snapshot table with the sheet's own columns.
+    if is_flat_sheet(name):
+        flat, _as_of, move_map = load_flat_snapshot(name)
+        cl_col, in_col, out_col = (
+            move_map.get("Cl Stock"), move_map.get("In Ward"), move_map.get("Out Ward"),
+        )
+    else:
+        flat, load_status = load_stock_for_date(year, month, target_date)
+        cl_col, in_col, out_col = "Cl Stock", "In Ward", "Out Ward"
+        move_map = None
     if flat.empty:
         return {
             "sent": False,
@@ -1276,13 +1714,16 @@ def send_daily_stock_email(target_date: date) -> dict:
     if not email_addr or not password:
         return {"sent": False, "error": "Email credentials not configured."}
 
-    html_table = _build_stock_html_table(flat)
+    html_table = (
+        _build_generic_html_table(flat, cl_col) if move_map is not None
+        else _build_stock_html_table(flat)
+    )
 
     # Summary line
     try:
-        cl_total  = int(pd.to_numeric(flat.get("Cl Stock",  pd.Series()), errors="coerce").fillna(0).sum())
-        in_total  = int(pd.to_numeric(flat.get("In Ward",   pd.Series()), errors="coerce").fillna(0).sum())
-        out_total = int(pd.to_numeric(flat.get("Out Ward",  pd.Series()), errors="coerce").fillna(0).sum())
+        cl_total  = int(pd.to_numeric(flat.get(cl_col,  pd.Series()), errors="coerce").fillna(0).sum())
+        in_total  = int(pd.to_numeric(flat.get(in_col,   pd.Series()), errors="coerce").fillna(0).sum())
+        out_total = int(pd.to_numeric(flat.get(out_col,  pd.Series()), errors="coerce").fillna(0).sum())
         summary_line = (
             f"Total items: <b>{to_indian_number_string(len(flat), 0)}</b> &nbsp;|&nbsp; "
             f"Cl Stock: <b>{to_indian_number_string(cl_total, 0)}</b> &nbsp;|&nbsp; "
