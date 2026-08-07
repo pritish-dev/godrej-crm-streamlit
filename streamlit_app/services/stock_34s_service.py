@@ -114,6 +114,66 @@ def dates_in_df(df: pd.DataFrame, year: int, month: int) -> list[date]:
     return sorted(seen)
 
 
+# ─── Fixed-column header normalization ────────────────────────────────────────
+# The sheet is often created / edited by hand, so the four fixed columns show up
+# with inconsistent casing, spacing or wording ("ITEM CODE", "Sl. No",
+# "Category", …).  Downstream logic matches these columns by their exact
+# canonical name, so a mismatch makes the whole sheet look empty
+# ("No items found …").  We map common variants back to the canonical name on
+# read.  Keys are compared case-insensitively with internal whitespace collapsed.
+
+_FIXED_COL_SYNONYMS: dict[str, str] = {
+    # → Sl No
+    "sl no": "Sl No", "sl. no": "Sl No", "sl.no": "Sl No", "slno": "Sl No",
+    "sl no.": "Sl No", "s no": "Sl No", "s. no": "Sl No", "s.no": "Sl No",
+    "sr no": "Sl No", "sr. no": "Sl No", "sr.no": "Sl No",
+    "serial no": "Sl No", "serial number": "Sl No", "sno": "Sl No",
+    # → Item Code
+    "item code": "Item Code", "itemcode": "Item Code", "item no": "Item Code",
+    "item number": "Item Code", "material code": "Item Code",
+    "material no": "Item Code", "material number": "Item Code",
+    "product code": "Item Code", "sku": "Item Code", "sku code": "Item Code",
+    # → Item Description
+    "item description": "Item Description", "item desc": "Item Description",
+    "description": "Item Description", "desc": "Item Description",
+    "item name": "Item Description", "material description": "Item Description",
+    "product description": "Item Description", "product name": "Item Description",
+    # → Product Category
+    "product category": "Product Category", "category": "Product Category",
+    "prod category": "Product Category", "product cat": "Product Category",
+    "item category": "Product Category", "categ/ory": "Product Category",
+}
+
+
+def _norm_key(s: str) -> str:
+    return re.sub(r"\s+", " ", str(s).strip().lower())
+
+
+def _canonicalize_fixed_headers(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Rename header variants of the four fixed columns to their canonical names
+    (Sl No / Item Code / Item Description / Product Category).
+
+    - Date columns ("01/08 Op Stock", …) are left untouched.
+    - A column already carrying the canonical name is never overwritten, and a
+      rename that would collide with an existing canonical column is skipped, so
+      duplicates are never introduced.
+    """
+    if df is None or df.empty:
+        return df
+    existing = set(df.columns)
+    rename: dict[str, str] = {}
+    for col in df.columns:
+        if col in FIXED_COLS or _parse_col(col):
+            continue  # already canonical, or a date sub-column
+        canon = _FIXED_COL_SYNONYMS.get(_norm_key(col))
+        if canon and canon not in existing:
+            rename[col] = canon
+            existing.discard(col)
+            existing.add(canon)
+    return df.rename(columns=rename) if rename else df
+
+
 # ─── Credentials ──────────────────────────────────────────────────────────────
 
 def _imap_creds() -> tuple[str, str]:
@@ -217,6 +277,7 @@ def _read_sheet_direct(sheet_name: str) -> pd.DataFrame:
             return pd.DataFrame()
         df = pd.DataFrame(data[1:], columns=data[0])
         df.columns = [str(c).strip() for c in df.columns]
+        df = _canonicalize_fixed_headers(df)
         return df.replace("", pd.NA).dropna(how="all").fillna("").reset_index(drop=True)
     except Exception:
         return pd.DataFrame()
@@ -291,6 +352,7 @@ def load_month_df(year: int, month: int, direct: bool = False) -> tuple[pd.DataF
     if df is None or df.empty:
         return pd.DataFrame(), f"⚠️ Sheet '{name}' is empty or does not exist yet."
     df.columns = [str(c).strip() for c in df.columns]
+    df = _canonicalize_fixed_headers(df)
     df = df.replace("", pd.NA).dropna(how="all").fillna("").reset_index(drop=True)
     return df, f"✅ {len(df)} items loaded from '{name}'."
 
@@ -843,10 +905,16 @@ def run_daily_update(
     # 3. Validate item count (must have at least one row with Item Code)
     item_count = _count_items(df)
     if item_count == 0:
-        return pd.DataFrame(), (
-            f"❌ No items found in '{name}'. "
-            "Add Sl No / Item Code / Item Description / Product Category rows first."
+        cols_seen = ", ".join(str(c) for c in df.columns[:8]) or "(none)"
+        has_code_col = "Item Code" in df.columns
+        hint = (
+            "The 'Item Code' column exists but has no filled rows — add item rows."
+            if has_code_col else
+            f"No 'Item Code' column was found. Columns detected: [{cols_seen}]. "
+            "Rename the item-code column to 'Item Code' (casing/spacing and common "
+            "variants like 'Material Code' are handled automatically)."
         )
+        return pd.DataFrame(), f"❌ No items found in '{name}'. {hint}"
 
     # 4. Previous closing stock
     prev_cl = _get_prev_cl_stock(target_date, df_override=df)
@@ -936,7 +1004,11 @@ def run_update_range(start_date: date, end_date: date) -> tuple[list[str], str]:
 
         item_count = _count_items(df_cache)
         if item_count == 0:
-            results.append(f"{d.strftime('%d/%m/%Y')}: ❌ No items with Item Code found in sheet.")
+            cols_seen = ", ".join(str(c) for c in df_cache.columns[:8]) or "(none)"
+            results.append(
+                f"{d.strftime('%d/%m/%Y')}: ❌ No items with 'Item Code' found in sheet. "
+                f"Columns detected: [{cols_seen}]."
+            )
             d += timedelta(days=1)
             continue
 
