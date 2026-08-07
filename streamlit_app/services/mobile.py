@@ -14,18 +14,19 @@ import streamlit as st
 
 def apply_mobile_optimizations() -> None:
     """Inject responsive CSS + PWA-friendly meta tags. Phone-only styling."""
-    # NOTE: keep this HTML flush-left (no leading indentation). Streamlit's
-    # markdown renderer follows CommonMark: a <style> block is only treated as
-    # raw HTML when it begins in the first column. Indented, it gets swallowed
-    # into the preceding <meta> block, which then ends at the first blank line
-    # inside the CSS — leaking the trailing "}" as a stray "}" at the top of
-    # every page. Flush-left keeps <style>…</style> as one raw-HTML block.
+    # NOTE: the blank line between the <meta> tags and <style> is REQUIRED.
+    # Streamlit's markdown renderer (react-markdown, CommonMark) otherwise
+    # folds <style> into the <meta> HTML block, which ends at the first blank
+    # line inside the CSS — leaking the media query's trailing "}" as a stray
+    # "}" at the top of every page. The blank line makes <style>…</style> its
+    # own HTML block, immune to the blank lines between CSS rules.
     st.markdown(
         """
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Godrej CRM">
 <meta name="theme-color" content="#B8232F">
+
 <style>
 /* ===== Phone-only tweaks. Desktop (>768px) is untouched. ===== */
 @media (max-width: 768px) {
