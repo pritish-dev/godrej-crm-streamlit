@@ -112,6 +112,10 @@ ROLE_LABELS = {
 
 BCM_NAME = "Dawn"
 
+# People who must always be kept in CC on every escalation (across all four
+# departments), regardless of which chain is being escalated.
+CC_ON_ESCALATION = ["Bibekananda Nayak", "Pradosh Dash"]
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CONTACT LOOKUP  (email + phone pulled from the OPS "SALES SUPPORT SYSTEM" tab)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -294,6 +298,20 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif !important; }
     background: #fff8e1; border-left: 4px solid #f7b500; border-radius: 8px;
     padding: .55rem .8rem; margin-top: .7rem; color: #6b5300; font-size: .85rem;
 }
+
+.sss-ccbar {
+    background: linear-gradient(135deg, #b71c1c, #e53935); border-radius: 14px;
+    padding: 1rem 1.3rem 1.15rem; margin: 0 0 1.6rem;
+    box-shadow: 0 8px 24px rgba(183,28,28,0.18);
+}
+.sss-cc-head { color: #fff; font-weight: 800; font-size: 1.05rem; margin-bottom: .7rem; }
+.sss-cc-head span { font-weight: 500; opacity: .85; font-size: .9rem; }
+.sss-cc-grid { display: flex; gap: .7rem; flex-wrap: wrap; }
+.sss-cc-person {
+    background: rgba(255,255,255,0.96); color: #1a1a2e; border-radius: 10px;
+    padding: .6rem .9rem; flex: 1; min-width: 220px;
+}
+.sss-cc-person .pname { font-weight: 700; font-size: 1rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -319,6 +337,27 @@ st.markdown(
         <span>👤 <b>Contact Person</b> — your first point of contact</span>
         <span>🪜 <b>Escalation Chain</b> — follow top to bottom if no response</span>
         <span>👑 <b>BCM = Dawn</b> — final escalation (Branch head)</span>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ── Always-CC banner ─────────────────────────────────────────────────────────
+# Two people must be kept in CC on every escalation, across all departments.
+_cc_cards = ""
+for _p in CC_ON_ESCALATION:
+    _cc_cards += (
+        f'<div class="sss-cc-person">'
+        f'<div class="pname">{_p}</div>'
+        f'<div>{_contact_bits(_p)}</div>'
+        f'</div>'
+    )
+st.markdown(
+    f"""
+    <div class="sss-ccbar">
+        <div class="sss-cc-head">📋 Always keep in CC on <u>every</u> escalation
+            <span>— across CST, Logistics, Spare and Service</span></div>
+        <div class="sss-cc-grid">{_cc_cards}</div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -445,6 +484,21 @@ for dept in DEPARTMENTS:
             "Email": info.get("email", "") or "—",
         })
 
+# Always-CC contacts (apply to every department's escalation).
+for name in CC_ON_ESCALATION:
+    key = _norm(name)
+    if key in seen:
+        continue
+    seen.add(key)
+    info = _lookup(name, CONTACTS)
+    dir_rows.append({
+        "Name": name,
+        "Department": "All",
+        "Role": "CC on every escalation",
+        "Phone": info.get("phone", "") or "—",
+        "Email": info.get("email", "") or "—",
+    })
+
 st.dataframe(
     pd.DataFrame(dir_rows),
     use_container_width=True,
@@ -452,6 +506,7 @@ st.dataframe(
 )
 
 with st.expander("ℹ️ How this directory stays up to date"):
+    _cc_names = " and ".join(CC_ON_ESCALATION)
     st.markdown(
         f"""
         - The **reporting structure and escalation order** are maintained in this page.
@@ -464,6 +519,8 @@ with st.expander("ℹ️ How this directory stays up to date"):
           the next name in the chain only after a reasonable wait with no response.
           For CST, Logistics and Spare the final escalation is **Dawn (BCM)**; the
           **Service** chain stops at **Bikas**.
+        - **Always CC on escalations:** keep **{_cc_names}** in CC on *every*
+          escalation email, across all four departments.
         """
     )
 
