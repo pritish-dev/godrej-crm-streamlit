@@ -72,6 +72,8 @@ _OPS_SHEETS: frozenset[str] = frozenset({
     "4S Godown items Delivered",
     "Godown Undelivered State",
     "Godown Undelivered reminder email",
+    # Sales Support System directory (contact + escalation matrix)
+    "SALES SUPPORT SYSTEM",
 })
 
 # Sheet name prefixes that always belong to the OPS spreadsheet

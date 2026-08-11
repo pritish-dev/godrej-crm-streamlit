@@ -648,6 +648,51 @@ MODULES = [
             },
         ],
     },
+    # ── SALES SUPPORT SYSTEM ──────────────────────────────────────────────────
+    {
+        "id": "sales_support_system",
+        "emoji": "🤝",
+        "title": "Sales Support System",
+        "route": "pages/27_Sales_Support_System.py",
+        "category": "Operations",
+        "section": "Sales Handbook",
+        "gradient": "linear-gradient(135deg, #1a1a2e, #0f3460)",
+        "tags": ["sales", "manager"],
+        "tagline": "Know whom to contact and whom to escalate to across CST, Logistics, Spare and Service.",
+        "what_it_does": "This page is the single reference for the four sales-support departments — CST (Customer Support Team), Logistics, Spare and Service. For each department it shows the front-line contact person(s) to reach first, and the exact escalation chain to follow if there is no response — right up to the BCM (Dawn). Phone numbers and email addresses are pulled live from the OPS 'SALES SUPPORT SYSTEM' sheet, so the directory always stays current.",
+        "features": [
+            {
+                "icon": "🎧",
+                "name": "Four Support Departments",
+                "desc": "CST, Logistics, Spare and Service — each with its own purpose, so you always know which team owns your query.",
+                "benefit": "Reach the right team the first time",
+            },
+            {
+                "icon": "👤",
+                "name": "Front-line Contact Persons",
+                "desc": "Each department lists exactly who to call or email first, with their live phone number and email address.",
+                "benefit": "No guessing whom to contact",
+            },
+            {
+                "icon": "🪜",
+                "name": "Clear Escalation Chain",
+                "desc": "If there is no response, follow the ordered escalation path — team lead, department head, and finally the BCM (Dawn) — shown step by step.",
+                "benefit": "Escalate confidently and in order",
+            },
+            {
+                "icon": "🧭",
+                "name": "Quick Escalation Matrix",
+                "desc": "A single table summarising, for every department, whom to contact first and the exact order to escalate in.",
+                "benefit": "One glance for the whole system",
+            },
+            {
+                "icon": "📇",
+                "name": "Live Contact Directory",
+                "desc": "Phone and email for everyone in the hierarchy are read from the OPS 'SALES SUPPORT SYSTEM' sheet and matched by name — edit the sheet and it updates here.",
+                "benefit": "Always-current contact details",
+            },
+        ],
+    },
     # ── MIS UPDATE ────────────────────────────────────────────────────────────
     {
         "id": "mis_update",
