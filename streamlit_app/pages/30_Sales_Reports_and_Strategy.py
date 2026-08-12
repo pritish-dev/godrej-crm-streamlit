@@ -397,6 +397,32 @@ rD.metric(
 st.divider()
 
 # =========================================================
+# SECTION — Pending Order value(as per CRM)
+# =========================================================
+st.subheader("📥 Pending Order value(as per CRM)")
+
+with st.spinner("Loading pending franchise order value…"):
+    _pending_order_crm = mm.get_pending_order_value_crm()
+
+rE, _, _ = st.columns(3)
+rE.metric(
+    "🧾 Pending Order value(as per CRM)",
+    f"₹{to_indian_number_string(_pending_order_crm, 0)}",
+    help="Total order value **without GST** of every franchise order still in "
+         "the PENDING delivery state, read straight from the CRM sheets. Covers "
+         "all Franchise tabs plus the ordering-app sheet (B2C FRANCHISE APP "
+         "ORDER DETAILS 26-27); 4S orders are excluded. Uses the "
+         "'CROSS CHECK GROSS AMT (ORDER VALUE WITHOUT TAX)' column.",
+)
+
+st.caption(
+    "🧮 Sum of **order value without GST** for all **franchise** orders whose "
+    "delivery status is **Pending** — includes orders placed from the ordering app."
+)
+
+st.divider()
+
+# =========================================================
 # SECTION — Monthly Sales from Invoices (without Tax)
 # =========================================================
 

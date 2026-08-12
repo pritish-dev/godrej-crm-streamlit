@@ -39,8 +39,14 @@ sys.path.insert(0, BASE_DIR)
 from services.sheets import get_df
 from services.mis_email_import import load_cached_mis
 from services.invoice_email_import import load_invoice_sheet
+from services.delivery_status import norm_status, BLANK_TOKENS
 
 IST = timezone(timedelta(hours=5, minutes=30))
+
+# Franchise ordering-app tab. It is added explicitly to the franchise scope
+# because it is not always listed under SHEET_DETAILS.Franchise_sheets (it lives
+# in a separate always-scan fallback elsewhere), yet its orders must be counted.
+FRANCHISE_APP_ORDER_SHEET = "B2C FRANCHISE APP ORDER DETAILS 26-27"
 
 FORECAST_SHEET_PREFIX = "MONTHEND SALES FORECAST- "
 
@@ -460,6 +466,105 @@ def get_pending_order_value() -> float:
             errors="coerce",
         ).fillna(0)
         return float(net_basic_num.sum())
+    except Exception:
+        return 0.0
+
+
+def _franchise_order_sheet_names() -> list[str]:
+    """Franchise CRM tabs (SHEET_DETAILS.Franchise_sheets) plus the ordering-app
+    tab. 4S tabs are deliberately excluded — this scope is franchise-only.
+
+    The ordering-app tab is appended explicitly because it is not guaranteed to
+    appear in the Franchise_sheets config list.
+    """
+    names: list[str] = []
+    try:
+        cfg = get_df("SHEET_DETAILS")
+        if cfg is not None and not cfg.empty and "Franchise_sheets" in cfg.columns:
+            names += cfg["Franchise_sheets"].dropna().astype(str).str.strip().tolist()
+    except Exception:
+        pass
+    names.append(FRANCHISE_APP_ORDER_SHEET)
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for n in names:
+        n = str(n).strip()
+        if n and n not in seen:
+            seen.add(n)
+            ordered.append(n)
+    return ordered
+
+
+def get_pending_order_value_crm() -> float:
+    """Total order value **without GST** of all franchise orders still in the
+    PENDING delivery state (as recorded in the CRM sheets).
+
+    Scope
+    -----
+    • Every Franchise CRM tab listed in ``SHEET_DETAILS.Franchise_sheets`` plus
+      the ordering-app tab ``B2C FRANCHISE APP ORDER DETAILS 26-27``. 4S tabs are
+      excluded.
+    • Value column = ``CROSS CHECK GROSS AMT (ORDER VALUE WITHOUT TAX)`` — the
+      order value without tax. If a tab spells it differently, any column whose
+      name contains "WITHOUT TAX" / "WITHOUT GST" is used as a fallback.
+    • "Pending" = the row's delivery status normalises exactly to ``PENDING``.
+      A blank / missing status is treated as PENDING (a freshly-booked order),
+      mirroring the B2C dashboard's default. Delivered / Scheduled / Installation
+      Done / Cancelled rows are excluded.
+    """
+    try:
+        total = 0.0
+        for sname in _franchise_order_sheet_names():
+            try:
+                raw = get_df(sname)
+            except Exception:
+                continue
+            if raw is None or raw.empty:
+                continue
+
+            raw = raw.copy()
+            raw.columns = [norm_status(c) for c in raw.columns]
+            raw = raw.loc[:, ~raw.columns.duplicated()]
+
+            # ── Order value without tax/GST column ───────────────────────────
+            val_col = None
+            if "CROSS CHECK GROSS AMT (ORDER VALUE WITHOUT TAX)" in raw.columns:
+                val_col = "CROSS CHECK GROSS AMT (ORDER VALUE WITHOUT TAX)"
+            else:
+                val_col = next(
+                    (c for c in raw.columns if "WITHOUT TAX" in c or "WITHOUT GST" in c),
+                    None,
+                )
+            if val_col is None:
+                continue
+
+            # ── Delivery status column (native, else delivery-remarks) ───────
+            status_col = next((c for c in raw.columns if c == "DELIVERY STATUS"), None)
+            if status_col is None:
+                status_col = next(
+                    (c for c in raw.columns if c.replace(" ", "").startswith("DELIVERYREMARKS")),
+                    None,
+                )
+
+            if status_col is not None:
+                status = raw[status_col].map(norm_status)
+                # Blank / missing status ⇒ PENDING (order booked, not yet actioned)
+                status = status.where(~status.isin(BLANK_TOKENS), "PENDING")
+            else:
+                # No status column at all ⇒ treat every row as PENDING
+                status = pd.Series("PENDING", index=raw.index)
+
+            pending_mask = status == "PENDING"
+            if not pending_mask.any():
+                continue
+
+            vals = pd.to_numeric(
+                raw[val_col].astype(str).str.replace(r"[₹,\s]", "", regex=True),
+                errors="coerce",
+            ).fillna(0.0)
+            total += float(vals[pending_mask].sum())
+        return total
     except Exception:
         return 0.0
 
