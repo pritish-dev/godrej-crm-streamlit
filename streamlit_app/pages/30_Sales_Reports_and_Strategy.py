@@ -361,6 +361,7 @@ with st.spinner("Loading current-month sales figures…"):
     _monthly_target    = mm.get_monthly_target(_month_name)
     _invoice_value     = mm.get_current_sales_invoice_value(_month_name)
     _pending_order     = mm.get_pending_order_value()
+    _pending_order_crm = mm.get_pending_order_value_crm()
     _pending_target    = _monthly_target - _invoice_value
 
 rA, rB, rC = st.columns(3)
@@ -386,25 +387,13 @@ rC.metric(
 
 st.caption("🧮 **Pending Target Value** = Monthly Sales Target − Current Sales Invoice Value")
 
-rD, _, _ = st.columns(3)
+rD, rE, _ = st.columns(3)
 rD.metric(
     "📦 Pending Order Value (MIS)",
     f"₹{to_indian_number_string(_pending_order, 0)}",
     help="Total Net Basic of all pending MIS orders. Same figure as the "
          "Pending Order Value on the MIS Update page.",
 )
-
-st.divider()
-
-# =========================================================
-# SECTION — Pending Order value(as per CRM)
-# =========================================================
-st.subheader("📥 Pending Order value(as per CRM)")
-
-with st.spinner("Loading pending franchise order value…"):
-    _pending_order_crm = mm.get_pending_order_value_crm()
-
-rE, _, _ = st.columns(3)
 rE.metric(
     "🧾 Pending Order value(as per CRM)",
     f"₹{to_indian_number_string(_pending_order_crm, 0)}",
@@ -413,11 +402,6 @@ rE.metric(
          "all Franchise tabs plus the ordering-app sheet (B2C FRANCHISE APP "
          "ORDER DETAILS 26-27); 4S orders are excluded. Uses the "
          "'CROSS CHECK GROSS AMT (ORDER VALUE WITHOUT TAX)' column.",
-)
-
-st.caption(
-    "🧮 Sum of **order value without GST** for all **franchise** orders whose "
-    "delivery status is **Pending** — includes orders placed from the ordering app."
 )
 
 st.divider()
