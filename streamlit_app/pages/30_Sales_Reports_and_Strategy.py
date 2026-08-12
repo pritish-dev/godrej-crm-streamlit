@@ -44,6 +44,17 @@ sys.path.insert(0, BASE_DIR)
 from services.sheets import get_df  # noqa: E402
 from utils.helpers import to_indian_number_string  # noqa: E402
 from services import monthly_metrics as mm  # noqa: E402
+
+# Streamlit Community Cloud re-executes the page script on every rerun but keeps
+# already-imported service modules cached in sys.modules — it does not reload a
+# deep service module when its file changes on disk, only on a full app reboot.
+# So a newly-added function can be missing from the cached module even though the
+# on-disk source (and this page) are current. Reload it from disk in that case so
+# the page self-heals instead of crashing until someone remembers to reboot.
+if not hasattr(mm, "get_pending_order_value_crm"):
+    import importlib
+    mm = importlib.reload(mm)
+
 from services.invoice_email_import import (  # noqa: E402
     fetch_and_save_invoices_range,
     load_invoice_sheet,
