@@ -496,6 +496,128 @@ def _franchise_order_sheet_names() -> list[str]:
     return ordered
 
 
+def _pick_col(cols, candidates) -> str | None:
+    """First column (already upper-cased) matching any candidate name."""
+    for cand in candidates:
+        if cand in cols:
+            return cand
+    return None
+
+
+# Columns returned by get_pending_order_details_crm(), in display order.
+PENDING_CRM_DETAIL_COLS = [
+    "SOURCE_SHEET", "ORDER NO", "GODREJ SO NO", "CUSTOMER NAME",
+    "CONTACT NUMBER", "SALES PERSON", "ORDER DATE", "DELIVERY STATUS",
+    "ORDER VALUE WITHOUT GST",
+]
+
+
+def get_pending_order_details_crm() -> pd.DataFrame:
+    """Line-item detail of every franchise order still in the PENDING delivery
+    state — the exact rows that make up ``get_pending_order_value_crm()``.
+
+    Scope / rules are identical to :func:`get_pending_order_value_crm`:
+      • Franchise tabs (``SHEET_DETAILS.Franchise_sheets``) + the ordering-app tab
+        ``B2C FRANCHISE APP ORDER DETAILS 26-27``; 4S tabs excluded.
+      • Value = ``CROSS CHECK GROSS AMT (ORDER VALUE WITHOUT TAX)`` (without-tax),
+        falling back to any "WITHOUT TAX" / "WITHOUT GST" column.
+      • "Pending" = delivery status normalises to ``PENDING`` (blank ⇒ PENDING).
+
+    Returns a DataFrame with :data:`PENDING_CRM_DETAIL_COLS` (empty if none).
+    """
+    empty = pd.DataFrame(columns=PENDING_CRM_DETAIL_COLS)
+    try:
+        frames: list[pd.DataFrame] = []
+        for sname in _franchise_order_sheet_names():
+            try:
+                raw = get_df(sname)
+            except Exception:
+                continue
+            if raw is None or raw.empty:
+                continue
+
+            raw = raw.copy()
+            raw.columns = [norm_status(c) for c in raw.columns]
+            raw = raw.loc[:, ~raw.columns.duplicated()]
+            cols = set(raw.columns)
+
+            # ── Order value without tax/GST column ───────────────────────────
+            val_col = None
+            if "CROSS CHECK GROSS AMT (ORDER VALUE WITHOUT TAX)" in cols:
+                val_col = "CROSS CHECK GROSS AMT (ORDER VALUE WITHOUT TAX)"
+            else:
+                val_col = next(
+                    (c for c in raw.columns if "WITHOUT TAX" in c or "WITHOUT GST" in c),
+                    None,
+                )
+            if val_col is None:
+                continue
+
+            # ── Delivery status (native, else delivery-remarks) ──────────────
+            status_col = "DELIVERY STATUS" if "DELIVERY STATUS" in cols else next(
+                (c for c in raw.columns if c.replace(" ", "").startswith("DELIVERYREMARKS")),
+                None,
+            )
+            if status_col is not None:
+                status_norm = raw[status_col].map(norm_status)
+                status_norm = status_norm.where(~status_norm.isin(BLANK_TOKENS), "PENDING")
+                # Display value: original text, but blank / nan rows read "PENDING".
+                status_disp = raw[status_col].astype(str).str.strip()
+                _blank = status_disp.str.upper().isin(["", "NAN", "NONE", "NAT"])
+                status_disp = status_disp.where(~_blank, "PENDING")
+            else:
+                status_norm = pd.Series("PENDING", index=raw.index)
+                status_disp = pd.Series("PENDING", index=raw.index)
+
+            pending_mask = status_norm == "PENDING"
+            if not pending_mask.any():
+                continue
+
+            vals = pd.to_numeric(
+                raw[val_col].astype(str).str.replace(r"[₹,\s]", "", regex=True),
+                errors="coerce",
+            ).fillna(0.0)
+
+            order_no_col = _pick_col(cols, ["ORDER NO", "ORDER NO."])
+            so_col       = _pick_col(cols, ["GODREJ SO NO", "GODREJ SO NO.", "GODREJ SO NUMBER"])
+            cust_col     = _pick_col(cols, ["CUSTOMER NAME", "CUSTOMER"])
+            contact_col  = _pick_col(cols, ["CONTACT NUMBER", "CONTACT NO", "CONTACT NO.", "MOBILE NO", "MOBILE NUMBER", "PHONE"])
+            sp_col       = _pick_col(cols, ["SALES PERSON", "SALES REP", "SALESPERSON"])
+            date_col     = _pick_col(cols, ["ORDER DATE", "DATE"])
+
+            def _txt(col):
+                if col and col in raw.columns:
+                    return raw[col].astype(str).str.strip()
+                return pd.Series("", index=raw.index)
+
+            sub = pd.DataFrame({
+                "SOURCE_SHEET":            sname,
+                "ORDER NO":                _txt(order_no_col),
+                "GODREJ SO NO":            _txt(so_col),
+                "CUSTOMER NAME":           _txt(cust_col),
+                "CONTACT NUMBER":          _txt(contact_col),
+                "SALES PERSON":            _txt(sp_col),
+                "ORDER DATE":              pd.to_datetime(raw[date_col], errors="coerce", dayfirst=True) if date_col else pd.NaT,
+                "DELIVERY STATUS":         status_disp,
+                "ORDER VALUE WITHOUT GST": vals,
+            })
+            sub = sub[pending_mask].copy()
+            # Drop blank / header rows that carry no value.
+            sub = sub[sub["ORDER VALUE WITHOUT GST"] > 0]
+            if not sub.empty:
+                frames.append(sub)
+
+        if not frames:
+            return empty
+        out = pd.concat(frames, ignore_index=True)
+        # Normalise blank string tokens to empty for clean display / matching.
+        for c in ("ORDER NO", "GODREJ SO NO", "CUSTOMER NAME", "CONTACT NUMBER", "SALES PERSON"):
+            out[c] = out[c].where(~out[c].str.upper().isin(["NAN", "NONE", "NAT"]), "")
+        return out[PENDING_CRM_DETAIL_COLS]
+    except Exception:
+        return empty
+
+
 def get_pending_order_value_crm() -> float:
     """Total order value **without GST** of all franchise orders still in the
     PENDING delivery state (as recorded in the CRM sheets).
@@ -514,59 +636,45 @@ def get_pending_order_value_crm() -> float:
       Done / Cancelled rows are excluded.
     """
     try:
-        total = 0.0
-        for sname in _franchise_order_sheet_names():
-            try:
-                raw = get_df(sname)
-            except Exception:
-                continue
-            if raw is None or raw.empty:
-                continue
-
-            raw = raw.copy()
-            raw.columns = [norm_status(c) for c in raw.columns]
-            raw = raw.loc[:, ~raw.columns.duplicated()]
-
-            # ── Order value without tax/GST column ───────────────────────────
-            val_col = None
-            if "CROSS CHECK GROSS AMT (ORDER VALUE WITHOUT TAX)" in raw.columns:
-                val_col = "CROSS CHECK GROSS AMT (ORDER VALUE WITHOUT TAX)"
-            else:
-                val_col = next(
-                    (c for c in raw.columns if "WITHOUT TAX" in c or "WITHOUT GST" in c),
-                    None,
-                )
-            if val_col is None:
-                continue
-
-            # ── Delivery status column (native, else delivery-remarks) ───────
-            status_col = next((c for c in raw.columns if c == "DELIVERY STATUS"), None)
-            if status_col is None:
-                status_col = next(
-                    (c for c in raw.columns if c.replace(" ", "").startswith("DELIVERYREMARKS")),
-                    None,
-                )
-
-            if status_col is not None:
-                status = raw[status_col].map(norm_status)
-                # Blank / missing status ⇒ PENDING (order booked, not yet actioned)
-                status = status.where(~status.isin(BLANK_TOKENS), "PENDING")
-            else:
-                # No status column at all ⇒ treat every row as PENDING
-                status = pd.Series("PENDING", index=raw.index)
-
-            pending_mask = status == "PENDING"
-            if not pending_mask.any():
-                continue
-
-            vals = pd.to_numeric(
-                raw[val_col].astype(str).str.replace(r"[₹,\s]", "", regex=True),
-                errors="coerce",
-            ).fillna(0.0)
-            total += float(vals[pending_mask].sum())
-        return total
+        detail = get_pending_order_details_crm()
+        if detail is None or detail.empty:
+            return 0.0
+        return float(detail["ORDER VALUE WITHOUT GST"].sum())
     except Exception:
         return 0.0
+
+
+def _norm_so(v) -> str:
+    """Canonical Sales-Order-No key for CRM ↔ MIS matching (upper, no spaces)."""
+    return "".join(str(v).split()).upper().strip()
+
+
+@st.cache_data(ttl=120)
+def get_mis_so_numbers() -> set[str]:
+    """Set of canonicalised Sales Order Nos present in the cached MIS data.
+
+    Used to flag whether a CRM franchise order also appears in MIS.
+    """
+    try:
+        df = _load_mis()
+        if df is None or df.empty:
+            return set()
+        df = df.copy()
+        df.columns = [str(c).strip() for c in df.columns]
+        so_col = next(
+            (c for c in df.columns if c.lower() in ("sales order no.", "sales order no", "so no", "so no.")),
+            next((c for c in df.columns if "sales order no" in c.lower()), None),
+        )
+        if not so_col:
+            return set()
+        out: set[str] = set()
+        for v in df[so_col].dropna().tolist():
+            key = _norm_so(v)
+            if key and key not in ("NAN", "NONE", "NAT"):
+                out.add(key)
+        return out
+    except Exception:
+        return set()
 
 
 def get_monthend_forecast_value(ref: date | None = None) -> float:
