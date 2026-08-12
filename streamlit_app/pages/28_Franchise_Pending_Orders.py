@@ -113,9 +113,27 @@ orders = detail.groupby("_GROUP_KEY", sort=False).agg(
 ).reset_index(drop=True)
 
 # ── MIS presence flag (matched on Godrej SO No) ─────────────────────────────
+# An order that carries a Godrej SO No should always exist in MIS, so its SO No
+# is looked up in the MIS_Daily sheet (the MIS Update sheet, in the OPS
+# spreadsheet). Three outcomes:
+#   ✅ Yes           — SO No found in MIS.
+#   ❌ Not in MIS    — SO No present on the CRM order but NOT found in MIS
+#                       (the sales-team error this page is built to surface).
+#   ⚠️ No SO No       — the CRM order has no Godrej SO No entered at all.
 _so_key = orders["Godrej SO No"].map(_norm_so)
-orders["_IN_MIS"] = _so_key.isin(mis_so) & _so_key.ne("")
-orders["In MIS?"] = orders["_IN_MIS"].map({True: "✅ Yes", False: "❌ No"})
+_has_so = _so_key.ne("")
+orders["_IN_MIS"] = _so_key.isin(mis_so) & _has_so
+
+
+def _mis_label(has_so: bool, in_mis: bool) -> str:
+    if not has_so:
+        return "⚠️ No SO No"
+    return "✅ Yes" if in_mis else "❌ Not in MIS"
+
+
+orders["In MIS?"] = [
+    _mis_label(h, m) for h, m in zip(_has_so, orders["_IN_MIS"])
+]
 
 # ── Headline reconciliation ─────────────────────────────────────────────────
 total_cnt = len(orders)
@@ -155,10 +173,14 @@ c3.metric(
 c3.metric("Value missing from MIS", _fmt_rs(out_val))
 
 if total_val:
+    _wrong_so = int((_has_so & ~orders["_IN_MIS"]).sum())    # SO No entered but not in MIS
+    _no_so    = int((~_has_so).sum())                        # SO No not entered at all
     st.caption(
         f"🧮 **{out_cnt}** of **{total_cnt}** pending franchise orders "
         f"(**{_fmt_rs(out_val)}** of **{_fmt_rs(total_val)}**, "
-        f"{out_val / total_val * 100:.1f}%) are **not** in MIS. "
+        f"{out_val / total_val * 100:.1f}%) are **not** in MIS — "
+        f"of these, **{_wrong_so}** have a Godrej SO No that is missing from MIS "
+        f"(❌ Not in MIS) and **{_no_so}** have no SO No entered (⚠️ No SO No). "
         "These need the sales team's attention."
     )
 
@@ -233,3 +255,56 @@ st.download_button(
     file_name="franchise_pending_orders.csv",
     mime="text/csv",
 )
+
+st.divider()
+
+# ── Persist snapshot to the OPS sheet ("Franchise pending orders") ──────────
+# The full order list (ALL orders, not the filtered view) is written to a
+# "Franchise pending orders" tab in the OPS spreadsheet so the reconciliation is
+# available outside the app. The order date is serialised as text and the value
+# is kept numeric so the sheet stays usable for downstream formulas.
+OPS_SNAPSHOT_SHEET = "Franchise pending orders"
+
+
+def _build_snapshot(df: pd.DataFrame) -> pd.DataFrame:
+    snap = df[[
+        "Order No", "Godrej SO No", "Customer", "Contact", "Sales Person",
+        "Order Date", "Delivery Status", "Source Sheet",
+        "Order Value (without GST)", "In MIS?",
+    ]].copy()
+    snap["Order Date"] = pd.to_datetime(snap["Order Date"], errors="coerce").dt.strftime("%d-%b-%Y").fillna("")
+    snap["Order Value (without GST)"] = pd.to_numeric(
+        snap["Order Value (without GST)"], errors="coerce"
+    ).fillna(0).round(2)
+    snap.insert(0, "Saved On", pd.Timestamp.now(tz="Asia/Kolkata").strftime("%d-%b-%Y %H:%M"))
+    return snap
+
+
+def _save_snapshot() -> str:
+    from services.sheets import write_df
+    write_df(OPS_SNAPSHOT_SHEET, _build_snapshot(orders))
+    return f"Saved {len(orders)} orders to '{OPS_SNAPSHOT_SHEET}' in the OPS sheet."
+
+
+st.subheader("💾 Save to OPS sheet")
+st.caption(
+    f"Writes the full pending-orders list (all {len(orders)} orders) to the "
+    f"**{OPS_SNAPSHOT_SHEET}** tab in the OPS spreadsheet, creating it if needed."
+)
+
+# Auto-save once per browser session so the tab is populated on first visit,
+# then let the user re-save on demand.
+if not st.session_state.get("_fpo_autosaved"):
+    try:
+        msg = _save_snapshot()
+        st.session_state["_fpo_autosaved"] = True
+        st.caption(f"✅ Auto-saved on open — {msg}")
+    except Exception as e:
+        st.warning(f"Could not auto-save to the OPS sheet: {e}")
+
+if st.button(f"💾 Save now to '{OPS_SNAPSHOT_SHEET}'"):
+    try:
+        msg = _save_snapshot()
+        st.success(f"✅ {msg}")
+    except Exception as e:
+        st.error(f"❌ Save failed: {e}")
