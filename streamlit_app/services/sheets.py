@@ -138,18 +138,33 @@ def _ensure_sheet(sheet_name):
     sh = _get_sh(sheet_name)
 
     try:
-        ws = sh.worksheet(sheet_name)
-    except:
-        ws = sh.add_worksheet(title=sheet_name, rows=1000, cols=50)
+        return sh.worksheet(sheet_name)
+    except gspread.exceptions.WorksheetNotFound:
+        # Genuinely missing — fall through to create it below.
+        pass
+    # NOTE: any other exception (rate-limit / transient API error / network
+    # blip) must propagate. Swallowing it here and creating a new worksheet
+    # is what caused the "A sheet with the name … already exists" 400 error:
+    # the lookup failed transiently even though the tab was already present.
 
-        if sheet_name == "CRM":
-            ws.append_row(CRM_HEADERS)
-        elif sheet_name == "New Leads":
-            ws.append_row(LEADS_HEADERS)
-        elif sheet_name == "Service Request":
-            ws.append_row(SERVICE_HEADERS)
-        elif sheet_name == "comitted Delivery reminder email":
-            ws.append_row(["Email", "CC"])
+    try:
+        ws = sh.add_worksheet(title=sheet_name, rows=1000, cols=50)
+    except gspread.exceptions.APIError as exc:
+        # Race / stale metadata: another process (or a transient lookup
+        # failure above) means the sheet actually already exists. Re-fetch
+        # and return it instead of crashing.
+        if "already exists" in str(exc).lower():
+            return sh.worksheet(sheet_name)
+        raise
+
+    if sheet_name == "CRM":
+        ws.append_row(CRM_HEADERS)
+    elif sheet_name == "New Leads":
+        ws.append_row(LEADS_HEADERS)
+    elif sheet_name == "Service Request":
+        ws.append_row(SERVICE_HEADERS)
+    elif sheet_name == "comitted Delivery reminder email":
+        ws.append_row(["Email", "CC"])
 
     return ws
 
