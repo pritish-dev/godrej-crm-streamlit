@@ -283,12 +283,18 @@ st.markdown(f"### 📋 PO Data — {to_indian_number_string(len(filtered), 0)} r
 show_cols   = [c for c in DISPLAY_COLUMNS if c in filtered.columns]
 display_df  = filtered[show_cols].reset_index(drop=True)
 display_df.index = range(1, len(display_df) + 1)
-display_msk = filtered_msk.reset_index(drop=True) if not filtered_msk.empty else \
-              pd.Series([False] * len(display_df))
+# Align the green mask to display_df's 1-based index so styling is looked up by
+# label (row.name), NOT positionally. Without this, .iloc[row.name] shifts every
+# row's colour by one (each row shows the row-below's readiness).
+if not filtered_msk.empty:
+    display_msk = filtered_msk.reset_index(drop=True)
+else:
+    display_msk = pd.Series([False] * len(display_df))
+display_msk.index = display_df.index
 
 def _row_style(row):
     try:
-        if bool(display_msk.iloc[row.name]):
+        if bool(display_msk.loc[row.name]):
             return ["background-color:#c8e6c9"] * len(row)
     except Exception:
         pass
