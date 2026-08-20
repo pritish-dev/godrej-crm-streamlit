@@ -49,6 +49,7 @@ sales_handbook_pages = [
     st.Page("pages/70_Leads.py",                       title="Leads",                               icon="🎯"),
     st.Page("pages/25_Godown_Undelivered_Items.py",    title="4s Godown Undelivered Items",         icon="📦"),
     st.Page("pages/27_Sales_Support_System.py",        title="Sales Support System",                icon="🤝"),
+    st.Page("pages/29_SOP.py",                         title="SOP",                                 icon="📋"),
 ]
 
 inventory_pages = [
