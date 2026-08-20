@@ -128,9 +128,7 @@ with st.expander("🛠️  Service Request", expanded=False):
         (
             "2",
             "Add that service request against the customer order in the App, and "
-            "also record it in the Service Request register. It is "
-            "<b>MANDATORY to enter the Service Request Number</b> whenever a new "
-            "service request is raised — a request cannot be logged without it.",
+            "also record it in the Service Request register.",
         ),
         (
             "3",
@@ -150,9 +148,7 @@ with st.expander("🛠️  Service Request", expanded=False):
             "5",
             "Collect the HAPPY CODE from the customer only after the issue is "
             "resolved — the service request can be closed from our end only once "
-            "the Happy Code is received. It is <b>MANDATORY to enter the Happy "
-            "Code</b> while resolving a service request; the request cannot be "
-            "marked resolved / closed without it.",
+            "the Happy Code is received.",
         ),
     ]
     st.markdown(

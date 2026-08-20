@@ -57,10 +57,7 @@ LEADS_HEADERS = [
 
 SERVICE_HEADERS = [
     "DATE RECEIVED", "Customer Name", "Contact Number", "Address/Location",
-    "Product Type", "Complaint / Service Request",
-    "Service Request Number",  # MANDATORY when a new service request is raised
-    "Complaint Status",
-    "Happy Code",              # MANDATORY when resolving / closing the request
+    "Product Type", "Complaint / Service Request", "Complaint Status",
     "Complaint Registered By", "Warranty (Y/N)",
     "Complaint/Service Assigned To", "SERVICE CHARGE",
     "Notes", "Staff Email", "Customer Email"
