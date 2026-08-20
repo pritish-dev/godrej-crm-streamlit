@@ -5,9 +5,9 @@ MIS UPDATE — Daily BR_MIS Excel data viewer (cached)
 Reads the cached MIS data from the 'MIS_Daily' Google Sheet (populated by
 the 11 AM scheduled fetch). Avoids hitting Gmail every page-load.
 
-Rows where Sales Order Qty == Sales Order Committed Qty AND the order belongs
-to a Franchise customer pending delivery are highlighted GREEN — they are
-ready for delivery.
+An entire order is highlighted GREEN when every one of its line items has
+Sales Order Qty == Sales Order Committed Qty — i.e. the whole order is
+committed in MIS and ready for delivery.
 """
 
 import sys
@@ -27,11 +27,9 @@ from services.mis_email_import import (
     fetch_and_cache_mis,
 )
 from services.delivery_readiness import (
-    customer_to_godrej_so,
     ready_so_set,
     ready_mis_row_mask,
 )
-from services.sheets import get_df
 
 # ─── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(layout="wide", page_title="MIS Update", page_icon="📦")
@@ -105,27 +103,16 @@ if df.empty:
     st.stop()
 
 # ─── Compute "ready" status for highlighting ──────────────────────────────────
-# Build the set of SO numbers that are READY (all line items match).
+# An entire order is READY (green) when every one of its line items satisfies
+# "Sales Order Qty" == "Sales Order Committed Qty". Highlighting is driven
+# purely by this whole-order commitment check — every fully-committed order is
+# highlighted, regardless of customer/franchise reconciliation.
 try:
     ready_sos = ready_so_set(df)
 except Exception:
     ready_sos = set()
 
-# Restrict highlight to Franchise pending/overdue customers' SO numbers.
-relevant_sos = set(ready_sos)  # default: highlight all ready SOs
-try:
-    crm_master = get_df("CRM")
-    if crm_master is not None and not crm_master.empty:
-        cust_to_so = customer_to_godrej_so(crm_master)
-        all_franchise_sos: set[str] = set()
-        for sos in cust_to_so.values():
-            all_franchise_sos.update(sos)
-        if all_franchise_sos:
-            relevant_sos = ready_sos & all_franchise_sos
-except Exception:
-    pass
-
-green_mask = ready_mis_row_mask(df, relevant_so_numbers=relevant_sos)
+green_mask = ready_mis_row_mask(df, relevant_so_numbers=ready_sos)
 
 # ─── Summary metrics ──────────────────────────────────────────────────────────
 st.markdown("---")
