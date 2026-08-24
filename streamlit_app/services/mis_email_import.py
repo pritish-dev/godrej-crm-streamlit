@@ -225,21 +225,23 @@ def fetch_mis_data(days_back: int = 3, today_only: bool = False) -> tuple[pd.Dat
     except Exception as e:
         return pd.DataFrame(), f"❌ Could not open Excel file: {e}"
 
-    # Find the PO sheet (case-insensitive)
+    # Find the MIS sheet (case-insensitive). The sender uses either "PO" or
+    # "B2C" as the sheet name, so accept both.
+    MIS_SHEET_NAMES = ("PO", "B2C")
     po_sheet = None
     for sheet in xl.sheet_names:
-        if sheet.strip().upper() == "PO":
+        if sheet.strip().upper() in MIS_SHEET_NAMES:
             po_sheet = sheet
             break
 
     if po_sheet is None:
         available = ", ".join(xl.sheet_names)
-        return pd.DataFrame(), f"⚠️ 'PO' sheet not found. Available sheets: {available}"
+        return pd.DataFrame(), f"⚠️ 'PO'/'B2C' sheet not found. Available sheets: {available}"
 
     try:
         df_raw = xl.parse(po_sheet, dtype=str)
     except Exception as e:
-        return pd.DataFrame(), f"❌ Failed to parse PO sheet: {e}"
+        return pd.DataFrame(), f"❌ Failed to parse '{po_sheet}' sheet: {e}"
 
     # Strip whitespace from column names
     df_raw.columns = [str(c).strip() for c in df_raw.columns]
