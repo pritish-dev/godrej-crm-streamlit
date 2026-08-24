@@ -788,6 +788,92 @@ def _fill_blank_sales_executives(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
     return df, int((filled_vals.astype(str).str.strip() != "").sum())
 
 
+def _is_blank_name(value) -> bool:
+    """True for a missing / placeholder salesperson value ("", nan, none, …)."""
+    return str(value).strip().lower() in ("", "nan", "none", "na", "n/a", "-")
+
+
+def update_sales_executives(month: str, exec_by_invoice: dict[str, str]) -> str:
+    """
+    Write hand-typed Sales Executive names for specific invoices into the month's
+    "SALE INVOICE- <Month>" sheet, matching on Sales Invoice No.
+
+    This is the persistence path for the **manual** "Save Sales Executive" edit.
+    It is deliberately *not* ``save_invoices_to_sheet`` — that function is an
+    append-only merge for the email fetch and skips every invoice already in the
+    sheet, so it can never persist an edit to a row that is already there.
+
+    Rules (so a name that is already present is never lost):
+      * Only **non-blank** incoming names are written. A blank/"none" incoming
+        value is ignored, so clearing a cell in the editor never wipes a name
+        that is already saved.
+      * A non-blank incoming name replaces whatever is in the cell (blank or a
+        previous name) — this is how a correction or a first-time entry sticks.
+
+    Returns a human-readable status message.
+    """
+    from services.sheets import get_df, write_df
+
+    # Keep only the invoices whose typed name is non-blank.
+    updates = {
+        str(inv).strip(): str(name).strip()
+        for inv, name in (exec_by_invoice or {}).items()
+        if str(inv).strip() and not _is_blank_name(name)
+    }
+    if not updates:
+        return "no salesperson names to save (nothing typed)."
+
+    sheet = invoice_sheet_name(month)
+    try:
+        df = get_df(sheet)
+    except Exception as e:
+        return f"❌ Could not read **{sheet}**: {e}"
+    if df is None or df.empty:
+        return f"⚠️ **{sheet}** has no invoice rows to update."
+
+    df.columns = [str(c).strip() for c in df.columns]
+    for c in SHEET_COLS:
+        if c not in df.columns:
+            df[c] = ""
+    df = df[SHEET_COLS].copy()
+
+    inv_norm = df["Sales Invoice No"].fillna("").astype(str).str.strip()
+
+    changed = 0
+    unchanged = 0
+    not_found: list[str] = []
+    for inv_no, name in updates.items():
+        mask = inv_norm == inv_no
+        if not mask.any():
+            not_found.append(inv_no)
+            continue
+        # Only touch rows whose value actually differs — avoids a needless write.
+        to_set = mask & (df["Sales Executive"].fillna("").astype(str).str.strip() != name)
+        if to_set.any():
+            df.loc[to_set, "Sales Executive"] = name
+            changed += int(to_set.sum())
+        else:
+            unchanged += int(mask.sum())
+
+    if changed == 0:
+        msg = "no changes — the typed name(s) already match the sheet."
+        if not_found:
+            msg += f" ⚠️ {len(not_found)} invoice(s) not found: {', '.join(not_found[:5])}"
+        return msg
+
+    try:
+        write_df(sheet, df)
+    except Exception as e:
+        return f"❌ Matched {changed} row(s) but writing **{sheet}** failed: {e}"
+
+    msg = f"✅ Saved Sales Executive on {changed} invoice row(s) in **{sheet}**"
+    if unchanged:
+        msg += f" · {unchanged} already correct"
+    if not_found:
+        msg += f" · ⚠️ {len(not_found)} invoice(s) not found: {', '.join(not_found[:5])}"
+    return msg + "."
+
+
 def reenrich_sales_executives(month: str) -> str:
     """
     Re-run the salesperson lookup for every row in the month's SALE INVOICE

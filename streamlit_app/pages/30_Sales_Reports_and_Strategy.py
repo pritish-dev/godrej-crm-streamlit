@@ -60,6 +60,7 @@ from services.invoice_email_import import (  # noqa: E402
     load_invoice_sheet,
     invoice_sheet_name,
     save_invoices_to_sheet,
+    update_sales_executives,
     reenrich_sales_executives,
     diagnose_sales_executive_lookup,
     configured_invoice_inboxes,
@@ -676,17 +677,22 @@ else:
         _save_col, _spacer = st.columns([1.5, 6])
         with _save_col:
             if st.button("💾 Save Sales Executive", type="primary", use_container_width=True, key="inv_save_exec_sr"):
-                inv_updated = inv_df.copy()
-                _inv_no_col = "Sales Invoice No"
-
+                # Collect only the names actually typed in the editor and persist
+                # them with update_sales_executives — an upsert that writes the
+                # typed name onto the existing invoice row. save_invoices_to_sheet
+                # is NOT used here: it is an append-only merge for the email fetch
+                # and skips every invoice already in the sheet, so it would
+                # silently discard a hand-typed name on an existing row.
+                # Blank cells are left out of the map, so clearing a field never
+                # wipes a salesperson name that is already saved.
+                _exec_by_invoice: dict[str, str] = {}
                 for _, edited_row in edited_inv.iterrows():
                     inv_no   = str(edited_row.get("Purchase Invoice", "")).strip()
                     exec_val = str(edited_row.get("Sales Executive", "")).strip()
-                    if inv_no and _inv_no_col in inv_updated.columns:
-                        _mask = inv_updated[_inv_no_col].astype(str).str.strip() == inv_no
-                        inv_updated.loc[_mask, "Sales Executive"] = exec_val
+                    if inv_no and exec_val:
+                        _exec_by_invoice[inv_no] = exec_val
 
-                _smsg = save_invoices_to_sheet(inv_updated, inv_selected_month)
+                _smsg = update_sales_executives(inv_selected_month, _exec_by_invoice)
                 st.session_state.inv_save_msg_sr = _smsg
                 try:
                     get_df.clear()
