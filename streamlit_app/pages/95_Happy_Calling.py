@@ -24,11 +24,33 @@ from services.happy_calling import (
     DATA_START_DATE,
     HAPPY_CALLING_HEADERS,
     build_pending_happy_calling,
+    create_lead_from_happy_calling,
     get_delivered_orders,
     load_happy_calling_log,
     upsert_happy_calling_rows,
     _row_key,
 )
+from services.sheets import get_df
+
+
+@st.cache_data(ttl=60)
+def _load_salesperson_names():
+    """Return the SALES-role team member names (upper-cased) for the lead
+    salesperson picker. Falls back to an empty list if the sheet is missing."""
+    try:
+        df = get_df("Sales Team")
+    except Exception:
+        return []
+    if df is None or df.empty:
+        return []
+    df.columns = [str(c).strip().upper() for c in df.columns]
+    name_col = "NAME" if "NAME" in df.columns else None
+    if name_col is None:
+        return []
+    if "ROLE" in df.columns:
+        df = df[df["ROLE"].astype(str).str.upper().str.strip() == "SALES"]
+    names = [str(n).strip().upper() for n in df[name_col].dropna() if str(n).strip()]
+    return sorted(set(names))
 
 _GOOGLE_REVIEW_URL = "https://g.co/kgs/pB8HG8d"
 _WA_CHANNEL_URL    = "https://whatsapp.com/channel/0029Vb6e8A7K5cDHqIpZFI0Y"
@@ -142,14 +164,20 @@ delivered["_key"] = delivered.apply(
     axis=1,
 )
 
-# Merge happy calling date / remarks from log
-log_lookup = (
-    log_df.set_index("_key")[["HAPPY CALLING DATE", "REMARKS"]]
-    if not log_df.empty else pd.DataFrame(columns=["HAPPY CALLING DATE", "REMARKS"])
-)
+# Merge happy calling date / remarks / recall + lead flags from log
+_log_cols = ["HAPPY CALLING DATE", "REMARKS", "RECALL", "LEAD CONVERTED"]
+if not log_df.empty:
+    for _c in _log_cols:
+        if _c not in log_df.columns:
+            log_df[_c] = ""
+    log_lookup = log_df.set_index("_key")[_log_cols]
+else:
+    log_lookup = pd.DataFrame(columns=_log_cols)
 delivered = delivered.merge(log_lookup, left_on="_key", right_index=True, how="left")
 delivered["HAPPY CALLING DATE"] = delivered["HAPPY CALLING DATE"].fillna("")
 delivered["REMARKS"]            = delivered["REMARKS"].fillna("")
+delivered["RECALL"]            = delivered["RECALL"].fillna("")
+delivered["LEAD CONVERTED"]     = delivered["LEAD CONVERTED"].fillna("")
 
 if view_mode == "Pending Happy Calling (default)":
     delivered = delivered[delivered["HAPPY CALLING DATE"].astype(str).str.strip() == ""]
@@ -157,7 +185,8 @@ if view_mode == "Pending Happy Calling (default)":
 # Reorder columns for display
 display_cols = [
     "ORDER DATE", "DELIVERY DATE", "CUSTOMER NAME", "CONTACT NUMBER",
-    "PRODUCTS", "SALES PERSON", "DELIVERY STATUS", "HAPPY CALLING DATE", "REMARKS",
+    "PRODUCTS", "SALES PERSON", "DELIVERY STATUS", "HAPPY CALLING DATE",
+    "REMARKS", "RECALL", "LEAD CONVERTED",
 ]
 existing_cols = [c for c in display_cols if c in delivered.columns]
 view_df = delivered[existing_cols + ["_key"]].reset_index(drop=True).copy()
@@ -189,6 +218,38 @@ for _, r in view_df.iterrows():
 view_df["WA_1"] = wa1_links
 view_df["WA_2"] = wa2_links
 
+# ── Re-call + Convert-to-Lead helper columns ─────────────────────────────────
+# RECALL is persisted as "Yes"/"No"/""; expose it as a checkbox.
+view_df["RECALL"] = view_df["RECALL"].astype(str).str.strip().str.upper().eq("YES")
+
+# LEAD CONVERTED persisted as "Yes"/""; show a compact read-only indicator.
+_already_converted = view_df["LEAD CONVERTED"].astype(str).str.strip().str.upper().eq("YES")
+view_df["LEAD CONVERTED"] = _already_converted.map(lambda x: "✅ Yes" if x else "")
+
+# Convert-to-lead input columns (blank by default each render)
+view_df["CONVERT TO LEAD"] = False
+view_df["LEAD PRODUCT"]    = ""
+if "SALES PERSON" in view_df.columns:
+    _sp = view_df["SALES PERSON"].astype(str).str.strip().str.upper()
+    _sp = _sp.where(~_sp.isin(["NAN", "NONE", ""]), "")
+    view_df["LEAD SALESPERSON"] = _sp
+else:
+    view_df["LEAD SALESPERSON"] = ""
+
+# Salesperson options for the lead picker = sales team ∪ names already on the data
+_team_names = _load_salesperson_names()
+_data_names = (
+    [n for n in view_df["LEAD SALESPERSON"].unique().tolist() if str(n).strip()]
+    if "LEAD SALESPERSON" in view_df.columns else []
+)
+sp_options = [""] + sorted(set(_team_names) | set(_data_names))
+
+# Recalled customers drop to the bottom of the list (stable sort keeps order).
+view_df = (
+    view_df.sort_values("RECALL", kind="stable")
+           .reset_index(drop=True)
+)
+
 # ── Metrics ──────────────────────────────────────────────────────────────────
 m1, m2, m3 = st.columns(3)
 total_delivered = int(len(delivered))
@@ -206,9 +267,27 @@ st.divider()
 
 # ── Data editor ──────────────────────────────────────────────────────────────
 st.markdown(
-    "**Update the `HAPPY CALLING DATE` for each customer once the call is done.**  "
-    "Click `Save changes` to push updates to the Google Sheet."
+    "**Update the `Happy Calling Date` for each customer once the call is done.** "
+    "Click `💾 Save changes` to push updates to the Google Sheet.\n\n"
+    "• **🔁 Re-call** — tick this for customers who were *Switched off / Not "
+    "responding / Busy*. On saving, they move to the **bottom of the list** so "
+    "the team calls them again.\n"
+    "• **🎯 Convert to Lead** — tick this, enter the **product the customer is "
+    "looking for** and the **salesperson**, then click "
+    "`🎯 Convert selected to Lead(s)`. The customer is added to the **Leads** page "
+    "with their contact details, the product, the assigned salesperson, and the "
+    "**Happy Calling date as the lead creation date**."
 )
+
+# Present the columns in a sensible left-to-right order.
+_editor_order = [
+    "ORDER DATE", "DELIVERY DATE", "CUSTOMER NAME", "CONTACT NUMBER",
+    "PRODUCTS", "SALES PERSON", "DELIVERY STATUS", "WA_1", "WA_2",
+    "HAPPY CALLING DATE", "REMARKS", "RECALL",
+    "CONVERT TO LEAD", "LEAD PRODUCT", "LEAD SALESPERSON", "LEAD CONVERTED",
+    "_key",
+]
+view_df = view_df[[c for c in _editor_order if c in view_df.columns]]
 
 editor_cols_config = {
     "ORDER DATE":        st.column_config.TextColumn(disabled=True),
@@ -226,6 +305,33 @@ editor_cols_config = {
     "REMARKS":           st.column_config.TextColumn(
         "Remarks", help="Optional note about the call (max 500 chars)",
         max_chars=500,
+    ),
+    "RECALL": st.column_config.CheckboxColumn(
+        "🔁 Re-call",
+        help="Tick if the customer was Switched off / Not responding / Busy. "
+             "On Save they drop to the bottom of the list for a re-call.",
+        width="small",
+    ),
+    "CONVERT TO LEAD": st.column_config.CheckboxColumn(
+        "🎯 Convert to Lead",
+        help="Tick to turn this customer into a Lead, then click "
+             "'Convert selected to Lead(s)' below.",
+        width="small",
+    ),
+    "LEAD PRODUCT": st.column_config.TextColumn(
+        "Looking For (Product)",
+        help="Product the customer is now looking to buy — becomes the lead's interest.",
+        max_chars=300,
+    ),
+    "LEAD SALESPERSON": st.column_config.SelectboxColumn(
+        "Lead Salesperson",
+        help="Salesperson to assign the new lead to (defaults to the order's sales person).",
+        options=sp_options,
+        width="medium",
+    ),
+    "LEAD CONVERTED": st.column_config.TextColumn(
+        "Lead?", help="Shows ✅ Yes once this customer has been converted to a lead.",
+        disabled=True, width="small",
     ),
     "WA_1": st.column_config.LinkColumn(
         "WhatsApp 1 📱",
@@ -253,38 +359,142 @@ edited = st.data_editor(
     key="hc_editor",
 )
 
-if st.button("💾 Save changes", type="primary"):
-    # Build payload — only push rows where HAPPY CALLING DATE is now set
-    rows = []
-    for _, r in edited.iterrows():
-        hcd = r.get("HAPPY CALLING DATE")
-        if not hcd or pd.isna(hcd):
-            continue
-        # Pull base info from the original delivered frame so we have ORDER NO etc.
-        match = delivered[delivered["_key"] == r["_key"]]
-        if match.empty:
-            continue
-        base = match.iloc[0]
-        rows.append({
-            "ORDER NO":           base.get("ORDER NO", ""),
-            "ORDER DATE":         base.get("ORDER DATE", ""),
-            "DELIVERY DATE":      base.get("DELIVERY DATE", ""),
-            "CUSTOMER NAME":      base.get("CUSTOMER NAME", ""),
-            "CONTACT NUMBER":     base.get("CONTACT NUMBER", ""),
-            "PRODUCTS":           base.get("PRODUCTS", ""),
-            "SALES PERSON":       base.get("SALES PERSON", ""),
-            "DELIVERY STATUS":    base.get("DELIVERY STATUS", ""),
-            "HAPPY CALLING DATE": hcd.strftime("%d-%m-%Y") if hasattr(hcd, "strftime") else str(hcd),
-            "REMARKS":            r.get("REMARKS", "") or "",
-        })
 
-    if not rows:
-        st.warning("No rows had a Happy Calling Date set. Add a date in any row first.")
-    else:
-        try:
-            n = upsert_happy_calling_rows(rows)
-            st.cache_data.clear()
-            st.success(f"✅ Saved {n} happy-calling update(s) to the Google Sheet.")
-            st.rerun()
-        except Exception as e:
-            st.error(f"❌ Save failed: {e}")
+def _hc_base_row(base, **overrides):
+    """Build a Happy Calling Sheet row dict from an original delivered row."""
+    def _d(v):
+        return v.strftime("%d-%m-%Y") if hasattr(v, "strftime") else ("" if v is None else str(v))
+    row = {
+        "ORDER NO":           base.get("ORDER NO", ""),
+        "ORDER DATE":         _d(base.get("ORDER DATE", "")),
+        "DELIVERY DATE":      _d(base.get("DELIVERY DATE", "")),
+        "CUSTOMER NAME":      base.get("CUSTOMER NAME", ""),
+        "CONTACT NUMBER":     base.get("CONTACT NUMBER", ""),
+        "PRODUCTS":           base.get("PRODUCTS", ""),
+        "SALES PERSON":       base.get("SALES PERSON", ""),
+        "DELIVERY STATUS":    base.get("DELIVERY STATUS", ""),
+        "HAPPY CALLING DATE": "",
+        "REMARKS":            "",
+        "RECALL":             "",
+        "LEAD CONVERTED":     "",
+    }
+    row.update(overrides)
+    return row
+
+
+col_save, col_convert = st.columns([1, 1])
+
+with col_save:
+    if st.button("💾 Save changes", type="primary"):
+        # Push any row that got a Happy Calling Date, a Re-call flag, or that
+        # previously carried a Re-call flag (so un-ticking it can clear it).
+        rows = []
+        for _, r in edited.iterrows():
+            match = delivered[delivered["_key"] == r["_key"]]
+            if match.empty:
+                continue
+            base = match.iloc[0]
+
+            hcd = r.get("HAPPY CALLING DATE")
+            hcd_set = bool(hcd) and not pd.isna(hcd)
+            recall_now = bool(r.get("RECALL"))
+            was_recall = str(base.get("RECALL", "")).strip().upper() == "YES"
+
+            if not (hcd_set or recall_now or was_recall):
+                continue
+
+            rows.append(_hc_base_row(
+                base,
+                **{
+                    "HAPPY CALLING DATE": (hcd.strftime("%d-%m-%Y")
+                                           if hcd_set and hasattr(hcd, "strftime")
+                                           else (str(hcd) if hcd_set else "")),
+                    "REMARKS":        r.get("REMARKS", "") or "",
+                    "RECALL":         "Yes" if recall_now else "No",
+                    "LEAD CONVERTED": str(base.get("LEAD CONVERTED", "") or ""),
+                },
+            ))
+
+        if not rows:
+            st.warning("Nothing to save. Set a Happy Calling Date or tick 🔁 Re-call first.")
+        else:
+            try:
+                n = upsert_happy_calling_rows(rows)
+                st.cache_data.clear()
+                st.success(f"✅ Saved {n} update(s) to the Google Sheet.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Save failed: {e}")
+
+with col_convert:
+    if st.button("🎯 Convert selected to Lead(s)"):
+        to_convert = edited[edited["CONVERT TO LEAD"].fillna(False).astype(bool)]
+        if to_convert.empty:
+            st.warning("Tick '🎯 Convert to Lead' on at least one row first.")
+        else:
+            created, skipped, errors = 0, [], []
+            hc_updates = []
+            for _, r in to_convert.iterrows():
+                match = delivered[delivered["_key"] == r["_key"]]
+                if match.empty:
+                    continue
+                base = match.iloc[0]
+                cust = str(base.get("CUSTOMER NAME", "") or "").strip() or "(unknown)"
+
+                if str(base.get("LEAD CONVERTED", "")).strip().upper() == "YES":
+                    skipped.append(cust)
+                    continue
+
+                product = str(r.get("LEAD PRODUCT", "") or "").strip()
+                if not product:
+                    errors.append(f"{cust}: enter the product they are looking for.")
+                    continue
+
+                salesperson = (str(r.get("LEAD SALESPERSON", "") or "").strip()
+                               or str(base.get("SALES PERSON", "") or "").strip())
+
+                hcd = r.get("HAPPY CALLING DATE")
+                if hcd and not pd.isna(hcd):
+                    hcd_val = hcd
+                    hcd_str = hcd.strftime("%d-%m-%Y") if hasattr(hcd, "strftime") else str(hcd)
+                else:
+                    hcd_val = base.get("HAPPY CALLING DATE", "")
+                    hcd_str = str(hcd_val or "")
+
+                try:
+                    lead_id = create_lead_from_happy_calling(
+                        customer_name=cust,
+                        contact_number=base.get("CONTACT NUMBER", ""),
+                        product=product,
+                        salesperson=salesperson,
+                        happy_calling_date=hcd_val,
+                        source_details="Converted from Happy Calling",
+                    )
+                    created += 1
+                    hc_updates.append(_hc_base_row(
+                        base,
+                        **{
+                            "HAPPY CALLING DATE": hcd_str,
+                            "REMARKS":        r.get("REMARKS", "") or "",
+                            "RECALL":         "Yes" if bool(r.get("RECALL")) else str(base.get("RECALL", "") or ""),
+                            "LEAD CONVERTED": "Yes",
+                        },
+                    ))
+                except Exception as e:
+                    errors.append(f"{cust}: {e}")
+
+            if hc_updates:
+                try:
+                    upsert_happy_calling_rows(hc_updates)
+                except Exception as e:
+                    errors.append(f"Could not flag converted rows: {e}")
+
+            if created:
+                st.cache_data.clear()
+                st.success(f"✅ Created {created} lead(s) on the Leads page.")
+            if skipped:
+                st.info("Already converted, skipped: " + ", ".join(skipped))
+            for err in errors:
+                st.error("❌ " + err)
+            if created:
+                st.rerun()

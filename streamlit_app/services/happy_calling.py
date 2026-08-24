@@ -47,7 +47,27 @@ HAPPY_CALLING_HEADERS = [
     "DELIVERY STATUS",
     "HAPPY CALLING DATE",
     "REMARKS",
+    "RECALL",
+    "LEAD CONVERTED",
     "LAST UPDATED",
+]
+
+# Columns that must never be silently blanked when an upsert payload omits them
+# (e.g. the daily 7 AM job re-upserts pending rows without these fields).
+# The page always sends an explicit "Yes"/"No" so it can still toggle them.
+_STICKY_HC_COLUMNS = {"HAPPY CALLING DATE", "RECALL", "LEAD CONVERTED"}
+
+# ── Leads sheet (for Happy Calling → Lead conversion) ────────────────────────
+LEADS_SHEET = "LEADS"
+
+# Mirrors the schema written by pages/70_Leads.py::create_new_lead so leads
+# created here appear identically on the Leads Management dashboard.
+LEADS_COLUMNS = [
+    "LEAD ID", "LEAD NAME", "COMPANY", "EMAIL", "PHONE", "ADDRESS",
+    "WHATSAPP NUMBER", "ALTERNATE NUMBER", "STORE LOCATION", "STATUS",
+    "PRIORITY", "SOURCE", "SOURCE_DETAILS", "ASSIGNED TO", "SALESFORCE URL",
+    "CREATED DATE", "LAST CONTACT", "FOLLOW UP DATE", "NOTES",
+    "CONVERSION DATE", "DEAL VALUE",
 ]
 
 DATA_START_DATE = date(2026, 4, 1)   # FY 2026-27 start
@@ -345,8 +365,11 @@ def upsert_happy_calling_rows(rows: list[dict]) -> int:
         mask = log_df["_key"] == key if "_key" in log_df.columns else pd.Series([], dtype=bool)
         if mask.any():
             for col in HAPPY_CALLING_HEADERS:
-                # Don't blank-out a previously-saved Happy Calling Date
-                if col == "HAPPY CALLING DATE" and not new_row[col]:
+                # Don't blank-out previously-saved sticky fields (Happy Calling
+                # Date / Re-call flag / Lead-converted flag) when the incoming
+                # payload leaves them empty — the daily job re-upserts pending
+                # rows without these columns and must not wipe them.
+                if col in _STICKY_HC_COLUMNS and not new_row[col]:
                     continue
                 log_df.loc[mask, col] = new_row[col]
         else:
@@ -358,3 +381,82 @@ def upsert_happy_calling_rows(rows: list[dict]) -> int:
     log_df = _ensure_hc_sheet_columns(log_df)
     write_df(HAPPY_CALLING_SHEET, log_df)
     return written
+
+
+# ── Happy Calling → Lead conversion ──────────────────────────────────────────
+
+def create_lead_from_happy_calling(
+    customer_name,
+    contact_number,
+    product,
+    salesperson,
+    happy_calling_date=None,
+    source_details: str = "",
+) -> str:
+    """
+    Create a new lead in the LEADS sheet from a Happy Calling customer.
+
+    A happy-calling customer who is now interested in buying something else can
+    be pushed straight into the Leads pipeline:
+      • Contact details (name + phone) carry over from the delivered order.
+      • ``product`` is what the customer is now looking for.
+      • ``salesperson`` is assigned to the lead (ASSIGNED TO).
+      • CREATED DATE = the Happy Calling date (i.e. the day the customer was
+        actually called), falling back to today when not supplied.
+
+    The row schema matches pages/70_Leads.py::create_new_lead so the lead shows
+    up on the Leads Management dashboard exactly like any other lead.
+
+    Returns the new LEAD ID as a string.
+    """
+    df = get_df(LEADS_SHEET)
+    if df is None or df.empty:
+        df = pd.DataFrame()
+        next_id = 1
+    else:
+        df.columns = [str(c).strip().upper() for c in df.columns]
+        df = df.loc[:, ~df.columns.duplicated()]
+        if "LEAD ID" in df.columns:
+            ids = pd.to_numeric(df["LEAD ID"].astype(str).str.strip(), errors="coerce")
+            valid_ids = ids.dropna()
+            next_id = int(valid_ids.max()) + 1 if not valid_ids.empty else len(df) + 1
+        else:
+            next_id = len(df) + 1
+
+    # CREATED DATE = the happy-calling date (when the customer was called).
+    created = ""
+    if happy_calling_date not in (None, ""):
+        d = pd.to_datetime(happy_calling_date, errors="coerce", dayfirst=True)
+        if pd.notna(d):
+            created = d.strftime("%d-%m-%Y")
+    if not created:
+        created = datetime.now().strftime("%d-%m-%Y %H:%M")
+
+    product = str(product or "").strip()
+    new_lead = {
+        "LEAD ID":          str(next_id),
+        "LEAD NAME":        str(customer_name or "").strip(),
+        "COMPANY":          "",
+        "EMAIL":            "",
+        "PHONE":            str(contact_number or "").strip(),
+        "ADDRESS":          "",
+        "WHATSAPP NUMBER":  "",
+        "ALTERNATE NUMBER": "",
+        "STORE LOCATION":   "Patia, Bhubaneswar",
+        "STATUS":           "🟢 New",
+        "PRIORITY":         "Medium",
+        "SOURCE":           "Happy Calling",
+        "SOURCE_DETAILS":   source_details or "Converted from Happy Calling",
+        "ASSIGNED TO":      str(salesperson or "").strip().upper(),
+        "SALESFORCE URL":   "",
+        "CREATED DATE":     created,
+        "LAST CONTACT":     "",
+        "FOLLOW UP DATE":   "",
+        "NOTES":            f"Looking for: {product}" if product else "Converted from Happy Calling",
+        "CONVERSION DATE":  "",
+        "DEAL VALUE":       "0",
+    }
+
+    df = pd.concat([df, pd.DataFrame([new_lead])], ignore_index=True)
+    write_df(LEADS_SHEET, df)
+    return str(next_id)
