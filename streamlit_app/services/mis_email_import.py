@@ -218,10 +218,33 @@ def fetch_mis_data(days_back: int = 3, today_only: bool = False) -> tuple[pd.Dat
     if attachment_bytes is None:
         return pd.DataFrame(), "⚠️ MIS email found but no Excel attachment detected."
 
-    # Parse Excel
+    df, parse_err = _parse_mis_attachment(attachment_bytes)
+    if df.empty:
+        return df, parse_err or "⚠️ MIS attachment parsed to no rows."
+
+    # Warn if any DISPLAY_COLUMNS are missing after rename
+    missing_cols = [c for c in DISPLAY_COLUMNS if c not in df.columns]
+
+    status_msg = (
+        f"✅ MIS data loaded — {len(df)} rows | {len(df.columns)} columns "
+        f"| Email date: {email_date}"
+    )
+    if missing_cols:
+        status_msg += f"\n⚠️ Expected display columns not found: {', '.join(missing_cols)}"
+
+    return df, status_msg
+
+
+def _parse_mis_attachment(attachment_bytes: bytes) -> tuple[pd.DataFrame, str]:
+    """
+    Parse one MIS Excel attachment's 'PO'/'B2C' sheet into a cleaned DataFrame.
+
+    Returns (df, error_message). ``df`` is empty on any failure and
+    ``error_message`` is "" on success. Shared by ``fetch_mis_data`` (latest
+    email) and ``fetch_mis_emails_in_range`` (historical emails).
+    """
     try:
-        excel_file = io.BytesIO(attachment_bytes)
-        xl = pd.ExcelFile(excel_file)
+        xl = pd.ExcelFile(io.BytesIO(attachment_bytes))
     except Exception as e:
         return pd.DataFrame(), f"❌ Could not open Excel file: {e}"
 
@@ -281,17 +304,66 @@ def fetch_mis_data(days_back: int = 3, today_only: bool = False) -> tuple[pd.Dat
         )
         df["Discount Percentage"] = (disc_num / nb_num.replace(0, float("nan")) * 100).round(2)
 
-    # Warn if any DISPLAY_COLUMNS are missing after rename
-    missing_cols = [c for c in DISPLAY_COLUMNS if c not in df.columns]
+    return df, ""
 
-    status_msg = (
-        f"✅ MIS data loaded — {len(df)} rows | {len(df.columns)} columns "
-        f"| Email date: {email_date}"
-    )
-    if missing_cols:
-        status_msg += f"\n⚠️ Expected display columns not found: {', '.join(missing_cols)}"
 
-    return df, status_msg
+def fetch_mis_emails_in_range(start_date, end_date) -> list[tuple[str, pd.DataFrame]]:
+    """
+    Fetch every daily BR_MIS email received between ``start_date`` and
+    ``end_date`` (inclusive) and parse each attachment.
+
+    Returns a list of ``(email_date_str, DataFrame)`` ordered **newest first**,
+    so a caller can take the most recent MIS snapshot that contains a given SO.
+    Returns an empty list if credentials are missing or nothing is found.
+    """
+    if not IMAP_EMAIL or not IMAP_PASSWORD:
+        return []
+
+    try:
+        mail = imaplib.IMAP4_SSL(IMAP_HOST)
+        mail.login(IMAP_EMAIL, IMAP_PASSWORD)
+        mail.select("inbox")
+    except Exception:
+        return []
+
+    since_str  = start_date.strftime("%d-%b-%Y")
+    before_str = (end_date + timedelta(days=1)).strftime("%d-%b-%Y")
+    search_query = f'(SUBJECT "{MIS_SUBJECT}" SINCE {since_str} BEFORE {before_str})'
+
+    try:
+        _, data = mail.search(None, search_query)
+    except Exception:
+        try:
+            mail.logout()
+        except Exception:
+            pass
+        return []
+
+    email_ids = data[0].split() if data and data[0] else []
+    results: list[tuple[str, pd.DataFrame]] = []
+
+    # IMAP returns ids oldest-first; reverse so we process newest-first.
+    for eid in reversed(email_ids):
+        try:
+            _, msg_data = mail.fetch(eid, "(RFC822)")
+            raw = msg_data[0][1]
+            msg = email.message_from_bytes(raw)
+            email_date = msg.get("Date", "")
+            att = _get_attachment_bytes(msg)
+            if att is None:
+                continue
+            df, _err = _parse_mis_attachment(att)
+            if df is not None and not df.empty:
+                results.append((email_date, df))
+        except Exception:
+            continue
+
+    try:
+        mail.logout()
+    except Exception:
+        pass
+
+    return results
 
 
 # ═════════════════════════════════════════════════════════════════════════════

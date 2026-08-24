@@ -8,10 +8,11 @@ Godrej SO number out of each, and builds a date-wise booking report:
 
     Date | SO No | Sales Person | Net Basic Value | Source
 
-The Net Basic Value is matched from that month's "Monthly Sales from Invoices"
-table (SALE INVOICE- <Month> · Amount without GST) first, then from the MIS
-UPDATE data (MIS_Daily · Total Net Basic).  SO numbers that match neither are
-left blank and can be filled in from this page (stored as a Manual entry).
+The Net Basic Value is matched from MIS only — today's MIS_Daily cache first,
+then (for SOs not in today's MIS) the daily BR_MIS email attachments over the
+fetch range, summing Total Net Basic across all of an SO's line items.  SO
+numbers found in neither are left blank and can be filled in from this page
+(stored as a Manual entry).
 
 Every fetch writes to a per-month OPS Google Sheet named
 ``Monthly Godrej Booking <Month>`` (created automatically if it does not exist).
@@ -51,7 +52,8 @@ IST = timezone(timedelta(hours=5, minutes=30))
 st.title("📒 Monthly Godrej Booking")
 st.caption(
     f"Source email subject: **{BOOKING_SUBJECT}-Order Number <WON…>**  ·  "
-    "SO numbers are matched to the month's invoice value, then MIS Net Basic. "
+    "Each SO's Net Basic Value comes from MIS — today's MIS_Daily first, then "
+    "the daily BR_MIS email attachments for SOs not in today's MIS. "
     "Data is saved to the **Monthly Godrej Booking <Month>** OPS sheet."
 )
 
@@ -285,7 +287,7 @@ edited = st.data_editor(
         "Sales Person": st.column_config.TextColumn("Sales Person", disabled=True, width="medium"),
         "Net Basic Value": st.column_config.TextColumn(
             "Net Basic Value", required=False, width="small",
-            help="Auto-filled from invoice/MIS. Type a value here for blank SOs.",
+            help="Auto-filled from MIS (today's + daily emails). Type a value here for blank SOs.",
         ),
         "Source": st.column_config.TextColumn("Source", disabled=True, width="small"),
     },
