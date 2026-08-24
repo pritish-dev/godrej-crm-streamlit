@@ -16,12 +16,14 @@ For every SO number found in the selected date range we build one report row:
 * SO No         — the Godrej SO number (WON…) parsed from the subject/body.
 * Sales Person  — looked up from the Franchise/4S order sheets via the SO number
                   (reuses ``invoice_email_import.lookup_sales_executive``).
-* Net Basic Value / Source:
-      1. First match the SO against that month's "Monthly Sales from Invoices"
-         table — the ``SALE INVOICE- <Month>`` sheet — and take its
-         "Taxable Value" (Amount without GST).  Source = "Invoice".
-      2. Otherwise match the SO against the "MIS UPDATE" data (``MIS_Daily``
-         sheet) and take the summed "Total Net Basic".  Source = "MIS".
+* Net Basic Value / Source — resolved from MIS only (never from invoices):
+      1. Today's MIS — the ``MIS_Daily`` cache (overwritten daily). For every SO
+         present there, sum its "Total Net Basic" across all its line items.
+         Source = "MIS".
+      2. For an SO NOT in today's MIS, read the daily BR_MIS email attachments
+         (they arrive every day except Sunday) over the fetch date range,
+         newest-first, and take the SO's summed Total Net Basic from the most
+         recent MIS snapshot that contains it.  Source = "MIS Email".
       3. Otherwise leave the value blank so it can be typed in from the CRM
          dashboard.  A hand-typed value is stored with Source = "Manual" and is
          never overwritten by a later fetch.
@@ -325,7 +327,18 @@ def fetch_booking_emails(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# VALUE LOOKUPS  (Invoice → MIS)
+# VALUE LOOKUPS  (MIS ONLY)
+#
+# The Net Basic Value for each Godrej SO number comes exclusively from the MIS
+# data — never from the invoice table.
+#
+#   1. Today's MIS  (the MIS_Daily cache, overwritten every day) — for every SO
+#      present there, sum its "Total Net Basic" across all of its line items.
+#   2. For any SO NOT in today's MIS, read the daily BR_MIS email attachments
+#      (they arrive every day except Sunday) over the fetch date range, newest
+#      first, and take the SO's summed Total Net Basic from the most recent MIS
+#      snapshot that contains it.
+#   3. If still not found, the value is left blank for manual entry.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _to_float(v) -> "float | None":
@@ -338,65 +351,90 @@ def _to_float(v) -> "float | None":
         return None
 
 
-def _invoice_value_map_for_months(months: set[str]) -> dict[str, float]:
-    """
-    normalized SO -> summed "Taxable Value" (Amount without GST) across the
-    ``SALE INVOICE- <Month>`` sheets for the given month names.
-    """
-    from services.invoice_email_import import load_invoice_sheet
-
-    result: dict[str, float] = {}
-    for month in months:
-        try:
-            df = load_invoice_sheet(month)
-        except Exception:
-            df = None
-        if df is None or df.empty:
-            continue
-        df.columns = [str(c).strip() for c in df.columns]
-        if "Sales Order No" not in df.columns or "Taxable Value" not in df.columns:
-            continue
-        for _, r in df.iterrows():
-            for norm in _so_tokens(r["Sales Order No"]):
-                val = _to_float(r["Taxable Value"])
-                if val is not None:
-                    result[norm] = result.get(norm, 0.0) + val
-    return result
-
-
-def _mis_value_map() -> dict[str, float]:
-    """
-    normalized SO -> summed "Total Net Basic" from the MIS_Daily cache
-    (the data shown on the MIS UPDATE page).
-    """
-    from services.mis_email_import import load_cached_mis
-
-    result: dict[str, float] = {}
-    try:
-        df, _ = load_cached_mis()
-    except Exception:
-        df = None
-    if df is None or df.empty:
-        return result
-
-    df.columns = [str(c).strip() for c in df.columns]
+def _find_mis_cols(df: pd.DataFrame) -> "tuple[str | None, str | None]":
+    """Return (so_column, net_basic_column) for a MIS DataFrame, or (None, None)."""
+    cols = [str(c).strip() for c in df.columns]
+    df.columns = cols
     so_col = next(
-        (c for c in df.columns if c.lower() in ("sales order no.", "sales order no")),
+        (c for c in cols if c.lower() in ("sales order no.", "sales order no")),
         None,
     )
     net_col = next(
-        (c for c in df.columns if c.lower() in ("total net basic", "net basic value", "net basic")),
-        next((c for c in df.columns if "net" in c.lower() and "basic" in c.lower()), None),
+        (c for c in cols if c.lower() in ("total net basic", "net basic value", "net basic")),
+        next((c for c in cols if "net" in c.lower() and "basic" in c.lower()), None),
     )
+    return so_col, net_col
+
+
+def _aggregate_mis_df(df: pd.DataFrame) -> dict[str, float]:
+    """
+    normalized SO -> summed "Total Net Basic" across every line item of that SO
+    in a single MIS snapshot (one day's data).
+    """
+    result: dict[str, float] = {}
+    if df is None or df.empty:
+        return result
+    so_col, net_col = _find_mis_cols(df)
     if not so_col or not net_col:
         return result
-
     for _, r in df.iterrows():
         val = _to_float(r[net_col])
         if val is None:
             continue
         for norm in _so_tokens(r[so_col]):
             result[norm] = result.get(norm, 0.0) + val
+    return result
+
+
+def _today_mis_value_map() -> dict[str, float]:
+    """normalized SO -> summed Total Net Basic from the MIS_Daily cache."""
+    from services.mis_email_import import load_cached_mis
+    try:
+        df, _ = load_cached_mis()
+    except Exception:
+        df = None
+    return _aggregate_mis_df(df)
+
+
+def _mis_email_value_map(
+    start_date: "date | None",
+    end_date: "date | None",
+    needed_norms: set[str],
+) -> dict[str, float]:
+    """
+    For SO numbers not present in today's MIS, look them up in the daily BR_MIS
+    email attachments received between ``start_date`` and ``end_date``.
+
+    Emails are read newest-first; each SO takes its summed Total Net Basic from
+    the MOST RECENT MIS snapshot that contains it (so the same SO repeated in
+    several days' emails is never double-counted).
+
+    Returns ``{normalized_SO: value}`` for the SOs that were found.
+    """
+    result: dict[str, float] = {}
+    if not needed_norms:
+        return result
+    if start_date is None or end_date is None:
+        return result
+    if start_date > end_date:
+        start_date, end_date = end_date, start_date
+
+    from services.mis_email_import import fetch_mis_emails_in_range
+
+    try:
+        emails = fetch_mis_emails_in_range(start_date, end_date)  # newest first
+    except Exception:
+        emails = []
+
+    pending = set(needed_norms)
+    for _email_date, df in emails:
+        if not pending:
+            break
+        per_so = _aggregate_mis_df(df)
+        for norm in list(pending):
+            if norm in per_so:
+                result[norm] = per_so[norm]
+                pending.discard(norm)
     return result
 
 
@@ -410,39 +448,58 @@ def _fmt_date(d) -> str:
     return str(d or "").strip()
 
 
-def build_report(bookings: pd.DataFrame) -> pd.DataFrame:
+def build_report(
+    bookings: pd.DataFrame,
+    mis_email_start: "date | None" = None,
+    mis_email_end: "date | None" = None,
+) -> pd.DataFrame:
     """
     Enrich fetched bookings (Date, SO No) into full report rows:
     Date | SO No | Sales Person | Net Basic Value | Source.
+
+    Net Basic Value is resolved from MIS only — today's MIS_Daily first, then
+    (for SOs missing from it) the daily BR_MIS email attachments between
+    ``mis_email_start`` and ``mis_email_end``.  Values that can't be found are
+    left blank.  Source is "MIS" (today's cache), "MIS Email" (historical email)
+    or "" (unresolved).
     """
     if bookings is None or bookings.empty:
         return pd.DataFrame(columns=SHEET_COLS)
 
     bookings = bookings.copy()
 
-    # Which month sheets do we need to read for invoice values?
-    months: set[str] = set()
-    for d in bookings["Date"]:
-        if isinstance(d, date):
-            months.add(d.strftime("%B"))
-    if not months:
-        months.add(datetime.now(IST).strftime("%B"))
+    # If no explicit MIS-email window was given, derive one from the bookings'
+    # own dates (extended to today) so the fallback still has a range to search.
+    if mis_email_start is None or mis_email_end is None:
+        booked_dates = [d for d in bookings["Date"] if isinstance(d, date)]
+        today = datetime.now(IST).date()
+        mis_email_start = min(booked_dates) if booked_dates else today.replace(day=1)
+        mis_email_end = today
 
-    inv_map  = _invoice_value_map_for_months(months)
-    mis_map  = _mis_value_map()
-    exec_map = lookup_sales_executive(bookings["SO No"].astype(str).tolist())
+    today_map = _today_mis_value_map()
+    exec_map  = lookup_sales_executive(bookings["SO No"].astype(str).tolist())
+
+    # Work out which SOs today's MIS could not value, then look those up in the
+    # historical MIS emails in one pass.
+    norm_by_so: dict[str, str] = {}
+    for so in bookings["SO No"].astype(str):
+        norm_by_so[so.strip()] = _normalize_so(so)
+    missing_norms = {
+        n for n in norm_by_so.values() if n and n not in today_map
+    }
+    email_map = _mis_email_value_map(mis_email_start, mis_email_end, missing_norms)
 
     out_rows: list[dict] = []
     for _, r in bookings.iterrows():
         so_raw = str(r["SO No"]).strip()
-        norm   = _normalize_so(so_raw)
+        norm   = norm_by_so.get(so_raw, _normalize_so(so_raw))
 
         value: "float | None" = None
         source = ""
-        if norm and norm in inv_map:
-            value, source = inv_map[norm], "Invoice"
-        elif norm and norm in mis_map:
-            value, source = mis_map[norm], "MIS"
+        if norm and norm in today_map:
+            value, source = today_map[norm], "MIS"
+        elif norm and norm in email_map:
+            value, source = email_map[norm], "MIS Email"
 
         out_rows.append({
             "Date":            _fmt_date(r["Date"]),
@@ -707,7 +764,12 @@ def fetch_and_save_bookings_range(
     if bookings is None or bookings.empty:
         return pd.DataFrame(columns=SHEET_COLS), status
 
-    report = build_report(bookings)
+    # Search the daily MIS emails from the range start up to today: an order can
+    # first appear in an MIS snapshot dated after its booking date, so we widen
+    # the MIS-email window to now rather than stopping at the booking end date.
+    _today = datetime.now(IST).date()
+    _mis_end = max(end_date, _today)
+    report = build_report(bookings, mis_email_start=start_date, mis_email_end=_mis_end)
     if report is None or report.empty:
         return pd.DataFrame(columns=SHEET_COLS), status
 
