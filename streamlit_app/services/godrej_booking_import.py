@@ -586,6 +586,11 @@ def save_bookings_to_sheet(df_new: pd.DataFrame, month: str) -> tuple[str, int, 
         if c not in existing.columns:
             existing[c] = ""
     existing = existing[SHEET_COLS].copy()
+    # Force plain-object columns.  On newer pandas (with the Arrow-backed
+    # string dtype) ``get_df`` returns ``str``-dtype columns that reject a
+    # non-string ``.at[...]`` assignment with a TypeError; the booking sheet
+    # is entirely text, so object dtype is both correct and assignment-safe.
+    existing = existing.astype(object)
 
     # Index existing rows by normalised SO for quick lookup.
     idx_by_norm: dict[str, int] = {}
@@ -610,20 +615,20 @@ def save_bookings_to_sheet(df_new: pd.DataFrame, month: str) -> tuple[str, int, 
             if src_existing != "manual":
                 if not _empty(r["Net Basic Value"]):
                     if str(existing.at[i, "Net Basic Value"]).strip() != str(r["Net Basic Value"]).strip():
-                        existing.at[i, "Net Basic Value"] = r["Net Basic Value"]
+                        existing.at[i, "Net Basic Value"] = str(r["Net Basic Value"])
                         row_changed = True
                     if str(existing.at[i, "Source"]).strip() != str(r["Source"]).strip():
-                        existing.at[i, "Source"] = r["Source"]
+                        existing.at[i, "Source"] = str(r["Source"])
                         row_changed = True
 
             # Sales person — fill only when currently blank.
             if _empty(existing.at[i, "Sales Person"]) and not _empty(r["Sales Person"]):
-                existing.at[i, "Sales Person"] = r["Sales Person"]
+                existing.at[i, "Sales Person"] = str(r["Sales Person"])
                 row_changed = True
 
             # Date — fill only when currently blank.
             if _empty(existing.at[i, "Date"]) and not _empty(r["Date"]):
-                existing.at[i, "Date"] = r["Date"]
+                existing.at[i, "Date"] = str(r["Date"])
                 row_changed = True
 
             if row_changed:
