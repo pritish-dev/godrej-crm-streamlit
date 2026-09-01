@@ -64,6 +64,7 @@ from services.invoice_email_import import (  # noqa: E402
     reenrich_sales_executives,
     diagnose_sales_executive_lookup,
     configured_invoice_inboxes,
+    _filter_invoices_by_month,
 )
 
 _sr_load_invoice_sheet = load_invoice_sheet
@@ -431,6 +432,25 @@ if "inv_last_fetched_month" not in st.session_state:
 
 _IST = timezone(timedelta(hours=5, minutes=30))
 
+def _invoice_month_year_map(count: int = 12) -> dict[str, int]:
+    """
+    Map each of the last `count` month names to the year it belongs to.
+
+    Walking back from today, a month name appears at most once (the most
+    recent occurrence wins), so "September" resolves to the current
+    September's year — not a same-named month from a previous year.
+    """
+    _now = datetime.now(_IST)
+    mapping: dict[str, int] = {}
+    yr, mo = _now.year, _now.month
+    for _ in range(count):
+        name = date(yr, mo, 1).strftime("%B")
+        mapping.setdefault(name, yr)
+        mo -= 1
+        if mo == 0:
+            mo, yr = 12, yr - 1
+    return mapping
+
 def _invoice_month_options(count: int = 12) -> list[str]:
     """Return last `count` month names, most recent first."""
     _now = datetime.now(_IST)
@@ -449,7 +469,8 @@ def _invoice_month_options(count: int = 12) -> list[str]:
             unique.append(n)
     return unique
 
-_inv_month_options = _invoice_month_options()
+_inv_month_options  = _invoice_month_options()
+_inv_month_year_map = _invoice_month_year_map()
 
 inv_selected_month = st.selectbox(
     "Filter by Month",
@@ -535,9 +556,29 @@ def _load_invoice_data_sr(month: str) -> pd.DataFrame:
 
 inv_df = _load_invoice_data_sr(inv_selected_month)
 
+# Guard against wrong-year rows in the month sheet. "SALE INVOICE- September"
+# can accumulate invoices dated in a previous year's September (e.g. an invoice
+# dated 25-09-2025 lingering in the sheet while the selected September belongs
+# to 2026). Only keep rows whose invoice date matches BOTH the selected month
+# and the year that month resolves to, so the table and its Total reflect the
+# current year alone. Rows with an unparseable/empty date are kept (see
+# _filter_invoices_by_month).
+_inv_expected_year = _inv_month_year_map.get(inv_selected_month)
+if _inv_expected_year is not None:
+    try:
+        _inv_expected_month = datetime.strptime(inv_selected_month, "%B").month
+    except ValueError:
+        _inv_expected_month = None
+    if _inv_expected_month is not None and inv_df is not None and not inv_df.empty:
+        inv_df, _inv_year_skip_msg = _filter_invoices_by_month(
+            inv_df, _inv_expected_year, _inv_expected_month
+        )
+        if _inv_year_skip_msg:
+            st.warning(_inv_year_skip_msg)
+
 st.markdown(
     f"<h4 style='margin-top:16px;'>Monthly Sales from Invoices(without Tax) "
-    f"<span style='color:#1a5276;'>{inv_selected_month}</span></h4>",
+    f"<span style='color:#1a5276;'>{inv_selected_month} {_inv_expected_year or ''}</span></h4>",
     unsafe_allow_html=True,
 )
 st.caption(
