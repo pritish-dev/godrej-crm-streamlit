@@ -65,7 +65,29 @@ var CONFIG = {
   MIS_COMMIT_DATE:    'Inventory Commitment Date',
 
   // Session time-to-live (seconds). 1 hour is plenty for one conversation.
-  SESSION_TTL: 3600
+  SESSION_TTL: 3600,
+
+  // ─── Multi-intent auto-reply (menu / enquiry capture / info / human) ──────
+  // Where new WhatsApp enquiries are written as CRM leads. LEADS lives in the
+  // OPS spreadsheet (services/sheet_config.py -> _OPS_SHEETS). Its columns are
+  // matched by header name, so column order can change safely.
+  LEADS_TAB:       'LEADS',
+  LEAD_SOURCE:     'WhatsApp Bot',
+  STORE_LOCATION:  'Patia, Bhubaneswar',
+
+  // "Talk to a person" hands off to your STAFFED WhatsApp Business App number
+  // (the phone your team actually watches). wa.me needs full intl digits, no +.
+  // NOTE: this task specified 9937423954; your saved brand profile says
+  // 9337423954 — set the correct one here.
+  HUMAN_HANDOFF_NUMBER: '919937423954',
+
+  // Showroom details for the "Showroom info" reply (edit to taste).
+  SHOWROOM_NAME:      'Interio by Godrej — Patia',
+  SHOWROOM_ADDRESS:   'Plot No. 129, Kanan Vihar, Gayatri Vihar, beside Croma, Patia, Bhubaneswar',
+  SHOWROOM_PHONE:     '08291957842',
+  SHOWROOM_HOURS:     '10:30 AM – 8:30 PM (all days)',   // ← EDIT to your real timings
+  SHOWROOM_MAPS:      'https://maps.google.com/?q=Interio+by+Godrej+Patia+Bhubaneswar',
+  SHOWROOM_INSTAGRAM: 'https://instagram.com/interiobygodrejpatia'
 };
 
 function _prop(key, fallback) {
@@ -135,13 +157,27 @@ function _extractText(msg) {
 
 function handleMessage(from, text) {
   var s = getSession(from);
-  var lower = (text || '').toLowerCase();
+  var lower = (text || '').toLowerCase().trim();
 
-  // Global reset commands
-  if (['hi', 'hello', 'hey', 'start', 'menu', 'namaste', 'namaskar'].indexOf(lower) >= 0) {
+  // Global reset commands -> start over from language selection
+  if (['hi', 'hello', 'hey', 'start', 'namaste', 'namaskar', 'restart'].indexOf(lower) >= 0) {
     s.step = 'await_lang';
     saveSession(from, s);
     askLanguage(from);
+    return;
+  }
+
+  // "menu" / "back" -> return to the main menu (ask language first if unknown)
+  if (lower === 'menu' || lower === 'back' || text.indexOf('menu_home') === 0) {
+    if (!s.lang) { s.step = 'await_lang'; saveSession(from, s); askLanguage(from); return; }
+    showMainMenu(from, s);
+    return;
+  }
+
+  // A main-menu row/button can be tapped at any time (ids: menu_order etc.)
+  if (text.indexOf('menu_') === 0) {
+    if (!s.lang) { s.step = 'await_lang'; saveSession(from, s); askLanguage(from); return; }
+    handleMenuChoice(from, s, text);
     return;
   }
 
@@ -150,9 +186,8 @@ function handleMessage(from, text) {
     var lang = parseLang(text);
     if (!lang) { askLanguage(from); return; }
     s.lang = lang;
-    s.step = 'await_query';
     saveSession(from, s);
-    sendText(from, t(lang, 'ask_query'));
+    showMainMenu(from, s);   // after language -> show the main menu
     return;
   }
 
@@ -164,6 +199,7 @@ function handleMessage(from, text) {
     return;
   }
 
+  // ─── Order-status branch ─────────────────────────────────────────────────
   // Step 1: expecting an order identifier (Order No / Name) or a contact number
   if (s.step === 'await_query') {
     if (!text) { sendText(from, t(s.lang, 'ask_query')); return; }
@@ -178,8 +214,23 @@ function handleMessage(from, text) {
     return;
   }
 
-  // Fallback
-  askLanguage(from);
+  // ─── Product-enquiry branch (captures a CRM lead) ────────────────────────
+  if (s.step === 'enq_name') {
+    if (!text) { sendText(from, t(s.lang, 'enq_ask_name')); return; }
+    s.enqName = text.slice(0, 80);
+    s.step = 'enq_detail';
+    saveSession(from, s);
+    sendText(from, t(s.lang, 'enq_ask_detail'));
+    return;
+  }
+  if (s.step === 'enq_detail') {
+    if (!text) { sendText(from, t(s.lang, 'enq_ask_detail')); return; }
+    finishEnquiry(from, s, text);
+    return;
+  }
+
+  // Fallback: show the menu so the customer always has options.
+  showMainMenu(from, s);
 }
 
 function parseLang(text) {
@@ -209,6 +260,199 @@ function askLanguage(from) {
     }
   };
   waSend(payload);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MAIN MENU  (multi-intent auto-reply)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Send the main menu as an interactive list (4 intents). */
+function showMainMenu(from, s) {
+  s.step = 'await_menu';
+  s.pending = null; s.attempts = 0;
+  saveSession(from, s);
+  var lang = s.lang || 'en';
+  var payload = {
+    messaging_product: 'whatsapp',
+    to: from,
+    type: 'interactive',
+    interactive: {
+      type: 'list',
+      body:   { text: t(lang, 'menu_body') },
+      footer: { text: CONFIG.SHOWROOM_NAME },
+      action: {
+        button: t(lang, 'menu_button'),
+        sections: [{
+          title: t(lang, 'menu_section'),
+          rows: [
+            { id: 'menu_order',   title: t(lang, 'menu_order_t'),   description: t(lang, 'menu_order_d') },
+            { id: 'menu_enquiry', title: t(lang, 'menu_enq_t'),     description: t(lang, 'menu_enq_d') },
+            { id: 'menu_info',    title: t(lang, 'menu_info_t'),    description: t(lang, 'menu_info_d') },
+            { id: 'menu_human',   title: t(lang, 'menu_human_t'),   description: t(lang, 'menu_human_d') }
+          ]
+        }]
+      }
+    }
+  };
+  waSend(payload);
+}
+
+/** Route a tapped/typed main-menu choice to its branch. */
+function handleMenuChoice(from, s, id) {
+  var lang = s.lang || 'en';
+  if (id === 'menu_order') {
+    s.step = 'await_query';
+    saveSession(from, s);
+    sendText(from, t(lang, 'ask_query'));
+    return;
+  }
+  if (id === 'menu_enquiry') {
+    s.step = 'enq_name';
+    s.enqName = '';
+    saveSession(from, s);
+    sendText(from, t(lang, 'enq_ask_name'));
+    return;
+  }
+  if (id === 'menu_info') {
+    sendShowroomInfo(from, lang);
+    // stay wherever we were; offer the menu again
+    s.step = 'await_menu';
+    saveSession(from, s);
+    return;
+  }
+  if (id === 'menu_human') {
+    sendHumanHandoff(from, lang);
+    // Log a lightweight lead so no request is lost (name unknown yet).
+    createLead({
+      name:   'WhatsApp enquiry ' + from,
+      phone:  from,
+      notes:  'Customer asked to talk to a person via WhatsApp bot.',
+      details:'Human handoff request'
+    });
+    s.step = 'await_menu';
+    saveSession(from, s);
+    return;
+  }
+  // Unknown id -> re-show the menu.
+  showMainMenu(from, s);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PRODUCT ENQUIRY  ->  writes a CRM lead into the LEADS tab
+// ═══════════════════════════════════════════════════════════════════════════
+
+function finishEnquiry(from, s, detail) {
+  var lang = s.lang || 'en';
+  var name = (s.enqName || '').trim() || ('WhatsApp user ' + from);
+  var interest = String(detail || '').slice(0, 300);
+
+  var ok = createLead({
+    name:   name,
+    phone:  from,
+    notes:  'Product interest: ' + interest,
+    details:'Enquiry via WhatsApp bot'
+  });
+
+  // Reset back to menu-ready state.
+  s.step = 'await_menu';
+  s.enqName = '';
+  saveSession(from, s);
+
+  if (ok) {
+    sendText(from, fill(t(lang, 'enq_done'), { name: name }));
+  } else {
+    // Even if the sheet write failed, still give the customer the human channel.
+    sendText(from, t(lang, 'enq_done_fallback'));
+  }
+  sendHumanHandoff(from, lang);
+}
+
+/**
+ * Append a new lead row to the LEADS tab (OPS spreadsheet).
+ * Columns are matched by header name so column order can change safely.
+ * Returns true on success.
+ */
+function createLead(o) {
+  try {
+    var ss = SpreadsheetApp.openById(opsSheetId());
+    var sheet = ss.getSheetByName(CONFIG.LEADS_TAB);
+    if (!sheet) { console.error('createLead: LEADS tab not found'); return false; }
+
+    var lastCol = sheet.getLastColumn();
+    var lastRow = sheet.getLastRow();
+    if (lastCol < 1 || lastRow < 1) { console.error('createLead: LEADS tab empty'); return false; }
+
+    var header = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    var idx = headerIndex(header); // {NORMALIZED HEADER: colIndex}
+
+    // Next LEAD ID = max numeric id + 1 (mirrors pages/70_Leads.py).
+    var nextId = 1;
+    var iId = idx[norm('LEAD ID')];
+    if (iId !== undefined && lastRow >= 2) {
+      var ids = sheet.getRange(2, iId + 1, lastRow - 1, 1).getValues();
+      var maxId = 0;
+      for (var r = 0; r < ids.length; r++) {
+        var n = parseInt(String(ids[r][0]).replace(/[^\d]/g, ''), 10);
+        if (!isNaN(n) && n > maxId) maxId = n;
+      }
+      nextId = maxId + 1;
+    }
+
+    var tz = Session.getScriptTimeZone() || 'Asia/Kolkata';
+    var now = fmtDateTime(new Date());
+    var tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
+    var followUp = Utilities.formatDate(tomorrow, tz, 'dd-MM-yyyy'); // CRM uses dd-MM-yyyy
+
+    // Values keyed by normalized header name.
+    var vals = {};
+    vals[norm('LEAD ID')]         = String(nextId);
+    vals[norm('LEAD NAME')]       = o.name || '';
+    vals[norm('PHONE')]           = o.phone || '';
+    vals[norm('WHATSAPP NUMBER')] = o.phone || '';
+    vals[norm('STORE LOCATION')]  = CONFIG.STORE_LOCATION;
+    vals[norm('STATUS')]          = '🟢 New';
+    vals[norm('PRIORITY')]        = 'Medium';
+    vals[norm('SOURCE')]          = CONFIG.LEAD_SOURCE;
+    vals[norm('SOURCE_DETAILS')]  = o.details || '';
+    vals[norm('CREATED DATE')]    = now;
+    vals[norm('FOLLOW UP DATE')]  = followUp;
+    vals[norm('NOTES')]           = o.notes || '';
+
+    // Build the row array in the sheet's actual column order.
+    var row = new Array(lastCol).fill('');
+    for (var key in vals) {
+      var ci = idx[key];
+      if (ci !== undefined) row[ci] = vals[key];
+    }
+    sheet.appendRow(row);
+    return true;
+  } catch (e) {
+    console.error('createLead error: ' + e);
+    return false;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SHOWROOM INFO  +  HUMAN HANDOFF
+// ═══════════════════════════════════════════════════════════════════════════
+
+function sendShowroomInfo(from, lang) {
+  sendText(from, fill(t(lang, 'info_body'), {
+    name:    CONFIG.SHOWROOM_NAME,
+    address: CONFIG.SHOWROOM_ADDRESS,
+    hours:   CONFIG.SHOWROOM_HOURS,
+    phone:   CONFIG.SHOWROOM_PHONE,
+    maps:    CONFIG.SHOWROOM_MAPS,
+    insta:   CONFIG.SHOWROOM_INSTAGRAM
+  }));
+}
+
+function sendHumanHandoff(from, lang) {
+  var num = String(CONFIG.HUMAN_HANDOFF_NUMBER || '').replace(/\D/g, '');
+  sendText(from, fill(t(lang, 'human_body'), {
+    link:  'https://wa.me/' + num,
+    phone: CONFIG.SHOWROOM_PHONE
+  }));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -513,7 +757,28 @@ var STR = {
     in_days:    ' (about {n} day(s))',
     soon:       'soon',
     not_available: 'not available yet',
-    footer:     'To check another order, send its Order/Contact/Name. Type *hi* to change language.'
+    footer:     'To check another order, send its Order/Contact/Name. Type *menu* for options, or *hi* to change language.',
+    // Main menu
+    menu_body:    'Hi! 👋 Welcome to *Interio by Godrej (Patia)*. How can I help you today?',
+    menu_button:  'Choose',
+    menu_section: 'How can we help?',
+    menu_order_t: '📦 Order status',
+    menu_order_d: 'Track your existing order & delivery',
+    menu_enq_t:   '🛋️ Product enquiry',
+    menu_enq_d:   'Sofas, wardrobes, mattress, dining & more',
+    menu_info_t:  '📍 Showroom info',
+    menu_info_d:  'Address, timings & directions',
+    menu_human_t: '🧑‍💼 Talk to a person',
+    menu_human_d: 'Chat with our showroom team',
+    // Product enquiry
+    enq_ask_name:   'Great! May I have your *name*, please?',
+    enq_ask_detail: 'Thanks! What are you looking for? (e.g., *sofa, wardrobe, mattress, dining table*). Feel free to add your budget or any details.',
+    enq_done:       'Thank you, *{name}*! ✅ Your enquiry is noted and our team will reach out to you shortly.',
+    enq_done_fallback: 'Thank you! ✅ Your enquiry is noted. Our team will reach out to you shortly.',
+    // Showroom info
+    info_body:  '🛋️ *{name}*\n\n📍 {address}\n🕒 {hours}\n📞 {phone}\n\n🗺️ Directions: {maps}\n📸 Instagram: {insta}\n\nType *menu* to go back.',
+    // Human handoff
+    human_body: '🧑‍💼 Sure! Tap here to chat with our showroom team on WhatsApp:\n{link}\n\nOr call us: 📞 {phone}\n\nType *menu* to go back.'
   },
   hi: {
     ask_query:  'Interio by Godrej (Patia) में आपका स्वागत है 🛋️\n\nअपने ऑर्डर की स्थिति जानने के लिए, कृपया इनमें से *कोई एक* भेजें:\n• रजिस्टर्ड मोबाइल नंबर\n• ऑर्डर नंबर\n• ग्राहक का नाम',
@@ -529,7 +794,28 @@ var STR = {
     in_days:    ' (लगभग {n} दिन)',
     soon:       'जल्द',
     not_available: 'अभी उपलब्ध नहीं',
-    footer:     'दूसरा ऑर्डर देखने के लिए उसका ऑर्डर/मोबाइल/नाम भेजें। भाषा बदलने के लिए *hi* लिखें।'
+    footer:     'दूसरा ऑर्डर देखने के लिए उसका ऑर्डर/मोबाइल/नाम भेजें। विकल्पों के लिए *menu*, भाषा बदलने के लिए *hi* लिखें।',
+    // Main menu
+    menu_body:    'नमस्ते! 👋 *Interio by Godrej (Patia)* में आपका स्वागत है। मैं आपकी कैसे मदद कर सकता हूँ?',
+    menu_button:  'चुनें',
+    menu_section: 'हम कैसे मदद करें?',
+    menu_order_t: '📦 ऑर्डर स्थिति',
+    menu_order_d: 'अपने ऑर्डर व डिलीवरी को ट्रैक करें',
+    menu_enq_t:   '🛋️ प्रोडक्ट पूछताछ',
+    menu_enq_d:   'सोफा, वॉर्डरोब, गद्दा, डाइनिंग व अन्य',
+    menu_info_t:  '📍 शोरूम जानकारी',
+    menu_info_d:  'पता, समय व दिशा',
+    menu_human_t: '🧑‍💼 टीम से बात करें',
+    menu_human_d: 'हमारी शोरूम टीम से चैट करें',
+    // Product enquiry
+    enq_ask_name:   'बढ़िया! कृपया अपना *नाम* बताएं?',
+    enq_ask_detail: 'धन्यवाद! आप क्या ढूंढ रहे हैं? (जैसे *सोफा, वॉर्डरोब, गद्दा, डाइनिंग टेबल*)। अपना बजट या कोई विवरण भी बता सकते हैं।',
+    enq_done:       'धन्यवाद, *{name}*! ✅ आपकी पूछताछ दर्ज कर ली गई है, हमारी टीम शीघ्र ही आपसे संपर्क करेगी।',
+    enq_done_fallback: 'धन्यवाद! ✅ आपकी पूछताछ दर्ज कर ली गई है। हमारी टीम शीघ्र ही आपसे संपर्क करेगी।',
+    // Showroom info
+    info_body:  '🛋️ *{name}*\n\n📍 {address}\n🕒 {hours}\n📞 {phone}\n\n🗺️ दिशा: {maps}\n📸 Instagram: {insta}\n\nवापस जाने के लिए *menu* लिखें।',
+    // Human handoff
+    human_body: '🧑‍💼 ज़रूर! हमारी शोरूम टीम से WhatsApp पर चैट करने के लिए यहाँ टैप करें:\n{link}\n\nया कॉल करें: 📞 {phone}\n\nवापस जाने के लिए *menu* लिखें।'
   },
   or: {
     ask_query:  'Interio by Godrej (Patia) କୁ ସ୍ୱାଗତ 🛋️\n\nଆପଣଙ୍କ ଅର୍ଡରର ସ୍ଥିତି ଜାଣିବା ପାଇଁ, ଦୟାକରି ଏଥିମଧ୍ୟରୁ *ଯେକୌଣସି ଗୋଟିଏ* ପଠାନ୍ତୁ:\n• ପଞ୍ଜୀକୃତ ମୋବାଇଲ ନମ୍ବର\n• ଅର୍ଡର ନମ୍ବର\n• ଗ୍ରାହକଙ୍କ ନାମ',
@@ -545,7 +831,28 @@ var STR = {
     in_days:    ' (ପ୍ରାୟ {n} ଦିନ)',
     soon:       'ଶୀଘ୍ର',
     not_available: 'ଏବେ ଉପଲବ୍ଧ ନାହିଁ',
-    footer:     'ଅନ୍ୟ ଏକ ଅର୍ଡର ଦେଖିବାକୁ ତାହାର ଅର୍ଡର/ମୋବାଇଲ/ନାମ ପଠାନ୍ତୁ। ଭାଷା ବଦଳାଇବାକୁ *hi* ଲେଖନ୍ତୁ।'
+    footer:     'ଅନ୍ୟ ଏକ ଅର୍ଡର ଦେଖିବାକୁ ତାହାର ଅର୍ଡର/ମୋବାଇଲ/ନାମ ପଠାନ୍ତୁ। ବିକଳ୍ପ ପାଇଁ *menu*, ଭାଷା ବଦଳାଇବାକୁ *hi* ଲେଖନ୍ତୁ।',
+    // Main menu
+    menu_body:    'ନମସ୍କାର! 👋 *Interio by Godrej (Patia)* କୁ ସ୍ୱାଗତ। ମୁଁ ଆପଣଙ୍କୁ କିପରି ସାହାଯ୍ୟ କରିପାରିବି?',
+    menu_button:  'ବାଛନ୍ତୁ',
+    menu_section: 'ସାହାଯ୍ୟ ବିଭାଗ',
+    menu_order_t: '📦 ଅର୍ଡର ସ୍ଥିତି',
+    menu_order_d: 'ଆପଣଙ୍କ ଅର୍ଡର ଓ ଡେଲିଭରି ଟ୍ରାକ କରନ୍ତୁ',
+    menu_enq_t:   '🛋️ ପ୍ରଡକ୍ଟ ପଚରାଉଚରା',
+    menu_enq_d:   'ସୋଫା, ୱାର୍ଡରୋବ, ମାଟ୍ରେସ, ଡାଇନିଂ ଆଦି',
+    menu_info_t:  '📍 ଶୋରୁମ ସୂଚନା',
+    menu_info_d:  'ଠିକଣା, ସମୟ ଓ ଦିଗ',
+    menu_human_t: '🧑‍💼 କଥା ହୁଅନ୍ତୁ',
+    menu_human_d: 'ଆମ ଶୋରୁମ ଟିମ ସହ ଚାଟ କରନ୍ତୁ',
+    // Product enquiry
+    enq_ask_name:   'ବହୁତ ଭଲ! ଦୟାକରି ଆପଣଙ୍କ *ନାମ* କୁହନ୍ତୁ?',
+    enq_ask_detail: 'ଧନ୍ୟବାଦ! ଆପଣ କ’ଣ ଖୋଜୁଛନ୍ତି? (ଯେମିତି *ସୋଫା, ୱାର୍ଡରୋବ, ମାଟ୍ରେସ, ଡାଇନିଂ ଟେବୁଲ*)। ଆପଣଙ୍କ ବଜେଟ କିମ୍ବା ବିବରଣୀ ମଧ୍ୟ ଦେଇପାରନ୍ତି।',
+    enq_done:       'ଧନ୍ୟବାଦ, *{name}*! ✅ ଆପଣଙ୍କ ପଚରାଉଚରା ରେକର୍ଡ ହୋଇଛି, ଆମ ଟିମ ଶୀଘ୍ର ଆପଣଙ୍କ ସହ ଯୋଗାଯୋଗ କରିବ।',
+    enq_done_fallback: 'ଧନ୍ୟବାଦ! ✅ ଆପଣଙ୍କ ପଚରାଉଚରା ରେକର୍ଡ ହୋଇଛି। ଆମ ଟିମ ଶୀଘ୍ର ଆପଣଙ୍କ ସହ ଯୋଗାଯୋଗ କରିବ।',
+    // Showroom info
+    info_body:  '🛋️ *{name}*\n\n📍 {address}\n🕒 {hours}\n📞 {phone}\n\n🗺️ ଦିଗ: {maps}\n📸 Instagram: {insta}\n\nପଛକୁ ଫେରିବାକୁ *menu* ଲେଖନ୍ତୁ।',
+    // Human handoff
+    human_body: '🧑‍💼 ନିଶ୍ଚୟ! ଆମ ଶୋରୁମ ଟିମ ସହ WhatsApp ରେ ଚାଟ କରିବାକୁ ଏଠାରେ ଟ୍ୟାପ କରନ୍ତୁ:\n{link}\n\nକିମ୍ବା କଲ କରନ୍ତୁ: 📞 {phone}\n\nପଛକୁ ଫେରିବାକୁ *menu* ଲେଖନ୍ତୁ।'
   }
 };
 
@@ -673,6 +980,12 @@ function parseDate(v) {
 function fmtDate(d) {
   var tz = Session.getScriptTimeZone() || 'Asia/Kolkata';
   return Utilities.formatDate(d, tz, 'dd MMM yyyy');
+}
+
+/** Lead CREATED DATE format used by pages/70_Leads.py: dd-MM-yyyy HH:mm. */
+function fmtDateTime(d) {
+  var tz = Session.getScriptTimeZone() || 'Asia/Kolkata';
+  return Utilities.formatDate(d, tz, 'dd-MM-yyyy HH:mm');
 }
 
 function daysFromToday(d) {

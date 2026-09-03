@@ -1,7 +1,19 @@
-# WhatsApp Order-Status Chatbot — Setup Guide
+# WhatsApp Auto-Reply Bot — Setup Guide
 
-A free WhatsApp chatbot for **Interio by Godrej (4S Interiors, Patia)** that lets
-customers check their **order committed status** in **English / Hindi / Odia**.
+A free WhatsApp auto-responder for **Interio by Godrej (4S Interiors, Patia)**. Every
+customer who messages the bot gets an instant, CRM-driven reply and a menu:
+**📦 order status**, **🛋️ product enquiry** (captured as a CRM lead),
+**📍 showroom info**, and **🧑‍💼 talk to a person** — all in **English / Hindi / Odia**.
+
+> **Important — one number, one channel.** A phone number can be registered on the
+> WhatsApp Business *App* **or** on the Cloud API, **never both at once**. Run this
+> bot on a **separate/new number** (recommended) and keep your existing staffed
+> number, e.g. **9937423954**, on the phone app for the "Talk to a person" handoff.
+> Set that handoff number in `CONFIG.HUMAN_HANDOFF_NUMBER` (see Part E). If instead
+> you want the bot ON your main number, you must first migrate that number off the
+> Business App into the Cloud API in Part B.
+
+The order-status branch lets customers check their **order committed status**:
 
 - **Channel:** WhatsApp Cloud API (official Meta) — free tier, no monthly fee
 - **Brain/hosting:** Google Apps Script — free, always-on, reads your Sheets natively
@@ -176,6 +188,32 @@ automatically. You can watch each run under the repo's **Actions** tab.
 
 ---
 
+## Part E — Multi-intent auto-reply (menu, lead capture, handoff)
+
+Beyond order status, the bot shows a menu and handles three more intents. Configure
+them in the `CONFIG` block at the top of `Code.gs`:
+
+| Setting | What it does |
+|---|---|
+| `HUMAN_HANDOFF_NUMBER` | The **staffed** WhatsApp number the "Talk to a person" button links to, as full international digits with **no `+`** (e.g. `919937423954`). This is normally your WhatsApp Business *App* number. |
+| `SHOWROOM_NAME` / `SHOWROOM_ADDRESS` / `SHOWROOM_PHONE` / `SHOWROOM_HOURS` / `SHOWROOM_MAPS` / `SHOWROOM_INSTAGRAM` | Shown in the "Showroom info" reply. **Edit `SHOWROOM_HOURS` to your real timings** (the default is a placeholder). |
+| `LEADS_TAB` / `LEAD_SOURCE` / `STORE_LOCATION` | Where product enquiries are written. `LEADS_TAB` defaults to `LEADS` in the **OPS** spreadsheet; leads land with source *WhatsApp Bot* and status *🟢 New*, exactly like the CRM's Leads page expects. |
+
+**Lead capture.** When a customer picks *Product enquiry*, the bot asks their name and
+what they're looking for, then appends a row to the `LEADS` tab (columns are matched
+by header name, so column order can change safely). The customer's WhatsApp number is
+saved as both `PHONE` and `WHATSAPP NUMBER`. These show up immediately in the
+Streamlit **Leads Management** page for your sales team to follow up.
+
+> The script already requests the full `spreadsheets` scope (read **and** write), so
+> no manifest change is needed. The first time you run it after this update, approve
+> the OAuth prompt again if Google asks.
+
+The bot only ever replies to a customer who messaged **first**, so all replies fall
+inside Meta's free 24-hour customer-service window — no paid message templates needed.
+
+---
+
 ## Customising
 
 Everything is in `Code.gs`:
@@ -187,6 +225,10 @@ Everything is in `Code.gs`:
 | Order tabs source | `CONFIG.SHEET_DETAILS_TAB` (reads `Franchise_sheets` + `four_s_sheets`) |
 | Add a 4th language | add a key to `STR` + a button in `askLanguage()` + `parseLang()` |
 | Session length | `CONFIG.SESSION_TTL` (seconds) |
+| Menu wording / rows | `menu_*` keys in `STR`, and the `rows` in `showMainMenu()` |
+| Showroom info / timings | `CONFIG.SHOWROOM_*` and the `info_body` key in `STR` |
+| Handoff number | `CONFIG.HUMAN_HANDOFF_NUMBER` (intl digits, no `+`) |
+| Where enquiries are saved | `CONFIG.LEADS_TAB` / `LEAD_SOURCE`; field mapping in `createLead()` |
 
 ### Privacy note
 Order details are gated behind the **registered contact number** (two-factor,
@@ -206,4 +248,6 @@ number).
 | Bot never replies | `messages` field not subscribed; or token expired — regenerate a permanent token. |
 | "not found" for a real order | Run `testConfig` — is the order's tab listed in `SHEET_DETAILS`? Check `COL_*` header names. |
 | No committed date shown | The SO isn't in the current `MIS_Daily` snapshot (may already be dispatched), or `Inventory Commitment Date` is blank. |
+| Menu doesn't appear | Interactive-list limits: keep every menu row **title ≤ 24 chars** and the list **button ≤ 20 chars**, or Meta silently drops the message. |
+| Enquiry not saved as a lead | Confirm the `LEADS` tab exists in the **OPS** spreadsheet and `OPS_SPREADSHEET_ID` is set; check the Execution Log for `createLead error`. |
 | Permission error on Run | Re-run and approve the OAuth prompt (Sheets + external request scopes). |
