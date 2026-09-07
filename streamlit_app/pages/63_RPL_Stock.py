@@ -31,8 +31,21 @@ from services.rpl_email_import import (
     RPL_CACHE_SHEET,
     load_cached_rpl,
     fetch_and_cache_rpl,
-    ensure_rpl_sheet,
 )
+
+
+def _ensure_rpl_sheet_safe():
+    """
+    Create the OPS 'RPL Stock' tab if missing — imported lazily and guarded so
+    that a stale in-process copy of services.rpl_email_import (which Streamlit
+    keeps cached in sys.modules across reruns, even after a git pull adds new
+    functions) can never crash the whole page/app with an ImportError.
+    """
+    try:
+        from services.rpl_email_import import ensure_rpl_sheet
+        ensure_rpl_sheet()
+    except Exception:
+        pass
 
 st.set_page_config(layout="wide", page_title="RPL Stock", page_icon="🔁")
 
@@ -94,7 +107,7 @@ if not st.session_state.rpl_loaded or reload_clicked:
     with st.spinner(f"Reading cached RPL data from '{RPL_CACHE_SHEET}'…"):
         # Guarantee the OPS tab exists (with headers) even before the first
         # email fetch, so 'RPL Stock' is always available in the OPS sheet.
-        ensure_rpl_sheet()
+        _ensure_rpl_sheet_safe()
         df, email_dt, status = load_cached_rpl()
         st.session_state.rpl_df       = df
         st.session_state.rpl_email_dt = email_dt
