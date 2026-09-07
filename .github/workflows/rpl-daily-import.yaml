@@ -1,0 +1,64 @@
+name: RPL Daily Import (Mon–Sat, morning + afternoon IST)
+
+# Fetches the daily "All DOCO RPL" replenishment email from Gmail and caches
+# the .xlsx report to the 'RPL Stock' OPS Google Sheet tab.
+#
+# The job is idempotent: it overwrites the sheet only when the fetched email
+# is NEWER than the one already cached (see fetch_and_cache_rpl). Re-runs and
+# days without a new RPL email leave the existing data untouched.
+#
+# GitHub Actions free-tier crons are best-effort (5–30 min delay), so we fire a
+# couple of windows to make sure the latest RPL is picked up each day.
+# IST = UTC + 5:30.
+
+on:
+  schedule:
+    - cron: '45 5 * * 1-6'      # 05:45 UTC = 11:15 IST  Mon–Sat (morning)
+    - cron: '30 9 * * 1-6'      # 09:30 UTC = 15:00 IST  Mon–Sat (afternoon)
+
+  # Manual trigger from the Actions UI for backfill / debugging
+  workflow_dispatch:
+
+concurrency:
+  group: rpl-daily-import
+  cancel-in-progress: false
+
+jobs:
+  rpl-daily-import:
+    name: Fetch 'All DOCO RPL' email — import to RPL Stock sheet
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f streamlit_app/requirements.txt ]; then
+            pip install -r streamlit_app/requirements.txt
+          else
+            pip install -r requirements.txt
+          fi
+
+      - name: Run RPL Daily Import
+        env:
+          # Gmail IMAP — same credentials used by the other import jobs
+          EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
+
+          # Service-account JSON for writing the RPL Stock sheet
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          # OPS spreadsheet id — without this 'RPL Stock' falls back to the
+          # CRM spreadsheet instead of being written to the OPS sheet.
+          OPS_SPREADSHEET_ID: ${{ secrets.OPS_SPREADSHEET_ID }}
+        run: |
+          cd streamlit_app
+          python rpl_daily_import_job.py

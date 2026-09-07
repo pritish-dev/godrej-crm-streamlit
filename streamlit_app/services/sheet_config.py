@@ -58,6 +58,7 @@ _OPS_SHEETS: frozenset[str] = frozenset({
     "SHEET_DETAILS",
     "OLD_SHEET_DETAILS",
     "Stock",
+    "RPL Stock",
     "comitted Delivery reminder email",
     # Price-list ingestion output (Godrej Price-List PDF → sheets)
     "Price_List",
