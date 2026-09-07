@@ -229,6 +229,35 @@ def fetch_rpl_data(days_back: int = 45) -> tuple[pd.DataFrame, datetime | None, 
 # GOOGLE SHEET CACHE
 # ═════════════════════════════════════════════════════════════════════════════
 
+def ensure_rpl_sheet() -> str:
+    """
+    Make sure the 'RPL Stock' tab exists in the OPS spreadsheet, creating it
+    with a header row if it is missing.
+
+    The tab is otherwise only created on the first successful fetch/write, so a
+    deployment that has never had a new RPL email would show no tab at all.
+    Calling this on page load guarantees the tab is always present (and routed
+    to the OPS sheet) even before the first email arrives.
+    """
+    header = [_META_EMAIL_DATE, _META_FETCHED_ON] + EXPECTED_HEADERS
+    try:
+        from services.sheets import _get_sh
+        sh = _get_sh(RPL_CACHE_SHEET)
+        try:
+            sh.worksheet(RPL_CACHE_SHEET)
+            return f"✅ '{RPL_CACHE_SHEET}' tab already exists."
+        except Exception:
+            ws = sh.add_worksheet(
+                title=RPL_CACHE_SHEET,
+                rows=1000,
+                cols=max(len(header) + 2, 12),
+            )
+            ws.update("A1", [header])
+            return f"🆕 Created the '{RPL_CACHE_SHEET}' tab in the OPS sheet."
+    except Exception as exc:
+        return f"❌ Could not ensure the '{RPL_CACHE_SHEET}' tab: {exc}"
+
+
 def save_rpl_to_sheet(df: pd.DataFrame, email_dt: datetime | None) -> str:
     """Persist the RPL DataFrame to the 'RPL Stock' OPS sheet with metadata."""
     if df is None or df.empty:
