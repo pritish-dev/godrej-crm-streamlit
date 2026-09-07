@@ -31,6 +31,7 @@ from services.rpl_email_import import (
     RPL_CACHE_SHEET,
     load_cached_rpl,
     fetch_and_cache_rpl,
+    ensure_rpl_sheet,
 )
 
 st.set_page_config(layout="wide", page_title="RPL Stock", page_icon="🔁")
@@ -91,6 +92,9 @@ with col_force:
 # Auto-load on first visit or manual reload
 if not st.session_state.rpl_loaded or reload_clicked:
     with st.spinner(f"Reading cached RPL data from '{RPL_CACHE_SHEET}'…"):
+        # Guarantee the OPS tab exists (with headers) even before the first
+        # email fetch, so 'RPL Stock' is always available in the OPS sheet.
+        ensure_rpl_sheet()
         df, email_dt, status = load_cached_rpl()
         st.session_state.rpl_df       = df
         st.session_state.rpl_email_dt = email_dt
