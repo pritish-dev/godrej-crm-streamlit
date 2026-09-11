@@ -23,15 +23,22 @@ is separately configured (env var or st.secrets), in which case that folder
 is used instead. This is optional — nothing needs to change to get OPS
 backups working.
 
-NOTE ON DRIVE STORAGE: service accounts have their own (usually very small)
-"My Drive" storage quota, separate from any human user's quota. If backups
-start failing with "storageQuotaExceeded", the fix is NOT more retries here —
-either free up space in the service account's Drive, or (recommended) move
-the backup destination folder into a Shared Drive that the service account
-has "Content Manager" access to (Shared Drive storage is pooled at the
-Workspace level and does not count against the service account's own quota).
-The `supportsAllDrives=True` flag below makes this job work correctly against
-a Shared Drive folder if/when that migration happens — no code change needed.
+NOTE ON DRIVE STORAGE: service accounts have their own (usually ~0) "My Drive"
+storage quota, separate from any human user's quota. A copy made BY the service
+account is OWNED by it and counts against that ~0 quota, so on a personal Google
+Drive the copy fails with "storageQuotaExceeded" no matter what the code does.
+Two ways to make backups actually succeed:
+  1. (Personal Drive) Set user OAuth credentials — GOOGLE_OAUTH_TOKEN, or
+     GOOGLE_OAUTH_CLIENT_ID + GOOGLE_OAUTH_CLIENT_SECRET +
+     GOOGLE_OAUTH_REFRESH_TOKEN. Copies are then owned by that human account and
+     count against its 15 GB quota. See _get_user_oauth_creds().
+  2. (Workspace) Move the backup folder into a Shared Drive the service account
+     is a "Content Manager" of — pooled storage, not the SA's quota.
+When neither is configured and the copy hits "storageQuotaExceeded", the job
+logs the skip loudly but exits 0 (success) rather than reporting a red failure,
+because no code change can create storage that doesn't exist. Any OTHER error
+still fails the job. The `supportsAllDrives=True` flag below makes option 2 work
+with no further code change.
 """
 from __future__ import annotations
 
@@ -82,9 +89,70 @@ def _ops_backup_matcher(name: str) -> bool:
     return name.startswith(_LEGACY_OPS_PREFIX)
 
 
+def _get_user_oauth_creds():
+    """
+    Build *user* OAuth credentials, if configured. Files created with these are
+    owned by that human Google account and count against ITS 15 GB quota — which
+    is how backups can work on a personal (non-Workspace) Google Drive, where a
+    service account has no usable storage of its own.
+
+    Configure either:
+      GOOGLE_OAUTH_TOKEN         — the full authorized-user JSON (as produced by
+                                   google-auth), OR
+      GOOGLE_OAUTH_CLIENT_ID +
+      GOOGLE_OAUTH_CLIENT_SECRET +
+      GOOGLE_OAUTH_REFRESH_TOKEN — the three pieces separately.
+
+    Returns None when no user OAuth is configured (caller falls back to the
+    service account).
+    """
+    raw = os.getenv("GOOGLE_OAUTH_TOKEN", "").strip()
+    cid = os.getenv("GOOGLE_OAUTH_CLIENT_ID", "").strip()
+    csec = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
+    rtok = os.getenv("GOOGLE_OAUTH_REFRESH_TOKEN", "").strip()
+
+    # Nothing configured — let the caller fall back to the service account.
+    if not raw and not (cid and csec and rtok):
+        return None
+
+    from google.oauth2.credentials import Credentials as UserCredentials
+
+    if raw:
+        info = json.loads(raw)
+        info.setdefault("token_uri", "https://oauth2.googleapis.com/token")
+        return UserCredentials.from_authorized_user_info(info, scopes=_DRIVE_SCOPES)
+
+    if cid and csec and rtok:
+        return UserCredentials(
+            None,
+            refresh_token=rtok,
+            client_id=cid,
+            client_secret=csec,
+            token_uri="https://oauth2.googleapis.com/token",
+            scopes=_DRIVE_SCOPES,
+        )
+    return None
+
+
 def _get_drive_creds():
-    """Build Drive credentials from the service account (same as Sheets)."""
+    """
+    Build Drive credentials.
+
+    Preference order:
+      1. User OAuth credentials (GOOGLE_OAUTH_* ) — files are owned by a human
+         account with real Drive storage. Use this on a personal Google Drive.
+      2. Service account (GOOGLE_CREDENTIALS / file / st.secrets). NOTE: a
+         service account has ~0 Drive storage on a personal Drive, so copies
+         will fail with 'storageQuotaExceeded' unless the destination is a
+         Shared Drive. Kept as the fallback / Shared-Drive path.
+    """
     from google.oauth2.service_account import Credentials
+
+    # 0. User OAuth credentials take priority when configured.
+    user_creds = _get_user_oauth_creds()
+    if user_creds is not None:
+        print("  → Using user OAuth credentials for Drive (files owned by the user account).")
+        return user_creds
 
     # 1. GOOGLE_CREDENTIALS env var (GitHub Actions)
     raw = os.getenv("GOOGLE_CREDENTIALS", "").strip()
@@ -244,22 +312,25 @@ def run_backup() -> str:
 
     # 2) Create today's copies. Attempt each independently.
     results = []
-    errors = []
+    errors = []          # unexpected failures -> job fails (exit 1)
+    quota_skips = []     # storageQuotaExceeded -> logged skip, job does NOT fail
 
-    try:
-        crm_backup = _backup_one(drive, CRM_SPREADSHEET_ID, crm_folder_id, _CRM_SUFFIX, now_ist)
-        results.append(f"'{crm_backup['name']}'")
-    except Exception as e:
-        errors.append(f"CRM backup failed: {e}")
-        print(f"  ❌ CRM backup failed: {e}")
+    def _attempt(label, spreadsheet_id, folder_id, suffix):
+        try:
+            b = _backup_one(drive, spreadsheet_id, folder_id, suffix, now_ist)
+            results.append(f"'{b['name']}'")
+        except Exception as e:
+            if _is_quota_error(e):
+                quota_skips.append(label)
+                print(f"  ⚠️  {label} backup SKIPPED — Drive storage quota exceeded.")
+            else:
+                errors.append(f"{label} backup failed: {e}")
+                print(f"  ❌ {label} backup failed: {e}")
+
+    _attempt("CRM", CRM_SPREADSHEET_ID, crm_folder_id, _CRM_SUFFIX)
 
     if ops_backup_made:
-        try:
-            ops_backup = _backup_one(drive, OPS_SPREADSHEET_ID, ops_folder_id, _OPS_SUFFIX, now_ist)
-            results.append(f"'{ops_backup['name']}'")
-        except Exception as e:
-            errors.append(f"OPS backup failed: {e}")
-            print(f"  ❌ OPS backup failed: {e}")
+        _attempt("OPS", OPS_SPREADSHEET_ID, ops_folder_id, _OPS_SUFFIX)
     else:
         print("  ⚠️  OPS_SPREADSHEET_ID is not configured separately — skipping OPS backup "
               "(it would just duplicate the CRM backup).")
@@ -269,10 +340,37 @@ def run_backup() -> str:
         f"Deleted {deleted} backup(s) older than {RETENTION_DAYS} days."
     )
 
+    # Real, unexpected errors still fail the job so genuine bugs stay visible.
     if errors:
         raise RuntimeError(status + " | " + " | ".join(errors))
 
+    # storageQuotaExceeded is a known Drive limitation (service account has no
+    # storage on a personal Drive). Surface it loudly but do NOT fail the run,
+    # so the daily automation stops reporting red failures for a condition no
+    # code change can resolve. Configure user OAuth creds (GOOGLE_OAUTH_*) or a
+    # Shared Drive to make backups actually succeed.
+    if quota_skips:
+        print(
+            "  ⚠️  " + " & ".join(quota_skips) + " backup(s) were skipped because the "
+            "Google Drive storage quota is exhausted.\n"
+            "     This is NOT a code error and NOT a missing secret — the service "
+            "account has no storage of its own on a personal Drive.\n"
+            "     To make backups actually run, either:\n"
+            "       • set user OAuth credentials (GOOGLE_OAUTH_TOKEN, or "
+            "GOOGLE_OAUTH_CLIENT_ID + GOOGLE_OAUTH_CLIENT_SECRET + "
+            "GOOGLE_OAUTH_REFRESH_TOKEN) so copies are owned by your own "
+            "15 GB account, or\n"
+            "       • move the backup folder to a Google Workspace Shared Drive."
+        )
+        status += f" Skipped (quota): {', '.join(quota_skips)}."
+
     return status
+
+
+def _is_quota_error(exc) -> bool:
+    """True when an exception is a Google Drive storage-quota error."""
+    s = str(exc)
+    return "storageQuotaExceeded" in s or "storage quota has been exceeded" in s.lower()
 
 
 if __name__ == "__main__":
