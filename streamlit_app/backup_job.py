@@ -150,36 +150,11 @@ def _get_user_oauth_config() -> dict:
     return {}
 
 
-def _oauth_safe_fingerprint(cfg: dict) -> str:
-    """
-    Describe the OAuth config WITHOUT revealing any secret material — only
-    lengths, a format check, and whether stray quotes/whitespace slipped in
-    (the usual causes of 'invalid_grant' from a mis-pasted GitHub secret).
-    """
-    def flags(v: str, expect_prefix: str = "", expect_suffix: str = "") -> str:
-        has_quote = ('"' in v) or ("'" in v)
-        has_space = any(c.isspace() for c in v)
-        fmt = True
-        if expect_prefix:
-            fmt = fmt and v.startswith(expect_prefix)
-        if expect_suffix:
-            fmt = fmt and v.endswith(expect_suffix)
-        return f"len={len(v)} format_ok={fmt} has_quote={has_quote} has_space={has_space}"
-
-    return (
-        "OAuth secret check (no values shown):\n"
-        f"       client_id      : {flags(cfg['client_id'], expect_suffix='.apps.googleusercontent.com')}\n"
-        f"       client_secret  : {flags(cfg['client_secret'], expect_prefix='GOCSPX-')}\n"
-        f"       refresh_token  : {flags(cfg['refresh_token'], expect_prefix='1//')}"
-    )
-
-
 def _get_user_oauth_creds():
     """Build refreshable OAuth user credentials for Drive, or None if unset."""
     cfg = _get_user_oauth_config()
     if not cfg:
         return None
-    print("  → " + _oauth_safe_fingerprint(cfg))
     from google.oauth2.credentials import Credentials as UserCredentials
     return UserCredentials(
         None,
