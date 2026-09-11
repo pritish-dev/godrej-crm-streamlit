@@ -1,7 +1,7 @@
 """
 backup_job.py
 
-Daily 9 PM IST job — creates a copy of BOTH spreadsheets (Sheet 1 "CRM" and
+Daily 10 PM IST job — creates a copy of BOTH spreadsheets (Sheet 1 "CRM" and
 Sheet 2 "OPS") in the "B2C CRM BACKUP" Google Drive folder, then deletes any
 backup files older than 7 days (so at most 7 days of backups are ever kept).
 
@@ -187,6 +187,16 @@ def run_backup() -> str:
     Returns a status string. If OPS_SPREADSHEET_ID isn't configured separately
     (still equal to CRM_SPREADSHEET_ID), only one backup is made to avoid
     creating a duplicate copy of the same spreadsheet.
+
+    Ordering: old backups are PURGED FIRST, before today's copies are created.
+    This guarantees the 7-day retention runs on every invocation (previously it
+    ran only after a successful copy, so a failed copy left old backups piling
+    up forever) and frees Drive space up front, which helps when the service
+    account is near its storage quota.
+
+    CRM and OPS backups are attempted independently: a failure on one is
+    reported but does not prevent the other from being created. The job still
+    exits non-zero (raises) if any step failed.
     """
     from services.sheet_config import CRM_SPREADSHEET_ID, OPS_SPREADSHEET_ID
 
@@ -197,32 +207,48 @@ def run_backup() -> str:
     now_ist = datetime.now(IST)
     cutoff_utc = (now_ist - timedelta(days=RETENTION_DAYS)).astimezone(timezone.utc)
 
-    results = []
-
-    crm_backup = _backup_one(drive, CRM_SPREADSHEET_ID, crm_folder_id, _CRM_PREFIX, now_ist)
-    results.append(f"'{crm_backup['name']}'")
-
     ops_backup_made = OPS_SPREADSHEET_ID != CRM_SPREADSHEET_ID
-    if ops_backup_made:
-        ops_backup = _backup_one(drive, OPS_SPREADSHEET_ID, ops_folder_id, _OPS_PREFIX, now_ist)
-        results.append(f"'{ops_backup['name']}'")
-    else:
-        print("  ⚠️  OPS_SPREADSHEET_ID is not configured separately — skipping OPS backup "
-              "(it would just duplicate the CRM backup).")
 
-    # Purge backups older than RETENTION_DAYS in each folder touched.
+    # 1) Purge first so retention always runs and space is freed before copying.
     deleted = _purge_old_backups(drive, crm_folder_id, cutoff_utc, _CRM_PREFIX)
     if ops_backup_made:
         deleted += _purge_old_backups(drive, ops_folder_id, cutoff_utc, _OPS_PREFIX)
 
-    return (
-        f"Backup(s) created: {', '.join(results)}. "
+    # 2) Create today's copies. Attempt each independently.
+    results = []
+    errors = []
+
+    try:
+        crm_backup = _backup_one(drive, CRM_SPREADSHEET_ID, crm_folder_id, _CRM_PREFIX, now_ist)
+        results.append(f"'{crm_backup['name']}'")
+    except Exception as e:
+        errors.append(f"CRM backup failed: {e}")
+        print(f"  ❌ CRM backup failed: {e}")
+
+    if ops_backup_made:
+        try:
+            ops_backup = _backup_one(drive, OPS_SPREADSHEET_ID, ops_folder_id, _OPS_PREFIX, now_ist)
+            results.append(f"'{ops_backup['name']}'")
+        except Exception as e:
+            errors.append(f"OPS backup failed: {e}")
+            print(f"  ❌ OPS backup failed: {e}")
+    else:
+        print("  ⚠️  OPS_SPREADSHEET_ID is not configured separately — skipping OPS backup "
+              "(it would just duplicate the CRM backup).")
+
+    status = (
+        f"Backup(s) created: {', '.join(results) if results else 'none'}. "
         f"Deleted {deleted} backup(s) older than {RETENTION_DAYS} days."
     )
 
+    if errors:
+        raise RuntimeError(status + " | " + " | ".join(errors))
+
+    return status
+
 
 if __name__ == "__main__":
-    print(f"[{datetime.now(IST).strftime('%Y-%m-%d %H:%M IST')}] Running CRM + OPS daily backup...")
+    print(f"[{datetime.now(IST).strftime('%Y-%m-%d %H:%M IST')}] Running CRM + OPS daily backup (10 PM IST)...")
     try:
         status = run_backup()
         print(f"  ✅ {status}")

@@ -2,8 +2,8 @@ name: CRM + OPS Daily Backup
 
 on:
   schedule:
-    # 9:00 PM IST = 15:30 UTC
-    - cron: '30 15 * * *'
+    # 10:00 PM IST = 16:30 UTC
+    - cron: '30 16 * * *'
 
   workflow_dispatch:
     inputs:
