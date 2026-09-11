@@ -49,9 +49,37 @@ RETENTION_DAYS = 7
 # Drive scopes — need write access to copy and delete files
 _DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive"]
 
-# Backup name prefixes — used both when creating and when purging old copies
-_CRM_PREFIX = "CRM Backup"
-_OPS_PREFIX = "OPS Backup"
+# Backup file naming.
+#   New format:  backup_<YYYY-MM-DD>_crm_sheet   /   backup_<YYYY-MM-DD>_ops_sheet
+# The date sits in the middle, so backups are identified by a common prefix
+# plus a per-stream suffix rather than a single leading prefix.
+_BACKUP_PREFIX = "backup_"
+_CRM_SUFFIX = "_crm_sheet"
+_OPS_SUFFIX = "_ops_sheet"
+
+# Legacy names still present in the folder from earlier runs. Matched only for
+# PURGING, so the old-format copies get cleaned up under the same 7-day policy.
+_LEGACY_CRM_PREFIX = "CRM Backup"
+_LEGACY_OPS_PREFIX = "OPS Backup"
+
+
+def _backup_name(date_str: str, suffix: str) -> str:
+    """Build a backup file name, e.g. 'backup_2026-09-11_crm_sheet'."""
+    return f"{_BACKUP_PREFIX}{date_str}{suffix}"
+
+
+def _crm_backup_matcher(name: str) -> bool:
+    """True for CRM backup files (new format or legacy name)."""
+    if name.startswith(_BACKUP_PREFIX) and name.endswith(_CRM_SUFFIX):
+        return True
+    return name.startswith(_LEGACY_CRM_PREFIX)
+
+
+def _ops_backup_matcher(name: str) -> bool:
+    """True for OPS backup files (new format or legacy name)."""
+    if name.startswith(_BACKUP_PREFIX) and name.endswith(_OPS_SUFFIX):
+        return True
+    return name.startswith(_LEGACY_OPS_PREFIX)
 
 
 def _get_drive_creds():
@@ -135,9 +163,9 @@ def _get_ops_backup_folder_id(crm_folder_id: str) -> str:
     )
 
 
-def _backup_one(drive, spreadsheet_id: str, folder_id: str, name_prefix: str, now_ist: datetime) -> dict:
+def _backup_one(drive, spreadsheet_id: str, folder_id: str, name_suffix: str, now_ist: datetime) -> dict:
     """Copy one spreadsheet into a Drive folder. Returns the created file's metadata."""
-    backup_name = f"{name_prefix} {now_ist.strftime('%Y-%m-%d')}"
+    backup_name = _backup_name(now_ist.strftime("%Y-%m-%d"), name_suffix)
     copy_body = {
         "name": backup_name,
         "parents": [folder_id],
@@ -152,8 +180,8 @@ def _backup_one(drive, spreadsheet_id: str, folder_id: str, name_prefix: str, no
     return copied
 
 
-def _purge_old_backups(drive, folder_id: str, cutoff_utc: datetime, name_prefix: str) -> int:
-    """Delete files in folder_id whose name starts with name_prefix and are older than cutoff_utc."""
+def _purge_old_backups(drive, folder_id: str, cutoff_utc: datetime, name_matches) -> int:
+    """Delete files in folder_id matched by name_matches(name) and older than cutoff_utc."""
     listing = drive.files().list(
         q=f"'{folder_id}' in parents and trashed=false",
         fields="files(id,name,createdTime)",
@@ -164,7 +192,7 @@ def _purge_old_backups(drive, folder_id: str, cutoff_utc: datetime, name_prefix:
 
     deleted = 0
     for f in listing.get("files", []):
-        if not f.get("name", "").startswith(name_prefix):
+        if not name_matches(f.get("name", "")):
             continue
         created_str = f.get("createdTime", "")
         if not created_str:
@@ -210,16 +238,16 @@ def run_backup() -> str:
     ops_backup_made = OPS_SPREADSHEET_ID != CRM_SPREADSHEET_ID
 
     # 1) Purge first so retention always runs and space is freed before copying.
-    deleted = _purge_old_backups(drive, crm_folder_id, cutoff_utc, _CRM_PREFIX)
+    deleted = _purge_old_backups(drive, crm_folder_id, cutoff_utc, _crm_backup_matcher)
     if ops_backup_made:
-        deleted += _purge_old_backups(drive, ops_folder_id, cutoff_utc, _OPS_PREFIX)
+        deleted += _purge_old_backups(drive, ops_folder_id, cutoff_utc, _ops_backup_matcher)
 
     # 2) Create today's copies. Attempt each independently.
     results = []
     errors = []
 
     try:
-        crm_backup = _backup_one(drive, CRM_SPREADSHEET_ID, crm_folder_id, _CRM_PREFIX, now_ist)
+        crm_backup = _backup_one(drive, CRM_SPREADSHEET_ID, crm_folder_id, _CRM_SUFFIX, now_ist)
         results.append(f"'{crm_backup['name']}'")
     except Exception as e:
         errors.append(f"CRM backup failed: {e}")
@@ -227,7 +255,7 @@ def run_backup() -> str:
 
     if ops_backup_made:
         try:
-            ops_backup = _backup_one(drive, OPS_SPREADSHEET_ID, ops_folder_id, _OPS_PREFIX, now_ist)
+            ops_backup = _backup_one(drive, OPS_SPREADSHEET_ID, ops_folder_id, _OPS_SUFFIX, now_ist)
             results.append(f"'{ops_backup['name']}'")
         except Exception as e:
             errors.append(f"OPS backup failed: {e}")
