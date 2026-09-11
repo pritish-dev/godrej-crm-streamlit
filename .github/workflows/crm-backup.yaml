@@ -41,14 +41,14 @@ jobs:
           # Optional — defaults to CRM_BACKUP_DRIVE_FOLDER_ID when not set.
           OPS_BACKUP_DRIVE_FOLDER_ID:   ${{ secrets.OPS_BACKUP_DRIVE_FOLDER_ID }}
           OPS_SPREADSHEET_ID:           ${{ secrets.OPS_SPREADSHEET_ID }}
-          # Optional — user OAuth credentials. On a PERSONAL Google Drive a
-          # service account has no storage, so set these to have backups owned
-          # by (and counted against) your own 15 GB account. Add either
-          # GOOGLE_OAUTH_TOKEN (full authorized-user JSON) OR the three below.
-          GOOGLE_OAUTH_TOKEN:           ${{ secrets.GOOGLE_OAUTH_TOKEN }}
-          GOOGLE_OAUTH_CLIENT_ID:       ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
-          GOOGLE_OAUTH_CLIENT_SECRET:   ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
-          GOOGLE_OAUTH_REFRESH_TOKEN:   ${{ secrets.GOOGLE_OAUTH_REFRESH_TOKEN }}
+          # Optional — Drive-OAuth user credentials (SAME secret the catalogue
+          # upload feature uses). On a PERSONAL Google Drive a service account
+          # has no storage, so set these to have backups owned by (and counted
+          # against) your own 15 GB account. Generate once with
+          # streamlit_app/tools/generate_drive_oauth_token.py.
+          DRIVE_OAUTH_CLIENT_ID:        ${{ secrets.DRIVE_OAUTH_CLIENT_ID }}
+          DRIVE_OAUTH_CLIENT_SECRET:    ${{ secrets.DRIVE_OAUTH_CLIENT_SECRET }}
+          DRIVE_OAUTH_REFRESH_TOKEN:    ${{ secrets.DRIVE_OAUTH_REFRESH_TOKEN }}
         run: |
           cd streamlit_app
           python backup_job.py

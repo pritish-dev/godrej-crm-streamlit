@@ -28,10 +28,11 @@ storage quota, separate from any human user's quota. A copy made BY the service
 account is OWNED by it and counts against that ~0 quota, so on a personal Google
 Drive the copy fails with "storageQuotaExceeded" no matter what the code does.
 Two ways to make backups actually succeed:
-  1. (Personal Drive) Set user OAuth credentials — GOOGLE_OAUTH_TOKEN, or
-     GOOGLE_OAUTH_CLIENT_ID + GOOGLE_OAUTH_CLIENT_SECRET +
-     GOOGLE_OAUTH_REFRESH_TOKEN. Copies are then owned by that human account and
-     count against its 15 GB quota. See _get_user_oauth_creds().
+  1. (Personal Drive) Set Drive-OAuth user credentials — DRIVE_OAUTH_TOKEN, or
+     DRIVE_OAUTH_CLIENT_ID + DRIVE_OAUTH_CLIENT_SECRET + DRIVE_OAUTH_REFRESH_TOKEN
+     (the same secret the catalogue-upload feature already uses). Copies are then
+     owned by that human account and count against its 15 GB quota. Generate the
+     token once with streamlit_app/tools/generate_drive_oauth_token.py.
   2. (Workspace) Move the backup folder into a Shared Drive the service account
      is a "Content Manager" of — pooled storage, not the SA's quota.
 When neither is configured and the copy hits "storageQuotaExceeded", the job
@@ -89,49 +90,80 @@ def _ops_backup_matcher(name: str) -> bool:
     return name.startswith(_LEGACY_OPS_PREFIX)
 
 
-def _get_user_oauth_creds():
+def _get_user_oauth_config() -> dict:
     """
-    Build *user* OAuth credentials, if configured. Files created with these are
-    owned by that human Google account and count against ITS 15 GB quota — which
-    is how backups can work on a personal (non-Workspace) Google Drive, where a
-    service account has no usable storage of its own.
+    Resolve OAuth *user* credentials config: {client_id, client_secret,
+    refresh_token}. Files created with these are owned by that human Google
+    account and count against ITS 15 GB quota — the way backups work on a
+    personal (non-Workspace) Google Drive, where a service account has no usable
+    storage of its own.
 
-    Configure either:
-      GOOGLE_OAUTH_TOKEN         — the full authorized-user JSON (as produced by
-                                   google-auth), OR
-      GOOGLE_OAUTH_CLIENT_ID +
-      GOOGLE_OAUTH_CLIENT_SECRET +
-      GOOGLE_OAUTH_REFRESH_TOKEN — the three pieces separately.
+    This reuses the SAME convention the catalogue-upload feature already uses
+    (see services.catalog_pdf_service), so one Drive-OAuth token unlocks both.
+    Generate it once with:
+        python streamlit_app/tools/generate_drive_oauth_token.py <client_secret.json>
 
-    Returns None when no user OAuth is configured (caller falls back to the
-    service account).
+    Looked up (first hit wins):
+      * st.secrets['drive_oauth'] -> client_id / client_secret / refresh_token
+      * env DRIVE_OAUTH_TOKEN = '{"client_id":..,"client_secret":..,"refresh_token":..}'
+      * env DRIVE_OAUTH_CLIENT_ID / DRIVE_OAUTH_CLIENT_SECRET / DRIVE_OAUTH_REFRESH_TOKEN
+
+    Returns {} when not configured (caller falls back to the service account).
     """
-    raw = os.getenv("GOOGLE_OAUTH_TOKEN", "").strip()
-    cid = os.getenv("GOOGLE_OAUTH_CLIENT_ID", "").strip()
-    csec = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
-    rtok = os.getenv("GOOGLE_OAUTH_REFRESH_TOKEN", "").strip()
+    # 1. Streamlit secrets table
+    try:
+        import streamlit as st
+        node = dict(st.secrets["drive_oauth"])
+        cfg = {
+            "client_id": str(node.get("client_id", "")).strip(),
+            "client_secret": str(node.get("client_secret", "")).strip(),
+            "refresh_token": str(node.get("refresh_token", "")).strip(),
+        }
+        if all(cfg.values()):
+            return cfg
+    except Exception:
+        pass
 
-    # Nothing configured — let the caller fall back to the service account.
-    if not raw and not (cid and csec and rtok):
-        return None
-
-    from google.oauth2.credentials import Credentials as UserCredentials
-
+    # 2. Single JSON env blob
+    raw = os.getenv("DRIVE_OAUTH_TOKEN", "").strip()
     if raw:
-        info = json.loads(raw)
-        info.setdefault("token_uri", "https://oauth2.googleapis.com/token")
-        return UserCredentials.from_authorized_user_info(info, scopes=_DRIVE_SCOPES)
+        try:
+            node = json.loads(raw)
+            cfg = {
+                "client_id": str(node.get("client_id", "")).strip(),
+                "client_secret": str(node.get("client_secret", "")).strip(),
+                "refresh_token": str(node.get("refresh_token", "")).strip(),
+            }
+            if all(cfg.values()):
+                return cfg
+        except Exception:
+            pass
 
-    if cid and csec and rtok:
-        return UserCredentials(
-            None,
-            refresh_token=rtok,
-            client_id=cid,
-            client_secret=csec,
-            token_uri="https://oauth2.googleapis.com/token",
-            scopes=_DRIVE_SCOPES,
-        )
-    return None
+    # 3. Individual env vars
+    cfg = {
+        "client_id": os.getenv("DRIVE_OAUTH_CLIENT_ID", "").strip(),
+        "client_secret": os.getenv("DRIVE_OAUTH_CLIENT_SECRET", "").strip(),
+        "refresh_token": os.getenv("DRIVE_OAUTH_REFRESH_TOKEN", "").strip(),
+    }
+    if all(cfg.values()):
+        return cfg
+    return {}
+
+
+def _get_user_oauth_creds():
+    """Build refreshable OAuth user credentials for Drive, or None if unset."""
+    cfg = _get_user_oauth_config()
+    if not cfg:
+        return None
+    from google.oauth2.credentials import Credentials as UserCredentials
+    return UserCredentials(
+        None,
+        refresh_token=cfg["refresh_token"],
+        client_id=cfg["client_id"],
+        client_secret=cfg["client_secret"],
+        token_uri="https://oauth2.googleapis.com/token",
+        scopes=_DRIVE_SCOPES,
+    )
 
 
 def _get_drive_creds():
@@ -139,7 +171,7 @@ def _get_drive_creds():
     Build Drive credentials.
 
     Preference order:
-      1. User OAuth credentials (GOOGLE_OAUTH_* ) — files are owned by a human
+      1. Drive-OAuth user credentials (DRIVE_OAUTH_* ) — files are owned by a human
          account with real Drive storage. Use this on a personal Google Drive.
       2. Service account (GOOGLE_CREDENTIALS / file / st.secrets). NOTE: a
          service account has ~0 Drive storage on a personal Drive, so copies
@@ -347,7 +379,7 @@ def run_backup() -> str:
     # storageQuotaExceeded is a known Drive limitation (service account has no
     # storage on a personal Drive). Surface it loudly but do NOT fail the run,
     # so the daily automation stops reporting red failures for a condition no
-    # code change can resolve. Configure user OAuth creds (GOOGLE_OAUTH_*) or a
+    # code change can resolve. Configure Drive-OAuth creds (DRIVE_OAUTH_*) or a
     # Shared Drive to make backups actually succeed.
     if quota_skips:
         print(
@@ -356,9 +388,9 @@ def run_backup() -> str:
             "     This is NOT a code error and NOT a missing secret — the service "
             "account has no storage of its own on a personal Drive.\n"
             "     To make backups actually run, either:\n"
-            "       • set user OAuth credentials (GOOGLE_OAUTH_TOKEN, or "
-            "GOOGLE_OAUTH_CLIENT_ID + GOOGLE_OAUTH_CLIENT_SECRET + "
-            "GOOGLE_OAUTH_REFRESH_TOKEN) so copies are owned by your own "
+            "       • set Drive-OAuth credentials (DRIVE_OAUTH_CLIENT_ID + "
+            "DRIVE_OAUTH_CLIENT_SECRET + DRIVE_OAUTH_REFRESH_TOKEN — the same "
+            "secret the catalogue upload uses) so copies are owned by your own "
             "15 GB account, or\n"
             "       • move the backup folder to a Google Workspace Shared Drive."
         )
