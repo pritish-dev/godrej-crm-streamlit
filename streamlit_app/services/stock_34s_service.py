@@ -689,13 +689,12 @@ def run_flat_update(target_date: date | None = None) -> tuple[pd.DataFrame, str]
     as_of, date_col = (_parse_title_date(values[title_idx]) if title_idx is not None else (None, None))
     new_day = (as_of is None) or (as_of < target_date)
 
-    # Movement sources (same as the pivot path)
-    email_in = _fetch_inward_from_email(target_date)
-    drive_in = _fetch_inward_from_drive(target_date)
-    inward: dict[str, float] = {}
-    for code, info in {**email_in, **drive_in}.items():
-        code = code.upper()
-        inward[code] = inward.get(code, 0.0) + float(info.get("qty", 0.0))
+    # Movement sources (same as the pivot path).  _fetch_inward de-duplicates the
+    # same challan received twice the same day and sums quantities per item.
+    inward_info, _email_in, _drive_in = _fetch_inward(target_date)
+    inward: dict[str, float] = {
+        code.upper(): float(v.get("qty", 0.0)) for code, v in inward_info.items()
+    }
     outward = {k.upper(): v for k, v in _fetch_outward(target_date).items()}
 
     def cell(row: list[str], i: int | None) -> str:
@@ -1024,56 +1023,191 @@ def _count_items(df: pd.DataFrame) -> int:
 
 # ─── PDF parsing (Delivery Challan) ───────────────────────────────────────────
 
-def _parse_challan_pdf(pdf_bytes: bytes) -> dict:
-    """
-    Parse a Delivery Challan PDF.
-    Returns {"warehouse_code": str, "challan_no": str,
-             "items": {item_code: {"qty": float, "description": str}}}
-    """
-    result: dict = {"warehouse_code": "", "challan_no": "", "items": {}}
-    text = ""
+# UOM tokens printed on Godrej delivery-challan item lines.  The RECEIVING
+# quantity is the number that appears immediately AFTER the UOM, e.g.
+# "… 1.00 ECH 2.00 35.00 …" → 2.00 (No. of Pkg → UOM → Quantity → Weight → …).
+_UOM_RE = re.compile(
+    r"\b(?:ECH|EA|EACH|NOS?|PCS?|PC|SET|SETS|UNT|UNIT|KGS?|MTR|MTRS|SQM|BOX|BOXES)\b",
+    re.IGNORECASE,
+)
+
+# One Godrej item code, e.g. "56121403SD00372".
+_CHALLAN_ITEM_RE = re.compile(r"(\d{8}[A-Z]{2}\d{5})")
+
+
+def _extract_pdf_text(pdf_bytes: bytes) -> str:
+    """Extract text from a PDF using pdfplumber, falling back to PyMuPDF/pypdf."""
     try:
         import pdfplumber
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-            text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+            return "\n".join(p.extract_text() or "" for p in pdf.pages)
     except Exception:
-        try:
-            import fitz
-            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-            text = "\n".join(page.get_text() for page in doc)
-        except Exception:
-            return result
+        pass
+    try:
+        import fitz
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        return "\n".join(page.get_text() for page in doc)
+    except Exception:
+        pass
+    try:
+        from pypdf import PdfReader
+        return "\n".join(pg.extract_text() or "" for pg in PdfReader(io.BytesIO(pdf_bytes)).pages)
+    except Exception:
+        return ""
 
-    wc = re.search(r"Warehouse\s*Code\s*[:\-]?\s*(ZB\w+)", text, re.IGNORECASE)
-    if wc:
-        result["warehouse_code"] = wc.group(1).strip()
 
+def _extract_line_qty(line: str) -> float:
+    """
+    Return the received quantity from a challan item line.
+
+    Layout: Sr  ItemCode  OrderNo  HSN  No.ofPkg  UOM  Quantity  Weight  Rate  Amount
+    so the quantity is the first number AFTER the UOM token.  Falls back to 1.0
+    when the layout can't be recognised so a received item is never dropped.
+    """
+    m = _UOM_RE.search(line)
+    if m:
+        qm = re.search(r"(\d+(?:\.\d+)?)", line[m.end():])
+        if qm:
+            try:
+                return float(qm.group(1))
+            except ValueError:
+                pass
+    return 1.0
+
+
+def _parse_challan_pdf(pdf_bytes: bytes) -> dict:
+    """
+    Parse a Godrej Delivery Challan PDF.
+
+    Returns {
+        "warehouse_code": str,   # the RECEIVING warehouse code (Receiver /
+                                 # Consignee side).  This is what decides whether
+                                 # the challan is 34S inward — for goods sent TO
+                                 # 34S it is "ZBF34S".  The despatching (Consignor)
+                                 # warehouse (e.g. "ZBF11T") is deliberately NOT
+                                 # used, otherwise a challan despatched from
+                                 # another warehouse to 34S would be wrongly
+                                 # skipped.
+        "consignor_code": str,   # despatching warehouse code
+        "challan_no": str,       # Delivery Challan No, e.g. "C67044017"
+        "shipment_no": str,      # Shipment No, e.g. "B26065685"  (for de-dup)
+        "items": {item_code: {"qty": float, "description": str}},
+    }
+    """
+    result: dict = {
+        "warehouse_code": "", "consignor_code": "",
+        "challan_no": "", "shipment_no": "", "items": {},
+    }
+    text = _extract_pdf_text(pdf_bytes)
+    if not text.strip():
+        return result
+
+    lines = text.split("\n")
+
+    # Challan identity — Delivery Challan No + Shipment No (used to de-duplicate a
+    # challan received more than once, e.g. the same email resent the same day).
     dc = re.search(r"Delivery\s+Challan\s+No\s*[:\-]?\s*([A-Z0-9]+)", text, re.IGNORECASE)
     if dc:
         result["challan_no"] = dc.group(1).strip()
+    sh = re.search(r"Shipment\s+No\s*[:\-]?\s*([A-Z0-9]+)", text, re.IGNORECASE)
+    if sh:
+        result["shipment_no"] = sh.group(1).strip()
 
-    item_re = re.compile(r"(\d{8}[A-Z]{2}\d{5})")
-    qty_re  = re.compile(r"\b(\d+(?:\.\d+)?)\s*(?:ECH|NOS|PCS|EACH|EA)?\b")
-    for line in text.split("\n"):
-        codes = item_re.findall(line)
+    # Warehouse codes, split by document section.  The Consignor (Despatching
+    # Warehouse) block is printed first, then the Receiver (Billed To) /
+    # Consignee (Shipped to) blocks.  We key the 34S decision off the RECEIVING
+    # side so that a challan despatched from another warehouse (e.g. ZBF11T) TO
+    # 34S is recognised as inward.
+    consignor_codes: list[str] = []
+    receiver_codes:  list[str] = []
+    section = "consignor"   # the consignor block always comes first
+    wh_re = re.compile(r"Warehouse\s*Code\s*[:\-]?\s*([A-Za-z0-9]+)", re.IGNORECASE)
+    for ln in lines:
+        low = ln.lower()
+        if "consignor" in low or "despatc" in low or "dispatc" in low:
+            section = "consignor"
+        elif ("receiver" in low or "billed to" in low
+              or "consignee" in low or "shipped to" in low):
+            section = "receiver"
+        m = wh_re.search(ln)
+        if m:
+            code = m.group(1).strip().upper()
+            (consignor_codes if section == "consignor" else receiver_codes).append(code)
+
+    result["consignor_code"] = consignor_codes[0] if consignor_codes else ""
+    # Prefer a receiving-side code that is 34S; else the first receiving code;
+    # else fall back to the consignor code so the field is never blank.
+    recv = receiver_codes or consignor_codes
+    chosen = next((c for c in receiver_codes if WAREHOUSE_CODE in c), "")
+    if not chosen:
+        chosen = recv[0] if recv else ""
+    result["warehouse_code"] = chosen
+
+    # Items + quantities.  Each item line carries exactly one Godrej item code;
+    # its description is on the following (non-item) line.
+    for i, line in enumerate(lines):
+        codes = _CHALLAN_ITEM_RE.findall(line)
         if not codes:
             continue
-        qty_m = qty_re.search(line)
-        qty   = float(qty_m.group(1)) if qty_m else 1.0
+        qty = _extract_line_qty(line)
+        desc = ""
+        for j in range(i + 1, min(i + 3, len(lines))):
+            nxt = lines[j].strip()
+            if nxt and not _CHALLAN_ITEM_RE.search(nxt) and not nxt.lower().startswith("total"):
+                desc = nxt[:80]
+                break
         for code in codes:
             if code in result["items"]:
                 result["items"][code]["qty"] += qty
             else:
-                result["items"][code] = {"qty": qty, "description": line.strip()[:80]}
+                result["items"][code] = {"qty": qty, "description": desc}
     return result
+
+
+def _challan_identity(parsed: dict) -> str:
+    """
+    A stable key identifying a single delivery challan, so the same challan
+    received more than once — the same "Delivery Challan Information" email
+    resent the same day, or a copy present in both email and Drive — is counted
+    only once.  Prefers the Delivery Challan No, then the Shipment No, then a
+    fingerprint of the item lines.
+    """
+    cid = str(parsed.get("challan_no", "")).strip().upper()
+    if cid:
+        return f"DC:{cid}"
+    ship = str(parsed.get("shipment_no", "")).strip().upper()
+    if ship:
+        return f"SH:{ship}"
+    items = parsed.get("items", {})
+    if items:
+        sig = "|".join(f"{k}:{v.get('qty', 0)}" for k, v in sorted(items.items()))
+        return "IT:" + str(hash(sig))
+    return ""
 
 
 # ─── Inward — email ───────────────────────────────────────────────────────────
 
-def _fetch_inward_from_email(target_date: date) -> dict[str, dict]:
-    """Search for 'Delivery Challan Information' emails on target_date and parse PDFs."""
+def _fetch_inward_from_email(
+    target_date: date,
+    seen_challans: set[str] | None = None,
+) -> dict[str, dict]:
+    """
+    Search for 'Delivery Challan Information' emails received on target_date,
+    parse each attached challan PDF, and sum the received quantities per item —
+    but only for challans whose RECEIVING warehouse is 34S (ZBF34S / "ZBF34S/4S
+    INTERIORS").
+
+    De-duplication: a challan whose identity (Delivery Challan No / Shipment No)
+    has already been seen is skipped, so the same invoice received twice the same
+    day — e.g. the same email delivered more than once — is counted only once.
+    `seen_challans` accumulates those identities across sources; pass a shared set
+    to also de-duplicate against the Drive source.
+    """
     import imaplib
     import email as _email_lib
+
+    if seen_challans is None:
+        seen_challans = set()
 
     email_addr, password = _imap_creds()
     if not email_addr or not password:
@@ -1099,6 +1233,7 @@ def _fetch_inward_from_email(target_date: date) -> dict[str, dict]:
 
     ids = data[0].split() if data and data[0] else []
     combined: dict[str, dict] = {}
+    dupes = 0
 
     for eid in ids:
         try:
@@ -1113,8 +1248,17 @@ def _fetch_inward_from_email(target_date: date) -> dict[str, dict]:
             if not pdf_bytes:
                 continue
             parsed = _parse_challan_pdf(pdf_bytes)
+            # Only goods RECEIVED by 34S (warehouse_code is the receiving side).
             if WAREHOUSE_CODE not in parsed["warehouse_code"].upper():
                 continue
+            # Skip a challan already counted (duplicate email / re-send).
+            identity = _challan_identity(parsed)
+            if identity and identity in seen_challans:
+                dupes += 1
+                print(f"[STOCK 34S] Duplicate challan {identity} skipped (email).")
+                continue
+            if identity:
+                seen_challans.add(identity)
             for code, info in parsed["items"].items():
                 if code in combined:
                     combined[code]["qty"] += info["qty"]
@@ -1125,19 +1269,30 @@ def _fetch_inward_from_email(target_date: date) -> dict[str, dict]:
                         "challan_no": parsed["challan_no"],
                     }
     mail.logout()
-    print(f"[STOCK 34S] Email inward: {len(combined)} items for {target_date}")
+    print(
+        f"[STOCK 34S] Email inward: {len(combined)} items for {target_date}"
+        f" ({dupes} duplicate challan(s) skipped)"
+    )
     return combined
 
 
 # ─── Inward — Google Drive ────────────────────────────────────────────────────
 
-def _fetch_inward_from_drive(target_date: date) -> dict[str, dict]:
+def _fetch_inward_from_drive(
+    target_date: date,
+    seen_challans: set[str] | None = None,
+) -> dict[str, dict]:
     """
     Read invoice PDFs from Google Drive for target_date.
     Reuses GOOGLE_DRIVE_INVOICES_FOLDER_ID and helpers from
     email_sender_delivery_schedule.py.
     Folder structure: <root> / "{N} {Month}-{YYYY}" / "for {DD}.{MM}.{YYYY}" / *.pdf
+
+    De-duplicates challans by identity via `seen_challans` — pass the same set
+    used for the email source so a challan present in both is counted only once.
     """
+    if seen_challans is None:
+        seen_challans = set()
     try:
         from services.email_sender_delivery_schedule import (
             _get_drive_folder_id, _get_drive_service,
@@ -1178,6 +1333,7 @@ def _fetch_inward_from_drive(target_date: date) -> dict[str, dict]:
 
     pdfs = _list_drive_pdfs(svc, df_id)
     combined: dict[str, dict] = {}
+    dupes = 0
     for f in pdfs:
         content = _download_drive_file(svc, f["id"])
         if not content:
@@ -1189,6 +1345,13 @@ def _fetch_inward_from_drive(target_date: date) -> dict[str, dict]:
             continue
         if WAREHOUSE_CODE not in parsed["warehouse_code"].upper():
             continue
+        identity = _challan_identity(parsed)
+        if identity and identity in seen_challans:
+            dupes += 1
+            print(f"[STOCK 34S] Duplicate challan {identity} skipped (drive).")
+            continue
+        if identity:
+            seen_challans.add(identity)
         for code, info in parsed["items"].items():
             if code in combined:
                 combined[code]["qty"] += info["qty"]
@@ -1198,8 +1361,39 @@ def _fetch_inward_from_drive(target_date: date) -> dict[str, dict]:
                     "description": info["description"],
                     "challan_no": parsed["challan_no"],
                 }
-    print(f"[STOCK 34S] Drive inward: {len(combined)} items for {target_date}")
+    print(
+        f"[STOCK 34S] Drive inward: {len(combined)} items for {target_date}"
+        f" ({dupes} duplicate challan(s) skipped)"
+    )
     return combined
+
+
+def _fetch_inward(target_date: date) -> tuple[dict[str, dict], dict[str, dict], dict[str, dict]]:
+    """
+    Fetch all 34S inward for target_date from both sources (email challans +
+    Drive invoice PDFs) with a SHARED challan de-duplication set, and sum the
+    received quantity per item code.
+
+    A challan received more than once — the same email resent the same day, or a
+    copy present in both email and Drive — is counted only once.  Two *different*
+    challans that both contain the same item code are correctly summed.
+
+    Returns (merged_inward, email_inward, drive_inward) where each value is
+    {item_code: {"qty": float, "description": str, "challan_no": str}}.
+    """
+    seen_challans: set[str] = set()
+    email_in = _fetch_inward_from_email(target_date, seen_challans)
+    drive_in = _fetch_inward_from_drive(target_date, seen_challans)
+
+    inward: dict[str, dict] = {}
+    for source in (email_in, drive_in):
+        for code, info in source.items():
+            code = code.upper()
+            if code in inward:
+                inward[code]["qty"] += float(info.get("qty", 0.0))
+            else:
+                inward[code] = dict(info)
+    return inward, email_in, drive_in
 
 
 # ─── Outward from sheets ───────────────────────────────────────────────────────
@@ -1364,16 +1558,10 @@ def run_daily_update(
     # 4. Previous closing stock
     prev_cl = _get_prev_cl_stock(target_date, df_override=df)
 
-    # 5. Inward — email challan PDFs + Google Drive invoice PDFs
-    email_in = _fetch_inward_from_email(target_date)
-    drive_in = _fetch_inward_from_drive(target_date)
-    inward: dict[str, dict] = {}
-    for code, info in {**email_in, **drive_in}.items():
-        code = code.upper()
-        if code in inward:
-            inward[code]["qty"] += info.get("qty", 0.0)
-        else:
-            inward[code] = dict(info)
+    # 5. Inward — email challan PDFs + Google Drive invoice PDFs (34S receiving
+    #    warehouse only), with the same challan received twice the same day
+    #    de-duplicated and quantities summed per item.
+    inward, email_in, drive_in = _fetch_inward(target_date)
 
     # 6. Outward — 34S PHYSICAL DELIVERY CHALLAN + 34S RETURN RPL sheets
     outward = {k.upper(): v for k, v in _fetch_outward(target_date).items()}
@@ -1465,15 +1653,7 @@ def run_update_range(start_date: date, end_date: date) -> tuple[list[str], str]:
             continue
 
         prev_cl  = _get_prev_cl_stock(d, df_override=df_cache)
-        email_in = _fetch_inward_from_email(d)
-        drive_in = _fetch_inward_from_drive(d)
-        inward: dict[str, dict] = {}
-        for code, info in {**email_in, **drive_in}.items():
-            code = code.upper()
-            if code in inward:
-                inward[code]["qty"] += info.get("qty", 0.0)
-            else:
-                inward[code] = dict(info)
+        inward, email_in, drive_in = _fetch_inward(d)
         outward = {k.upper(): v for k, v in _fetch_outward(d).items()}
 
         # Build columns over full df — no item filtering, no positional mismatch
