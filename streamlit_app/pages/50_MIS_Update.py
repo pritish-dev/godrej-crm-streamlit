@@ -237,7 +237,16 @@ with wh_col_ui:
 with commit_col_ui:
     commitment_filter = st.selectbox(
         "Commitment Status",
-        ["All Items", "Committed Items Only", "Non-Committed Items Only"],
+        [
+            "All Items",
+            "Committed Items Only",
+            "Non-Committed Items Only",
+            "Committed Order",
+        ],
+        help=(
+            "‘Committed Order’ shows only orders (SO No.) where EVERY line item "
+            "is committed — the same orders highlighted green above."
+        ),
     )
 
 # Apply filters (also filter the green_mask in lock-step)
@@ -264,7 +273,14 @@ if selected_wh != "All" and "Sales Order Warehouse" in filtered.columns:
     filtered     = filtered[keep]
     filtered_msk = filtered_msk.loc[filtered.index] if not filtered_msk.empty else filtered_msk
 
-if commitment_filter != "All Items" and _committed_qty_col and _committed_qty_col in filtered.columns:
+if commitment_filter == "Committed Order":
+    # Show only orders where EVERY line item is committed (fully-committed SOs).
+    # These are exactly the SO numbers in `ready_sos` that drive the green rows.
+    if "Sales Order No." in filtered.columns:
+        keep = filtered["Sales Order No."].astype(str).str.strip().isin(ready_sos)
+        filtered     = filtered[keep]
+        filtered_msk = filtered_msk.loc[filtered.index] if not filtered_msk.empty else filtered_msk
+elif commitment_filter != "All Items" and _committed_qty_col and _committed_qty_col in filtered.columns:
     comm_num = pd.to_numeric(
         filtered[_committed_qty_col].astype(str).str.strip().str.replace(",", "", regex=False),
         errors="coerce"
