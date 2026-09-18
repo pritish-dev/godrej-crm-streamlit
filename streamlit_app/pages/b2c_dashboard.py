@@ -770,15 +770,20 @@ _pending_grouped = group_by_order_no(
 total_pending   = _pending_grouped.loc[
     _pending_grouped["PENDING DUE"] > PENDING_DUE_TOLERANCE, "PENDING DUE"
 ].sum()
-# Count unique orders whose delivery is not yet completed — matches pending-
-# delivery table logic. An order is "completed" only at "Delivered" (legacy
-# sheets) or "Installation Done" (new-format sheets); everything before that
-# (Pending, Scheduled for Delivery, Delivered-awaiting-install) counts here.
-_active_crm = crm[active_mask(crm)]
-if "ORDER NO" in crm.columns:
-    pending_del_cnt = int(_active_crm["ORDER NO"].nunique())
-else:
-    pending_del_cnt = int(len(_active_crm))
+# Count orders still awaiting delivery — matches the Pending / Overdue delivery
+# tables below, which show ONLY orders whose rolled-up delivery status is still
+# PENDING. Orders that have moved further along the lifecycle (Scheduled for
+# Delivery, Delivered, Installation Done) are NOT pending and are excluded.
+# group_by_order_no rolls each order up to its least-progressed line-item
+# status, so a group tagged PENDING still has at least one un-progressed item.
+_pending_active = group_by_order_no(
+    crm[active_mask(crm) & ~_is_free_stock(crm)]
+)
+if not _pending_active.empty and "DELIVERY STATUS" in _pending_active.columns:
+    _pending_active = _pending_active[
+        _pending_active["DELIVERY STATUS"].map(norm_status) == "PENDING"
+    ]
+pending_del_cnt = int(len(_pending_active))
 
 k1, k2, k3, k4 = st.columns(4)
 k1.metric("📦 Total Orders",       total_orders)
@@ -1009,13 +1014,19 @@ overdue_grouped = (
     .reset_index(drop=True)
 ) if not pending_overdue_raw.empty else pd.DataFrame()
 
-# ── Overdue table = PENDING orders only ──────────────────────────────────────
-# The Overdue Delivery Orders table must show ONLY orders whose delivery status
-# is still PENDING. Orders that have moved further along the lifecycle
-# (Scheduled for Delivery, Delivered-awaiting-install, …) are no longer treated
-# as overdue and drop out of this table. group_by_order_no already rolls each
-# order up to its least-progressed line-item status, so a group tagged PENDING
-# means the order still has at least one un-progressed item.
+# ── Pending & Overdue tables = PENDING orders only ───────────────────────────
+# Both the Pending Deliveries and the Overdue Delivery Orders tables must show
+# ONLY orders whose delivery status is still PENDING. Orders that have moved
+# further along the lifecycle (Scheduled for Delivery, Delivered, Installation
+# Done) are no longer awaiting delivery and drop out of these tables.
+# group_by_order_no already rolls each order up to its least-progressed
+# line-item status, so a group tagged PENDING still has at least one
+# un-progressed item.
+if not pending_grouped.empty and "DELIVERY STATUS" in pending_grouped.columns:
+    pending_grouped = pending_grouped[
+        pending_grouped["DELIVERY STATUS"].map(norm_status) == "PENDING"
+    ].reset_index(drop=True)
+
 if not overdue_grouped.empty and "DELIVERY STATUS" in overdue_grouped.columns:
     overdue_grouped = overdue_grouped[
         overdue_grouped["DELIVERY STATUS"].map(norm_status) == "PENDING"
