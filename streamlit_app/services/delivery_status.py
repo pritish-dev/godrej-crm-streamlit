@@ -8,10 +8,14 @@ New-format sheets (those that carry a dedicated "DELIVERY STATUS" column, e.g.
 
     PENDING → SCHEDULED FOR DELIVERY → DELIVERED → INSTALLATION DONE
 
-An order from a new-format sheet is only COMPLETED once its delivery status
-reaches "Installation Done". Legacy sheets only ever reach "DELIVERED", which
-is their completed state — so completion is judged per-row: "Installation Done"
-for new-format rows, "Delivered" for legacy rows.
+For these sheets the delivery state is also driven by the
+"DELIVERY REMARKS(DELIVERED/PENDING)" column, whose value ("Delivered" /
+"Pending") is folded into DELIVERY STATUS when the dashboard loads. An order is
+COMPLETED — and therefore drops out of the Pending Delivery / Overdue Delivery
+tables — once its status reaches EITHER "Delivered" OR "Installation Done".
+Legacy sheets only ever reach "DELIVERED", which is their completed state. So
+completion is judged per-row: "Delivered" or "Installation Done" for new-format
+rows, "Delivered" for legacy rows.
 """
 from __future__ import annotations
 
@@ -75,12 +79,14 @@ def cancelled_mask(df: pd.DataFrame) -> pd.Series:
 def is_completed(status, is_new_format: bool) -> bool:
     """True when this row/order is in its terminal completed state.
 
-    New-format rows complete at "Installation Done"; legacy rows complete at
+    New-format rows complete at EITHER "Delivered" OR "Installation Done" (a
+    "Delivered" order is treated as delivered and an "Installation Done" order
+    as completed — both leave the delivery pipeline). Legacy rows complete at
     "Delivered".
     """
     s = norm_status(status)
     if bool(is_new_format):
-        return s == COMPLETED_STATUS_NEW
+        return s in (COMPLETED_STATUS_NEW, COMPLETED_STATUS_LEGACY)
     return s == COMPLETED_STATUS_LEGACY
 
 

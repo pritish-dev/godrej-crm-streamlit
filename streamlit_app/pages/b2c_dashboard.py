@@ -99,6 +99,11 @@ PENDING_DISPLAY_COLS = [
     "SALES PERSON", "DELIVERY STATUS", "REMARKS", "SOURCE",
 ]
 
+# Payment-due rounding tolerance (₹). An order whose outstanding differential
+# (ORDER VALUE − amount paid) is this small or less is treated as fully paid and
+# is NOT shown in the Payment Due table nor counted in the headline Pending Due.
+PENDING_DUE_TOLERANCE = 1
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -405,6 +410,16 @@ def load_b2c_data():
         if _remarks_status is not None:
             blank = _native_status.str.strip().str.lower().isin(["", "nan", "none"])
             _native_status = _native_status.where(~blank, _remarks_status)
+            # The "DELIVERY REMARKS(DELIVERED/PENDING)" column is the source of
+            # truth for whether a new-format order is done. When it records
+            # "Delivered" (or "Installation Done") let it override an
+            # out-of-date native DELIVERY STATUS (e.g. still "Pending" /
+            # "Scheduled for Delivery"), so the completed order is recognised
+            # as such and drops out of the Pending / Overdue delivery tables.
+            _rem_done = _remarks_status.map(norm_status).isin(
+                ["DELIVERED", "INSTALLATION DONE"]
+            )
+            _native_status = _native_status.where(~_rem_done, _remarks_status)
         crm["DELIVERY STATUS"] = _native_status
         if _remarks_cols:
             crm = crm.drop(columns=[c for c in _remarks_cols if c in crm.columns])
@@ -747,9 +762,14 @@ total_value     = crm["ORDER VALUE"].sum()
 # phantom balance whenever the advance sits on a different line than the item
 # it paid for. Group first — excluding cancelled and free-stock rows exactly as
 # the Payment Due table does — then sum the per-order outstanding balances.
-total_pending   = group_by_order_no(
+_pending_grouped = group_by_order_no(
     crm[~cancelled_mask(crm) & ~_is_free_stock(crm)]
-)["PENDING DUE"].sum()
+)
+# Ignore ≤₹1 differentials (rounding artefacts) exactly as the Payment Due
+# table does, so the headline ties out with the sum of its rows.
+total_pending   = _pending_grouped.loc[
+    _pending_grouped["PENDING DUE"] > PENDING_DUE_TOLERANCE, "PENDING DUE"
+].sum()
 # Count unique orders whose delivery is not yet completed — matches pending-
 # delivery table logic. An order is "completed" only at "Delivered" (legacy
 # sheets) or "Installation Done" (new-format sheets); everything before that
@@ -1875,7 +1895,11 @@ st.subheader("💰 Payment Due")
 # so a cancelled item never shows as an outstanding payment.
 _crm_no_freestock = crm[~_is_free_stock(crm) & ~cancelled_mask(crm)].copy()
 payment_grouped = group_by_order_no(_crm_no_freestock)
-payment_grouped = payment_grouped[payment_grouped["PENDING DUE"] > 0].copy()
+# PENDING DUE is the differential (ORDER VALUE − amount the customer has paid,
+# i.e. ADV RECEIVED + MONEY RECEIPTS). An order counts as a payment due only
+# when that differential exceeds ₹1 — a residual of ₹1 or less is a rounding
+# artefact and is treated as fully paid, so it is not shown as pending.
+payment_grouped = payment_grouped[payment_grouped["PENDING DUE"] > PENDING_DUE_TOLERANCE].copy()
 payment_grouped = payment_grouped.sort_values(
     "DELIVERY DATE", ascending=False
 ).reset_index(drop=True)
