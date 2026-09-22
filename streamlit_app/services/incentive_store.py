@@ -212,6 +212,203 @@ def upsert_target(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Store target — proportional redistribution
+# ─────────────────────────────────────────────────────────────────────────────
+# The "store target" is simply the sum of every salesperson's monthly target.
+# At the start of a month each salesperson is given a target (e.g. senior 20 L,
+# next 10 L, rest 5 L each) and the store target = their sum. When the store
+# target has to be changed (e.g. lowered because sales are behind), we keep the
+# *same proportion* between salespeople and only rescale the total.
+#
+# Standards: the store keeps three benchmark levels of its base ("actual")
+# target — 90 %, 100 % and 110 %. Picking a standard sets the store target to
+# base × standard and splits it across the team in the existing proportion.
+
+QUARTER_MONTHS = {
+    "Q1": ["APRIL", "MAY", "JUNE"],
+    "Q2": ["JULY", "AUGUST", "SEPTEMBER"],
+    "Q3": ["OCTOBER", "NOVEMBER", "DECEMBER"],
+    "Q4": ["JANUARY", "FEBRUARY", "MARCH"],
+}
+
+# The three store-target standards, as fractions of the base ("actual") target.
+STORE_TARGET_STANDARDS = {"90%": 0.90, "100%": 1.00, "110%": 1.10}
+
+
+def _safe_float(v) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def plan_store_target_split(current_targets: dict, new_store_total_lakh: float) -> dict:
+    """Split ``new_store_total_lakh`` across salespeople keeping the *same*
+    proportion as ``current_targets`` (a ``{key: current_lakh}`` map).
+
+    Returns ``{key: new_lakh}`` whose values sum *exactly* to
+    ``new_store_total_lakh`` (rounded to 2 dp). Keys can be salesperson names
+    (monthly split) or ``(person, month)`` tuples (quarterly split) — the
+    proportion is preserved either way. Entries with a non-positive current
+    target are ignored, and an empty/zero input map yields ``{}``.
+    """
+    try:
+        new_total = round(float(new_store_total_lakh), 2)
+    except (TypeError, ValueError):
+        return {}
+    if new_total < 0:
+        return {}
+
+    keys = [k for k, v in current_targets.items() if _safe_float(v) > 0]
+    cur_sum = sum(_safe_float(current_targets[k]) for k in keys)
+    if not keys or cur_sum <= 0:
+        return {}
+
+    raw = {k: _safe_float(current_targets[k]) / cur_sum * new_total for k in keys}
+    rounded = {k: round(raw[k], 2) for k in keys}
+
+    # Push any rounding residual onto the largest share so the parts sum
+    # exactly to the requested store total.
+    residual = round(new_total - sum(rounded.values()), 2)
+    if abs(residual) >= 0.01:
+        top = max(keys, key=lambda k: raw[k])
+        rounded[top] = round(rounded[top] + residual, 2)
+
+    return rounded
+
+
+def get_store_target_lakh(fy: str, month: str = "", quarter: str = "") -> float:
+    """Current store target (Lakh) = sum of salesperson targets.
+
+    Pass ``month`` for a monthly store target or ``quarter`` for a quarterly
+    one (the sum across that quarter's three months).
+    """
+    df = get_targets_df()
+    if df is None or df.empty:
+        return 0.0
+    fy_c = (fy or "").strip()
+    mask = df["FY"] == fy_c
+    if month:
+        mask &= df["MONTH"] == str(month).strip().upper()
+    if quarter:
+        mask &= df["QUARTER"] == str(quarter).strip().upper()
+    return round(float(df.loc[mask, "TARGET"].sum()), 2)
+
+
+def apply_monthly_store_target(
+    fy: str, month: str, new_store_total_lakh: float, quarter: str = ""
+) -> dict:
+    """Rescale every salesperson's target for ``month`` so their sum becomes
+    ``new_store_total_lakh`` (Lakh), keeping the existing proportion.
+
+    Returns ``{"ok": bool, "msg": str, "rows": [...], "new_total": float}``.
+    """
+    df = get_targets_df()
+    fy_c  = (fy or "").strip()
+    mon_u = (month or "").strip().upper()
+    if not quarter:
+        quarter = _quarter_for_month(mon_u)
+
+    mask = (df["FY"] == fy_c) & (df["MONTH"] == mon_u) & (df["TARGET"] > 0)
+    cur = df[mask]
+    current = {
+        str(r["SALES PERSON"]).strip().upper(): float(r["TARGET"])
+        for _, r in cur.iterrows()
+    }
+
+    plan = plan_store_target_split(current, new_store_total_lakh)
+    if not plan:
+        return {
+            "ok": False,
+            "msg": (
+                f"No existing salesperson targets found for {mon_u} (FY {fy_c}) "
+                "to split. Set individual monthly targets first, then adjust the "
+                "store target."
+            ),
+            "rows": [],
+            "new_total": 0.0,
+        }
+
+    rows = []
+    for person, new_lakh in plan.items():
+        upsert_target(person, fy_c, month, new_lakh, quarter)
+        rows.append({
+            "SALES PERSON": person,
+            "OLD": round(current.get(person, 0.0), 2),
+            "NEW": new_lakh,
+        })
+    rows.sort(key=lambda r: r["NEW"], reverse=True)
+    new_total = round(sum(plan.values()), 2)
+    return {
+        "ok": True,
+        "msg": (
+            f"Store target for {mon_u} (FY {fy_c}) set to {new_total} Lakh, "
+            f"split across {len(rows)} salesperson(s) in the same proportion."
+        ),
+        "rows": rows,
+        "new_total": new_total,
+    }
+
+
+def apply_quarterly_store_target(
+    fy: str, quarter: str, new_store_total_lakh: float
+) -> dict:
+    """Rescale every salesperson's target across ``quarter``'s three months so
+    their combined sum becomes ``new_store_total_lakh`` (Lakh), keeping the
+    existing per-person, per-month proportion.
+
+    Returns ``{"ok": bool, "msg": str, "rows": [...], "new_total": float}``.
+    """
+    df = get_targets_df()
+    fy_c = (fy or "").strip()
+    q_u  = (quarter or "").strip().upper()
+
+    mask = (df["FY"] == fy_c) & (df["QUARTER"] == q_u) & (df["TARGET"] > 0)
+    cur = df[mask]
+    # Key on (person, month) so both the split between people and the split
+    # across the quarter's months keep their original proportion.
+    current = {
+        (str(r["SALES PERSON"]).strip().upper(), str(r["MONTH"]).strip().upper()):
+            float(r["TARGET"])
+        for _, r in cur.iterrows()
+    }
+
+    plan = plan_store_target_split(current, new_store_total_lakh)
+    if not plan:
+        return {
+            "ok": False,
+            "msg": (
+                f"No existing salesperson targets found for {q_u} (FY {fy_c}) "
+                "to split. Set individual monthly targets first, then adjust the "
+                "store target."
+            ),
+            "rows": [],
+            "new_total": 0.0,
+        }
+
+    rows = []
+    for (person, mon_u), new_lakh in plan.items():
+        upsert_target(person, fy_c, mon_u, new_lakh, q_u)
+        rows.append({
+            "SALES PERSON": person,
+            "MONTH": mon_u,
+            "OLD": round(current.get((person, mon_u), 0.0), 2),
+            "NEW": new_lakh,
+        })
+    rows.sort(key=lambda r: (r["SALES PERSON"], r["MONTH"]))
+    new_total = round(sum(plan.values()), 2)
+    return {
+        "ok": True,
+        "msg": (
+            f"Store target for {q_u} (FY {fy_c}) set to {new_total} Lakh, "
+            f"split across {len(rows)} salesperson-month(s) in the same proportion."
+        ),
+        "rows": rows,
+        "new_total": new_total,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Audit log
 # ─────────────────────────────────────────────────────────────────────────────
 def append_log(
