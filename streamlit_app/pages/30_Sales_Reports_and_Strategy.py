@@ -74,10 +74,23 @@ try:
     from services.incentive_store import (
         get_targets_df as _sr_get_iq_targets_df,
         upsert_target as _sr_upsert_iq_target,
+        get_store_target_lakh as _sr_get_store_target_lakh,
+        plan_store_target_split as _sr_plan_store_target_split,
+        apply_monthly_store_target as _sr_apply_monthly_store_target,
+        apply_quarterly_store_target as _sr_apply_quarterly_store_target,
+        STORE_TARGET_STANDARDS as _SR_STORE_STANDARDS,
+        QUARTER_MONTHS as _SR_QUARTER_MONTHS_MAP,
     )
     _SR_IQ_AVAILABLE = True
 except Exception:
     _SR_IQ_AVAILABLE = False
+    _SR_STORE_STANDARDS = {"90%": 0.90, "100%": 1.00, "110%": 1.10}
+    _SR_QUARTER_MONTHS_MAP = {
+        "Q1": ["APRIL", "MAY", "JUNE"],
+        "Q2": ["JULY", "AUGUST", "SEPTEMBER"],
+        "Q3": ["OCTOBER", "NOVEMBER", "DECEMBER"],
+        "Q4": ["JANUARY", "FEBRUARY", "MARCH"],
+    }
 
 _SR_MONTH_NAMES = {
     1: "JANUARY", 2: "FEBRUARY", 3: "MARCH", 4: "APRIL",
@@ -994,6 +1007,191 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                         st.cache_data.clear()
                     else:
                         st.error(_sr_msg)
+
+        st.divider()
+
+        # ── Store target — proportional redistribution ────────────────────
+        st.subheader("🏪 Set Store Target (90% / 100% / 110%)")
+        st.caption(
+            "The **store target** is the sum of all salesperson targets. Enter "
+            "the store's actual (100%) target and pick a standard — **90%**, "
+            "**100%** or **110%**. The chosen store target is split across the "
+            "team in the **same proportion** as their current targets, so "
+            "relative shares (senior vs junior) stay intact. Example: a 39 L "
+            "store target keeps a 20 : 10 : 5 : 5 split as 20 : 10 : 5 : 5 "
+            "scaled to sum to 39 L."
+        )
+
+        _sr_st_scope = st.radio(
+            "Scope",
+            ["Monthly", "Quarterly (3 months)"],
+            horizontal=True,
+            key="sr_store_scope",
+            help="Monthly rescales one month; Quarterly rescales all three "
+                 "months of the quarter together, keeping each month's share.",
+        )
+        _sr_is_quarterly = _sr_st_scope.startswith("Quarterly")
+
+        _sr_st_today = datetime.now().date()
+        _sc1, _sc2, _sc3 = st.columns([1, 1, 1.4])
+        with _sc1:
+            _sr_st_month = st.selectbox(
+                "Month",
+                options=list(range(1, 13)),
+                index=_sr_st_today.month - 1,
+                format_func=lambda m: calendar.month_name[m],
+                key="sr_store_month",
+                help="For Quarterly scope this only picks which quarter to use.",
+            )
+        with _sc2:
+            _sr_st_year = st.selectbox(
+                "Year",
+                options=list(range(2026, _sr_st_today.year + 2)),
+                index=0,
+                key="sr_store_year",
+            )
+        with _sc3:
+            _sr_st_standard = st.radio(
+                "Standard",
+                list(_SR_STORE_STANDARDS.keys()),
+                index=0,
+                horizontal=True,
+                key="sr_store_standard",
+                help="Store target = actual (100%) target × the chosen standard.",
+            )
+
+        _sr_st_fy  = _sr_get_fy_str(_sr_st_month, _sr_st_year)
+        _sr_st_mon = _SR_MONTH_NAMES.get(_sr_st_month, "")
+        _sr_st_qtr = next(
+            (q for q, ms in _SR_QUARTER_MONTHS_MAP.items() if _sr_st_mon in ms),
+            "",
+        )
+
+        if _sr_is_quarterly:
+            _sr_cur_store = (
+                _sr_get_store_target_lakh(_sr_st_fy, quarter=_sr_st_qtr)
+                if _SR_IQ_AVAILABLE else 0.0
+            )
+            _sr_scope_lbl = f"{_sr_st_qtr} FY {_sr_st_fy}"
+        else:
+            _sr_cur_store = (
+                _sr_get_store_target_lakh(_sr_st_fy, month=_sr_st_mon)
+                if _SR_IQ_AVAILABLE else 0.0
+            )
+            _sr_scope_lbl = f"{_sr_st_mon.title()} {_sr_st_year}"
+
+        _sr_base_lakh = st.number_input(
+            "Actual (100%) store target — ₹ Lakh",
+            min_value=0.0,
+            value=float(_sr_cur_store),
+            step=1.0,
+            format="%.2f",
+            key="sr_store_base",
+            help=(
+                "The store's real base target for this "
+                + ("quarter" if _sr_is_quarterly else "month")
+                + ". Defaults to the current store target (sum of salesperson "
+                "targets). The three standards are computed from this value."
+            ),
+        )
+
+        _sr_pct = _SR_STORE_STANDARDS.get(_sr_st_standard, 1.0)
+        _sr_new_store = round(_sr_base_lakh * _sr_pct, 2)
+
+        _sm1, _sm2, _sm3 = st.columns(3)
+        _sm1.metric("Current store target", f"{_sr_cur_store:g} L")
+        _sm2.metric(f"New store target ({_sr_st_standard})", f"{_sr_new_store:g} L")
+        _sm3.metric("Scope", _sr_scope_lbl)
+
+        # Build the proportional preview from the current targets.
+        _sr_iq_all = _sr_get_iq_targets_df() if _SR_IQ_AVAILABLE else pd.DataFrame()
+        _sr_preview_rows = []
+        if _SR_IQ_AVAILABLE and _sr_iq_all is not None and not _sr_iq_all.empty:
+            if _sr_is_quarterly:
+                _sr_qmask = (
+                    (_sr_iq_all["FY"] == _sr_st_fy)
+                    & (_sr_iq_all["QUARTER"] == _sr_st_qtr)
+                    & (_sr_iq_all["TARGET"] > 0)
+                )
+                _sr_cur_map = {
+                    (str(r["SALES PERSON"]).strip().upper(),
+                     str(r["MONTH"]).strip().upper()): float(r["TARGET"])
+                    for _, r in _sr_iq_all[_sr_qmask].iterrows()
+                }
+                _sr_plan = _sr_plan_store_target_split(_sr_cur_map, _sr_new_store)
+                for (_sr_p, _sr_mo), _sr_v in _sr_plan.items():
+                    _sr_preview_rows.append({
+                        "Sales Person": _sr_p,
+                        "Month": _sr_mo.title(),
+                        "Old (L)": round(_sr_cur_map[(_sr_p, _sr_mo)], 2),
+                        "New (L)": _sr_v,
+                    })
+                _sr_preview_rows.sort(key=lambda d: (d["Sales Person"], d["Month"]))
+            else:
+                _sr_mmask = (
+                    (_sr_iq_all["FY"] == _sr_st_fy)
+                    & (_sr_iq_all["MONTH"] == _sr_st_mon)
+                    & (_sr_iq_all["TARGET"] > 0)
+                )
+                _sr_cur_map = {
+                    str(r["SALES PERSON"]).strip().upper(): float(r["TARGET"])
+                    for _, r in _sr_iq_all[_sr_mmask].iterrows()
+                }
+                _sr_plan = _sr_plan_store_target_split(_sr_cur_map, _sr_new_store)
+                for _sr_p, _sr_v in _sr_plan.items():
+                    _sr_preview_rows.append({
+                        "Sales Person": _sr_p,
+                        "Old (L)": round(_sr_cur_map[_sr_p], 2),
+                        "New (L)": _sr_v,
+                    })
+                _sr_preview_rows.sort(key=lambda d: d["New (L)"], reverse=True)
+
+        if not _SR_IQ_AVAILABLE:
+            st.error("❌ Incentive_Quarterly_Targets service is unavailable.")
+        elif not _sr_preview_rows:
+            st.warning(
+                f"No existing salesperson targets to split for {_sr_scope_lbl}. "
+                "Use the 'Set / Update Monthly Target' form above to set each "
+                "salesperson's target first, then adjust the store target."
+            )
+        else:
+            _sr_prev_df = pd.DataFrame(_sr_preview_rows)
+            st.caption("Preview — new split (proportional to current targets):")
+            st.dataframe(_sr_prev_df, use_container_width=True, hide_index=True)
+
+            _sr_store_confirm = st.checkbox(
+                f"Confirm: overwrite salesperson targets for {_sr_scope_lbl} so "
+                f"they sum to {_sr_new_store:g} L ({_sr_st_standard} of "
+                f"{_sr_base_lakh:g} L).",
+                key="sr_store_confirm",
+            )
+            if st.button(
+                "💾 Apply Store Target",
+                type="primary",
+                use_container_width=True,
+                key="sr_store_apply",
+                disabled=not _sr_store_confirm,
+            ):
+                try:
+                    if _sr_is_quarterly:
+                        _sr_res = _sr_apply_quarterly_store_target(
+                            _sr_st_fy, _sr_st_qtr, _sr_new_store
+                        )
+                    else:
+                        _sr_res = _sr_apply_monthly_store_target(
+                            _sr_st_fy, _sr_st_mon, _sr_new_store, _sr_st_qtr
+                        )
+                except Exception as _sr_exc:
+                    _sr_res = {
+                        "ok": False,
+                        "msg": f"Failed to apply store target: {_sr_exc}",
+                    }
+                if _sr_res.get("ok"):
+                    st.success("✅ " + _sr_res.get("msg", "Store target applied."))
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.error("❌ " + _sr_res.get("msg", "Could not apply store target."))
 
         st.divider()
 
