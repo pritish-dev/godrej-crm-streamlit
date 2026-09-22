@@ -372,13 +372,18 @@ def _slice_window(df, dt_col, start, end):
     return df[mask.fillna(False)].copy()
 
 
+# Use the EFFECTIVE target (adjusted UPDATED TARGET where set, else the
+# original TARGET) so a store-target adjustment flows into the incentive maths.
+_TGT_COL = "EFFECTIVE TARGET" if "EFFECTIVE TARGET" in targets_df.columns else "TARGET"
+
+
 def quarterly_target(person):
     rows = targets_df[
         (targets_df["FY"] == fy)
         & (targets_df["QUARTER"] == quarter)
         & (targets_df["SALES PERSON"] == person)
     ]
-    return float(rows["TARGET"].sum())
+    return float(rows[_TGT_COL].sum())
 
 
 def monthly_target(person, month_name):
@@ -388,7 +393,7 @@ def monthly_target(person, month_name):
         & (targets_df["MONTH"] == month_name)
         & (targets_df["SALES PERSON"] == person)
     ]
-    return float(rows["TARGET"].sum())
+    return float(rows[_TGT_COL].sum())
 
 
 def tier_rate(achv_pct):

@@ -134,7 +134,9 @@ def _sr_iq_target_rupees(sales_person: str, month_int: int, year_int: int) -> fl
             (iq_df["MONTH"].str.upper() == mon)
         ]
         if not match.empty:
-            return float(match.iloc[0]["TARGET"]) * 100_000
+            # Effective target = adjusted UPDATED TARGET where set, else TARGET.
+            _col = "EFFECTIVE TARGET" if "EFFECTIVE TARGET" in match.columns else "TARGET"
+            return float(match.iloc[0][_col]) * 100_000
     except Exception:
         pass
     return 0.0
@@ -1016,10 +1018,13 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
             "The **store target** is the sum of all salesperson targets. Enter "
             "the store's actual (100%) target and pick a standard — **90%**, "
             "**100%** or **110%**. The chosen store target is split across the "
-            "team in the **same proportion** as their current targets, so "
-            "relative shares (senior vs junior) stay intact. Example: a 39 L "
-            "store target keeps a 20 : 10 : 5 : 5 split as 20 : 10 : 5 : 5 "
-            "scaled to sum to 39 L."
+            "team in the **same proportion** as their original targets, so "
+            "relative shares (senior vs junior) stay intact. The result is "
+            "auto-populated into a separate **UPDATED TARGET** column in the "
+            "Incentive_Quarterly_Targets sheet — the original targets are never "
+            "overwritten — and the dashboards then show the updated figures. "
+            "Example: a 39 L store target keeps a 20 : 10 : 5 : 5 split as "
+            "20 : 10 : 5 : 5 scaled to sum to 39 L."
         )
 
         _sr_st_scope = st.radio(
@@ -1072,10 +1077,20 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                 _sr_get_store_target_lakh(_sr_st_fy, quarter=_sr_st_qtr)
                 if _SR_IQ_AVAILABLE else 0.0
             )
+            _sr_base_default = (
+                _sr_get_store_target_lakh(
+                    _sr_st_fy, quarter=_sr_st_qtr, use_effective=False)
+                if _SR_IQ_AVAILABLE else 0.0
+            )
             _sr_scope_lbl = f"{_sr_st_qtr} FY {_sr_st_fy}"
         else:
             _sr_cur_store = (
                 _sr_get_store_target_lakh(_sr_st_fy, month=_sr_st_mon)
+                if _SR_IQ_AVAILABLE else 0.0
+            )
+            _sr_base_default = (
+                _sr_get_store_target_lakh(
+                    _sr_st_fy, month=_sr_st_mon, use_effective=False)
                 if _SR_IQ_AVAILABLE else 0.0
             )
             _sr_scope_lbl = f"{_sr_st_mon.title()} {_sr_st_year}"
@@ -1083,15 +1098,17 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
         _sr_base_lakh = st.number_input(
             "Actual (100%) store target — ₹ Lakh",
             min_value=0.0,
-            value=float(_sr_cur_store),
+            value=float(_sr_base_default),
             step=1.0,
             format="%.2f",
             key="sr_store_base",
             help=(
-                "The store's real base target for this "
+                "The store's real base (100%) target for this "
                 + ("quarter" if _sr_is_quarterly else "month")
-                + ". Defaults to the current store target (sum of salesperson "
-                "targets). The three standards are computed from this value."
+                + ". Defaults to the sum of the salespeople's ORIGINAL targets "
+                "(the start-of-month baseline). The three standards are computed "
+                "from this value; the result is written to the UPDATED TARGET "
+                "column, leaving the original targets untouched."
             ),
         )
 
@@ -1099,7 +1116,7 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
         _sr_new_store = round(_sr_base_lakh * _sr_pct, 2)
 
         _sm1, _sm2, _sm3 = st.columns(3)
-        _sm1.metric("Current store target", f"{_sr_cur_store:g} L")
+        _sm1.metric("Current store target (live)", f"{_sr_cur_store:g} L")
         _sm2.metric(f"New store target ({_sr_st_standard})", f"{_sr_new_store:g} L")
         _sm3.metric("Scope", _sr_scope_lbl)
 
@@ -1123,8 +1140,8 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                     _sr_preview_rows.append({
                         "Sales Person": _sr_p,
                         "Month": _sr_mo.title(),
-                        "Old (L)": round(_sr_cur_map[(_sr_p, _sr_mo)], 2),
-                        "New (L)": _sr_v,
+                        "Original Target (L)": round(_sr_cur_map[(_sr_p, _sr_mo)], 2),
+                        "Updated Target (L)": _sr_v,
                     })
                 _sr_preview_rows.sort(key=lambda d: (d["Sales Person"], d["Month"]))
             else:
@@ -1141,10 +1158,10 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                 for _sr_p, _sr_v in _sr_plan.items():
                     _sr_preview_rows.append({
                         "Sales Person": _sr_p,
-                        "Old (L)": round(_sr_cur_map[_sr_p], 2),
-                        "New (L)": _sr_v,
+                        "Original Target (L)": round(_sr_cur_map[_sr_p], 2),
+                        "Updated Target (L)": _sr_v,
                     })
-                _sr_preview_rows.sort(key=lambda d: d["New (L)"], reverse=True)
+                _sr_preview_rows.sort(key=lambda d: d["Updated Target (L)"], reverse=True)
 
         if not _SR_IQ_AVAILABLE:
             st.error("❌ Incentive_Quarterly_Targets service is unavailable.")
@@ -1156,13 +1173,17 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
             )
         else:
             _sr_prev_df = pd.DataFrame(_sr_preview_rows)
-            st.caption("Preview — new split (proportional to current targets):")
+            st.caption(
+                "Preview — the new **UPDATED TARGET** for each salesperson, "
+                "split in the same proportion as their original targets. The "
+                "original TARGET column is left unchanged."
+            )
             st.dataframe(_sr_prev_df, use_container_width=True, hide_index=True)
 
             _sr_store_confirm = st.checkbox(
-                f"Confirm: overwrite salesperson targets for {_sr_scope_lbl} so "
-                f"they sum to {_sr_new_store:g} L ({_sr_st_standard} of "
-                f"{_sr_base_lakh:g} L).",
+                f"Confirm: write the UPDATED TARGET for {_sr_scope_lbl} so the "
+                f"salespeople sum to {_sr_new_store:g} L ({_sr_st_standard} of "
+                f"{_sr_base_lakh:g} L). Original targets are kept.",
                 key="sr_store_confirm",
             )
             if st.button(

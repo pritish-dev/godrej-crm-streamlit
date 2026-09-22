@@ -352,7 +352,8 @@ def _get_monthly_target(month: str) -> float:
         if df is None or df.empty:
             return 0.0
         mask = df["MONTH"] == month.upper()
-        return float(df.loc[mask, "TARGET"].sum()) * 1_00_000
+        _col = "EFFECTIVE TARGET" if "EFFECTIVE TARGET" in df.columns else "TARGET"
+        return float(df.loc[mask, _col].sum()) * 1_00_000
     except Exception:
         return 0.0
 
