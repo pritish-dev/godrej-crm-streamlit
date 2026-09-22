@@ -93,7 +93,9 @@ def _iq_target_rupees(sales_person: str, month_int: int, year_int: int) -> float
             (iq_df["MONTH"].str.upper() == mon)
         ]
         if not match.empty:
-            return float(match.iloc[0]["TARGET"]) * 100_000
+            # Effective target = adjusted UPDATED TARGET where set, else TARGET.
+            _col = "EFFECTIVE TARGET" if "EFFECTIVE TARGET" in match.columns else "TARGET"
+            return float(match.iloc[0][_col]) * 100_000
     except Exception:
         pass
     return 0.0
