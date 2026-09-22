@@ -41,10 +41,21 @@ from services.sheets import _get_sh, get_df  # type: ignore
 # Sheet names + canonical headers
 # ─────────────────────────────────────────────────────────────────────────────
 TARGETS_SHEET = "Incentive_Quarterly_Targets"
-TARGETS_HEADERS = ["SALES PERSON", "FY", "QUARTER", "MONTH", "TARGET", "UPDATED TARGET"]
-# Column that holds the auto-populated, store-target-adjusted figure. Kept
-# separate from the original TARGET so the start-of-month baseline is preserved.
-UPDATED_TARGET_COL = "UPDATED TARGET"
+TARGETS_HEADERS = ["SALES PERSON", "FY", "QUARTER", "MONTH", "TARGET"]
+
+# The store/monthly-target adjustment writes each salesperson's recalculated
+# figure into a *per-month* column, e.g. "UPDATED TARGET SEPTEMBER". The
+# original TARGET is never overwritten. A row's effective target is the value in
+# its own month's UPDATED TARGET column when set, otherwise the original TARGET.
+UPDATED_TARGET_PREFIX = "UPDATED TARGET "
+
+
+def updated_target_col_name(month: str) -> str:
+    """Column header that holds the adjusted target for ``month``.
+
+    e.g. ``updated_target_col_name("September") -> "UPDATED TARGET SEPTEMBER"``.
+    """
+    return f"{UPDATED_TARGET_PREFIX}{str(month).strip().upper()}"
 
 LOG_SHEET = "Incentive_Audit_Log"
 LOG_HEADERS = [
@@ -89,24 +100,24 @@ def _ensure_tab(name: str, headers: list[str], rows: int = 1000) -> "object":
     return ws
 
 
-def _ensure_updated_target_column(ws) -> None:
-    """Add the 'UPDATED TARGET' header to an existing sheet that predates it.
+def _ensure_month_updated_column(ws, month: str) -> str:
+    """Ensure a per-month 'UPDATED TARGET <MONTH>' column exists; return its name.
 
-    Older sheets only have SALES PERSON | FY | QUARTER | MONTH | TARGET. This
-    appends the UPDATED TARGET column header (leaving every data cell blank) so
-    the store-target adjustment has somewhere to write without disturbing the
-    original TARGET values. Best-effort — never raises.
+    Creates the header at the next free column if missing (data cells left
+    blank). Best-effort — never raises.
     """
+    col_name = updated_target_col_name(month)
     try:
         headers = [str(h).strip().upper() for h in (ws.row_values(1) or [])]
-        if UPDATED_TARGET_COL not in headers:
-            ws.update_cell(1, len(headers) + 1, UPDATED_TARGET_COL)
+        if col_name not in headers:
+            ws.update_cell(1, len(headers) + 1, col_name)
             try:
                 get_df.clear()
             except Exception:
                 pass
     except Exception:
         pass
+    return col_name
 
 
 def ensure_targets_tab():
@@ -116,16 +127,13 @@ def ensure_targets_tab():
         existing = ws.get_all_values()
         if len(existing) <= 1:
             for person, month, tgt in SEED_TARGETS:
-                # 6 columns: leave UPDATED TARGET blank at seed time.
-                ws.append_row([person, DEFAULT_FY, DEFAULT_QUARTER, month, tgt, ""])
+                ws.append_row([person, DEFAULT_FY, DEFAULT_QUARTER, month, tgt])
             try:
                 get_df.clear()
             except Exception:
                 pass
     except Exception:
         pass
-    # Migrate legacy sheets that lack the UPDATED TARGET column.
-    _ensure_updated_target_column(ws)
     return ws
 
 
@@ -155,14 +163,36 @@ def get_targets_df() -> pd.DataFrame:
     df["QUARTER"] = df["QUARTER"].astype(str).str.strip().str.upper()
     df["MONTH"] = df["MONTH"].astype(str).str.strip().str.upper()
     df["TARGET"] = pd.to_numeric(df["TARGET"], errors="coerce").fillna(0.0)
-    df[UPDATED_TARGET_COL] = pd.to_numeric(
-        df[UPDATED_TARGET_COL], errors="coerce"
-    ).fillna(0.0)
-    # Effective target = UPDATED TARGET when it has been set (> 0), else the
-    # original TARGET. Dashboards read this column so a store-target adjustment
-    # is reflected everywhere while the baseline TARGET stays intact.
+
+    # Normalise every per-month "UPDATED TARGET <MONTH>" column to numeric.
+    month_cols = [
+        c for c in df.columns
+        if str(c).strip().upper().startswith(UPDATED_TARGET_PREFIX)
+    ]
+    for c in month_cols:
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+
+    # For each row, its adjusted figure lives in the column named after its own
+    # MONTH (e.g. a SEPTEMBER row -> "UPDATED TARGET SEPTEMBER").
+    def _own_month_updated(row) -> float:
+        col = updated_target_col_name(row["MONTH"])
+        if col in df.columns:
+            try:
+                return float(row[col])
+            except (TypeError, ValueError):
+                return 0.0
+        return 0.0
+
+    if len(df):
+        df["UPDATED TARGET"] = df.apply(_own_month_updated, axis=1)
+    else:
+        df["UPDATED TARGET"] = pd.Series(dtype="float64")
+
+    # Effective target = the month's UPDATED TARGET when set (> 0), else the
+    # original TARGET. Dashboards read this so an adjustment is reflected
+    # everywhere while the baseline TARGET stays intact.
     df["EFFECTIVE TARGET"] = df["TARGET"].where(
-        df[UPDATED_TARGET_COL] <= 0, df[UPDATED_TARGET_COL]
+        df["UPDATED TARGET"] <= 0, df["UPDATED TARGET"]
     )
     return df
 
@@ -258,25 +288,29 @@ def upsert_updated_target(
     updated_target_lakh: float,
     quarter: str = "",
 ) -> str:
-    """Write the auto-populated **UPDATED TARGET** for one salesperson-month.
+    """Write the auto-populated updated target for one salesperson-month into the
+    **per-month** column ``UPDATED TARGET <MONTH>`` (created on demand).
 
     Leaves the original TARGET untouched. Matches on SALES PERSON + FY + MONTH
     (case-insensitive). ``updated_target_lakh`` is stored in Lakh, whole numbers
     without a trailing ``.0``. If the row does not yet exist it is created (with
     a blank TARGET) so nothing is lost.
     """
-    ws = ensure_targets_tab()  # also guarantees the UPDATED TARGET column exists
+    ws = ensure_targets_tab()
+    mon_u = (month or "").strip().upper()
+    # Guarantee the month-specific column exists, then (re)read the headers.
+    upd_col = _ensure_month_updated_column(ws, mon_u)
     headers = [h.strip().upper() for h in (ws.row_values(1) or [])]
     if not headers:
         ws.update("A1", [TARGETS_HEADERS])
         headers = TARGETS_HEADERS[:]
-    if UPDATED_TARGET_COL not in headers:
-        _ensure_updated_target_column(ws)
-        headers = [h.strip().upper() for h in (ws.row_values(1) or [])]
+    if upd_col not in headers:
+        # Header write did not take yet — append it to our local list so the
+        # append/update below still targets the right column index.
+        headers = headers + [upd_col]
 
     sp_u  = (sales_person or "").strip().upper()
     fy_c  = (fy or "").strip()
-    mon_u = (month or "").strip().upper()
     if not quarter:
         quarter = _quarter_for_month(mon_u)
 
@@ -298,17 +332,17 @@ def upsert_updated_target(
             break
 
     if found_row:
-        col_idx = headers.index(UPDATED_TARGET_COL) + 1
+        col_idx = headers.index(upd_col) + 1
         ws.update_cell(found_row, col_idx, tgt_store)
         action = "updated"
     else:
         val_map = {
-            "SALES PERSON":       sp_u,
-            "FY":                 fy_c,
-            "QUARTER":            quarter,
-            "MONTH":              mon_u,
-            "TARGET":             "",
-            UPDATED_TARGET_COL:   tgt_store,
+            "SALES PERSON": sp_u,
+            "FY":           fy_c,
+            "QUARTER":      quarter,
+            "MONTH":        mon_u,
+            "TARGET":       "",
+            upd_col:        tgt_store,
         }
         ws.append_row([val_map.get(c, "") for c in headers])
         action = "set"
@@ -319,7 +353,9 @@ def upsert_updated_target(
         except Exception:
             pass
 
-    return f"✅ Updated target {action} for {sales_person} — {month} (FY {fy_c}): {tgt_store} Lakh"
+    return (
+        f"✅ {upd_col} {action} for {sales_person} (FY {fy_c}): {tgt_store} Lakh"
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -450,7 +486,7 @@ def apply_monthly_store_target(
 
     rows = []
     for person, new_lakh in plan.items():
-        # Write the adjusted figure to UPDATED TARGET; keep the original TARGET.
+        # Write the adjusted figure into "UPDATED TARGET <MONTH>"; keep TARGET.
         upsert_updated_target(person, fy_c, month, new_lakh, quarter)
         rows.append({
             "SALES PERSON": person,
@@ -462,9 +498,10 @@ def apply_monthly_store_target(
     return {
         "ok": True,
         "msg": (
-            f"Store target for {mon_u} (FY {fy_c}) set to {new_total} Lakh, "
+            f"Monthly target for {mon_u} (FY {fy_c}) set to {new_total} Lakh, "
             f"split across {len(rows)} salesperson(s) in the same proportion "
-            "(written to the UPDATED TARGET column; original targets kept)."
+            f"(written to the '{updated_target_col_name(mon_u)}' column; "
+            "original targets kept)."
         ),
         "rows": rows,
         "new_total": new_total,
@@ -509,7 +546,7 @@ def apply_quarterly_store_target(
 
     rows = []
     for (person, mon_u), new_lakh in plan.items():
-        # Write the adjusted figure to UPDATED TARGET; keep the original TARGET.
+        # Write the adjusted figure into "UPDATED TARGET <MONTH>"; keep TARGET.
         upsert_updated_target(person, fy_c, mon_u, new_lakh, q_u)
         rows.append({
             "SALES PERSON": person,
@@ -519,12 +556,16 @@ def apply_quarterly_store_target(
         })
     rows.sort(key=lambda r: (r["SALES PERSON"], r["MONTH"]))
     new_total = round(sum(plan.values()), 2)
+    q_month_cols = ", ".join(
+        f"'{updated_target_col_name(m)}'" for m in QUARTER_MONTHS.get(q_u, [])
+    )
     return {
         "ok": True,
         "msg": (
-            f"Store target for {q_u} (FY {fy_c}) set to {new_total} Lakh, "
-            f"split across {len(rows)} salesperson-month(s) in the same proportion "
-            "(written to the UPDATED TARGET column; original targets kept)."
+            f"Quarterly target for {q_u} (FY {fy_c}) set to {new_total} Lakh, "
+            f"split across {len(rows)} salesperson-month(s) in the same "
+            f"proportion (written to the {q_month_cols} columns; "
+            "original targets kept)."
         ),
         "rows": rows,
         "new_total": new_total,

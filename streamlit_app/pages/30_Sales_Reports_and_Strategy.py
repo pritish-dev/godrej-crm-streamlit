@@ -1012,19 +1012,20 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
 
         st.divider()
 
-        # ── Store target — proportional redistribution ────────────────────
-        st.subheader("🏪 Set Store Target (90% / 100% / 110%)")
+        # ── Monthly / quarterly target — proportional redistribution ──────
+        st.subheader("🎯 Set Monthly Target (90% / 100% / 110%)")
         st.caption(
-            "The **store target** is the sum of all salesperson targets. Enter "
-            "the store's actual (100%) target and pick a standard — **90%**, "
-            "**100%** or **110%**. The chosen store target is split across the "
-            "team in the **same proportion** as their original targets, so "
-            "relative shares (senior vs junior) stay intact. The result is "
-            "auto-populated into a separate **UPDATED TARGET** column in the "
-            "Incentive_Quarterly_Targets sheet — the original targets are never "
-            "overwritten — and the dashboards then show the updated figures. "
-            "Example: a 39 L store target keeps a 20 : 10 : 5 : 5 split as "
-            "20 : 10 : 5 : 5 scaled to sum to 39 L."
+            "The **monthly target** is the sum of all salesperson targets for "
+            "the month (e.g. September = 63 L). Enter the actual (100%) target "
+            "and pick a standard — **90%**, **100%** or **110%**. The chosen "
+            "target is split across the team in the **same proportion** as their "
+            "original targets, so relative shares (senior vs junior) stay intact. "
+            "Each salesperson's new figure is auto-populated into a per-month "
+            "**`UPDATED TARGET <MONTH>`** column (e.g. `UPDATED TARGET "
+            "SEPTEMBER`) in the Incentive_Quarterly_Targets sheet — the original "
+            "TARGET is never overwritten — and the dashboards then show the "
+            "updated figures. Example: a 63 L September target at 90% becomes "
+            "56.7 L, split 20 : 20 : 10 : 5 : 5 : 3 scaled to sum to 56.7 L."
         )
 
         _sr_st_scope = st.radio(
@@ -1096,19 +1097,20 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
             _sr_scope_lbl = f"{_sr_st_mon.title()} {_sr_st_year}"
 
         _sr_base_lakh = st.number_input(
-            "Actual (100%) store target — ₹ Lakh",
+            "Actual (100%) target — ₹ Lakh",
             min_value=0.0,
             value=float(_sr_base_default),
             step=1.0,
             format="%.2f",
             key="sr_store_base",
             help=(
-                "The store's real base (100%) target for this "
+                "The real base (100%) target for this "
                 + ("quarter" if _sr_is_quarterly else "month")
                 + ". Defaults to the sum of the salespeople's ORIGINAL targets "
                 "(the start-of-month baseline). The three standards are computed "
-                "from this value; the result is written to the UPDATED TARGET "
-                "column, leaving the original targets untouched."
+                "from this value; the result is written to the per-month "
+                "'UPDATED TARGET <MONTH>' column(s), leaving the original "
+                "targets untouched."
             ),
         )
 
@@ -1116,8 +1118,8 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
         _sr_new_store = round(_sr_base_lakh * _sr_pct, 2)
 
         _sm1, _sm2, _sm3 = st.columns(3)
-        _sm1.metric("Current store target (live)", f"{_sr_cur_store:g} L")
-        _sm2.metric(f"New store target ({_sr_st_standard})", f"{_sr_new_store:g} L")
+        _sm1.metric("Current target (live)", f"{_sr_cur_store:g} L")
+        _sm2.metric(f"New target ({_sr_st_standard})", f"{_sr_new_store:g} L")
         _sm3.metric("Scope", _sr_scope_lbl)
 
         # Build the proportional preview from the current targets.
@@ -1169,13 +1171,14 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
             st.warning(
                 f"No existing salesperson targets to split for {_sr_scope_lbl}. "
                 "Use the 'Set / Update Monthly Target' form above to set each "
-                "salesperson's target first, then adjust the store target."
+                "salesperson's target first, then adjust the monthly target."
             )
         else:
             _sr_prev_df = pd.DataFrame(_sr_preview_rows)
             st.caption(
                 "Preview — the new **UPDATED TARGET** for each salesperson, "
-                "split in the same proportion as their original targets. The "
+                "split in the same proportion as their original targets. It is "
+                "written to the per-month 'UPDATED TARGET <MONTH>' column; the "
                 "original TARGET column is left unchanged."
             )
             st.dataframe(_sr_prev_df, use_container_width=True, hide_index=True)
@@ -1187,7 +1190,7 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                 key="sr_store_confirm",
             )
             if st.button(
-                "💾 Apply Store Target",
+                "💾 Apply Target",
                 type="primary",
                 use_container_width=True,
                 key="sr_store_apply",
