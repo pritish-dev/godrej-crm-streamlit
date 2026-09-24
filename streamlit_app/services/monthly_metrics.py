@@ -37,6 +37,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
 from services.sheets import get_df
+from utils.helpers import money, money_sum, to_money
 from services.mis_email_import import load_cached_mis
 from services.invoice_email_import import load_invoice_sheet
 from services.delivery_status import norm_status, BLANK_TOKENS
@@ -120,10 +121,8 @@ def forecast_sheet_name(month: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _to_num(v) -> float:
-    try:
-        return float(str(v).replace(",", "").strip())
-    except (ValueError, TypeError):
-        return 0.0
+    # Exact parse (₹, commas, spaces) rounded to paise — never a binary-float guess.
+    return money(v)
 
 
 def _is_mis_committed(row: pd.Series) -> bool:
@@ -423,7 +422,7 @@ def get_monthly_target(month: str) -> float:
             return 0.0
         mask = df["MONTH"] == month.upper()
         _col = "EFFECTIVE TARGET" if "EFFECTIVE TARGET" in df.columns else "TARGET"
-        return float(df.loc[mask, _col].sum()) * 1_00_000
+        return money(sum((to_money(v) for v in df.loc[mask, _col]), to_money(0)) * 1_00_000)
     except Exception:
         return 0.0
 
@@ -443,7 +442,7 @@ def get_current_sales_invoice_value(month: str) -> float:
             inv_df = inv_df[wfx_mask].copy()
         if "Taxable Value" not in inv_df.columns:
             return 0.0
-        return float(inv_df["Taxable Value"].apply(_to_num).sum())
+        return money_sum(inv_df["Taxable Value"])
     except Exception:
         return 0.0
 
@@ -462,11 +461,7 @@ def get_pending_order_value() -> float:
         )
         if not net_col:
             return 0.0
-        net_basic_num = pd.to_numeric(
-            df[net_col].astype(str).str.strip().str.replace(",", "", regex=False),
-            errors="coerce",
-        ).fillna(0)
-        return float(net_basic_num.sum())
+        return money_sum(df[net_col])
     except Exception:
         return 0.0
 
@@ -574,10 +569,7 @@ def get_pending_order_details_crm() -> pd.DataFrame:
             if not pending_mask.any():
                 continue
 
-            vals = pd.to_numeric(
-                raw[val_col].astype(str).str.replace(r"[₹,\s]", "", regex=True),
-                errors="coerce",
-            ).fillna(0.0)
+            vals = raw[val_col].map(money)
 
             order_no_col = _pick_col(cols, ["ORDER NO", "ORDER NO."])
             so_col       = _pick_col(cols, ["GODREJ SO NO", "GODREJ SO NO.", "GODREJ SO NUMBER"])
@@ -640,7 +632,7 @@ def get_pending_order_value_crm() -> float:
         detail = get_pending_order_details_crm()
         if detail is None or detail.empty:
             return 0.0
-        return float(detail["ORDER VALUE WITHOUT GST"].sum())
+        return money_sum(detail["ORDER VALUE WITHOUT GST"])
     except Exception:
         return 0.0
 
@@ -733,6 +725,6 @@ def get_monthend_forecast_value(ref: date | None = None) -> float:
             return 0.0
 
         green_mask = visible_df.apply(_is_committed, axis=1)
-        return float(visible_df.loc[green_mask, "TOTAL_NET_BASIC"].apply(_to_num).sum())
+        return money_sum(visible_df.loc[green_mask, "TOTAL_NET_BASIC"])
     except Exception:
         return 0.0

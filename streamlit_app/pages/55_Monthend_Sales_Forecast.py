@@ -35,7 +35,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
 from services.sheets import get_df, write_df
-from utils.helpers import to_indian_number_string
+from utils.helpers import fmt_inr, money, money_sum, to_indian_number_string, to_money
 from services.mis_email_import import load_cached_mis
 from services.invoice_email_import import (
     fetch_and_save_invoices_range,
@@ -353,7 +353,7 @@ def _get_monthly_target(month: str) -> float:
             return 0.0
         mask = df["MONTH"] == month.upper()
         _col = "EFFECTIVE TARGET" if "EFFECTIVE TARGET" in df.columns else "TARGET"
-        return float(df.loc[mask, _col].sum()) * 1_00_000
+        return money(sum((to_money(v) for v in df.loc[mask, _col]), to_money(0)) * 1_00_000)
     except Exception:
         return 0.0
 
@@ -372,12 +372,7 @@ def _get_month_sales_achievement(month: str) -> float:
             inv_df = inv_df[wfx_mask].copy()
         if "Taxable Value" not in inv_df.columns:
             return 0.0
-        def _parse(v):
-            try:
-                return float(str(v).replace(",", "").strip())
-            except (ValueError, TypeError):
-                return 0.0
-        return float(inv_df["Taxable Value"].apply(_parse).sum())
+        return money_sum(inv_df["Taxable Value"])
     except Exception:
         return 0.0
 
@@ -387,10 +382,8 @@ def _get_month_sales_achievement(month: str) -> float:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _to_num(v) -> float:
-    try:
-        return float(str(v).replace(",", "").strip())
-    except (ValueError, TypeError):
-        return 0.0
+    # Exact parse (₹, commas, spaces) rounded to paise — never a binary-float guess.
+    return money(v)
 
 
 def _is_mis_committed(row: pd.Series) -> bool:
@@ -557,7 +550,7 @@ def compute_mis_committed_value(mis_df: pd.DataFrame) -> float:
     df.columns = ["SO_QTY", "SO_COMMITTED_QTY", "TOTAL_NET_BASIC"]
 
     committed_mask = df.apply(_is_mis_committed, axis=1)
-    return float(df.loc[committed_mask, "TOTAL_NET_BASIC"].apply(_to_num).sum())
+    return money_sum(df.loc[committed_mask, "TOTAL_NET_BASIC"])
 
 
 def compute_forecast_breakdown(df: pd.DataFrame) -> dict[str, float]:
@@ -670,16 +663,21 @@ def compute_forecast_breakdown(df: pd.DataFrame) -> dict[str, float]:
         if _is_manual_committed(row):
             manual_val += _to_num(row.get("TOTAL_NET_BASIC", 0))
 
-    total = agree_val + godown_val + partial_val + manual_val
+    # Round each bucket to paise, then build the total from those exact
+    # buckets so the Forecast Value always equals the sum of its sub-fields.
+    agree_val, godown_val, partial_val, manual_val = (
+        money(agree_val), money(godown_val), money(partial_val), money(manual_val)
+    )
+    total = money_sum([agree_val, godown_val, partial_val, manual_val])
     return dict(
         agree=agree_val,
         godown=godown_val,
         partial=partial_val,
         manual=manual_val,
-        committed_ns=committed_ns_val,
-        denied=denied_val,
-        not_committed=not_committed_val,
-        cancelled=cancelled_val,
+        committed_ns=money(committed_ns_val),
+        denied=money(denied_val),
+        not_committed=money(not_committed_val),
+        cancelled=money(cancelled_val),
         total=total,
     )
 
@@ -711,8 +709,9 @@ def compute_committed_by_category(df: pd.DataFrame) -> tuple[dict[str, float], f
             scope_by_so.get(str(row["SO_NO"]), DELIVER_SCOPE_FULL),
         )
         out[cat] = out.get(cat, 0.0) + val
-        total += val
-    return out, total
+    # Paise-exact subtotals; the total is the exact sum of those subtotals.
+    out = {k: money(v) for k, v in out.items()}
+    return out, money_sum(out.values())
 
 
 def compute_manual_committed_by_via(df: pd.DataFrame) -> dict[str, float]:
@@ -747,7 +746,8 @@ def compute_manual_committed_by_via(df: pd.DataFrame) -> dict[str, float]:
             out["stock_34s"] += val
         else:
             out["other"] += val
-        out["total"] += val
+    out = {k: money(out[k]) for k in ("rpl", "stock_34s", "other")}
+    out["total"] = money_sum(out.values())
     return out
 
 
@@ -1072,28 +1072,28 @@ _mis_committed_val = st.session_state.mef_mis_committed
 
 _monthly_target  = _get_monthly_target(month_name)
 _current_achieve = _get_month_sales_achievement(month_name)
-_pending_target  = _monthly_target - _current_achieve
+_pending_target  = money(to_money(_monthly_target) - to_money(_current_achieve))
 
 # ─── KPI Row 1 ────────────────────────────────────────────────────────────────
 k1, k2, k3, k4 = st.columns(4)
 k1.metric(
     "🎯 Monthly Sales Target",
-    f"₹{to_indian_number_string(_monthly_target, 0)}",
+    fmt_inr(_monthly_target),
     help=f"Sum of all sales person targets for {month_name} from Incentive_Quarterly_Targets.",
 )
 k2.metric(
     "✅ Current Sales Achievement",
-    f"₹{to_indian_number_string(_current_achieve, 0)}",
+    fmt_inr(_current_achieve),
     help=f"Total Month Sales (without Tax) for {month_name} — WFX invoices only.",
 )
 k3.metric(
     "⏳ Pending Target Value",
-    f"₹{to_indian_number_string(_pending_target, 0)}",
+    fmt_inr(_pending_target),
     help="Monthly Sales Target − Current Sales Achievement.",
 )
 k4.metric(
     "📦 Committed Value (MIS)",
-    f"₹{to_indian_number_string(_mis_committed_val, 0)}",
+    fmt_inr(_mis_committed_val),
     help="Sum of Total Net Basic for all MIS items where SO Qty = SO Committed Qty — raw MIS total, no invoice/delivery exclusions. Matches what you'd compute manually from the MIS sheet.",
 )
 
@@ -1110,7 +1110,7 @@ st.markdown(
     <div style="background:#d6eaf8;border:2px solid #2980b9;border-radius:8px;
                 padding:14px 18px 8px;margin:14px 0 10px;">
         <h4 style="margin:0 0 2px;color:#1a5276;">
-            ✏️ Manually Committed Value:&nbsp;₹{to_indian_number_string(_manual_via['total'], 0)}
+            ✏️ Manually Committed Value:&nbsp;{fmt_inr(_manual_via['total'])}
         </h4>
         <p style="margin:0;color:#555;font-size:12px;">
             Value of items committed manually, split by source. These items are already
@@ -1124,17 +1124,17 @@ st.markdown(
 mc1, mc2 = st.columns(2)
 mc1.metric(
     "🔁 RPL",
-    f"₹{to_indian_number_string(_manual_via['rpl'], 0)}",
+    fmt_inr(_manual_via['rpl']),
     help="Total value of manually-committed items sourced via RPL.",
 )
 mc2.metric(
     "🏬 34S Stock",
-    f"₹{to_indian_number_string(_manual_via['stock_34s'], 0)}",
+    fmt_inr(_manual_via['stock_34s']),
     help="Total value of manually-committed items sourced via 34S Stock.",
 )
 if _manual_via["other"] > 0:
     st.caption(
-        f"ℹ️ ₹{to_indian_number_string(_manual_via['other'], 0)} of manually-committed "
+        f"ℹ️ {fmt_inr(_manual_via['other'])} of manually-committed "
         "value has no source selected (neither RPL nor 34S Stock)."
     )
 
@@ -1147,7 +1147,7 @@ st.markdown(
                 padding:16px 20px 10px;margin-bottom:10px;">
         <h3 style="margin:0 0 4px;color:#1e8449;">
             💰 Monthend Forecast Value ({month_name}):
-            &nbsp;₹{to_indian_number_string(breakdown['total'], 0)}
+            &nbsp;{fmt_inr(breakdown['total'])}
         </h3>
         <p style="margin:0;color:#555;font-size:12px;">
             Agree for Delivery + Godown Delivery + Partial Delivery
@@ -1190,7 +1190,7 @@ for _start in range(0, len(SUBFIELD_METRICS), SUBFIELDS_PER_ROW):
     _row = SUBFIELD_METRICS[_start:_start + SUBFIELDS_PER_ROW]
     _cols = st.columns(SUBFIELDS_PER_ROW)
     for _col, (_label, _value, _help) in zip(_cols, _row):
-        _col.metric(_label, f"₹{to_indian_number_string(_value, 0)}", help=_help)
+        _col.metric(_label, fmt_inr(_value), help=_help)
 
 # ─── Committed-value reconciliation (per MIS) ────────────────────────────────
 # The bucket figures above are full order value (they include uncommitted items
@@ -1199,7 +1199,7 @@ for _start in range(0, len(SUBFIELD_METRICS), SUBFIELDS_PER_ROW):
 # DO add up to the "Committed Value (MIS)" KPI.
 _committed_by_cat, _committed_total = compute_committed_by_category(df)
 with st.expander(
-    f"🔎 Committed Value reconciliation — ₹{to_indian_number_string(_committed_total, 0)} "
+    f"🔎 Committed Value reconciliation — {fmt_inr(_committed_total)} "
     f"(per MIS; matches 📦 Committed Value above)",
     expanded=False,
 ):
@@ -1220,14 +1220,14 @@ with st.expander(
         _recon_df,
         use_container_width=True,
         column_config={
-            "Committed Value (₹)": st.column_config.NumberColumn(format="%.0f"),
+            "Committed Value (₹)": st.column_config.NumberColumn(format="%.2f"),
         },
     )
     if abs(_committed_total - _mis_committed_val) > 1:
         st.warning(
-            f"Reconciliation total (₹{to_indian_number_string(_committed_total, 0)}) "
+            f"Reconciliation total ({fmt_inr(_committed_total)}) "
             f"differs from Committed Value (MIS) "
-            f"(₹{to_indian_number_string(_mis_committed_val, 0)}). The MIS sheet may "
+            f"({fmt_inr(_mis_committed_val)}). The MIS sheet may "
             "have changed since the last load — click 🔁 Refresh Data."
         )
 
@@ -1306,11 +1306,11 @@ for start in range(0, len(cat_labels), CHIPS_PER_ROW):
         n_items = len(cat_rows)
         # .astype(float) guards the empty-category case: an empty object-dtype
         # Series sums to "" (str), which would break to_indian_number_string.
-        cat_val = float(cat_rows["TOTAL_NET_BASIC"].apply(_to_num).astype(float).sum())
+        cat_val = money_sum(cat_rows["TOTAL_NET_BASIC"])
         col.metric(
             cat,
             f"{to_indian_number_string(n_orders, 0)} orders",
-            help=f"{to_indian_number_string(n_items, 0)} items · ₹{to_indian_number_string(cat_val, 0)} (Total Net Basic)",
+            help=f"{to_indian_number_string(n_items, 0)} items · {fmt_inr(cat_val)} (Total Net Basic)",
         )
 
 # ── Category filter ───────────────────────────────────────────────────────────
@@ -1344,7 +1344,7 @@ else:
     for cat, _sort_date, so_str, grp_key in order_keys:
         grp = grouped.get_group(grp_key).sort_values("SO_POSITION")
         # Order Value reflects only the items shown in this category block.
-        order_total = float(grp["TOTAL_NET_BASIC"].apply(_to_num).astype(float).sum())
+        order_total = money_sum(grp["TOTAL_NET_BASIC"])
         first = grp.iloc[0]
         for i, (_, item) in enumerate(grp.iterrows()):
             head = (i == 0)  # order-level columns only on the first item row
@@ -1372,21 +1372,21 @@ else:
 
     n_blocks = len(order_keys)
     n_orders = filtered["SO_NO"].nunique()
-    total_val = float(filtered["TOTAL_NET_BASIC"].apply(_to_num).astype(float).sum())
+    total_val = money_sum(filtered["TOTAL_NET_BASIC"])
     st.caption(
         f"Showing **{to_indian_number_string(n_orders, 0)}** order(s) "
         f"in **{to_indian_number_string(n_blocks, 0)}** category block(s) · "
         f"**{to_indian_number_string(len(display), 0)}** line item(s)  ·  "
-        f"Total Net Basic: **₹{to_indian_number_string(total_val, 0)}**"
+        f"Total Net Basic: **{fmt_inr(total_val)}**"
     )
     st.dataframe(
         display,
         use_container_width=True,
         column_config={
-            "Order Value":   st.column_config.NumberColumn(format="%.0f"),
+            "Order Value":   st.column_config.NumberColumn(format="%.2f"),
             "SO Qty":        st.column_config.NumberColumn(format="%d"),
             "Committed Qty": st.column_config.NumberColumn(format="%d"),
-            "Item Net Basic": st.column_config.NumberColumn(format="%.0f"),
+            "Item Net Basic": st.column_config.NumberColumn(format="%.2f"),
         },
     )
 
@@ -1426,7 +1426,7 @@ for del_date_str, date_grp in df.groupby("_del_date_str", sort=False):
         so_no = str(so_no)
         cust       = str(so_grp["CUSTOMER_NAME"].iloc[0])
         sales_exec = str(so_grp["SALES_EXECUTIVE"].iloc[0])
-        order_val  = so_grp["TOTAL_NET_BASIC"].apply(_to_num).sum()
+        order_val  = money_sum(so_grp["TOTAL_NET_BASIC"])
         n_items    = len(so_grp)
         n_mis_committed = int(so_grp.apply(_is_mis_committed, axis=1).sum())
         n_manual_committed = int(so_grp.apply(_is_manual_committed, axis=1).sum())
@@ -1444,7 +1444,7 @@ for del_date_str, date_grp in df.groupby("_del_date_str", sort=False):
         status_badge = f"  [{cur_status}]" if cur_status else ""
         expander_label = (
             f"SO {so_no}  ·  {cust or '—'}  ·  {sales_exec or '—'}  ·  "
-            f"₹{to_indian_number_string(order_val, 0)}"
+            f"{fmt_inr(order_val)}"
             f"{commitment_badge}{status_badge}"
         )
 
@@ -1531,7 +1531,7 @@ for del_date_str, date_grp in df.groupby("_del_date_str", sort=False):
                     f'<td style="padding:4px 8px;font-size:12px;border-bottom:1px solid #eee;">{item_row.get("ITEM_DESCRIPTION","")}</td>'
                     f'<td style="padding:4px 8px;font-size:12px;border-bottom:1px solid #eee;text-align:right;">{_fmt_num(item_row.get("SO_QTY",""))}</td>'
                     f'<td style="padding:4px 8px;font-size:12px;border-bottom:1px solid #eee;text-align:right;">{_fmt_num(item_row.get("SO_COMMITTED_QTY",""))}</td>'
-                    f'<td style="padding:4px 8px;font-size:12px;border-bottom:1px solid #eee;text-align:right;">₹{_fmt_num(item_row.get("TOTAL_NET_BASIC",""))}</td>'
+                    f'<td style="padding:4px 8px;font-size:12px;border-bottom:1px solid #eee;text-align:right;">{fmt_inr(item_row.get("TOTAL_NET_BASIC",""))}</td>'
                     f'<td style="padding:4px 8px;font-size:12px;border-bottom:1px solid #eee;">{item_row.get("WAREHOUSE","")}</td>'
                     f'<td style="padding:4px 8px;font-size:12px;border-bottom:1px solid #eee;">{status_badge_html}</td>'
                     f'</tr>'
@@ -1565,7 +1565,7 @@ for del_date_str, date_grp in df.groupby("_del_date_str", sort=False):
                     pos       = str(item_row.get("SO_POSITION", ""))
                     item_code = str(item_row.get("ITEM_CODE", ""))
                     item_desc = str(item_row.get("ITEM_DESCRIPTION", ""))
-                    net_val   = _fmt_num(item_row.get("TOTAL_NET_BASIC", ""))
+                    net_val   = fmt_inr(item_row.get("TOTAL_NET_BASIC", ""), symbol=False)
                     new_sel = st.checkbox(
                         f"Pos {pos}: {item_code} — {item_desc}  (₹{net_val})",
                         value=cur_sel,
@@ -1605,7 +1605,7 @@ for del_date_str, date_grp in df.groupby("_del_date_str", sort=False):
                         pos       = str(item_row.get("SO_POSITION", ""))
                         item_code = str(item_row.get("ITEM_CODE", ""))
                         item_desc = str(item_row.get("ITEM_DESCRIPTION", ""))
-                        net_val   = _fmt_num(item_row.get("TOTAL_NET_BASIC", ""))
+                        net_val   = fmt_inr(item_row.get("TOTAL_NET_BASIC", ""), symbol=False)
                         new_sel = st.checkbox(
                             f"Pos {pos}: {item_code} — {item_desc}  (₹{net_val})",
                             value=cur_sel,
@@ -1723,27 +1723,27 @@ st.markdown(
                 padding:18px;margin-top:10px;">
         <h3 style="margin:0 0 8px;color:#1e8449;">
             💰 Monthend Forecast Value ({month_name}):
-            &nbsp;₹{to_indian_number_string(breakdown['total'], 0)}
+            &nbsp;{fmt_inr(breakdown['total'])}
         </h3>
         <table style="font-size:13px;width:100%;border-collapse:collapse;">
           <tr>
             <td style="padding:4px 16px 4px 0;color:#555;">🤝 Agreed for Delivery</td>
-            <td style="font-weight:bold;">₹{to_indian_number_string(breakdown['agree'], 0)}</td>
+            <td style="font-weight:bold;">{fmt_inr(breakdown['agree'])}</td>
             <td style="padding:4px 16px;color:#555;">📦 Partial Delivery</td>
-            <td style="font-weight:bold;">₹{to_indian_number_string(breakdown['partial'], 0)}</td>
+            <td style="font-weight:bold;">{fmt_inr(breakdown['partial'])}</td>
             <td style="padding:4px 16px;color:#555;">🏭 Godown Delivery</td>
-            <td style="font-weight:bold;">₹{to_indian_number_string(breakdown['godown'], 0)}</td>
+            <td style="font-weight:bold;">{fmt_inr(breakdown['godown'])}</td>
             <td colspan="2"></td>
           </tr>
           <tr>
             <td style="padding:4px 16px 4px 0;color:#555;">🟢 Committed (No Status)</td>
-            <td style="font-weight:bold;">₹{to_indian_number_string(breakdown['committed_ns'], 0)}</td>
+            <td style="font-weight:bold;">{fmt_inr(breakdown['committed_ns'])}</td>
             <td style="padding:4px 16px;color:#555;">🚫 Customer Denied Delivery</td>
-            <td style="font-weight:bold;">₹{to_indian_number_string(breakdown['denied'], 0)}</td>
+            <td style="font-weight:bold;">{fmt_inr(breakdown['denied'])}</td>
             <td style="padding:4px 16px;color:#555;">⏳ Not Committed</td>
-            <td style="font-weight:bold;">₹{to_indian_number_string(breakdown['not_committed'], 0)}</td>
+            <td style="font-weight:bold;">{fmt_inr(breakdown['not_committed'])}</td>
             <td style="padding:4px 16px;color:#555;">❌ Order Cancelled</td>
-            <td style="font-weight:bold;">₹{to_indian_number_string(breakdown['cancelled'], 0)}</td>
+            <td style="font-weight:bold;">{fmt_inr(breakdown['cancelled'])}</td>
           </tr>
           <tr>
             <td colspan="8" style="padding:6px 16px 0 0;color:#888;font-style:italic;">

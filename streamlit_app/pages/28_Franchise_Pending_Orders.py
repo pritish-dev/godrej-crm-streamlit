@@ -41,16 +41,13 @@ if not hasattr(mm, "get_pending_order_details_crm"):
     import importlib
     mm = importlib.reload(mm)
 
-from utils.helpers import to_indian_number_string  # noqa: E402
+from utils.helpers import fmt_inr  # noqa: E402
 
 st.set_page_config(page_title="Franchise Pending Orders", layout="wide")
 
 
 def _fmt_rs(v) -> str:
-    try:
-        return f"₹{to_indian_number_string(float(v), 0)}"
-    except Exception:
-        return "₹0"
+    return fmt_inr(v) or "₹0"
 
 
 def _norm_so(v) -> str:

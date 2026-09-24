@@ -1,3 +1,5 @@
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+
 import pandas as pd
 
 
@@ -29,14 +31,91 @@ def indian_comma_group(digits: str) -> str:
 
 
 def to_indian_number_string(f: float, decimals: int = 0) -> str:
-    """Format a float using Indian comma grouping, with a fixed number of decimal places."""
-    sign = "-" if f < 0 else ""
-    f = abs(f)
+    """Format a number using Indian comma grouping, with a fixed number of decimal places.
+
+    Rounds half-up on the exact decimal value (not Python's banker's rounding on
+    a binary float), so e.g. 2.5 -> 3 and 1.005 -> 1.01 every time.
+    """
+    q = to_money(f).quantize(Decimal(1).scaleb(-decimals), rounding=ROUND_HALF_UP)
+    sign = "-" if q < 0 else ""
+    s = f"{abs(q):f}"
     if decimals > 0:
-        s = f"{f:.{decimals}f}"
         int_part, dec_part = s.split(".")
         return f"{sign}{indian_comma_group(int_part)}.{dec_part}"
-    return f"{sign}{indian_comma_group(str(int(round(f))))}"
+    return f"{sign}{indian_comma_group(s)}"
+
+
+# ---------------------------------------------------------
+# EXACT MONEY ARITHMETIC (paise-accurate)
+# ---------------------------------------------------------
+# Rupee amounts are parsed into Decimal from their text form and summed exactly,
+# then rounded half-up to paise only once, at the end. Totals are never rounded
+# to whole rupees, so a total always equals the sum of its parts to the paisa.
+
+_PAISE = Decimal("0.01")
+
+
+def to_money(v) -> Decimal:
+    """Parse a rupee amount exactly. Handles ₹/Rs, commas, spaces and (negative).
+
+    Blank / non-numeric / NaN -> Decimal(0). Never raises.
+    """
+    if v is None or isinstance(v, bool):
+        return Decimal(0)
+    if isinstance(v, Decimal):
+        return v if v.is_finite() else Decimal(0)
+    if isinstance(v, int):
+        return Decimal(v)
+    if isinstance(v, float):
+        # repr() is the shortest string that round-trips, so 988.84 stays
+        # 988.84 instead of 988.8399999999999181...
+        return Decimal(repr(float(v))) if v == v and abs(v) != float("inf") else Decimal(0)
+    s = str(v).strip()
+    if not s:
+        return Decimal(0)
+    neg = s.startswith("(") and s.endswith(")")
+    if neg:
+        s = s[1:-1]
+    s = (s.replace("₹", "").replace(",", "").replace(" ", "").replace("\u00a0", "")
+          .replace("Rs.", "").replace("Rs", "").replace("INR", ""))
+    try:
+        d = Decimal(s)
+    except (InvalidOperation, ValueError):
+        try:
+            d = Decimal(repr(float(s)))  # numpy / odd float text
+        except (ValueError, TypeError, InvalidOperation):
+            return Decimal(0)
+    if not d.is_finite():
+        return Decimal(0)
+    return -d if neg else d
+
+
+def money(v) -> float:
+    """Parse a rupee amount and round it half-up to paise. Returns a float."""
+    return float(to_money(v).quantize(_PAISE, rounding=ROUND_HALF_UP))
+
+
+def money_sum(values) -> float:
+    """Exact sum of rupee amounts (any iterable / Series), rounded to paise once."""
+    total = sum((to_money(v) for v in values), Decimal(0))
+    return float(total.quantize(_PAISE, rounding=ROUND_HALF_UP))
+
+
+def fmt_inr(val, symbol: bool = True) -> str:
+    """Exact rupee display: Indian grouping, paise kept (never rounded to rupees).
+
+    Whole-rupee amounts show no decimals (₹1,23,456); anything with paise shows
+    exactly two decimals (₹1,23,456.70). Blank for None/NaN/non-numeric text.
+    """
+    if val is None:
+        return ""
+    if isinstance(val, float) and val != val:
+        return ""
+    if isinstance(val, str) and not val.strip():
+        return ""
+    d = to_money(val).quantize(_PAISE, rounding=ROUND_HALF_UP)
+    s = to_indian_number_string(d, 0 if d == d.to_integral_value() else 2)
+    return f"₹{s}" if symbol else s
 
 
 def fmt_number(val) -> str:

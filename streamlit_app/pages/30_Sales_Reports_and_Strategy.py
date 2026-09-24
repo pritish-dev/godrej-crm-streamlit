@@ -42,7 +42,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
 from services.sheets import get_df  # noqa: E402
-from utils.helpers import to_indian_number_string  # noqa: E402
+from utils.helpers import fmt_inr, money, money_sum, to_indian_number_string, to_money  # noqa: E402
 from services import monthly_metrics as mm  # noqa: E402
 
 # Streamlit Community Cloud re-executes the page script on every rerun but keeps
@@ -136,7 +136,7 @@ def _sr_iq_target_rupees(sales_person: str, month_int: int, year_int: int) -> fl
         if not match.empty:
             # Effective target = adjusted UPDATED TARGET where set, else TARGET.
             _col = "EFFECTIVE TARGET" if "EFFECTIVE TARGET" in match.columns else "TARGET"
-            return float(match.iloc[0][_col]) * 100_000
+            return money(to_money(match.iloc[0][_col]) * 100_000)
     except Exception:
         pass
     return 0.0
@@ -180,10 +180,7 @@ def _sr_load_invoice_achievement(month_name: str) -> pd.DataFrame:
         df = df[wfx_mask].copy()
     if df.empty:
         return empty
-    df["AMOUNT"] = pd.to_numeric(
-        df["Taxable Value"].astype(str).str.replace(r"[₹,]", "", regex=True),
-        errors="coerce",
-    ).fillna(0.0)
+    df["AMOUNT"] = df["Taxable Value"].map(money)
     df["SALES PERSON"] = df["Sales Executive"].astype(str).str.strip().str.upper()
     # Every sales invoice belongs to an order that has a salesperson, so this
     # branch should not normally trigger. As a worst-case safety net, any invoice
@@ -194,7 +191,9 @@ def _sr_load_invoice_achievement(month_name: str) -> pd.DataFrame:
     df.loc[df["SALES PERSON"].isin(["", "NAN", "NONE"]), "SALES PERSON"] = "UNKNOWN"
     if df.empty:
         return empty
-    return df.groupby("SALES PERSON", as_index=False)["AMOUNT"].sum()
+    # Exact (Decimal) per-salesperson sum, so the parts add up to the month
+    # total to the paisa.
+    return df.groupby("SALES PERSON", as_index=False)["AMOUNT"].agg(money_sum)
 
 
 def _sr_compute_achievement(sales_person: str, month: int, year: int) -> float:
@@ -202,37 +201,16 @@ def _sr_compute_achievement(sales_person: str, month: int, year: int) -> float:
     if grp is None or grp.empty:
         return 0.0
     match = grp[grp["SALES PERSON"] == sales_person.strip().upper()]
-    return float(match["AMOUNT"].sum()) if not match.empty else 0.0
+    return money_sum(match["AMOUNT"]) if not match.empty else 0.0
 
 
 def _sr_fmt_money(v) -> str:
-    try:
-        f = float(v)
-    except Exception:
-        return str(v) if v is not None else ""
-    if pd.isna(f):
-        return ""
-    if float(f).is_integer():
-        return to_indian_number_string(f, 0)
-    s = to_indian_number_string(f, 2)
-    if "." in s:
-        s = s.rstrip("0").rstrip(".")
-    return s
+    # Exact to the paisa — never rounded to whole rupees.
+    return fmt_inr(v, symbol=False)
 
 
 def _sr_fmt_money_rs(v) -> str:
-    try:
-        f = float(v)
-    except Exception:
-        return str(v) if v is not None else ""
-    if pd.isna(f):
-        return ""
-    if float(f).is_integer():
-        return f"₹{to_indian_number_string(f, 0)}"
-    s = to_indian_number_string(f, 2)
-    if "." in s:
-        s = s.rstrip("0").rstrip(".")
-    return f"₹{s}"
+    return fmt_inr(v)
 
 st.set_page_config(page_title="Sales Reports and Strategy", layout="wide")
 
@@ -390,26 +368,26 @@ with st.spinner("Loading current-month sales figures…"):
     _invoice_value     = mm.get_current_sales_invoice_value(_month_name)
     _pending_order     = mm.get_pending_order_value()
     _pending_order_crm = mm.get_pending_order_value_crm()
-    _pending_target    = _monthly_target - _invoice_value
+    _pending_target    = money(to_money(_monthly_target) - to_money(_invoice_value))
 
 rA, rB, rC = st.columns(3)
 rA.metric(
     "🎯 Monthly Sales Target",
-    f"₹{to_indian_number_string(_monthly_target, 0)}",
+    fmt_inr(_monthly_target),
     help=f"Sum of all sales-person targets for {_month_full} from "
          "Incentive_Quarterly_Targets. Same figure as the Monthly Sales Target "
          "vs Achievement page.",
 )
 rB.metric(
     "✅ Current Sales Invoice Value",
-    f"₹{to_indian_number_string(_invoice_value, 0)}",
+    fmt_inr(_invoice_value),
     help=f"Total WFX invoice value (without tax) booked in {_month_full}. "
          "Same as 'Current Sales Achievement' on the Monthly Sales Target vs "
          "Achievement page.",
 )
 rC.metric(
     "⏳ Pending Target Value",
-    f"₹{to_indian_number_string(_pending_target, 0)}",
+    fmt_inr(_pending_target),
     help="Monthly Sales Target − Current Sales Invoice Value.",
 )
 
@@ -418,13 +396,13 @@ st.caption("🧮 **Pending Target Value** = Monthly Sales Target − Current Sal
 rD, rE, _ = st.columns(3)
 rD.metric(
     "📦 Pending Order Value (MIS)",
-    f"₹{to_indian_number_string(_pending_order, 0)}",
+    fmt_inr(_pending_order),
     help="Total Net Basic of all pending MIS orders. Same figure as the "
          "Pending Order Value on the MIS Update page.",
 )
 rE.metric(
     "🧾 Pending Order value(as per CRM)",
-    f"₹{to_indian_number_string(_pending_order_crm, 0)}",
+    fmt_inr(_pending_order_crm),
     help="Total order value **without GST** of every franchise order still in "
          "the PENDING delivery state, read straight from the CRM sheets. Covers "
          "all Franchise tabs plus the ordering-app sheet (B2C FRANCHISE APP "
@@ -639,12 +617,6 @@ _inv_col_map = {
     "Sales Executive":    "Sales Executive",
 }
 
-def _to_inv_float(v) -> float:
-    try:
-        return float(str(v).replace(",", "").strip())
-    except (ValueError, TypeError):
-        return 0.0
-
 if inv_df is None or inv_df.empty:
     st.info(
         f"No invoice data found for **{inv_selected_month}**. "
@@ -764,7 +736,7 @@ else:
             else:
                 st.error(_sm)
 
-        _total_inv = edited_inv["Amount without GST"].apply(_to_inv_float).sum()
+        _total_inv = money_sum(edited_inv["Amount without GST"])
 
         st.markdown(
             f"""
@@ -772,7 +744,7 @@ else:
                         padding:14px;margin-top:12px;">
                 <h4 style="margin:0;color:#1a5276;">
                     🧾 Total Month Sales (without Tax) — {inv_selected_month}:
-                    &nbsp;₹{to_indian_number_string(_total_inv, 2)}
+                    &nbsp;{fmt_inr(_total_inv)}
                 </h4>
                 <p style="margin:6px 0 0;color:#555;font-size:12px;">
                     Sum of <b>Taxable Value (without GST)</b> for all
@@ -872,9 +844,9 @@ if "ORDER DATE" in crm_all.columns:
         (_sr_crm_raw["_DATE_DT"] >= _sr_last_mon) & (_sr_crm_raw["_DATE_DT"] <= _sr_last_sun)
     ]
 
-    _sr_this_week_total = _sr_this_week_data["ORDER VALUE"].sum()
-    _sr_last_week_total = _sr_last_week_data["ORDER VALUE"].sum()
-    _sr_wow_delta       = _sr_this_week_total - _sr_last_week_total
+    _sr_this_week_total = money_sum(_sr_this_week_data["ORDER VALUE"])
+    _sr_last_week_total = money_sum(_sr_last_week_data["ORDER VALUE"])
+    _sr_wow_delta       = money(to_money(_sr_this_week_total) - to_money(_sr_last_week_total))
     _sr_wow_pct         = ((_sr_wow_delta / _sr_last_week_total) * 100) if _sr_last_week_total > 0 else 0.0
 
     _sr_w1, _sr_w2, _sr_w3 = st.columns(3)
@@ -1320,7 +1292,7 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                             f"the SALE INVOICE- {_sr_mname} sheet yet."
                         )
                     else:
-                        _sr_month_total = float(_sr_grp["AMOUNT"].sum())
+                        _sr_month_total = money_sum(_sr_grp["AMOUNT"])
                         _sr_refresh_msgs.append(
                             f"**{_sr_mname} {_sr_ry}**: {len(_sr_grp)} salesperson(s) · "
                             f"₹{_sr_fmt_money(_sr_month_total)} total achievement"
@@ -1365,7 +1337,10 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
 
         _sr_result_df = pd.DataFrame(_sr_rows)
         _sr_result_df = _sr_result_df[
-            (_sr_result_df["Target (₹)"] > 0) | (_sr_result_df["Achievement (₹)"] > 0)
+            # != 0 (not > 0): a salesperson whose month nets negative (credit
+            # notes) must still be listed, or the table total drifts from the
+            # invoice total.
+            (_sr_result_df["Target (₹)"] != 0) | (_sr_result_df["Achievement (₹)"] != 0)
         ].copy()
         _sr_result_df = _sr_result_df.sort_values(
             ["_year", "_month", "Sales Person"]
@@ -1376,9 +1351,11 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
         else:
             _sr_achieved_count  = int((_sr_result_df["Achieved %"] >= 100).sum())
             _sr_total_sp_months = len(_sr_result_df)
+            _sr_total_target      = money_sum(_sr_result_df["Target (₹)"])
+            _sr_total_achievement = money_sum(_sr_result_df["Achievement (₹)"])
             _sr_overall_pct     = (
-                _sr_result_df["Achievement (₹)"].sum() / _sr_result_df["Target (₹)"].sum() * 100
-                if _sr_result_df["Target (₹)"].sum() > 0 else 0.0
+                _sr_total_achievement / _sr_total_target * 100
+                if _sr_total_target > 0 else 0.0
             )
 
             if _sr_achieved_count == _sr_total_sp_months:
@@ -1410,8 +1387,8 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
             """, unsafe_allow_html=True)
 
             _sr_sk1, _sr_sk2, _sr_sk3, _sr_sk4 = st.columns(4)
-            _sr_sk1.metric("🎯 Total Target",      f"₹{_sr_fmt_money(_sr_result_df['Target (₹)'].sum())}")
-            _sr_sk2.metric("💰 Total Achievement", f"₹{_sr_fmt_money(_sr_result_df['Achievement (₹)'].sum())}")
+            _sr_sk1.metric("🎯 Total Target",      fmt_inr(_sr_total_target))
+            _sr_sk2.metric("💰 Total Achievement", fmt_inr(_sr_total_achievement))
             _sr_sk3.metric("📈 Overall %",         f"{_sr_overall_pct:.1f}%")
             _sr_sk4.metric("🏅 Targets Hit",       f"{_sr_achieved_count} / {_sr_total_sp_months}")
 
