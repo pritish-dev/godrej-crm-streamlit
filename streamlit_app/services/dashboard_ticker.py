@@ -19,7 +19,7 @@ import streamlit as st
 
 from services.sheets import get_df
 from services.delivery_status import active_mask
-from utils.helpers import to_indian_number_string
+from utils.helpers import fmt_inr
 
 FY_START = date(2026, 4, 1)
 
@@ -70,7 +70,7 @@ def _metric_payment_due(crm: pd.DataFrame) -> list[str]:
     customers = int(pay["CUSTOMER NAME"].astype(str).str.strip().nunique()) \
         if "CUSTOMER NAME" in pay.columns else len(pay)
     total = float(pay["PENDING DUE"].sum())
-    return [f"💰 {customers} customers have payment due — ₹{to_indian_number_string(total, 0)} outstanding"]
+    return [f"💰 {customers} customers have payment due — {fmt_inr(total)} outstanding"]
 
 
 def _metric_happy_calling(today: date) -> list[str]:
@@ -195,7 +195,7 @@ def _metric_revenue_month(crm: pd.DataFrame, today: date) -> list[str]:
     rev = float(crm.loc[same_month, "ORDER VALUE"].sum())
     if rev <= 0:
         return []
-    return [f"📈 ₹{to_indian_number_string(rev, 0)} booked this month-to-date"]
+    return [f"📈 {fmt_inr(rev)} booked this month-to-date"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────

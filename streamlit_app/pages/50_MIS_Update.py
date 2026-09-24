@@ -18,7 +18,7 @@ sys.path.insert(0, BASE_DIR)
 
 import streamlit as st
 import pandas as pd
-from utils.helpers import to_indian_number_string
+from utils.helpers import fmt_inr, money_sum, to_indian_number_string
 from services.mis_email_import import (
     MIS_SUBJECT,
     MIS_CACHE_SHEET,
@@ -183,7 +183,7 @@ else:
 
 # Sum of ALL Net Basic values — negative SO Qty rows already carry negative Net Basic,
 # so they deduct automatically from the total (e.g. 1000+2000-1800+5000 = 6200)
-pending_order_val = net_basic_num.sum()
+pending_order_val = money_sum(net_basic_num)
 
 # Committed Items Value: sum of Net Basic for rows where Sales Order Committed Qty > 0
 _committed_qty_col = _find_col(df.columns, "Sales Order Committed Qty", "Committed Qty")
@@ -193,7 +193,7 @@ if _committed_qty_col:
         errors="coerce"
     ).fillna(0)
     committed_mask = committed_qty_num > 0
-    committed_items_val = net_basic_num[committed_mask].sum()
+    committed_items_val = money_sum(net_basic_num[committed_mask])
 else:
     committed_items_val = 0.0
 
@@ -202,9 +202,9 @@ c1.metric("CREDITED STOCK (ZBF11U)", to_indian_number_string(credited_qty, 0),
           help="Sum of SO Qty for negative stock items under warehouse ZBF11U")
 c2.metric("To Be CREDITED STOCK (ZBF11T)", to_indian_number_string(to_be_credited, 0),
           help="Sum of SO Qty for negative stock items under warehouse ZBF11T")
-c3.metric("PENDING ORDER VALUE", f"₹{to_indian_number_string(pending_order_val, 0)}",
+c3.metric("PENDING ORDER VALUE", fmt_inr(pending_order_val),
           help="Total Net Basic (all rows) minus Net Basic of negative SO Qty rows")
-c4.metric("COMMITTED ITEMS VALUE", f"₹{to_indian_number_string(committed_items_val, 0)}",
+c4.metric("COMMITTED ITEMS VALUE", fmt_inr(committed_items_val),
           help="Sum of Net Basic Value for all items where Sales Order Committed Qty > 0")
 
 # ─── Filters ──────────────────────────────────────────────────────────────────
