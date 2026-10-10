@@ -134,12 +134,45 @@ def _get_sh(sheet_name: str):
 # ENSURE SHEET + HEADERS
 # ==============================
 
+# Worksheet handles keyed by sheet name. sh.worksheet() costs a full metadata
+# read on every call, so caching it halves the read requests made by get_df()
+# and keeps multi-sheet pages under the 60 reads/min/user Sheets API quota.
+_WS_CACHE: dict = {}
+
+_RETRYABLE_STATUS = (429, 500, 502, 503, 504)
+
+
+def _api_status(exc):
+    return getattr(getattr(exc, "response", None), "status_code", None)
+
+
+def _with_retry(fn, *args, **kwargs):
+    """Call a gspread function, retrying on rate-limit (429) / transient 5xx."""
+    import time as _time
+    from gspread.exceptions import APIError
+
+    delay = 2.0
+    for attempt in range(6):
+        try:
+            return fn(*args, **kwargs)
+        except APIError as exc:
+            if _api_status(exc) in _RETRYABLE_STATUS and attempt < 5:
+                _time.sleep(delay)
+                delay = min(delay * 2, 32.0)
+                continue
+            raise
+
+
 def _ensure_sheet(sheet_name):
+    cached = _WS_CACHE.get(sheet_name)
+    if cached is not None:
+        return cached
+
     sh = _get_sh(sheet_name)
 
     try:
-        ws = sh.worksheet(sheet_name)
-    except:
+        ws = _with_retry(sh.worksheet, sheet_name)
+    except gspread.exceptions.WorksheetNotFound:
         ws = sh.add_worksheet(title=sheet_name, rows=1000, cols=50)
 
         if sheet_name == "CRM":
@@ -151,6 +184,7 @@ def _ensure_sheet(sheet_name):
         elif sheet_name == "comitted Delivery reminder email":
             ws.append_row(["Email", "CC"])
 
+    _WS_CACHE[sheet_name] = ws
     return ws
 
 # ==============================
@@ -184,7 +218,12 @@ def _normalize(col, val):
 @st.cache_data(ttl=60)
 def get_df(sheet_name):
     ws = _ensure_sheet(sheet_name)
-    data = ws.get_all_values()
+    try:
+        data = _with_retry(ws.get_all_values)
+    except gspread.exceptions.APIError:
+        # Handle may be stale (sheet renamed/deleted) — look it up fresh next time.
+        _WS_CACHE.pop(sheet_name, None)
+        raise
 
     if not data:
         return pd.DataFrame()
