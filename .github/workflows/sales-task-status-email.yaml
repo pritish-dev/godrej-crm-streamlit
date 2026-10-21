@@ -1,4 +1,4 @@
-name: Sales Team Task Status Email (Evening)
+name: Sales Team Task Status Email (9 PM)
 
 on:
   schedule:
@@ -6,9 +6,9 @@ on:
     # Triple-fire window to absorb GitHub Actions cron drift; the script
     # itself is idempotent via was_email_sent_today() — only the first
     # successful run actually sends.
-    - cron: '25 12 * * *'   # 12:25 UTC = 17:55 IST  (primary, early)
-    - cron: '30 12 * * *'   # 12:30 UTC = 18:00 IST  (primary, on-time)
-    - cron: '50 12 * * *'   # 12:50 UTC = 18:20 IST  (drift backup)
+    # CRM mail goes out only after 9 PM IST (was 6 PM).
+    - cron: '30 15 * * *'   # 15:30 UTC = 21:00 IST  (primary)
+    - cron: '50 15 * * *'   # 15:50 UTC = 21:20 IST  (drift backup)
 
   # Allow manual trigger from GitHub Actions UI for testing
   workflow_dispatch:
@@ -43,6 +43,8 @@ jobs:
         env:
           EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
+          CRM_EMAIL_SENDER:   ${{ secrets.CRM_EMAIL_SENDER }}    # sends all CRM mail
+          CRM_EMAIL_PASSWORD: ${{ secrets.CRM_EMAIL_PASSWORD }}
           EMAIL_RECIPIENTS:   ${{ secrets.EMAIL_RECIPIENTS }}
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           OPS_SPREADSHEET_ID: ${{ secrets.OPS_SPREADSHEET_ID }}

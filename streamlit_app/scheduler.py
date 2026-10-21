@@ -2,10 +2,13 @@
 scheduler.py — Run this alongside your Streamlit app.
 
 Schedule (LOCAL SERVER TIME — make sure the host is configured to IST):
-  10:00 AM IST  →  Email 1: Pending Delivery Report
-  11:00 AM IST  →  Email 2: Update Delivery Status Reminder
   11:00 AM IST  →  MIS Daily Import (backup to GitHub Actions)
-   5:00 PM IST  →  Email 1: Pending Delivery Report (evening repeat)
+   9:00 PM IST  →  Email 1: Pending Delivery Report
+   9:05 PM IST  →  Email 2: Update Delivery Status Reminder
+  10:30 PM IST  →  CRM Outbox flush (emails queued during the day)
+
+CRM emails only go out after 9 PM IST (services/crm_mail.py); anything sent
+earlier is queued and released by the 10:30 PM outbox flush.
 
 ⚠️  IMPORTANT: The `schedule` library uses LOCAL time, not UTC. If the server
     runs in UTC (typical for Linux cloud hosts), '11:00' fires at 11:00 UTC =
@@ -139,7 +142,7 @@ def fetch_pending_grouped():
 # ─── Scheduled jobs ──────────────────────────────────────────────────────────
 
 def job_email1():
-    """10:00 AM and 5:00 PM — Pending Delivery Report."""
+    """9:00 PM — Pending Delivery Report."""
     print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M')}] 📧 Running Email 1: Pending Delivery Report")
     try:
         df = fetch_pending_grouped()
@@ -152,7 +155,7 @@ def job_email1():
 
 
 def job_email2():
-    """11:00 AM — Update Delivery Status Reminder."""
+    """9:05 PM — Update Delivery Status Reminder."""
     print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M')}] 📧 Running Email 2: Update Delivery Status Reminder")
     try:
         df = fetch_pending_grouped()
@@ -175,6 +178,16 @@ def job_invoice_email_import():
         print(f"  → {status}")
     except Exception as e:
         print(f"  ❌ Invoice Email Import failed: {e}")
+
+
+def job_outbox_flush():
+    """10:30 PM — Send CRM emails that were queued during the day."""
+    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M')}] 📤 Running CRM Outbox flush")
+    try:
+        from services.crm_mail import flush_outbox
+        print(f"  → {flush_outbox()}")
+    except Exception as e:
+        print(f"  ❌ Outbox flush failed: {e}")
 
 
 def job_crm_backup():
@@ -216,8 +229,9 @@ def job_discontinued_products_import():
 
 # ─── Schedule ────────────────────────────────────────────────────────────────
 
-schedule.every().day.at("10:00").do(job_email1)             # Email 1 — Morning
-schedule.every().day.at("11:00").do(job_email2)             # Email 2 — once daily
+schedule.every().day.at("21:00").do(job_email1)             # Email 1 — nightly
+schedule.every().day.at("21:05").do(job_email2)             # Email 2 — nightly
+schedule.every().day.at("22:30").do(job_outbox_flush)       # queued CRM emails
 # MIS daily import: fire at 11:00 AND 11:15 as a drift cushion.
 # fetch_and_cache_mis() simply overwrites the MIS_Daily sheet, so duplicate
 # triggers within the same day are idempotent.
@@ -226,7 +240,6 @@ schedule.every().day.at("11:15").do(job_mis_daily_import)
 # Discontinued Products import: 11:00 AM primary + 11:15 drift backup (idempotent)
 schedule.every().day.at("11:00").do(job_discontinued_products_import)
 schedule.every().day.at("11:15").do(job_discontinued_products_import)
-schedule.every().day.at("17:00").do(job_email1)             # Email 1 — Evening
 schedule.every().day.at("20:00").do(job_invoice_email_import)  # Invoice Import — 8 PM
 schedule.every().day.at("20:15").do(job_invoice_email_import)  # Invoice Import — drift backup
 schedule.every().day.at("22:00").do(job_crm_backup)            # CRM + OPS Backup — 10 PM
@@ -238,20 +251,21 @@ print("=" * 60)
 print(f"  Local time now : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 print(f"  IST time now   : {_ist_now().strftime('%Y-%m-%d %H:%M:%S')}")
 print("-" * 60)
-print("  10:00 AM (local) → Email 1: Pending Delivery Report")
-print("  11:00 AM (local) → Email 2: Update Delivery Status Reminder")
 print("  11:00 AM (local) → MIS Daily Import (primary)")
 print("  11:15 AM (local) → MIS Daily Import (drift backup)")
 print("  11:00 AM (local) → Discontinued Products Import (primary)")
 print("  11:15 AM (local) → Discontinued Products Import (drift backup)")
-print("   5:00 PM (local) → Email 1: Pending Delivery Report (Evening)")
 print("   8:00 PM (local) → Invoice Email Import (primary)")
 print("   8:15 PM (local) → Invoice Email Import (drift backup)")
+print("   9:00 PM (local) → Email 1: Pending Delivery Report")
+print("   9:05 PM (local) → Email 2: Update Delivery Status Reminder")
 print("  10:00 PM (local) → CRM + OPS Daily Backup to Google Drive")
+print("  10:30 PM (local) → CRM Outbox flush (queued emails)")
 print("=" * 60)
 print("  Press Ctrl+C to stop.\n")
 
 # Run Email 1 immediately on startup so you can verify it works
+# (outside 9 PM–midnight IST it is queued for the nightly flush, not sent).
 print("Running startup test (Email 1)...")
 try:
     job_email1()

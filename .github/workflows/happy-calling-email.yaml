@@ -1,9 +1,9 @@
-name: Happy Calling Email (7 AM)
+name: Happy Calling Email (9:25 PM)
 
 on:
   schedule:
     # All times UTC. IST = UTC + 5:30
-    - cron: '30 1 * * *'    # 07:00 AM IST → Happy Calling Email
+    - cron: '55 15 * * *'   # 09:25 PM IST → Happy Calling Email (CRM mail only after 9 PM)
 
   workflow_dispatch:
 
@@ -33,6 +33,8 @@ jobs:
         env:
           EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
+          CRM_EMAIL_SENDER:   ${{ secrets.CRM_EMAIL_SENDER }}    # sends all CRM mail
+          CRM_EMAIL_PASSWORD: ${{ secrets.CRM_EMAIL_PASSWORD }}
           EMAIL_RECIPIENTS:   ${{ secrets.EMAIL_RECIPIENTS }}
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           OPS_SPREADSHEET_ID: ${{ secrets.OPS_SPREADSHEET_ID }}

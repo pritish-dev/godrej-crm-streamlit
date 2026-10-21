@@ -64,6 +64,10 @@ if SENDER_EMAIL is None:
     except Exception:
         pass
 
+# ── CRM emails are sent from the dedicated CRM account (CRM_EMAIL_SENDER) ────
+from services import crm_mail
+SENDER_EMAIL, SENDER_PASSWORD = crm_mail.sender_credentials(SENDER_EMAIL, SENDER_PASSWORD)
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 DATA_START_DATE = date(2026, 4, 1)   # FY 2026-27 start
 
@@ -103,18 +107,12 @@ def _send_email(subject: str, html_body: str,
     summary = {"sent": False, "recipients": list(RECIPIENTS),
                "subject": subject, "records": records_count, "error": ""}
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(SENDER_EMAIL, SENDER_PASSWORD)
-            server.sendmail(SENDER_EMAIL, RECIPIENTS, msg.as_string())
-        summary["sent"] = True
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] ✅ Email sent → {RECIPIENTS}")
-        try:
-            from services.sheets import append_email_log
-            append_email_log(job_name=job_name or subject[:60],
-                             records_count=records_count,
-                             recipients=list(RECIPIENTS), status="success")
-        except Exception as log_err:
-            print(f"[EMAIL_LOG] Warning: {log_err}")
+        outcome = crm_mail.deliver(msg, RECIPIENTS, job_name=job_name or subject[:60],
+                                   records_count=records_count)
+        summary["sent"]   = outcome == "sent"
+        summary["queued"] = outcome == "queued"
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] ✅ Email {outcome} → {RECIPIENTS}")
+        crm_mail.log_outcome(outcome, job_name or subject[:60], records_count, RECIPIENTS)
     except Exception as send_err:
         summary["error"] = str(send_err)
         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] ❌ Email failed: {send_err}")

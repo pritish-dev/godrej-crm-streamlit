@@ -34,6 +34,7 @@ import pandas as pd
 from utils.helpers import to_indian_number_string
 from datetime import datetime, timezone, timedelta, date
 
+from services.crm_mail import QUEUED_NOTICE
 from services.stock_34s_service import (
     load_month_df,
     load_stock_for_date,
@@ -171,7 +172,9 @@ if st.session_state.s34f_is_flat:
         ):
             with st.spinner("Sending today's stock report…"):
                 _res = send_daily_stock_email(TODAY)
-            if _res.get("sent"):
+            if _res.get("queued"):
+                st.info(QUEUED_NOTICE)
+            elif _res.get("sent"):
                 st.success(f"✅ Sent — {', '.join(_res['recipients'])}")
             else:
                 st.error(f"❌ {_res.get('error', 'Unknown error')}")
@@ -198,7 +201,9 @@ if st.session_state.s34f_is_flat:
         ):
             with st.spinner("Sending monthly stock report…"):
                 _res = send_monthly_stock_email(sel_year, sel_month, archive=False)
-            if _res.get("sent"):
+            if _res.get("queued"):
+                st.info(QUEUED_NOTICE)
+            elif _res.get("sent"):
                 st.success(f"✅ Sent — {', '.join(_res['recipients'])}")
             else:
                 st.error(f"❌ {_res.get('error', 'Unknown error')}")
@@ -450,7 +455,9 @@ with col_email_monthly:
     ):
         with st.spinner(f"Sending monthly stock report for {sel_month_label}…"):
             result = send_monthly_stock_email(sel_year, sel_month, archive=False)
-        if result.get("sent"):
+        if result.get("queued"):
+            st.info(QUEUED_NOTICE)
+        elif result.get("sent"):
             st.success(
                 f"✅ Monthly report sent!  \n"
                 f"**Subject:** {result['subject']}  \n"
@@ -471,7 +478,9 @@ with col_email_daily:
     ):
         with st.spinner(f"Sending today's stock report ({TODAY.strftime('%d %b %Y')})…"):
             result = send_daily_stock_email(TODAY)
-        if result.get("sent"):
+        if result.get("queued"):
+            st.info(QUEUED_NOTICE)
+        elif result.get("sent"):
             st.success(
                 f"✅ Today's report sent!  \n"
                 f"**Subject:** {result['subject']}  \n"

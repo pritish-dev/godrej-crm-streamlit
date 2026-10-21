@@ -3,13 +3,13 @@ name: CRM Pending Delivery Alerts
 on:
   schedule:
     # All times UTC.  IST = UTC + 5:30
-    - cron: '30 1 * * *'    # 07:00 AM IST  →  morning alert
-    - cron: '30 10 * * *'   # 04:00 PM IST  →  evening alert
+    # CRM mail goes out only after 9 PM IST — one alert a night (was 7 AM + 4 PM).
+    - cron: '35 15 * * *'   # 09:05 PM IST  →  nightly alert (SLOT=morning subject)
 
   workflow_dispatch:
     inputs:
       slot:
-        description: 'Which slot to send (morning = 7 AM alert, evening = 4 PM alert)'
+        description: 'Which subject to send (morning = Pending Delivery Alerts, evening = Update on Pending Delivery Alerts)'
         required: true
         default: 'morning'
         type: choice
@@ -43,6 +43,8 @@ jobs:
         env:
           EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
+          CRM_EMAIL_SENDER:   ${{ secrets.CRM_EMAIL_SENDER }}    # sends all CRM mail
+          CRM_EMAIL_PASSWORD: ${{ secrets.CRM_EMAIL_PASSWORD }}
           EMAIL_RECIPIENTS:   ${{ secrets.EMAIL_RECIPIENTS }}
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           OPS_SPREADSHEET_ID: ${{ secrets.OPS_SPREADSHEET_ID }}
@@ -53,8 +55,7 @@ jobs:
           SCHEDULE="${{ github.event.schedule }}"
           MANUAL="${{ github.event.inputs.slot }}"
 
-          if   [ "$SCHEDULE" = "30 1 * * *"  ]; then export SLOT=morning
-          elif [ "$SCHEDULE" = "30 10 * * *" ]; then export SLOT=evening
+          if   [ "$SCHEDULE" = "35 15 * * *" ]; then export SLOT=morning
           elif [ -n "$MANUAL"               ]; then export SLOT=$MANUAL
           fi
 

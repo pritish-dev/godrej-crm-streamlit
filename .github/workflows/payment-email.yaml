@@ -3,8 +3,10 @@ name: CRM Payment Due Emails
 on:
   schedule:
     # All times UTC. IST = UTC+5:30
-    - cron: '30 2 * * *'    # 08:00 AM IST → Payment Due Morning (delivery_date ≤ yesterday)
-    - cron: '30 3 * * *'    # 09:00 AM IST → Payment Due Reminder (all overdue+today)
+    # CRM mail goes out only after 9 PM IST — one payment email a night
+    # (was 8 AM "morning" + 9 AM "reminder"; the reminder already covers
+    # everything the morning one listed, plus today).
+    - cron: '40 15 * * *'   # 09:10 PM IST → Payment Due Reminder (all overdue+today)
 
   workflow_dispatch:
     inputs:
@@ -43,6 +45,8 @@ jobs:
         env:
           EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
+          CRM_EMAIL_SENDER:   ${{ secrets.CRM_EMAIL_SENDER }}    # sends all CRM mail
+          CRM_EMAIL_PASSWORD: ${{ secrets.CRM_EMAIL_PASSWORD }}
           EMAIL_RECIPIENTS:   ${{ secrets.EMAIL_RECIPIENTS }}
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           OPS_SPREADSHEET_ID: ${{ secrets.OPS_SPREADSHEET_ID }}
@@ -54,8 +58,7 @@ jobs:
           # email is sent for a scheduled run — payment_email_job.py has no
           # hour-fallback any more, so a misfire can never send an unrelated mail.
           SCHEDULE="${{ github.event.schedule }}"
-          if   [ "$SCHEDULE" = "30 2 * * *" ]; then export SLOT=morning
-          elif [ "$SCHEDULE" = "30 3 * * *" ]; then export SLOT=reminder
+          if [ "$SCHEDULE" = "40 15 * * *" ]; then export SLOT=reminder
           fi
 
           echo "SLOT=${SLOT:-unset}  SCHEDULE=${SCHEDULE:-manual}  MANUAL_JOB=${MANUAL_JOB:-}"

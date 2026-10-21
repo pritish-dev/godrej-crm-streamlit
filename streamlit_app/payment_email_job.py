@@ -4,8 +4,9 @@ streamlit_app/payment_email_job.py
 Payment Due Email Job — called by GitHub Actions.
 
 Schedule (cron set in .github/workflows/payment-email.yaml):
-  08:00 AM IST  [SLOT=morning]  → Payment Due Morning: PENDING_DUE > 0 & delivery_date ≤ yesterday
-  09:00 AM IST  [SLOT=reminder] → Payment Due Reminder: PENDING_DUE > 0 & delivery_date ≤ today
+  09:10 PM IST  [SLOT=reminder] → Payment Due Reminder: PENDING_DUE > 0 & delivery_date ≤ today
+  (SLOT=morning → Payment Due Morning, delivery_date ≤ yesterday — manual only)
+  CRM mail goes out only after 9 PM IST, so this is now one email a night.
 
 Manual trigger via MANUAL_JOB env var:
   payment_morning  → morning slot

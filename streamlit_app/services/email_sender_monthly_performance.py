@@ -50,6 +50,11 @@ if SENDER_EMAIL is None:
         pass
 
 
+# ── CRM emails are sent from the dedicated CRM account (CRM_EMAIL_SENDER) ────
+from services import crm_mail
+SENDER_EMAIL, SENDER_PASSWORD = crm_mail.sender_credentials(SENDER_EMAIL, SENDER_PASSWORD)
+
+
 def _validate():
     if not SENDER_EMAIL or not SENDER_PASSWORD:
         raise ValueError("EMAIL_SENDER / EMAIL_PASSWORD not set.")
@@ -67,16 +72,13 @@ def _send(subject: str, html: str, records_count: int) -> dict:
     summary = {"sent": False, "recipients": list(RECIPIENTS),
                "subject": subject, "records": records_count, "error": ""}
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(SENDER_EMAIL, SENDER_PASSWORD)
-            server.sendmail(SENDER_EMAIL, RECIPIENTS, msg.as_string())
-        summary["sent"] = True
-        try:
-            from services.sheets import append_email_log
-            append_email_log("Monthly Performance Email (Last Day 7 PM)",
-                             records_count, list(RECIPIENTS), "success")
-        except Exception:
-            pass
+        outcome = crm_mail.deliver(msg, RECIPIENTS,
+                                   job_name="Monthly Performance Email (Last Day 7 PM)",
+                                   records_count=records_count)
+        summary["sent"]   = outcome == "sent"
+        summary["queued"] = outcome == "queued"
+        crm_mail.log_outcome(outcome, "Monthly Performance Email (Last Day 7 PM)",
+                             records_count, RECIPIENTS)
     except Exception as e:
         summary["error"] = str(e)
         try:

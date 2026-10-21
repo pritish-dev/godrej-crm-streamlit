@@ -1878,7 +1878,8 @@ def send_monthly_stock_email(year: int, month: int, archive: bool = True) -> dic
     if not recipients:
         return {"sent": False, "error": "No email recipients configured."}
 
-    email_addr, password = _imap_creds()
+    from services import crm_mail
+    email_addr, password = crm_mail.sender_credentials(*_imap_creds())
     if not email_addr or not password:
         return {"sent": False, "error": "Email credentials not configured."}
 
@@ -1911,9 +1912,8 @@ def send_monthly_stock_email(year: int, month: int, archive: bool = True) -> dic
     )
 
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(email_addr, password)
-            server.send_message(msg)
+        outcome = crm_mail.deliver(msg, recipients,
+                                   job_name=f"Monthly 34S Stock Email ({month_label})")
     except Exception as e:
         return {"sent": False, "error": str(e)}
 
@@ -1931,12 +1931,13 @@ def send_monthly_stock_email(year: int, month: int, archive: bool = True) -> dic
         from services.sheets import append_email_log
         append_email_log(
             f"Monthly 34S Stock Email ({month_label})",
-            0, recipients, "success",
+            0, recipients, "success" if outcome == "sent" else "queued",
         )
     except Exception:
         pass
 
-    return {"sent": True, "subject": subject, "recipients": recipients}
+    return {"sent": outcome == "sent", "queued": outcome == "queued",
+            "subject": subject, "recipients": recipients}
 
 
 def send_daily_stock_email(target_date: date) -> dict:
@@ -1980,7 +1981,8 @@ def send_daily_stock_email(target_date: date) -> dict:
     if not recipients:
         return {"sent": False, "error": "No email recipients configured (EMAIL_RECIPIENTS secret)."}
 
-    email_addr, password = _imap_creds()
+    from services import crm_mail
+    email_addr, password = crm_mail.sender_credentials(*_imap_creds())
     if not email_addr or not password:
         return {"sent": False, "error": "Email credentials not configured."}
 
@@ -2025,9 +2027,9 @@ def send_daily_stock_email(target_date: date) -> dict:
     msg.add_alternative(html_body, subtype="html")
 
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(email_addr, password)
-            server.send_message(msg)
+        outcome = crm_mail.deliver(msg, recipients,
+                                   job_name=f"Daily 34S Stock Email ({date_label})",
+                                   records_count=len(flat))
     except Exception as e:
         return {"sent": False, "error": str(e)}
 
@@ -2035,9 +2037,10 @@ def send_daily_stock_email(target_date: date) -> dict:
         from services.sheets import append_email_log
         append_email_log(
             f"Daily 34S Stock Email ({date_label})",
-            len(flat), recipients, "success",
+            len(flat), recipients, "success" if outcome == "sent" else "queued",
         )
     except Exception:
         pass
 
-    return {"sent": True, "subject": subject, "recipients": recipients}
+    return {"sent": outcome == "sent", "queued": outcome == "queued",
+            "subject": subject, "recipients": recipients}

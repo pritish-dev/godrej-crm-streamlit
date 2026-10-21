@@ -2,15 +2,15 @@
 services/email_sender_sales_tasks.py
 Sales Team Task Email Sender — grouped by FREQUENCY type.
 
-Two scheduled emails daily:
-  11:00 AM — Tasks for today + overdue, grouped by Daily / Adhoc / Weekly / Monthly
-   8:00 PM — Task status for the day (summary + detail)
+Two scheduled emails nightly (CRM mail goes out only after 9 PM IST):
+  ~9:00 PM — Task status for the day (summary + detail)
+  ~9:30 PM — Tomorrow's tasks + overdue, grouped by Daily / Adhoc / Weekly / Monthly
 """
 
 import smtplib
 import os
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, date
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
@@ -59,6 +59,11 @@ if SENDER_EMAIL is None:
         pass
 
 
+# ── CRM emails are sent from the dedicated CRM account (CRM_EMAIL_SENDER) ────
+from services import crm_mail
+SENDER_EMAIL, SENDER_PASSWORD = crm_mail.sender_credentials(SENDER_EMAIL, SENDER_PASSWORD)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # SHARED UTILITIES
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -80,17 +85,16 @@ def _validate_credentials():
         raise ValueError("EMAIL_RECIPIENTS not set in env vars or secrets.")
 
 
-def _send_email(subject: str, html_body: str):
+def _send_email(subject: str, html_body: str, job_name: str = "") -> str:
     _validate_credentials()
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"]    = SENDER_EMAIL
     msg["To"]      = ", ".join(RECIPIENTS)
     msg.attach(MIMEText(html_body, "html"))
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-        server.login(SENDER_EMAIL, SENDER_PASSWORD)
-        server.sendmail(SENDER_EMAIL, RECIPIENTS, msg.as_string())
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] ✅ Sales Task Email sent → {RECIPIENTS}")
+    outcome = crm_mail.deliver(msg, RECIPIENTS, job_name=job_name or subject[:60])
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] ✅ Sales Task Email {outcome} → {RECIPIENTS}")
+    return outcome
 
 
 def _html_task_table(df: pd.DataFrame, header_bg: str = "#1a237e") -> str:
@@ -293,20 +297,23 @@ def _render_missed_summary_html(missed_df: pd.DataFrame, today: datetime) -> str
 #   Today's tasks + overdue, grouped by Daily / Adhoc / Weekly / Monthly
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def send_sales_team_tasks_email(tasks_df: pd.DataFrame, overdue_df: pd.DataFrame):
+def send_sales_team_tasks_email(tasks_df: pd.DataFrame, overdue_df: pd.DataFrame,
+                                for_date: date | None = None) -> str:
     """
-    11 AM email: Sales team tasks grouped by frequency type.
-    Shows Today's tasks and Overdue pending tasks.
+    Task briefing email: Sales team tasks grouped by frequency type.
+    Shows the tasks due on `for_date` (default today — the nightly job passes
+    tomorrow) and Overdue pending tasks. Returns "sent" or "queued".
     """
-    today        = datetime.now()
+    today        = datetime.combine(for_date, datetime.min.time()) if for_date else datetime.now()
     current_date = today.strftime("%d %B %Y")
+    day_word     = "Today's" if today.date() == datetime.now().date() else "Tomorrow's"
 
     body_sections = []
 
     # ── Today's tasks by frequency ─────────────────────────────────────────
     body_sections.append(
         "<h2 style='color:#1a237e;margin-top:0;border-bottom:2px solid #1a237e;"
-        f"padding-bottom:6px'>📋 Today's Assigned Tasks — {current_date}</h2>"
+        f"padding-bottom:6px'>📋 {day_word} Assigned Tasks — {current_date}</h2>"
     )
 
     if not tasks_df.empty:
@@ -360,7 +367,7 @@ def send_sales_team_tasks_email(tasks_df: pd.DataFrame, overdue_df: pd.DataFrame
         f"<div style='background:#e8eaf6;padding:12px 16px;border-radius:6px;"
         f"margin-bottom:20px;display:flex;gap:30px'>"
         f"<div><strong style='font-size:22px;color:#1a237e'>{total_today}</strong>"
-        f"<div style='font-size:12px;color:#555'>Today's Tasks</div></div>"
+        f"<div style='font-size:12px;color:#555'>{day_word} Tasks</div></div>"
         f"<div><strong style='font-size:22px;color:#c62828'>{total_overdue}</strong>"
         f"<div style='font-size:12px;color:#555'>Overdue Pending</div></div></div>"
     )
@@ -373,8 +380,9 @@ def send_sales_team_tasks_email(tasks_df: pd.DataFrame, overdue_df: pd.DataFrame
     )
 
     subject = f"[4s CRM] Sales Team Tasks - {current_date}"
-    _send_email(subject, email_html)
-    print(f"✅ Sales Team Tasks Email (11 AM) sent: {total_today} today, {total_overdue} overdue")
+    outcome = _send_email(subject, email_html)
+    print(f"✅ Sales Team Tasks Email {outcome}: {total_today} for {current_date}, {total_overdue} overdue")
+    return outcome
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -461,5 +469,6 @@ def send_sales_team_task_status_email(tasks_df: pd.DataFrame,
     )
 
     subject = f"[4s CRM] Sales Team Task Status - {current_date} ({completion_pct}% completed)"
-    _send_email(subject, email_html)
-    print(f"✅ Task Status Email (8 PM) sent: {done}/{total} done ({completion_pct}%)")
+    outcome = _send_email(subject, email_html)
+    print(f"✅ Task Status Email {outcome}: {done}/{total} done ({completion_pct}%)")
+    return outcome

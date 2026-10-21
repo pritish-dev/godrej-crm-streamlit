@@ -1,18 +1,14 @@
-name: Sales Team Tasks Email (Morning)
+name: Sales Team Tasks Email (Tomorrow's Plan, 9:30 PM)
 
 on:
   schedule:
     # All times UTC. IST = UTC+5:30
-    # GitHub Actions crons are best-effort — runs are routinely delayed by
-    # 5–30 min and very occasionally skipped. Fire three times in a tight
-    # window to make sure the morning briefing always lands. The job is
-    # idempotent — send_sales_team_tasks_email just composes today's task
-    # snapshot from SALES_TEAM_TASK + TASK_LOGS, so duplicate emails would
-    # carry the same content. To prevent that, we add a sentinel below
-    # (see the "Skip if already sent today" step).
-    - cron: '25 3 * * *'    # 03:25 UTC = 08:55 IST  (primary, early)
-    - cron: '30 3 * * *'    # 03:30 UTC = 09:00 IST  (primary, on-time)
-    - cron: '50 3 * * *'    # 03:50 UTC = 09:20 IST  (drift backup)
+    # CRM mail goes out only after 9 PM IST, so this is now the night-before
+    # briefing: TOMORROW's tasks + overdue (was 9 AM for the same day).
+    # GitHub Actions crons are best-effort (5–30 min drift); the backup cron
+    # is a no-op once the first run has logged a send (was_email_sent_today).
+    - cron: '0 16 * * *'    # 16:00 UTC = 21:30 IST  (primary)
+    - cron: '20 16 * * *'   # 16:20 UTC = 21:50 IST  (drift backup)
 
   workflow_dispatch:
 
@@ -44,11 +40,13 @@ jobs:
           fi
 
       - name: Run sales team tasks email
-        # Single-purpose workflow: only the 11→9 AM IST cron above triggers it.
+        # Single-purpose workflow: only the nightly crons above trigger it.
         # No SLOT logic needed — the script always runs the same email.
         env:
           EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
+          CRM_EMAIL_SENDER:   ${{ secrets.CRM_EMAIL_SENDER }}    # sends all CRM mail
+          CRM_EMAIL_PASSWORD: ${{ secrets.CRM_EMAIL_PASSWORD }}
           EMAIL_RECIPIENTS:   ${{ secrets.EMAIL_RECIPIENTS }}
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           OPS_SPREADSHEET_ID: ${{ secrets.OPS_SPREADSHEET_ID }}
