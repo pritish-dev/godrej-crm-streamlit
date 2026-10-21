@@ -1,10 +1,11 @@
 name: CRM + OPS Daily Backup
 
+# The nightly backup now runs as a Google Apps Script time trigger
+# (crm_backup/Code.gs — setup in crm_backup/SETUP.md). It runs as the owner's
+# Google account, so it needs no OAuth refresh token — the DRIVE_OAUTH_* token
+# used here expired every 7 days while the OAuth app is in "Testing".
+# This workflow is kept for manual runs only.
 on:
-  schedule:
-    # 10:00 PM IST = 16:30 UTC
-    - cron: '30 16 * * *'
-
   workflow_dispatch:
     inputs:
       dry_run:
