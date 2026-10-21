@@ -5,7 +5,9 @@ CRM Combined Delivery Alert Job — called by GitHub Actions.
 
 Schedule (godrej-email.yaml):
   07:00 AM IST  [SLOT=morning]  → subject "[4s CRM] Pending Delivery Alerts"
-  04:00 PM IST  [SLOT=evening]  → subject "[4s CRM] Update on Pending Delivery Alerts"
+  (SLOT=evening → "[4s CRM] Update on Pending Delivery Alerts", manual only)
+  The workflow sets CRM_EMAIL_SEND_NOW=1, so this alert is exempt from the
+  9 PM CRM send window.
 
 Rules:
   • No email is sent when both upcoming and overdue lists are empty.

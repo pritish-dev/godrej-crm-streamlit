@@ -79,6 +79,11 @@ if SENDER_EMAIL is None:
         pass
 
 
+# ── CRM emails are sent from the dedicated CRM account (CRM_EMAIL_SENDER) ────
+from services import crm_mail
+SENDER_EMAIL, SENDER_PASSWORD = crm_mail.sender_credentials(SENDER_EMAIL, SENDER_PASSWORD)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Recipients — read from the Ops sheet "comitted Delivery reminder email"
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -149,19 +154,13 @@ def _send_email(subject: str, html_body: str, to: list[str], cc: list[str],
     summary = {"sent": False, "recipients": list(to), "cc": list(cc),
                "subject": subject, "records": records_count, "error": ""}
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(SENDER_EMAIL, SENDER_PASSWORD)
-            server.sendmail(SENDER_EMAIL, all_rcpts, msg.as_string())
-        summary["sent"] = True
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] ✅ Committed Delivery Reminder sent "
+        outcome = crm_mail.deliver(msg, all_rcpts, job_name=job_name or subject[:60],
+                                   records_count=records_count)
+        summary["sent"]   = outcome == "sent"
+        summary["queued"] = outcome == "queued"
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] ✅ Committed Delivery Reminder {outcome} "
               f"→ To:{to} Cc:{cc}")
-        try:
-            from services.sheets import append_email_log
-            append_email_log(job_name=job_name or subject[:60],
-                             records_count=records_count,
-                             recipients=all_rcpts, status="success")
-        except Exception as log_err:
-            print(f"[EMAIL_LOG] Warning: {log_err}")
+        crm_mail.log_outcome(outcome, job_name or subject[:60], records_count, all_rcpts)
     except Exception as send_err:
         summary["error"] = str(send_err)
         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] ❌ Committed Delivery Reminder failed: {send_err}")

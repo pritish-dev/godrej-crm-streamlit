@@ -33,6 +33,7 @@ from services.delivery_updates import (
     update_source_delivery_date,
 )
 from services.dashboard_ticker import render_ticker
+from services.crm_mail import QUEUED_NOTICE
 from services.payment_utils import add_money_receipts_column, MONEY_RECEIPTS_COL
 from services.delivery_readiness import (
     customer_to_godrej_so,
@@ -1539,10 +1540,16 @@ def _handle_schedule_delivery_button(edited_df: pd.DataFrame,
     # ── If a previous send just succeeded, show the success banner once ──────
     if st.session_state.get(sent_flag_key):
         res = st.session_state[sent_flag_key]
-        st.success(
-            f"✅ Delivery email sent — {res.get('records', 0)} record(s), "
-            f"{len(res.get('attachments', []))} invoice attachment(s)."
-        )
+        if res.get("queued"):
+            st.info(
+                f"{QUEUED_NOTICE} — {res.get('records', 0)} record(s), "
+                f"{len(res.get('attachments', []))} invoice attachment(s)."
+            )
+        else:
+            st.success(
+                f"✅ Delivery email sent — {res.get('records', 0)} record(s), "
+                f"{len(res.get('attachments', []))} invoice attachment(s)."
+            )
         with st.expander("📋 Send details", expanded=False):
             st.write(f"**To:** {', '.join(res.get('to', []))}")
             st.write(f"**Cc:** {', '.join(res.get('cc', []))}")
@@ -1629,7 +1636,7 @@ def _handle_schedule_delivery_button(edited_df: pd.DataFrame,
                      key=f"{button_key}_confirm"):
             with st.spinner("Sending email…"):
                 res = send_prepared_delivery_email(prepared)
-            if res.get("sent"):
+            if res.get("sent") or res.get("queued"):
                 st.session_state[sent_flag_key] = res
                 del st.session_state[preview_state_key]
                 st.rerun()
@@ -1677,7 +1684,9 @@ if st.button(
     else:
         try:
             _reminder_res = send_committed_delivery_reminder_email(_committed_now_df)
-            if _reminder_res.get("sent"):
+            if _reminder_res.get("queued"):
+                st.info(QUEUED_NOTICE)
+            elif _reminder_res.get("sent"):
                 st.success(
                     f"✅ Comitted Delivery Reminder sent — "
                     f"To: {', '.join(_reminder_res.get('recipients', [])) or '—'}  ·  "
@@ -1715,7 +1724,9 @@ if not pending_grouped.empty:
                         mis_df=mis_df_for_page,
                         crm_all_df=crm,
                     )
-                    if _smry.get("sent"):
+                    if _smry.get("queued"):
+                        st.info(QUEUED_NOTICE)
+                    elif _smry.get("sent"):
                         st.success(
                             f"✅ Delivery Alerts email sent to "
                             f"{len(_smry.get('recipients', []))} recipient(s)! "
@@ -1929,7 +1940,10 @@ if not payment_grouped.empty:
             if not tomorrow_pay.empty:
                 try:
                     _smry = send_pending_delivery_email_4s(tomorrow_pay)
-                    st.success(f"✅ Tomorrow's Payment Due email sent to {len(_smry.get('recipients', []))} recipient(s)!")
+                    if _smry.get("queued"):
+                        st.info(QUEUED_NOTICE)
+                    else:
+                        st.success(f"✅ Tomorrow's Payment Due email sent to {len(_smry.get('recipients', []))} recipient(s)!")
                     with st.expander("📋 Send details"):
                         st.write(f"**Recipients:** {', '.join(_smry.get('recipients', []))}")
                         st.write(f"**Records sent:** {_smry.get('records', len(tomorrow_pay))}")
@@ -1943,7 +1957,10 @@ if not payment_grouped.empty:
         if st.button("📧 All Payment Due Email", use_container_width=True, key="em_all_pay"):
             try:
                 _smry = send_pending_delivery_email_4s(payment_grouped)
-                st.success(f"✅ Payment Due email sent to {len(_smry.get('recipients', []))} recipient(s)!")
+                if _smry.get("queued"):
+                    st.info(QUEUED_NOTICE)
+                else:
+                    st.success(f"✅ Payment Due email sent to {len(_smry.get('recipients', []))} recipient(s)!")
                 with st.expander("📋 Send details"):
                     st.write(f"**Recipients:** {', '.join(_smry.get('recipients', []))}")
                     st.write(f"**Records sent:** {_smry.get('records', len(payment_grouped))}")
@@ -1955,7 +1972,10 @@ if not payment_grouped.empty:
         if st.button("🔔 Payment Update Reminder", use_container_width=True, key="em_upd_pay"):
             try:
                 _smry = send_update_delivery_status_email_4s(payment_grouped)
-                st.success(f"✅ Payment Update Reminder sent to {len(_smry.get('recipients', []))} recipient(s)!")
+                if _smry.get("queued"):
+                    st.info(QUEUED_NOTICE)
+                else:
+                    st.success(f"✅ Payment Update Reminder sent to {len(_smry.get('recipients', []))} recipient(s)!")
                 with st.expander("📋 Send details"):
                     st.write(f"**Recipients:** {', '.join(_smry.get('recipients', []))}")
                     st.write(f"**Records sent:** {_smry.get('records', len(payment_grouped))}")

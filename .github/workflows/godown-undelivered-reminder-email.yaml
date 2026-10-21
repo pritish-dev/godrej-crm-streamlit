@@ -1,6 +1,7 @@
 name: CRM Godown Undelivered Items Reminder
 
-# Runs daily at 10 AM IST. All times UTC; IST = UTC + 5:30.
+# Runs nightly at 9:20 PM IST (CRM mail goes out only after 9 PM).
+# All times UTC; IST = UTC + 5:30.
 #
 # The job (godown_undelivered_reminder_job.py):
 #   1. Refreshes the "4s Godown Undelivered Items" OPS sheet — re-pulls each
@@ -15,8 +16,8 @@ name: CRM Godown Undelivered Items Reminder
 
 on:
   schedule:
-    - cron: '30 4 * * *'   # 04:30 UTC = 10:00 IST  (primary)
-    - cron: '55 4 * * *'   # 04:55 UTC = 10:25 IST  (drift backup)
+    - cron: '50 15 * * *'  # 15:50 UTC = 21:20 IST  (primary)
+    - cron: '10 16 * * *'  # 16:10 UTC = 21:40 IST  (drift backup)
 
   workflow_dispatch: {}
 
@@ -52,6 +53,8 @@ jobs:
         env:
           EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
+          CRM_EMAIL_SENDER:   ${{ secrets.CRM_EMAIL_SENDER }}    # sends all CRM mail
+          CRM_EMAIL_PASSWORD: ${{ secrets.CRM_EMAIL_PASSWORD }}
           EMAIL_RECIPIENTS:   ${{ secrets.EMAIL_RECIPIENTS }}
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           OPS_SPREADSHEET_ID: ${{ secrets.OPS_SPREADSHEET_ID }}

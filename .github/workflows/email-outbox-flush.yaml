@@ -1,0 +1,58 @@
+name: CRM Email Outbox Flush (10:30 PM)
+
+# Sends the CRM emails that were triggered during the day (dashboard buttons)
+# and queued until the 9 PM–midnight IST send window. Runs after all the
+# nightly scheduled email jobs so duplicates of their reports are dropped.
+# The second cron is a drift backup — an empty outbox makes it a no-op.
+
+on:
+  schedule:
+    # All times UTC. IST = UTC + 5:30
+    - cron: '0 17 * * *'    # 10:30 PM IST (primary)
+    - cron: '45 17 * * *'   # 11:15 PM IST (drift backup)
+
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'List queued emails without sending'
+        type: boolean
+        default: false
+
+concurrency:
+  group: crm-email-outbox-flush
+  cancel-in-progress: false
+
+jobs:
+  flush-outbox:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          if [ -f streamlit_app/requirements.txt ]; then
+            pip install -r streamlit_app/requirements.txt
+          else
+            pip install -r requirements.txt
+          fi
+
+      - name: Flush CRM outbox
+        env:
+          EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}      # fallback only
+          EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
+          CRM_EMAIL_SENDER:   ${{ secrets.CRM_EMAIL_SENDER }}
+          CRM_EMAIL_PASSWORD: ${{ secrets.CRM_EMAIL_PASSWORD }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          OPS_SPREADSHEET_ID: ${{ secrets.OPS_SPREADSHEET_ID }}
+          DRY_RUN:            ${{ github.event.inputs.dry_run }}
+        run: |
+          cd streamlit_app
+          python email_outbox_flush_job.py

@@ -78,6 +78,11 @@ if SENDER_EMAIL is None:
     except Exception:
         pass
 
+# ── CRM emails are sent from the dedicated CRM account (CRM_EMAIL_SENDER) ────
+# Drafts ("Save as Draft") are saved in that same account.
+from services import crm_mail
+SENDER_EMAIL, SENDER_PASSWORD = crm_mail.sender_credentials(SENDER_EMAIL, SENDER_PASSWORD)
+
 IMAP_HOST = "imap.gmail.com"
 RECIPIENTS_SHEET = "Delivery mail Recipients"
 
@@ -909,9 +914,11 @@ def send_prepared_delivery_email(prepared: dict) -> dict:
     )
 
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(SENDER_EMAIL, SENDER_PASSWORD)
-            server.send_message(msg, from_addr=SENDER_EMAIL, to_addrs=all_rcpts)
+        # report=False: every delivery email is distinct, so a queued one is
+        # never dropped in favour of a scheduled job's copy.
+        outcome = crm_mail.deliver(msg, all_rcpts, job_name="Schedule Delivery Email",
+                                   records_count=prepared.get("records_count", 0),
+                                   report=False)
     except Exception as e:
         return {
             "sent": False,
@@ -928,13 +935,14 @@ def send_prepared_delivery_email(prepared: dict) -> dict:
             job_name="Schedule Delivery Email",
             records_count=prepared.get("records_count", 0),
             recipients=all_rcpts,
-            status="success",
+            status="success" if outcome == "sent" else "queued",
         )
     except Exception:
         pass
 
     return {
-        "sent": True,
+        "sent": outcome == "sent",
+        "queued": outcome == "queued",
         "recipients": all_rcpts,
         "to": prepared.get("to", []),
         "cc": prepared.get("cc", []),

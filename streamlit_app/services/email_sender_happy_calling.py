@@ -60,6 +60,11 @@ if SENDER_EMAIL is None:
         pass
 
 
+# ── CRM emails are sent from the dedicated CRM account (CRM_EMAIL_SENDER) ────
+from services import crm_mail
+SENDER_EMAIL, SENDER_PASSWORD = crm_mail.sender_credentials(SENDER_EMAIL, SENDER_PASSWORD)
+
+
 COL_ORDER = ["ORDER DATE", "DELIVERY DATE", "CUSTOMER NAME", "CONTACT NUMBER",
              "PRODUCTS", "SALES PERSON", "DELIVERY STATUS", "HAPPY CALLING DATE"]
 
@@ -82,17 +87,12 @@ def _send(subject: str, html: str, records_count: int) -> dict:
     summary = {"sent": False, "recipients": list(RECIPIENTS),
                "subject": subject, "records": records_count, "error": ""}
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(SENDER_EMAIL, SENDER_PASSWORD)
-            server.sendmail(SENDER_EMAIL, RECIPIENTS, msg.as_string())
-        summary["sent"] = True
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] ✅ Happy Calling email → {RECIPIENTS}")
-        try:
-            from services.sheets import append_email_log
-            append_email_log("Happy Calling Email (7 AM)", records_count,
-                             list(RECIPIENTS), "success")
-        except Exception:
-            pass
+        outcome = crm_mail.deliver(msg, RECIPIENTS, job_name="Happy Calling Email (7 AM)",
+                                   records_count=records_count)
+        summary["sent"]   = outcome == "sent"
+        summary["queued"] = outcome == "queued"
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] ✅ Happy Calling email {outcome} → {RECIPIENTS}")
+        crm_mail.log_outcome(outcome, "Happy Calling Email (7 AM)", records_count, RECIPIENTS)
     except Exception as send_err:
         summary["error"] = str(send_err)
         print(f"❌ Happy Calling email failed: {send_err}")

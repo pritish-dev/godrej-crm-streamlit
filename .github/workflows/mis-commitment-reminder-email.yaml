@@ -1,7 +1,8 @@
 name: CRM Committed Delivery Reminder
 
-# Runs daily at 11 AM IST, right after the scheduled MIS Daily Import
-# (mis-daily-import.yaml, ~10:55/11:15 IST). All times UTC; IST = UTC + 5:30.
+# Runs nightly at 9:15 PM IST (CRM mail goes out only after 9 PM), well after
+# both MIS Daily Imports (mis-daily-import.yaml, ~11 AM and ~2:30 PM IST).
+# All times UTC; IST = UTC + 5:30.
 #
 # The job itself (mis_commitment_reminder_job.py):
 #   1. Checks whether today's MIS_Daily cache is actually fresh.
@@ -15,8 +16,8 @@ name: CRM Committed Delivery Reminder
 
 on:
   schedule:
-    - cron: '30 5 * * *'   # 05:30 UTC = 11:00 IST  (primary)
-    - cron: '55 5 * * *'   # 05:55 UTC = 11:25 IST  (drift backup)
+    - cron: '45 15 * * *'  # 15:45 UTC = 21:15 IST  (primary)
+    - cron: '5 16 * * *'   # 16:05 UTC = 21:35 IST  (drift backup)
 
   workflow_dispatch: {}
 
@@ -52,6 +53,8 @@ jobs:
         env:
           EMAIL_SENDER:       ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
+          CRM_EMAIL_SENDER:   ${{ secrets.CRM_EMAIL_SENDER }}    # sends all CRM mail
+          CRM_EMAIL_PASSWORD: ${{ secrets.CRM_EMAIL_PASSWORD }}
           EMAIL_RECIPIENTS:   ${{ secrets.EMAIL_RECIPIENTS }}
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           OPS_SPREADSHEET_ID: ${{ secrets.OPS_SPREADSHEET_ID }}

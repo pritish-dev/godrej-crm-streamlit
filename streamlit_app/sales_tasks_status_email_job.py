@@ -84,12 +84,12 @@ except Exception as _missed_err:
 
 # Send email (even if empty)
 try:
-    send_sales_team_task_status_email(today_tasks, missed_df=missed_df)
+    outcome = send_sales_team_task_status_email(today_tasks, missed_df=missed_df)
     append_email_log(
         job_name      = JOB_NAME,
         records_count = int(len(today_tasks)),
         recipients    = [],
-        status        = "success",
+        status        = "success" if outcome == "sent" else "queued",
     )
     print("✅ Sales Team Task Status Email (Evening) job completed")
 except Exception as send_err:

@@ -531,6 +531,29 @@ def append_email_log(job_name: str, records_count: int, recipients: list,
         print(f"[EMAIL_LOG] Warning — could not write log entry: {exc}")
 
 
+def last_email_success_today(job_name: str) -> str | None:
+    """
+    TIMESTAMP ("YYYY-MM-DD HH:MM IST") of the latest SUCCESSFUL EMAIL_LOG row
+    for `job_name` today (IST), or None. None on any error.
+    """
+    from datetime import timezone, timedelta
+    IST = timezone(timedelta(hours=5, minutes=30))
+    today_str = datetime.now(IST).strftime("%Y-%m-%d")
+    try:
+        rows = _get_sh("EMAIL_LOG").worksheet("EMAIL_LOG").get_all_values()
+    except Exception as exc:
+        print(f"[EMAIL_LOG] last_email_success_today probe failed: {exc}")
+        return None
+    latest = None
+    for row in rows[1:]:
+        if len(row) < 5:
+            continue
+        ts, job, status = (row[0] or "").strip(), (row[1] or "").strip(), (row[4] or "").strip().lower()
+        if job == job_name and ts.startswith(today_str) and status == "success":
+            latest = max(latest or ts, ts)
+    return latest
+
+
 def was_email_sent_today(job_name: str) -> bool:
     """
     Return True if the EMAIL_LOG contains a SUCCESSFUL row for `job_name`

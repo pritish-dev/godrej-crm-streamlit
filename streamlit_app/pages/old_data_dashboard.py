@@ -249,15 +249,15 @@ if not pending.empty:
     with b2:
         if st.button("📧 Send Delivery Email", key="old_em_del", use_container_width=True):
             try:
-                send_pending_delivery_email(pending)
-                st.success("✅ Email sent!")
+                _r = send_pending_delivery_email(pending)
+                st.success("🕘 Queued for tonight's 9 PM batch." if _r.get("queued") else "✅ Email sent!")
             except Exception as e:
                 st.error(f"❌ Failed: {e}")
     with b3:
         if st.button("⚠️ Send Update Reminder", key="old_em_upd", use_container_width=True):
             try:
-                send_update_delivery_status_email(pending)
-                st.success("✅ Reminder sent!")
+                _r = send_update_delivery_status_email(pending)
+                st.success("🕘 Queued for tonight's 9 PM batch." if _r.get("queued") else "✅ Reminder sent!")
             except Exception as e:
                 st.error(f"❌ Failed: {e}")
 

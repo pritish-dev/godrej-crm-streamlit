@@ -1,9 +1,11 @@
 """
 streamlit_app/sales_tasks_email_job.py
 
-Sales Team Tasks Email Job — 11:00 AM IST daily.
+Sales Team Tasks Email Job — nightly ~9:30 PM IST (CRM mail goes out only
+after 9 PM).
 
-Sends today's tasks + overdue pending tasks grouped by FREQUENCY type:
+Sends TOMORROW's tasks + overdue pending tasks grouped by FREQUENCY type, so
+the team has the plan the night before:
   Daily / Adhoc / Weekly / Monthly
 
 NOTE: SALES_TEAM_TASK is a master/template sheet (one row per task with
@@ -27,6 +29,9 @@ from services.sales_task_expander import get_today_and_overdue
 IST        = timezone(timedelta(hours=5, minutes=30))
 now_ist    = datetime.now(IST)
 today_date = now_ist.date()
+# Run at night → brief the team on the next day. (A run before noon, e.g. a
+# manual dispatch, still briefs on the same day.)
+plan_date  = today_date + timedelta(days=1) if now_ist.hour >= 12 else today_date
 
 JOB_NAME = "Sales Team Tasks Email (Morning)"
 
@@ -49,7 +54,7 @@ def load_and_process_tasks():
             print("  → SALES_TEAM_TASK sheet empty or not found.")
             return pd.DataFrame(), pd.DataFrame()
 
-        today_tasks, overdue_df = get_today_and_overdue(df_master, today_date)
+        today_tasks, overdue_df = get_today_and_overdue(df_master, plan_date)
 
         # Normalise FREQUENCY column for downstream grouping in email sender
         for d in (today_tasks, overdue_df):
@@ -58,7 +63,7 @@ def load_and_process_tasks():
             else:
                 d["FREQUENCY"] = "adhoc"
 
-        print(f"  → {len(today_tasks)} tasks for today, {len(overdue_df)} overdue")
+        print(f"  → {len(today_tasks)} tasks for {plan_date}, {len(overdue_df)} overdue")
         return today_tasks, overdue_df
 
     except Exception as e:
@@ -69,12 +74,12 @@ def load_and_process_tasks():
 
 today_tasks, overdue_pending = load_and_process_tasks()
 try:
-    send_sales_team_tasks_email(today_tasks, overdue_pending)
+    outcome = send_sales_team_tasks_email(today_tasks, overdue_pending, for_date=plan_date)
     append_email_log(
         job_name      = JOB_NAME,
         records_count = int(len(today_tasks) + len(overdue_pending)),
         recipients    = [],  # the email sender already logs recipients in detail
-        status        = "success",
+        status        = "success" if outcome == "sent" else "queued",
     )
     print("✅ Sales Team Tasks Email (Morning) job completed.")
 except Exception as send_err:

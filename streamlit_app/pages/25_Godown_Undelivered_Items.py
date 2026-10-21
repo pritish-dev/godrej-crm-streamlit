@@ -110,7 +110,10 @@ stats: dict = st.session_state.godown_stats
 if send_now:
     with st.spinner("Sending reminder email …"):
         res = send_godown_undelivered_reminder_email(df, delivered_count=stats.get("delivered", 0))
-    if res.get("sent"):
+    if res.get("queued"):
+        from services.crm_mail import QUEUED_NOTICE
+        st.info(QUEUED_NOTICE)
+    elif res.get("sent"):
         st.success(
             f"✅ Reminder email sent — {res.get('records', 0)} item(s) due within "
             f"{REMINDER_WINDOW_DAYS} days. To: {', '.join(res.get('recipients', []))}"
