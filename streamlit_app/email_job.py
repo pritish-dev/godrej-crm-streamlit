@@ -234,7 +234,9 @@ mis_df     = pd.DataFrame()
 crm_all_df = pd.DataFrame()
 try:
     print("  → Fetching MIS_Daily for readiness check …")
-    mis_df = get_df("MIS_Daily") or pd.DataFrame()
+    mis_df = get_df("MIS_Daily")
+    if mis_df is None:
+        mis_df = pd.DataFrame()
     if not mis_df.empty:
         print(f"  → MIS_Daily loaded: {len(mis_df)} rows")
     else:
