@@ -4,9 +4,10 @@ streamlit_app/email_job.py
 CRM Combined Delivery Alert Job — called by GitHub Actions.
 
 Schedule (godrej-email.yaml):
-  09:05 PM IST  [SLOT=morning]  → subject "[4s CRM] Pending Delivery Alerts"
+  07:00 AM IST  [SLOT=morning]  → subject "[4s CRM] Pending Delivery Alerts"
   (SLOT=evening → "[4s CRM] Update on Pending Delivery Alerts", manual only)
-  CRM mail goes out only after 9 PM IST, so this is now one alert a night.
+  The workflow sets CRM_EMAIL_SEND_NOW=1, so this alert is exempt from the
+  9 PM CRM send window.
 
 Rules:
   • No email is sent when both upcoming and overdue lists are empty.

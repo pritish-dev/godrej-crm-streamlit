@@ -1,14 +1,7 @@
-name: Sales Team Task Status Email (9 PM)
+name: Sales Team Task Status Email (STOPPED — manual only)
 
 on:
-  schedule:
-    # All times in UTC. IST = UTC + 5:30
-    # Triple-fire window to absorb GitHub Actions cron drift; the script
-    # itself is idempotent via was_email_sent_today() — only the first
-    # successful run actually sends.
-    # CRM mail goes out only after 9 PM IST (was 6 PM).
-    - cron: '30 15 * * *'   # 15:30 UTC = 21:00 IST  (primary)
-    - cron: '50 15 * * *'   # 15:50 UTC = 21:20 IST  (drift backup)
+  # Scheduled runs STOPPED — run manually from the Actions tab if ever needed.
 
   # Allow manual trigger from GitHub Actions UI for testing
   workflow_dispatch:

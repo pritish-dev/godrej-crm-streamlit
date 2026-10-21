@@ -25,13 +25,14 @@ Single delivery point for every email the CRM sends.
 3. Fewer emails
    When the outbox is flushed, repeated triggers of the same email (same job,
    subject and recipients) collapse to the most recent one, and a queued report
-   is dropped altogether if its nightly scheduled job already sent a fresher
-   copy that day.
+   is dropped altogether if its scheduled job sent a fresher copy (one sent
+   after the click) that day.
 
 Overrides (env var or Streamlit secret):
     EMAIL_SEND_WINDOW_START  — IST hour the window opens   (default 21)
     EMAIL_SEND_WINDOW_END    — IST hour the window closes  (default 24 = midnight)
-    CRM_EMAIL_SEND_NOW=1     — ignore the window and send immediately (testing)
+    CRM_EMAIL_SEND_NOW=1     — ignore the window and send immediately (set by the
+                               7 AM Pending Delivery Alert workflow; also for testing)
 """
 from __future__ import annotations
 
@@ -54,7 +55,8 @@ H_JOB     = "X-CRM-Job"
 H_RECORDS = "X-CRM-Records"
 H_KEY     = "X-CRM-Dedup-Key"
 H_REPORT  = "X-CRM-Report"
-_PRIVATE_HEADERS = (H_RCPTS, H_JOB, H_RECORDS, H_KEY, H_REPORT)
+H_QUEUED  = "X-CRM-Queued-At"
+_PRIVATE_HEADERS = (H_RCPTS, H_JOB, H_RECORDS, H_KEY, H_REPORT, H_QUEUED)
 
 QUEUED_NOTICE = ("🕘 Queued — CRM emails go out only after 9 PM IST. "
                  "This one will be sent with tonight's batch.")
@@ -161,9 +163,8 @@ def deliver(msg, recipients: list[str], *, job_name: str = "",
     Inside the send window it is sent immediately; outside it is queued in the
     sender's CRM-Outbox label. Returns "sent" or "queued"; raises on failure.
 
-    report=True marks a recurring report that a nightly scheduled job also
-    produces — a queued copy is skipped at flush time if that job already sent
-    today. Pass report=False for one-off mails (e.g. customer delivery emails).
+    report=True marks a recurring report that a scheduled job also produces —
+    a queued copy is skipped at flush time if that job sent after it was queued. Pass report=False for one-off mails (e.g. customer delivery emails).
     """
     sender, password = sender_credentials()
     if not sender or not password:
@@ -188,6 +189,7 @@ def deliver(msg, recipients: list[str], *, job_name: str = "",
     msg[H_RECORDS] = str(int(records_count or 0))
     msg[H_KEY]     = " | ".join([msg[H_JOB], str(msg.get("Subject", "")), ",".join(sorted(rcpts))])
     msg[H_REPORT]  = "1" if report else "0"
+    msg[H_QUEUED]  = datetime.now(IST).strftime("%Y-%m-%d %H:%M IST")
 
     mail = _imap_login(sender, password)
     try:
@@ -224,7 +226,8 @@ def flush_outbox(dry_run: bool = False) -> dict:
     """
     Send everything waiting in CRM-Outbox. Duplicates (same dedup key) collapse
     to the newest copy; queued reports whose scheduled job already sent today
-    are dropped. Every handled message is removed from the outbox.
+    after they were queued are dropped. Every handled message is removed from
+    the outbox.
     """
     sender, password = sender_credentials()
     if not sender or not password:
@@ -256,7 +259,7 @@ def flush_outbox(dry_run: bool = False) -> dict:
                 _mark_done(mail, latest[key][1], dry_run)
             latest[key] = item
 
-        from services.sheets import append_email_log, was_email_sent_today
+        from services.sheets import append_email_log, last_email_success_today
 
         server = None
         try:
@@ -266,10 +269,11 @@ def flush_outbox(dry_run: bool = False) -> dict:
                 rcpts   = [r.strip() for r in str(msg.get(H_RCPTS, "")).split(",") if r.strip()]
                 records = int(str(msg.get(H_RECORDS, "0") or 0))
 
-                if msg.get(H_REPORT) == "1" and was_email_sent_today(job):
+                last_sent = last_email_success_today(job) if msg.get(H_REPORT) == "1" else None
+                if last_sent and last_sent >= str(msg.get(H_QUEUED, "")):
                     result["superseded"].append(subj)
                     append_email_log(job, records, rcpts, "superseded",
-                                     "Fresher copy already sent by tonight's scheduled job")
+                                     f"Fresher copy already sent at {last_sent}")
                     _mark_done(mail, uid, dry_run)
                     continue
                 if dry_run:

@@ -9,8 +9,8 @@ is parked in the "CRM-Outbox" Gmail label of the CRM sender account
 (4sinteriors.crm@gmail.com). This job releases them:
 
   • repeated clicks of the same email collapse to the latest copy;
-  • a queued report is dropped if tonight's scheduled job already sent a
-    fresher copy (those jobs run at 9:00–9:45 PM, before this flush).
+  • a queued report is dropped if its scheduled job sent a fresher copy
+    after the click (e.g. tonight's 9:10 PM Payment Due email).
 
 Triggered from .github/workflows/email-outbox-flush.yaml
 Set DRY_RUN=1 to list what would be sent without sending anything.

@@ -1,9 +1,7 @@
-name: Happy Calling Email (9:25 PM)
+name: Happy Calling Email (STOPPED — manual only)
 
 on:
-  schedule:
-    # All times UTC. IST = UTC + 5:30
-    - cron: '55 15 * * *'   # 09:25 PM IST → Happy Calling Email (CRM mail only after 9 PM)
+  # Scheduled runs STOPPED — run manually from the Actions tab if ever needed.
 
   workflow_dispatch:
 

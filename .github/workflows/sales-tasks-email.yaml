@@ -1,14 +1,7 @@
-name: Sales Team Tasks Email (Tomorrow's Plan, 9:30 PM)
+name: Sales Team Tasks Email (STOPPED — manual only)
 
 on:
-  schedule:
-    # All times UTC. IST = UTC+5:30
-    # CRM mail goes out only after 9 PM IST, so this is now the night-before
-    # briefing: TOMORROW's tasks + overdue (was 9 AM for the same day).
-    # GitHub Actions crons are best-effort (5–30 min drift); the backup cron
-    # is a no-op once the first run has logged a send (was_email_sent_today).
-    - cron: '0 16 * * *'    # 16:00 UTC = 21:30 IST  (primary)
-    - cron: '20 16 * * *'   # 16:20 UTC = 21:50 IST  (drift backup)
+  # Scheduled runs STOPPED — run manually from the Actions tab if ever needed.
 
   workflow_dispatch:
 

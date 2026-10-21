@@ -3,8 +3,9 @@ name: CRM Pending Delivery Alerts
 on:
   schedule:
     # All times UTC.  IST = UTC + 5:30
-    # CRM mail goes out only after 9 PM IST — one alert a night (was 7 AM + 4 PM).
-    - cron: '35 15 * * *'   # 09:05 PM IST  →  nightly alert (SLOT=morning subject)
+    # One alert a day at 7 AM (the 4 PM repeat is dropped). This is the only
+    # CRM email exempt from the 9 PM send window — see CRM_EMAIL_SEND_NOW below.
+    - cron: '30 1 * * *'    # 07:00 AM IST  →  morning alert
 
   workflow_dispatch:
     inputs:
@@ -45,6 +46,7 @@ jobs:
           EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
           CRM_EMAIL_SENDER:   ${{ secrets.CRM_EMAIL_SENDER }}    # sends all CRM mail
           CRM_EMAIL_PASSWORD: ${{ secrets.CRM_EMAIL_PASSWORD }}
+          CRM_EMAIL_SEND_NOW: '1'    # send at 7 AM, not held for the 9 PM window
           EMAIL_RECIPIENTS:   ${{ secrets.EMAIL_RECIPIENTS }}
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           OPS_SPREADSHEET_ID: ${{ secrets.OPS_SPREADSHEET_ID }}
@@ -55,7 +57,7 @@ jobs:
           SCHEDULE="${{ github.event.schedule }}"
           MANUAL="${{ github.event.inputs.slot }}"
 
-          if   [ "$SCHEDULE" = "35 15 * * *" ]; then export SLOT=morning
+          if   [ "$SCHEDULE" = "30 1 * * *"  ]; then export SLOT=morning
           elif [ -n "$MANUAL"               ]; then export SLOT=$MANUAL
           fi
 
