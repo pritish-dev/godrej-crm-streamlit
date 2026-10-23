@@ -16,10 +16,17 @@ Single delivery point for every email the CRM sends.
    official inbox over IMAP (MIS, stock, RPL, invoice and lead imports), because
    that is where Godrej sends those mails.
 
-2. Night-only send window
-   Mail is only handed to SMTP between 21:00 and 23:59 IST. Anything triggered
-   outside that window (e.g. a button on the CRM dashboard at 2 PM) is parked
-   in the "CRM-Outbox" Gmail label of the sender account and released by
+   Exception — mail to anyone other than the official showroom inbox
+   (4sinteriorsbbsr@gmail.com) is sent FROM 4sinteriorsbbsr@gmail.com, using
+   EMAIL_SENDER / EMAIL_PASSWORD (which must be that account). Only mail whose
+   recipients are all 4sinteriorsbbsr@gmail.com itself uses the CRM account.
+
+2. Night-only send window (automated mail only)
+   Emails triggered MANUALLY from the CRM dashboard (any deliver() call made
+   while a Streamlit page is running) are sent immediately.
+   AUTOMATED mail (scheduled jobs / GitHub Actions) is only handed to SMTP
+   between 21:00 and 23:59 IST; outside that window it is parked in the
+   "CRM-Outbox" Gmail label of the CRM sender account and released by
    email_outbox_flush_job.py, which runs nightly after the scheduled jobs.
 
 3. Fewer emails
@@ -41,6 +48,7 @@ import os
 import smtplib
 import time
 import email
+from email.utils import parseaddr
 from datetime import datetime, timezone, timedelta
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -48,6 +56,9 @@ IST = timezone(timedelta(hours=5, minutes=30))
 SMTP_HOST = "smtp.gmail.com"
 IMAP_HOST = "imap.gmail.com"
 OUTBOX_FOLDER = "CRM-Outbox"
+
+# Official showroom account — every email to anyone else is sent from it.
+OFFICIAL_SENDER = "4sinteriorsbbsr@gmail.com"
 
 # Private headers carried by a queued message; stripped before it is sent.
 H_RCPTS   = "X-CRM-Envelope-To"
@@ -58,7 +69,7 @@ H_REPORT  = "X-CRM-Report"
 H_QUEUED  = "X-CRM-Queued-At"
 _PRIVATE_HEADERS = (H_RCPTS, H_JOB, H_RECORDS, H_KEY, H_REPORT, H_QUEUED)
 
-QUEUED_NOTICE = ("🕘 Queued — CRM emails go out only after 9 PM IST. "
+QUEUED_NOTICE = ("🕘 Queued — automated CRM emails go out only after 9 PM IST. "
                  "This one will be sent with tonight's batch.")
 
 
@@ -114,6 +125,43 @@ def sender_credentials(fallback_email: str | None = None,
     return fallback_email or None, fallback_password or None
 
 
+def official_credentials() -> tuple[str | None, str | None]:
+    """(email, app_password) of the official 4sinteriorsbbsr@gmail.com account."""
+    e, p = _setting("EMAIL_SENDER"), _setting("EMAIL_PASSWORD")
+    if e and e.lower() != OFFICIAL_SENDER:
+        print(f"[crm_mail] ⚠️ EMAIL_SENDER is {e}, expected {OFFICIAL_SENDER}.")
+    return e or None, p or None
+
+
+def _bare(addr: str) -> str:
+    return (parseaddr(addr)[1] or addr).strip().lower()
+
+
+def credentials_for(recipients: list[str]) -> tuple[str | None, str | None]:
+    """
+    Sender account for a message: 4sinteriorsbbsr@gmail.com whenever any
+    recipient is someone else; the CRM account when the mail only goes to
+    4sinteriorsbbsr@gmail.com itself (or the official login is missing).
+    """
+    if any(_bare(r) != OFFICIAL_SENDER for r in recipients):
+        e, p = official_credentials()
+        if e and p:
+            return e, p
+    return sender_credentials()
+
+
+def triggered_manually() -> bool:
+    """True when called from a running Streamlit page (a dashboard button)."""
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+        try:
+            return get_script_run_ctx(suppress_warning=True) is not None
+        except TypeError:
+            return get_script_run_ctx() is not None
+    except Exception:
+        return False
+
+
 def _window() -> tuple[int, int]:
     try:
         start = int(_setting("EMAIL_SEND_WINDOW_START") or 21)
@@ -155,13 +203,17 @@ def _imap_login(sender: str, password: str) -> imaplib.IMAP4_SSL:
 
 
 def deliver(msg, recipients: list[str], *, job_name: str = "",
-            records_count: int = 0, report: bool = True) -> str:
+            records_count: int = 0, report: bool = True,
+            immediate: bool | None = None) -> str:
     """
     Send `msg` (an email.message.Message) to `recipients` (the full envelope
-    list: To + Cc + Bcc) from the CRM sender account.
+    list: To + Cc + Bcc) — from 4sinteriorsbbsr@gmail.com, or from the CRM
+    account when the mail only goes to 4sinteriorsbbsr@gmail.com.
 
-    Inside the send window it is sent immediately; outside it is queued in the
-    sender's CRM-Outbox label. Returns "sent" or "queued"; raises on failure.
+    Manually triggered mail (immediate=None → auto-detected: called from a
+    Streamlit page) and mail inside the send window is sent right away;
+    automated mail outside the window is queued in the CRM account's
+    CRM-Outbox label. Returns "sent" or "queued"; raises on failure.
 
     report=True marks a recurring report that a scheduled job also produces —
     a queued copy is skipped at flush time if that job sent after it was queued. Pass report=False for one-off mails (e.g. customer delivery emails).
@@ -174,10 +226,13 @@ def deliver(msg, recipients: list[str], *, job_name: str = "",
     if not rcpts:
         raise ValueError("No recipients given.")
 
-    if in_send_window():
+    if immediate is None:
+        immediate = triggered_manually()
+    if immediate or in_send_window():
+        from_addr, from_pw = credentials_for(rcpts)
         with smtplib.SMTP_SSL(SMTP_HOST, 465) as server:
-            server.login(sender, password)
-            _smtp_send(server, sender, msg, rcpts)
+            server.login(from_addr, from_pw)
+            _smtp_send(server, from_addr, msg, rcpts)
         return "sent"
 
     for h in _PRIVATE_HEADERS:
@@ -261,7 +316,7 @@ def flush_outbox(dry_run: bool = False) -> dict:
 
         from services.sheets import append_email_log, last_email_success_today
 
-        server = None
+        servers: dict[str, smtplib.SMTP] = {}
         try:
             for _, uid, msg in latest.values():
                 subj    = str(msg.get("Subject", ""))
@@ -280,10 +335,13 @@ def flush_outbox(dry_run: bool = False) -> dict:
                     result["sent"].append(subj)
                     continue
                 try:
+                    from_addr, from_pw = credentials_for(rcpts)
+                    server = servers.get(from_addr)
                     if server is None:
                         server = smtplib.SMTP_SSL(SMTP_HOST, 465)
-                        server.login(sender, password)
-                    _smtp_send(server, sender, msg, rcpts)
+                        server.login(from_addr, from_pw)
+                        servers[from_addr] = server
+                    _smtp_send(server, from_addr, msg, rcpts)
                     result["sent"].append(subj)
                     append_email_log(job, records, rcpts, "success")
                     _mark_done(mail, uid, dry_run)
@@ -291,7 +349,7 @@ def flush_outbox(dry_run: bool = False) -> dict:
                     result["failed"].append(f"{subj}: {e}")
                     append_email_log(job, records, rcpts, "error", str(e))
         finally:
-            if server is not None:
+            for server in servers.values():
                 try:
                     server.quit()
                 except Exception:
