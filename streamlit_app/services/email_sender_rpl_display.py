@@ -11,6 +11,10 @@ this module sends ONE email listing them in a table:
 
 Subject line (fixed): "REQUEST FOR DELIVERY 34S RPL FOR SHOWROOM DISPLAY".
 
+Signed off "Thanks & Regards," + the sales person chosen on the page.
+The page can either send the email or save it as a Gmail draft (in the account
+it would be sent from) for a final review in Gmail.
+
 Recipients:
   To — the "TO" column of the OPS sheet "RPL_DISPLAY_REQUEST".
   CC — the "CC" column of that same sheet.
@@ -42,6 +46,7 @@ IST = timezone(timedelta(hours=5, minutes=30))
 GREETING = "Dear Sir,"
 INTRO = ("Kindly plan the delivery of the following products to our store.<br>"
          "The product details are mentioned below for your reference.")
+SIGN_OFF = "Thanks & Regards,"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -93,7 +98,7 @@ def _bare_addresses(entries: list[str]) -> list[str]:
 # Body builders
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def build_html_body(items: list[dict]) -> str:
+def build_html_body(items: list[dict], sender_name: str = "") -> str:
     """HTML email body — yellow header row / green item rows, like the sample."""
     cell = ("padding:6px 12px;border:1px solid #444;font-family:Calibri,Arial,sans-serif;"
             "font-size:14px;font-weight:bold;text-align:center")
@@ -115,31 +120,47 @@ def build_html_body(items: list[dict]) -> str:
         f"<p>{GREETING}</p>"
         f"<p>{INTRO}</p>"
         f"{table}"
+        f"<p>{SIGN_OFF}<br>{html.escape(sender_name.strip())}</p>"
         f"</div>"
     )
 
 
-def build_plain_body(items: list[dict]) -> str:
+def build_plain_body(items: list[dict], sender_name: str = "") -> str:
     """Plain-text alternative of the email (tab-separated table)."""
     lines = [GREETING,
              INTRO.replace("<br>", "\n"),
              "",
              "\t".join(EMAIL_COLS)]
     lines += ["\t".join(str(it.get(c, "")) for c in EMAIL_COLS) for it in items]
-    return "\n".join(lines)
+    lines += ["", SIGN_OFF, sender_name.strip()]
+    return "\n".join(lines).rstrip() + "\n"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # MAIN ENTRY-POINT
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def send_rpl_display_request_email(items: list[dict]) -> dict:
+def _build_message(items: list[dict], sender_name: str, to: list[str], cc: list[str]):
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = SUBJECT
+    msg["To"]      = ", ".join(to)
+    if cc:
+        msg["Cc"] = ", ".join(cc)
+    msg.attach(MIMEText(build_plain_body(items, sender_name), "plain"))
+    msg.attach(MIMEText(build_html_body(items, sender_name), "html"))
+    return msg
+
+
+def send_rpl_display_request_email(items: list[dict], sender_name: str = "",
+                                   as_draft: bool = False) -> dict:
     """
     Send the showroom-display delivery request for `items` (dicts keyed by
-    EMAIL_COLS). Returns {"sent", "queued", "to", "cc", "records", "error"}.
+    EMAIL_COLS), signed by `sender_name` — or, with as_draft=True, only save it
+    as a Gmail draft. Returns {"sent", "queued", "draft", "draft_account",
+    "to", "cc", "records", "error"}.
     """
-    summary = {"sent": False, "queued": False, "to": [], "cc": [],
-               "records": len(items), "error": ""}
+    summary = {"sent": False, "queued": False, "draft": False, "draft_account": "",
+               "to": [], "cc": [], "records": len(items), "error": ""}
     if not items:
         summary["error"] = "No items selected."
         return summary
@@ -150,15 +171,17 @@ def send_rpl_display_request_email(items: list[dict]) -> dict:
         summary["error"] = r["error"]
         return summary
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = SUBJECT
-    msg["To"]      = ", ".join(r["to"])
-    if r["cc"]:
-        msg["Cc"] = ", ".join(r["cc"])
-    msg.attach(MIMEText(build_plain_body(items), "plain"))
-    msg.attach(MIMEText(build_html_body(items), "html"))
-
+    msg = _build_message(items, sender_name, r["to"], r["cc"])
     all_rcpts = _bare_addresses(r["to"] + r["cc"])
+
+    if as_draft:
+        try:
+            summary["draft_account"] = crm_mail.save_draft(msg, all_rcpts)
+            summary["draft"] = True
+        except Exception as e:
+            summary["error"] = str(e)
+        return summary
+
     try:
         outcome = crm_mail.deliver(msg, all_rcpts, job_name=JOB_NAME,
                                    records_count=len(items), report=False)

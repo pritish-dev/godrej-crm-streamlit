@@ -262,6 +262,51 @@ def deliver(msg, recipients: list[str], *, job_name: str = "",
     return "queued"
 
 
+def _drafts_folder(mail: imaplib.IMAP4_SSL) -> str:
+    """Gmail's Drafts mailbox (special-use \\Drafts; name can be localised)."""
+    try:
+        _, boxes = mail.list()
+        for b in boxes or []:
+            line = b.decode(errors="ignore") if isinstance(b, bytes) else str(b)
+            if "\\Drafts" in line:
+                return line.rsplit(' "/" ', 1)[-1].strip()
+    except Exception:
+        pass
+    return '"[Gmail]/Drafts"'
+
+
+def save_draft(msg, recipients: list[str]) -> str:
+    """
+    Save `msg` as a Gmail draft (not sent) in the account it would be sent from
+    (see credentials_for). Returns that account's address; raises on failure.
+    """
+    rcpts = [r for r in dict.fromkeys(r.strip() for r in recipients) if r]
+    if not rcpts:
+        raise ValueError("No recipients given.")
+    sender, password = credentials_for(rcpts)
+    if not sender or not password:
+        raise ValueError("EMAIL_SENDER / EMAIL_PASSWORD not set in env vars or secrets.")
+    for h in _PRIVATE_HEADERS:
+        del msg[h]
+    del msg["From"]
+    msg["From"] = sender
+
+    mail = _imap_login(sender, password)
+    try:
+        folder = _drafts_folder(mail)
+        typ, data = mail.append(folder, "(\\Draft)", imaplib.Time2Internaldate(time.time()),
+                                msg.as_bytes())
+        if typ != "OK":
+            raise RuntimeError(f"IMAP append to {folder} failed: {data}")
+    finally:
+        try:
+            mail.logout()
+        except Exception:
+            pass
+    print(f"[crm_mail] 📝 Draft saved '{msg.get('Subject', '')}' in {sender}")
+    return sender
+
+
 def log_outcome(outcome: str, job_name: str, records_count: int, recipients: list[str]) -> None:
     """EMAIL_LOG row for a deliver() outcome ("sent" → success, "queued" → queued)."""
     try:
