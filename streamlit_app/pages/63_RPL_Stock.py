@@ -424,31 +424,94 @@ if not over.empty:
 items = chosen[DISPLAY_EMAIL_COLS].to_dict("records")
 recips = get_display_request_recipients()
 
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _sales_person_names() -> list[str]:
+    """Names from the OPS 'Sales Team' sheet (NAME column), nicely cased."""
+    try:
+        from services.sheets import get_df
+        team = get_df("Sales Team")
+    except Exception:
+        return []
+    if team is None or team.empty:
+        return []
+    team.columns = [str(c).strip().upper() for c in team.columns]
+    col = next((c for c in ("NAME", "EMPLOYEE", "SALES PERSON") if c in team.columns), None)
+    if not col:
+        return []
+    out: list[str] = []
+    for v in team[col].astype(str).str.strip():
+        n = v.title() if v.isupper() else v
+        if n and n.lower() not in ("nan", "none") and n not in out:
+            out.append(n)
+    return out
+
+
+# ─── Sign-off: "Thanks & Regards, <Sales Person Name>" ────────────────────────
+OTHER_NAME = "✏️ Other (type a name)"
+sp_names = _sales_person_names()
+_me = (st.session_state.get("auth_user") or {}).get("fullname", "")
+_me = _me.title() if _me.isupper() else _me
+sp_options = list(sp_names)
+if _me and _me not in sp_options:
+    sp_options.insert(0, _me)
+sp_options.append(OTHER_NAME)
+
+st.markdown("#### ✍️ Sign-off")
+n1, n2 = st.columns([2, 2])
+with n1:
+    sp_choice = st.selectbox(
+        "Thanks & Regards — Sales Person",
+        sp_options,
+        index=sp_options.index(_me) if _me in sp_options else 0,
+        key="rpl_disp_sender_choice",
+        help="Name shown under 'Thanks & Regards,' at the end of the email.",
+    )
+with n2:
+    if sp_choice == OTHER_NAME:
+        sender_name = st.text_input("Sales Person Name", key="rpl_disp_sender_other",
+                                    placeholder="Type your name").strip()
+    else:
+        sender_name = sp_choice
+
 with st.container(border=True):
     st.markdown(f"**Subject:** {DISPLAY_SUBJECT}")
     st.markdown(f"**To:** {', '.join(recips['to']) or '—'}")
     st.markdown(f"**CC:** {', '.join(recips['cc']) or '—'}")
     st.markdown("---")
-    st.markdown(build_html_body(items), unsafe_allow_html=True)
+    st.markdown(build_html_body(items, sender_name), unsafe_allow_html=True)
 
 if recips["error"]:
     st.error(f"❌ {recips['error']}")
+if not sender_name:
+    st.warning("✍️ Enter the Sales Person name for the sign-off.")
 
-b1, b2 = st.columns([1.6, 4])
+_n = f"{len(items)} item{'s' if len(items) != 1 else ''}"
+_blocked = bool(recips["error"]) or not sender_name
+b1, b2, b3 = st.columns([1.6, 1.6, 3])
 with b1:
     send_clicked = st.button(
-        f"📧 Send Request ({len(items)} item{'s' if len(items) != 1 else ''})",
+        f"📧 Send Now ({_n})",
         type="primary",
         use_container_width=True,
-        disabled=bool(recips["error"]),
+        disabled=_blocked,
+        help="Send the email immediately.",
     )
 with b2:
+    draft_clicked = st.button(
+        "📝 Save as Draft",
+        use_container_width=True,
+        disabled=_blocked,
+        help="Save the email in Gmail Drafts (not sent) so you can review and send it from Gmail.",
+    )
+with b3:
     with st.expander("📋 Copy email text (plain)"):
-        st.code(f"Subject: {DISPLAY_SUBJECT}\n\n{build_plain_body(items)}", language=None)
+        st.code(f"Subject: {DISPLAY_SUBJECT}\n\n{build_plain_body(items, sender_name)}",
+                language=None)
 
 if send_clicked:
     with st.spinner("Sending showroom display request …"):
-        res = send_rpl_display_request_email(items)
+        res = send_rpl_display_request_email(items, sender_name)
     if res.get("queued"):
         from services.crm_mail import QUEUED_NOTICE
         st.info(QUEUED_NOTICE)
@@ -458,3 +521,12 @@ if send_clicked:
         st.error(f"❌ Could not send the request: {res.get('error')}")
     if res.get("sent") or res.get("queued"):
         st.balloons()
+
+if draft_clicked:
+    with st.spinner("Saving the email to Gmail Drafts …"):
+        res = send_rpl_display_request_email(items, sender_name, as_draft=True)
+    if res.get("draft"):
+        st.success(f"📝 Saved as a draft in the Gmail Drafts of **{res['draft_account']}** "
+                   "— open Gmail to review and send it.")
+    else:
+        st.error(f"❌ Could not save the draft: {res.get('error')}")
