@@ -134,11 +134,45 @@ def _get_sh(sheet_name: str):
 # ENSURE SHEET + HEADERS
 # ==============================
 
+# Worksheet handles are cached per process: ``sh.worksheet(name)`` costs a
+# full spreadsheet-metadata READ request every time, and it used to run on
+# every get_df() cache miss, eating into the 60-reads/minute Sheets quota.
+_WS_CACHE: dict = {}
+
+
+def _api_retry(fn, *args, **kwargs):
+    """Call a gspread function, retrying on 429 (quota) and transient 5xx.
+
+    Google Sheets allows ~60 read requests per minute per user. When several
+    pages / sections load at once the quota trips and gspread raises
+    ``APIError`` (HTTP 429). The quota window is one minute, so back off and
+    retry instead of crashing the page.
+    """
+    import time as _time
+    from gspread.exceptions import APIError
+
+    delay = 2.0
+    for attempt in range(5):
+        try:
+            return fn(*args, **kwargs)
+        except APIError as exc:
+            code = getattr(getattr(exc, "response", None), "status_code", None)
+            if code in (429, 500, 502, 503, 504) and attempt < 4:
+                _time.sleep(delay)
+                delay = min(delay * 2, 20.0)
+                continue
+            raise
+
+
 def _ensure_sheet(sheet_name):
+    cached = _WS_CACHE.get(sheet_name)
+    if cached is not None:
+        return cached
+
     sh = _get_sh(sheet_name)
 
     try:
-        ws = sh.worksheet(sheet_name)
+        ws = _api_retry(sh.worksheet, sheet_name)
     except:
         ws = sh.add_worksheet(title=sheet_name, rows=1000, cols=50)
 
@@ -151,6 +185,7 @@ def _ensure_sheet(sheet_name):
         elif sheet_name == "comitted Delivery reminder email":
             ws.append_row(["Email", "CC"])
 
+    _WS_CACHE[sheet_name] = ws
     return ws
 
 # ==============================
@@ -181,15 +216,37 @@ def _normalize(col, val):
 # GET DATA
 # ==============================
 
+# Last successfully-read frame per sheet. If Google returns a quota (429) or
+# server error even after retries, we serve this slightly-stale copy instead
+# of crashing the whole page.
+_LAST_GOOD_DF: dict = {}
+
+
 @st.cache_data(ttl=60)
 def get_df(sheet_name):
-    ws = _ensure_sheet(sheet_name)
-    data = ws.get_all_values()
+    try:
+        ws = _ensure_sheet(sheet_name)
+        data = _api_retry(ws.get_all_values)
+    except Exception as exc:
+        stale = _LAST_GOOD_DF.get(sheet_name)
+        if stale is not None:
+            try:
+                st.toast(f"Google Sheets is busy — showing last loaded "
+                         f"'{sheet_name}' data.", icon="⚠️")
+            except Exception:
+                pass
+            return stale.copy()
+        # Worksheet handle may be stale (tab renamed/deleted) — drop it so
+        # the next call re-resolves it.
+        _WS_CACHE.pop(sheet_name, None)
+        raise exc
 
     if not data:
-        return pd.DataFrame()
-
-    return pd.DataFrame(data[1:], columns=data[0])
+        df = pd.DataFrame()
+    else:
+        df = pd.DataFrame(data[1:], columns=data[0])
+    _LAST_GOOD_DF[sheet_name] = df.copy()
+    return df
 
 
 # ==============================
@@ -232,8 +289,13 @@ def upsert_record(sheet_name, unique_fields, new_data):
         return f"Inserted record ({key_val})"
         
 def get_sheet(sheet_name):
+    cached = _WS_CACHE.get(sheet_name)
+    if cached is not None:
+        return cached
     try:
-        return _get_sh(sheet_name).worksheet(sheet_name)
+        ws = _api_retry(_get_sh(sheet_name).worksheet, sheet_name)
+        _WS_CACHE[sheet_name] = ws
+        return ws
     except Exception:
         raise Exception(f"Sheet '{sheet_name}' not found in Google Sheets")
         

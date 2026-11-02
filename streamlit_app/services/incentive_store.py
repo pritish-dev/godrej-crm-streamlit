@@ -82,8 +82,23 @@ SEED_TARGETS = [
 # ─────────────────────────────────────────────────────────────────────────────
 # Sheet-tab provisioning
 # ─────────────────────────────────────────────────────────────────────────────
+# Tabs already verified in this process. Provisioning costs 2-3 READ requests
+# (metadata + header row + full sheet) and get_targets_df() used to repeat it
+# on every 60-second cache refresh, tripping the Sheets 429 read quota.
+_ENSURED_TABS: dict = {}
+
+
 def _ensure_tab(name: str, headers: list[str], rows: int = 1000) -> "object":
     """Get the worksheet tab; create with headers if missing."""
+    cached = _ENSURED_TABS.get(name)
+    if cached is not None:
+        return cached
+    ws = _ensure_tab_uncached(name, headers, rows)
+    _ENSURED_TABS[name] = ws
+    return ws
+
+
+def _ensure_tab_uncached(name: str, headers: list[str], rows: int = 1000) -> "object":
     sh = _get_sh(name)
     try:
         ws = sh.worksheet(name)
@@ -120,11 +135,18 @@ def _ensure_month_updated_column(ws, month: str) -> str:
     return col_name
 
 
+_TARGETS_SEED_CHECKED = False
+
+
 def ensure_targets_tab():
+    global _TARGETS_SEED_CHECKED
     ws = _ensure_tab(TARGETS_SHEET, TARGETS_HEADERS, rows=200)
+    if _TARGETS_SEED_CHECKED:
+        return ws
     # Seed only if completely empty (just header)
     try:
         existing = ws.get_all_values()
+        _TARGETS_SEED_CHECKED = True
         if len(existing) <= 1:
             for person, month, tgt in SEED_TARGETS:
                 ws.append_row([person, DEFAULT_FY, DEFAULT_QUARTER, month, tgt])
@@ -450,6 +472,68 @@ def get_store_target_lakh(
     return round(float(df.loc[mask, col].sum()), 2)
 
 
+def _fmt_lakh_cell(v):
+    """Whole numbers stored without '.0'; fractions rounded to 2 dp."""
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return ""
+    return int(round(n)) if n.is_integer() else round(n, 2)
+
+
+def write_month_updated_targets(fy: str, month: str, plan: Optional[dict]) -> int:
+    """Set the ``UPDATED TARGET <MONTH>`` cell for every salesperson row of
+    ``fy`` + ``month`` in a single batch write.
+
+    ``plan`` maps SALES PERSON -> new Lakh figure. Rows of that month not in
+    ``plan`` are cleared (blank), so their effective target falls back to the
+    original TARGET. Pass ``plan=None`` to clear the whole month — i.e. go back
+    to the individual (stretch) targets. Returns the number of cells written.
+    """
+    from gspread.utils import rowcol_to_a1
+
+    ws = ensure_targets_tab()
+    fy_c = (fy or "").strip()
+    mon_u = (month or "").strip().upper()
+    upd_col = updated_target_col_name(mon_u)
+
+    all_data = ws.get_all_values()
+    if not all_data:
+        return 0
+    headers = [str(h).strip().upper() for h in all_data[0]]
+    if upd_col not in headers:
+        if not plan:
+            return 0  # nothing to clear
+        ws.update_cell(1, len(headers) + 1, upd_col)
+        headers.append(upd_col)
+    col_idx = headers.index(upd_col) + 1
+
+    def _idx(name):
+        return headers.index(name) if name in headers else None
+
+    i_sp, i_fy, i_mon = _idx("SALES PERSON"), _idx("FY"), _idx("MONTH")
+    plan_u = {str(k).strip().upper(): v for k, v in (plan or {}).items()}
+
+    updates = []
+    for r_no, row in enumerate(all_data[1:], start=2):
+        row = row + [""] * (len(headers) - len(row))
+        if (i_fy is None or i_mon is None or
+                row[i_fy].strip() != fy_c or row[i_mon].strip().upper() != mon_u):
+            continue
+        person = row[i_sp].strip().upper() if i_sp is not None else ""
+        val = _fmt_lakh_cell(plan_u[person]) if person in plan_u else ""
+        updates.append({"range": rowcol_to_a1(r_no, col_idx), "values": [[val]]})
+
+    if updates:
+        ws.batch_update(updates, value_input_option="USER_ENTERED")
+    for _clearable in (get_df, get_targets_df):
+        try:
+            _clearable.clear()
+        except Exception:
+            pass
+    return len(updates)
+
+
 def apply_monthly_store_target(
     fy: str, month: str, new_store_total_lakh: float, quarter: str = ""
 ) -> dict:
@@ -484,10 +568,11 @@ def apply_monthly_store_target(
             "new_total": 0.0,
         }
 
+    # Write every adjusted figure into "UPDATED TARGET <MONTH>" in ONE batch
+    # (keeps TARGET untouched and stays well inside the Sheets quota).
+    write_month_updated_targets(fy_c, mon_u, plan)
     rows = []
     for person, new_lakh in plan.items():
-        # Write the adjusted figure into "UPDATED TARGET <MONTH>"; keep TARGET.
-        upsert_updated_target(person, fy_c, month, new_lakh, quarter)
         rows.append({
             "SALES PERSON": person,
             "OLD": round(current.get(person, 0.0), 2),
@@ -570,6 +655,175 @@ def apply_quarterly_store_target(
         "rows": rows,
         "new_total": new_total,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Store monthly target (the 100% figure) + active target mode
+# ─────────────────────────────────────────────────────────────────────────────
+# The MONTHLY TARGET is the store's official 100% figure for a month. Each
+# salesperson is then given an individual TARGET; their sum may be *higher*
+# than the monthly target — that sum is the "stretch" target the team aims
+# for, and it is shown as a % of the monthly target (e.g. 70 L / 63 L = 111%).
+#
+# ACTIVE MODE decides which figure the salespeople are measured against:
+#   STRETCH -> each person's original individual TARGET (default)
+#   100%    -> monthly target × 100%, split in the same proportion
+#   90%     -> monthly target × 90%,  split in the same proportion
+# 100% / 90% are written to "UPDATED TARGET <MONTH>"; switching back to
+# STRETCH clears that column so the original targets apply again.
+STORE_TARGETS_SHEET = "Incentive_Store_Monthly_Targets"
+STORE_TARGETS_HEADERS = [
+    "FY", "QUARTER", "MONTH", "MONTHLY TARGET", "ACTIVE MODE", "UPDATED AT",
+]
+MODE_STRETCH = "STRETCH"
+TARGET_MODES = {MODE_STRETCH: None, "100%": 1.00, "90%": 0.90}
+
+
+def ensure_store_targets_tab():
+    return _ensure_tab(STORE_TARGETS_SHEET, STORE_TARGETS_HEADERS, rows=200)
+
+
+@st.cache_data(ttl=60)
+def get_store_monthly_targets_df() -> pd.DataFrame:
+    ensure_store_targets_tab()
+    df = get_df(STORE_TARGETS_SHEET).copy()
+    if df is None or df.empty:
+        return pd.DataFrame(columns=STORE_TARGETS_HEADERS)
+    df.columns = [str(c).strip().upper() for c in df.columns]
+    for col in STORE_TARGETS_HEADERS:
+        if col not in df.columns:
+            df[col] = ""
+    df["FY"] = df["FY"].astype(str).str.strip()
+    df["MONTH"] = df["MONTH"].astype(str).str.strip().str.upper()
+    df["MONTHLY TARGET"] = pd.to_numeric(df["MONTHLY TARGET"], errors="coerce").fillna(0.0)
+    df["ACTIVE MODE"] = df["ACTIVE MODE"].astype(str).str.strip().str.upper()
+    return df
+
+
+def get_monthly_store_setting(fy: str, month: str) -> dict:
+    """Return ``{"monthly_target": Lakh, "mode": "STRETCH"|"100%"|"90%"}``."""
+    out = {"monthly_target": 0.0, "mode": MODE_STRETCH}
+    try:
+        df = get_store_monthly_targets_df()
+    except Exception:
+        return out
+    if df is None or df.empty:
+        return out
+    m = df[(df["FY"] == (fy or "").strip()) &
+           (df["MONTH"] == (month or "").strip().upper())]
+    if m.empty:
+        return out
+    r = m.iloc[-1]
+    mode = r["ACTIVE MODE"] if r["ACTIVE MODE"] in TARGET_MODES else MODE_STRETCH
+    return {"monthly_target": float(r["MONTHLY TARGET"]), "mode": mode}
+
+
+def _save_monthly_store_setting(fy: str, month: str, monthly_target=None, mode=None) -> None:
+    ws = ensure_store_targets_tab()
+    fy_c = (fy or "").strip()
+    mon_u = (month or "").strip().upper()
+    all_data = ws.get_all_values()
+    headers = [str(h).strip().upper() for h in (all_data[0] if all_data else [])]
+    if not headers:
+        ws.update("A1", [STORE_TARGETS_HEADERS])
+        headers = STORE_TARGETS_HEADERS[:]
+        all_data = [headers]
+    for h in STORE_TARGETS_HEADERS:
+        if h not in headers:
+            ws.update_cell(1, len(headers) + 1, h)
+            headers.append(h)
+
+    found, existing = None, {}
+    for r_no, row in enumerate(all_data[1:], start=2):
+        row = row + [""] * (len(headers) - len(row))
+        rd = dict(zip(headers, row))
+        if rd.get("FY", "").strip() == fy_c and rd.get("MONTH", "").strip().upper() == mon_u:
+            found, existing = r_no, rd
+
+    vals = {
+        "FY": fy_c,
+        "QUARTER": _quarter_for_month(mon_u),
+        "MONTH": mon_u,
+        "MONTHLY TARGET": (_fmt_lakh_cell(monthly_target) if monthly_target is not None
+                           else existing.get("MONTHLY TARGET", "")),
+        "ACTIVE MODE": (mode if mode is not None
+                        else (existing.get("ACTIVE MODE", "") or MODE_STRETCH)),
+        "UPDATED AT": _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    row_vals = [vals.get(h, existing.get(h, "")) for h in headers]
+    if found:
+        from gspread.utils import rowcol_to_a1
+        ws.update(f"A{found}:{rowcol_to_a1(found, len(headers))}", [row_vals],
+                  value_input_option="USER_ENTERED")
+    else:
+        ws.append_row(row_vals, value_input_option="USER_ENTERED")
+    for _clearable in (get_df, get_store_monthly_targets_df):
+        try:
+            _clearable.clear()
+        except Exception:
+            pass
+
+
+def _apply_mode(fy: str, month: str, monthly_target: float, mode: str) -> dict:
+    """Push ``mode`` onto the salespeople's UPDATED TARGET column."""
+    mon_u = (month or "").strip().upper()
+    pct = TARGET_MODES.get(mode)
+    if pct is None:
+        n = write_month_updated_targets(fy, mon_u, None)
+        return {"ok": True, "msg": (
+            f"Switched {mon_u.title()} to the individual (stretch) targets — "
+            f"{n} salesperson target(s) restored to their original figure.")}
+    if monthly_target <= 0:
+        return {"ok": False, "msg": "Set the monthly target first."}
+    res = apply_monthly_store_target(fy, mon_u, round(monthly_target * pct, 2))
+    if res.get("ok"):
+        res["msg"] = (f"Switched {mon_u.title()} to {mode} of the monthly target "
+                      f"({monthly_target:g} L × {mode} = {res['new_total']:g} L), "
+                      "split across salespeople in the same proportion as their "
+                      "individual targets.")
+    return res
+
+
+def set_store_target_mode(fy: str, month: str, mode: str) -> dict:
+    """Switch the month between STRETCH / 100% / 90% and re-split the
+    salesperson targets accordingly."""
+    mode = (mode or "").strip().upper()
+    if mode not in TARGET_MODES:
+        return {"ok": False, "msg": f"Unknown target mode '{mode}'."}
+    setting = get_monthly_store_setting(fy, month)
+    res = _apply_mode(fy, month, setting["monthly_target"], mode)
+    if res.get("ok"):
+        _save_monthly_store_setting(fy, month, mode=mode)
+    return res
+
+
+def set_monthly_store_target(fy: str, month: str, monthly_target_lakh: float) -> dict:
+    """Save the store's 100% monthly target. If the month is currently on
+    100% / 90% mode, the salesperson split is recomputed with the new figure."""
+    try:
+        tgt = round(float(monthly_target_lakh), 2)
+    except (TypeError, ValueError):
+        return {"ok": False, "msg": "Invalid monthly target."}
+    if tgt <= 0:
+        return {"ok": False, "msg": "Monthly target must be greater than 0."}
+    setting = get_monthly_store_setting(fy, month)
+    _save_monthly_store_setting(fy, month, monthly_target=tgt)
+    msg = f"Monthly target for {str(month).title()} (FY {fy}) saved: {tgt:g} L (100%)."
+    if setting["mode"] != MODE_STRETCH:
+        res = _apply_mode(fy, month, tgt, setting["mode"])
+        msg += " " + res.get("msg", "")
+        return {"ok": res.get("ok", False), "msg": msg}
+    return {"ok": True, "msg": msg}
+
+
+def reapply_store_mode(fy: str, month: str) -> Optional[dict]:
+    """Re-split the month after an individual target changed, if the month is
+    on 100% / 90% mode (so the new person's share is included). No-op on
+    STRETCH."""
+    setting = get_monthly_store_setting(fy, month)
+    if setting["mode"] == MODE_STRETCH:
+        return None
+    return _apply_mode(fy, month, setting["monthly_target"], setting["mode"])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
