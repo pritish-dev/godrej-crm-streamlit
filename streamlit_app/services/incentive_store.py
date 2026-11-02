@@ -488,7 +488,7 @@ def write_month_updated_targets(fy: str, month: str, plan: Optional[dict]) -> in
     ``plan`` maps SALES PERSON -> new Lakh figure. Rows of that month not in
     ``plan`` are cleared (blank), so their effective target falls back to the
     original TARGET. Pass ``plan=None`` to clear the whole month — i.e. go back
-    to the individual (stretch) targets. Returns the number of cells written.
+    to the individual (Aspired) targets. Returns the number of cells written.
     """
     from gspread.utils import rowcol_to_a1
 
@@ -662,21 +662,40 @@ def apply_quarterly_store_target(
 # ─────────────────────────────────────────────────────────────────────────────
 # The MONTHLY TARGET is the store's official 100% figure for a month. Each
 # salesperson is then given an individual TARGET; their sum may be *higher*
-# than the monthly target — that sum is the "stretch" target the team aims
+# than the monthly target — that sum is the "Aspired Target" the team aims
 # for, and it is shown as a % of the monthly target (e.g. 70 L / 63 L = 111%).
 #
 # ACTIVE MODE decides which figure the salespeople are measured against:
-#   STRETCH -> each person's original individual TARGET (default)
+#   ASPIRED -> each person's original individual TARGET (default)
 #   100%    -> monthly target × 100%, split in the same proportion
 #   90%     -> monthly target × 90%,  split in the same proportion
 # 100% / 90% are written to "UPDATED TARGET <MONTH>"; switching back to
-# STRETCH clears that column so the original targets apply again.
+# ASPIRED clears that column so the original targets apply again.
 STORE_TARGETS_SHEET = "Incentive_Store_Monthly_Targets"
 STORE_TARGETS_HEADERS = [
     "FY", "QUARTER", "MONTH", "MONTHLY TARGET", "ACTIVE MODE", "UPDATED AT",
 ]
-MODE_STRETCH = "STRETCH"
-TARGET_MODES = {MODE_STRETCH: None, "100%": 1.00, "90%": 0.90}
+# "ASPIRED" = measure against the individual targets (their sum is the
+# Aspired Target). Older rows saved as "STRETCH" are read as ASPIRED.
+MODE_ASPIRED = "ASPIRED"
+MODE_STRETCH = MODE_ASPIRED  # backward-compatible alias
+TARGET_MODES = {MODE_ASPIRED: None, "100%": 1.00, "90%": 0.90}
+_LEGACY_MODES = {"STRETCH": MODE_ASPIRED}
+
+# Monthly targets are stored in Lakh. Any stored figure above this many Lakh
+# (₹100 Cr) can only be a rupee amount typed into the box by mistake, so it is
+# read as rupees and converted (e.g. 4200000 -> 42 L).
+_MAX_PLAUSIBLE_LAKH = 10_000.0
+
+
+def normalize_target_lakh(v) -> float:
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return 0.0
+    if n > _MAX_PLAUSIBLE_LAKH:
+        n = n / 100_000
+    return round(n, 2)
 
 
 def ensure_store_targets_tab():
@@ -701,7 +720,7 @@ def get_store_monthly_targets_df() -> pd.DataFrame:
 
 
 def get_monthly_store_setting(fy: str, month: str) -> dict:
-    """Return ``{"monthly_target": Lakh, "mode": "STRETCH"|"100%"|"90%"}``."""
+    """Return ``{"monthly_target": Lakh, "mode": "ASPIRED"|"100%"|"90%"}``."""
     out = {"monthly_target": 0.0, "mode": MODE_STRETCH, "updated_at": ""}
     try:
         df = get_store_monthly_targets_df()
@@ -714,8 +733,10 @@ def get_monthly_store_setting(fy: str, month: str) -> dict:
     if m.empty:
         return out
     r = m.iloc[-1]
-    mode = r["ACTIVE MODE"] if r["ACTIVE MODE"] in TARGET_MODES else MODE_STRETCH
-    return {"monthly_target": float(r["MONTHLY TARGET"]), "mode": mode,
+    mode = _LEGACY_MODES.get(r["ACTIVE MODE"], r["ACTIVE MODE"])
+    if mode not in TARGET_MODES:
+        mode = MODE_ASPIRED
+    return {"monthly_target": normalize_target_lakh(r["MONTHLY TARGET"]), "mode": mode,
             "updated_at": str(r.get("UPDATED AT", "") or "").strip()}
 
 
@@ -772,23 +793,24 @@ def _apply_mode(fy: str, month: str, monthly_target: float, mode: str) -> dict:
     if pct is None:
         n = write_month_updated_targets(fy, mon_u, None)
         return {"ok": True, "msg": (
-            f"Switched {mon_u.title()} to the individual (stretch) targets — "
+            f"Switched {mon_u.title()} to the Aspired Target (individual targets) — "
             f"{n} salesperson target(s) restored to their original figure.")}
     if monthly_target <= 0:
         return {"ok": False, "msg": "Set the monthly target first."}
     res = apply_monthly_store_target(fy, mon_u, round(monthly_target * pct, 2))
     if res.get("ok"):
         res["msg"] = (f"Switched {mon_u.title()} to {mode} of the monthly target "
-                      f"({monthly_target:g} L × {mode} = {res['new_total']:g} L), "
+                      f"({monthly_target:,.2f} L × {mode} = {res['new_total']:,.2f} L), "
                       "split across salespeople in the same proportion as their "
                       "individual targets.")
     return res
 
 
 def set_store_target_mode(fy: str, month: str, mode: str) -> dict:
-    """Switch the month between STRETCH / 100% / 90% and re-split the
+    """Switch the month between ASPIRED / 100% / 90% and re-split the
     salesperson targets accordingly."""
     mode = (mode or "").strip().upper()
+    mode = _LEGACY_MODES.get(mode, mode)
     if mode not in TARGET_MODES:
         return {"ok": False, "msg": f"Unknown target mode '{mode}'."}
     setting = get_monthly_store_setting(fy, month)
@@ -802,14 +824,14 @@ def set_monthly_store_target(fy: str, month: str, monthly_target_lakh: float) ->
     """Save the store's 100% monthly target. If the month is currently on
     100% / 90% mode, the salesperson split is recomputed with the new figure."""
     try:
-        tgt = round(float(monthly_target_lakh), 2)
+        tgt = normalize_target_lakh(monthly_target_lakh)
     except (TypeError, ValueError):
         return {"ok": False, "msg": "Invalid monthly target."}
     if tgt <= 0:
         return {"ok": False, "msg": "Monthly target must be greater than 0."}
     setting = get_monthly_store_setting(fy, month)
     _save_monthly_store_setting(fy, month, monthly_target=tgt)
-    msg = f"Monthly target for {str(month).title()} (FY {fy}) saved: {tgt:g} L (100%)."
+    msg = f"Monthly target for {str(month).title()} (FY {fy}) saved: {tgt:,.2f} L (100%)."
     if setting["mode"] != MODE_STRETCH:
         res = _apply_mode(fy, month, tgt, setting["mode"])
         msg += " " + res.get("msg", "")
@@ -820,7 +842,7 @@ def set_monthly_store_target(fy: str, month: str, monthly_target_lakh: float) ->
 def reapply_store_mode(fy: str, month: str) -> Optional[dict]:
     """Re-split the month after an individual target changed, if the month is
     on 100% / 90% mode (so the new person's share is included). No-op on
-    STRETCH."""
+    ASPIRED."""
     setting = get_monthly_store_setting(fy, month)
     if setting["mode"] == MODE_STRETCH:
         return None
