@@ -540,7 +540,18 @@ def _parse_row_date(v) -> "date | None":
 
 
 def _empty(v) -> bool:
-    return str(v).strip().lower() in ("", "nan", "none")
+    return str(v).strip().lower() in ("", "nan", "none", "<na>", "nat")
+
+
+def _as_object_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy with every column as plain ``object`` dtype and blanks as "".
+
+    pandas >= 3 infers Arrow-backed ``str`` columns, which raise ``TypeError``
+    when a non-string (e.g. a float Net Basic Value) is assigned cell-wise via
+    ``.at``.  Object columns accept any value, matching the sheet's loose types.
+    """
+    out = df.astype(object)
+    return out.where(out.notna(), "")
 
 
 def save_bookings_to_sheet(df_new: pd.DataFrame, month: str) -> tuple[str, int, int]:
@@ -585,7 +596,7 @@ def save_bookings_to_sheet(df_new: pd.DataFrame, month: str) -> tuple[str, int, 
     for c in SHEET_COLS:
         if c not in existing.columns:
             existing[c] = ""
-    existing = existing[SHEET_COLS].copy()
+    existing = _as_object_frame(existing[SHEET_COLS])
 
     # Index existing rows by normalised SO for quick lookup.
     idx_by_norm: dict[str, int] = {}
@@ -706,7 +717,7 @@ def save_manual_net_basic(month: str, so_to_value: dict[str, str]) -> str:
     for c in SHEET_COLS:
         if c not in df.columns:
             df[c] = ""
-    df = df[SHEET_COLS].copy()
+    df = _as_object_frame(df[SHEET_COLS])
 
     changed = 0
     not_found: list[str] = []
