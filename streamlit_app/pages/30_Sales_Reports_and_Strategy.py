@@ -91,14 +91,24 @@ try:
 except Exception:
     _SR_IQ_AVAILABLE = False
     _SR_STORE_STANDARDS = {"90%": 0.90, "100%": 1.00, "110%": 1.10}
-    _SR_TARGET_MODES = {"STRETCH": None, "100%": 1.00, "90%": 0.90}
-    _SR_MODE_STRETCH = "STRETCH"
+    _SR_TARGET_MODES = {"ASPIRED": None, "100%": 1.00, "90%": 0.90}
+    _SR_MODE_STRETCH = "ASPIRED"
     _SR_QUARTER_MONTHS_MAP = {
         "Q1": ["APRIL", "MAY", "JUNE"],
         "Q2": ["JULY", "AUGUST", "SEPTEMBER"],
         "Q3": ["OCTOBER", "NOVEMBER", "DECEMBER"],
         "Q4": ["JANUARY", "FEBRUARY", "MARCH"],
     }
+
+def _sr_fmt_lakh(v) -> str:
+    """42 -> '42 L', 56.7 -> '56.7 L', 1234.5 -> '1,234.5 L' (never 4.2e+06)."""
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        n = 0.0
+    txt = f"{n:,.2f}".rstrip("0").rstrip(".")
+    return f"{txt} L"
+
 
 _SR_MONTH_NAMES = {
     1: "JANUARY", 2: "FEBRUARY", 3: "MARCH", 4: "APRIL",
@@ -1002,18 +1012,18 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
 
         st.divider()
 
-        # ── Monthly store target (100%) + Stretch / 100% / 90% switch ─────
+        # ── Monthly store target (100%) + Aspired / 100% / 90% switch ─────
         st.subheader("🎯 Monthly Target & Target Mode")
         st.caption(
             "**Monthly Target** = the store's official **100%** figure for the "
             "month. Salespeople are given individual targets which may add up to "
-            "*more* than this — that sum is the **Stretch Target** we always aim "
+            "*more* than this — that sum is the **Aspired Target** we always aim "
             "for, shown as a % of the monthly target. Depending on the month's "
             "performance, switch the team to **100%** or **90%** of the monthly "
             "target: every salesperson's target is then rescaled in the same "
             "proportion (written to `UPDATED TARGET <MONTH>`; the original "
             "individual targets are never overwritten). Switch back to "
-            "**Stretch** any time to restore the individual targets."
+            "**Aspired Target** any time to restore the individual targets."
         )
 
         _sr_st_today = datetime.now().date()
@@ -1072,37 +1082,38 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                 if _sr_ach_grp is not None and not _sr_ach_grp.empty else 0.0
             )
             _sr_mode_lbl = {
-                _SR_MODE_STRETCH: "Stretch (individual targets)",
+                _SR_MODE_STRETCH: "Aspired Target",
                 "100%": "100% of monthly target",
                 "90%": "90% of monthly target",
             }.get(_sr_active_mode, _sr_active_mode)
 
             _sm1, _sm2, _sm3, _sm4 = st.columns(4)
             _sm1.metric("Monthly Target (100%)",
-                        f"{_sr_monthly_tgt:g} L" if _sr_monthly_tgt > 0 else "Not set")
+                        _sr_fmt_lakh(_sr_monthly_tgt) if _sr_monthly_tgt > 0 else "Not set")
             _sm2.metric(
-                "Stretch Target (sum of individual)",
-                f"{_sr_stretch:g} L",
+                "Aspired Target (sum of individual)",
+                _sr_fmt_lakh(_sr_stretch),
                 (f"{_sr_stretch_pct:.1f}% of monthly target"
                  if _sr_monthly_tgt > 0 else None),
                 delta_color="off",
             )
             _sm3.metric("Active mode", _sr_mode_lbl,
-                        f"Team target now {_sr_live:g} L", delta_color="off")
+                        f"Team target now {_sr_fmt_lakh(_sr_live)}", delta_color="off")
             _sm4.metric(
                 "Achieved so far",
                 f"{_sr_ach_lakh:.2f} L",
                 (f"{_sr_ach_lakh / _sr_monthly_tgt * 100:.1f}% of 100% · "
-                 f"{(_sr_ach_lakh / _sr_stretch * 100) if _sr_stretch else 0:.1f}% of stretch"
+                 f"{(_sr_ach_lakh / _sr_stretch * 100) if _sr_stretch else 0:.1f}% of aspired"
                  if _sr_monthly_tgt > 0 else None),
                 delta_color="off",
             )
             if _sr_monthly_tgt > 0:
                 st.progress(
                     min(_sr_ach_lakh / _sr_stretch, 1.0) if _sr_stretch > 0 else 0.0,
-                    text=(f"Aim: {_sr_stretch:g} L stretch ({_sr_stretch_pct:.0f}%) · "
-                          f"100% = {_sr_monthly_tgt:g} L · "
-                          f"90% = {_sr_monthly_tgt * 0.9:g} L"),
+                    text=(f"Aim: {_sr_fmt_lakh(_sr_stretch)} Aspired Target "
+                          f"({_sr_stretch_pct:.0f}% of monthly) · "
+                          f"100% = {_sr_fmt_lakh(_sr_monthly_tgt)} · "
+                          f"90% = {_sr_fmt_lakh(_sr_monthly_tgt * 0.9)}"),
                 )
 
             # ── 3) Salesperson breakdown ──────────────────────────────────
@@ -1122,7 +1133,7 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                 for _p, _v in sorted(_sr_cur_map.items(), key=lambda kv: -kv[1]):
                     _sr_bd_rows.append({
                         "Sales Person": _p,
-                        "Individual (Stretch) Target (L)": round(_v, 2),
+                        "Individual (Aspired) Target (L)": round(_v, 2),
                         "Share %": round(_v / _sr_stretch * 100, 1) if _sr_stretch else 0.0,
                         "At 100% (L)": _sr_plan100.get(_p, None),
                         "At 90% (L)": _sr_plan90.get(_p, None),
@@ -1130,7 +1141,7 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                     })
                 _sr_bd_rows.append({
                     "Sales Person": "TOTAL",
-                    "Individual (Stretch) Target (L)": _sr_stretch,
+                    "Individual (Aspired) Target (L)": _sr_stretch,
                     "Share %": 100.0,
                     "At 100% (L)": round(sum(_sr_plan100.values()), 2) if _sr_plan100 else None,
                     "At 90% (L)": round(sum(_sr_plan90.values()), 2) if _sr_plan90 else None,
@@ -1158,20 +1169,22 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                 value=False,
                 key="sr_show_target_editor",
                 help="Hidden by default. Turn on to edit the saved monthly "
-                     "target or switch Stretch / 100% / 90%.",
+                     "target or switch Aspired Target / 100% / 90%.",
             ):
                 # ── 1) Set the monthly (100%) target ──────────────────────────
                 with st.form("sr_monthly_target_form"):
                     _mf1, _mf2 = st.columns([3, 1])
                     with _mf1:
                         _sr_mt_input = st.number_input(
-                            f"Monthly Target (100%) for {_sr_scope_lbl} — ₹ Lakh",
+                            f"Monthly Target (100%) for {_sr_scope_lbl} — ₹",
                             min_value=0.0,
-                            value=float(_sr_monthly_tgt),
-                            step=1.0,
+                            value=float(round(_sr_monthly_tgt * 100_000, 2)),
+                            step=100000.0,
                             format="%.2f",
-                            help="The store's official 100% target for the month.",
+                            help="Enter the store's official 100% target in rupees "
+                                 "(e.g. 4200000 for ₹42 Lakh). Saved in Lakh.",
                         )
+                        st.caption(f"= {_sr_fmt_lakh(_sr_mt_input / 100_000)}")
                     with _mf2:
                         st.write("")
                         st.write("")
@@ -1182,7 +1195,7 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                 if _sr_mt_save:
                     try:
                         _sr_mt_res = _sr_set_monthly_store_target(
-                            _sr_st_fy, _sr_st_mon, _sr_mt_input)
+                            _sr_st_fy, _sr_st_mon, float(_sr_mt_input) / 100_000)
                     except Exception as _sr_exc:
                         _sr_mt_res = {"ok": False, "msg": f"Failed to save: {_sr_exc}"}
                     if _sr_mt_res.get("ok"):
@@ -1196,10 +1209,10 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                     # ── 4) Switch mode ────────────────────────────────────────
                     _sr_mode_opts = list(_SR_TARGET_MODES.keys())
                     _sr_mode_names = {
-                        _SR_MODE_STRETCH: f"Stretch — individual targets ({_sr_stretch:g} L)",
-                        "100%": (f"100% — {_sr_monthly_tgt:g} L"
+                        _SR_MODE_STRETCH: f"Aspired Target — individual targets ({_sr_fmt_lakh(_sr_stretch)})",
+                        "100%": (f"100% — {_sr_fmt_lakh(_sr_monthly_tgt)}"
                                  if _sr_monthly_tgt > 0 else "100% (set monthly target)"),
-                        "90%": (f"90% — {_sr_monthly_tgt * 0.9:g} L"
+                        "90%": (f"90% — {_sr_fmt_lakh(_sr_monthly_tgt * 0.9)}"
                                 if _sr_monthly_tgt > 0 else "90% (set monthly target)"),
                     }
                     _sr_new_mode = st.radio(
