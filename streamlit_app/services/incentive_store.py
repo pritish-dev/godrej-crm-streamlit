@@ -82,8 +82,23 @@ SEED_TARGETS = [
 # ─────────────────────────────────────────────────────────────────────────────
 # Sheet-tab provisioning
 # ─────────────────────────────────────────────────────────────────────────────
+# Tabs already verified in this process. Provisioning costs 2-3 READ requests
+# (metadata + header row + full sheet) and get_targets_df() used to repeat it
+# on every 60-second cache refresh, tripping the Sheets 429 read quota.
+_ENSURED_TABS: dict = {}
+
+
 def _ensure_tab(name: str, headers: list[str], rows: int = 1000) -> "object":
     """Get the worksheet tab; create with headers if missing."""
+    cached = _ENSURED_TABS.get(name)
+    if cached is not None:
+        return cached
+    ws = _ensure_tab_uncached(name, headers, rows)
+    _ENSURED_TABS[name] = ws
+    return ws
+
+
+def _ensure_tab_uncached(name: str, headers: list[str], rows: int = 1000) -> "object":
     sh = _get_sh(name)
     try:
         ws = sh.worksheet(name)
@@ -120,11 +135,18 @@ def _ensure_month_updated_column(ws, month: str) -> str:
     return col_name
 
 
+_TARGETS_SEED_CHECKED = False
+
+
 def ensure_targets_tab():
+    global _TARGETS_SEED_CHECKED
     ws = _ensure_tab(TARGETS_SHEET, TARGETS_HEADERS, rows=200)
+    if _TARGETS_SEED_CHECKED:
+        return ws
     # Seed only if completely empty (just header)
     try:
         existing = ws.get_all_values()
+        _TARGETS_SEED_CHECKED = True
         if len(existing) <= 1:
             for person, month, tgt in SEED_TARGETS:
                 ws.append_row([person, DEFAULT_FY, DEFAULT_QUARTER, month, tgt])
