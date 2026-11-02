@@ -702,7 +702,7 @@ def get_store_monthly_targets_df() -> pd.DataFrame:
 
 def get_monthly_store_setting(fy: str, month: str) -> dict:
     """Return ``{"monthly_target": Lakh, "mode": "STRETCH"|"100%"|"90%"}``."""
-    out = {"monthly_target": 0.0, "mode": MODE_STRETCH}
+    out = {"monthly_target": 0.0, "mode": MODE_STRETCH, "updated_at": ""}
     try:
         df = get_store_monthly_targets_df()
     except Exception:
@@ -715,7 +715,8 @@ def get_monthly_store_setting(fy: str, month: str) -> dict:
         return out
     r = m.iloc[-1]
     mode = r["ACTIVE MODE"] if r["ACTIVE MODE"] in TARGET_MODES else MODE_STRETCH
-    return {"monthly_target": float(r["MONTHLY TARGET"]), "mode": mode}
+    return {"monthly_target": float(r["MONTHLY TARGET"]), "mode": mode,
+            "updated_at": str(r.get("UPDATED AT", "") or "").strip()}
 
 
 def _save_monthly_store_setting(fy: str, month: str, monthly_target=None, mode=None) -> None:
