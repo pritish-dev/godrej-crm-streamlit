@@ -1064,38 +1064,6 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
             _sr_stretch = round(sum(_sr_cur_map.values()), 2)
             _sr_live = round(sum(_sr_eff_map.values()), 2)
 
-            # ── 1) Set the monthly (100%) target ──────────────────────────
-            with st.form("sr_monthly_target_form"):
-                _mf1, _mf2 = st.columns([3, 1])
-                with _mf1:
-                    _sr_mt_input = st.number_input(
-                        f"Monthly Target (100%) for {_sr_scope_lbl} — ₹ Lakh",
-                        min_value=0.0,
-                        value=float(_sr_monthly_tgt),
-                        step=1.0,
-                        format="%.2f",
-                        help="The store's official 100% target for the month.",
-                    )
-                with _mf2:
-                    st.write("")
-                    st.write("")
-                    _sr_mt_save = st.form_submit_button(
-                        "💾 Save Monthly Target", use_container_width=True,
-                        type="primary",
-                    )
-            if _sr_mt_save:
-                try:
-                    _sr_mt_res = _sr_set_monthly_store_target(
-                        _sr_st_fy, _sr_st_mon, _sr_mt_input)
-                except Exception as _sr_exc:
-                    _sr_mt_res = {"ok": False, "msg": f"Failed to save: {_sr_exc}"}
-                if _sr_mt_res.get("ok"):
-                    st.success("✅ " + _sr_mt_res["msg"])
-                    st.cache_data.clear()
-                    st.rerun()
-                else:
-                    st.error("❌ " + _sr_mt_res.get("msg", "Could not save."))
-
             # ── 2) Summary ────────────────────────────────────────────────
             _sr_stretch_pct = (_sr_stretch / _sr_monthly_tgt * 100) if _sr_monthly_tgt > 0 else 0.0
             _sr_ach_grp = _sr_load_invoice_achievement(calendar.month_name[_sr_st_month])
@@ -1171,47 +1139,102 @@ with st.expander("🎯 Sales Targets & Achievement Tracker", expanded=True):
                 st.dataframe(pd.DataFrame(_sr_bd_rows),
                              use_container_width=True, hide_index=True)
 
-                # ── 4) Switch mode ────────────────────────────────────────
-                _sr_mode_opts = list(_SR_TARGET_MODES.keys())
-                _sr_mode_names = {
-                    _SR_MODE_STRETCH: f"Stretch — individual targets ({_sr_stretch:g} L)",
-                    "100%": (f"100% — {_sr_monthly_tgt:g} L"
-                             if _sr_monthly_tgt > 0 else "100% (set monthly target)"),
-                    "90%": (f"90% — {_sr_monthly_tgt * 0.9:g} L"
-                            if _sr_monthly_tgt > 0 else "90% (set monthly target)"),
-                }
-                _sr_new_mode = st.radio(
-                    "Measure salespeople against",
-                    _sr_mode_opts,
-                    index=(_sr_mode_opts.index(_sr_active_mode)
-                           if _sr_active_mode in _sr_mode_opts else 0),
-                    format_func=lambda m: _sr_mode_names.get(m, m),
-                    horizontal=True,
-                    key=f"sr_mode_{_sr_st_fy}_{_sr_st_mon}",
+            if _sr_setting.get("updated_at"):
+                st.caption(
+                    f"🔒 Saved target for {_sr_scope_lbl} — last changed "
+                    f"{_sr_setting['updated_at']}. It stays the same for everyone "
+                    "until it is edited below."
                 )
-                _sr_need_mt = (_SR_TARGET_MODES.get(_sr_new_mode) is not None
-                               and _sr_monthly_tgt <= 0)
-                if _sr_need_mt:
-                    st.info("Save the monthly target first to use 100% / 90%.")
-                if st.button(
-                    f"🔁 Apply '{_sr_new_mode}' to {_sr_scope_lbl}",
-                    type="primary",
-                    use_container_width=True,
-                    key="sr_mode_apply",
-                    disabled=(_sr_new_mode == _sr_active_mode) or _sr_need_mt,
-                ):
-                    with st.spinner("Updating salesperson targets…"):
-                        try:
-                            _sr_mres = _sr_set_store_target_mode(
-                                _sr_st_fy, _sr_st_mon, _sr_new_mode)
-                        except Exception as _sr_exc:
-                            _sr_mres = {"ok": False, "msg": f"Failed: {_sr_exc}"}
-                    if _sr_mres.get("ok"):
-                        st.success("✅ " + _sr_mres.get("msg", "Updated."))
+
+            # ── 4) Set / change the monthly target & mode (hidden) ───────────
+            # Everything that CHANGES targets lives behind this toggle, off by
+            # default. The saved values live in Google Sheets, so they stay the
+            # same for every user and every session until someone edits them here.
+            # A toggle (not an expander) because this already sits inside the
+            # "Sales Targets & Achievement Tracker" expander and Streamlit
+            # does not allow nested expanders on older versions.
+            if st.toggle(
+                "⚙️ Set / Change Monthly Target & Target Mode",
+                value=False,
+                key="sr_show_target_editor",
+                help="Hidden by default. Turn on to edit the saved monthly "
+                     "target or switch Stretch / 100% / 90%.",
+            ):
+                # ── 1) Set the monthly (100%) target ──────────────────────────
+                with st.form("sr_monthly_target_form"):
+                    _mf1, _mf2 = st.columns([3, 1])
+                    with _mf1:
+                        _sr_mt_input = st.number_input(
+                            f"Monthly Target (100%) for {_sr_scope_lbl} — ₹ Lakh",
+                            min_value=0.0,
+                            value=float(_sr_monthly_tgt),
+                            step=1.0,
+                            format="%.2f",
+                            help="The store's official 100% target for the month.",
+                        )
+                    with _mf2:
+                        st.write("")
+                        st.write("")
+                        _sr_mt_save = st.form_submit_button(
+                            "💾 Save Monthly Target", use_container_width=True,
+                            type="primary",
+                        )
+                if _sr_mt_save:
+                    try:
+                        _sr_mt_res = _sr_set_monthly_store_target(
+                            _sr_st_fy, _sr_st_mon, _sr_mt_input)
+                    except Exception as _sr_exc:
+                        _sr_mt_res = {"ok": False, "msg": f"Failed to save: {_sr_exc}"}
+                    if _sr_mt_res.get("ok"):
+                        st.success("✅ " + _sr_mt_res["msg"])
                         st.cache_data.clear()
                         st.rerun()
                     else:
-                        st.error("❌ " + _sr_mres.get("msg", "Could not switch mode."))
+                        st.error("❌ " + _sr_mt_res.get("msg", "Could not save."))
+
+                if _sr_cur_map:
+                    # ── 4) Switch mode ────────────────────────────────────────
+                    _sr_mode_opts = list(_SR_TARGET_MODES.keys())
+                    _sr_mode_names = {
+                        _SR_MODE_STRETCH: f"Stretch — individual targets ({_sr_stretch:g} L)",
+                        "100%": (f"100% — {_sr_monthly_tgt:g} L"
+                                 if _sr_monthly_tgt > 0 else "100% (set monthly target)"),
+                        "90%": (f"90% — {_sr_monthly_tgt * 0.9:g} L"
+                                if _sr_monthly_tgt > 0 else "90% (set monthly target)"),
+                    }
+                    _sr_new_mode = st.radio(
+                        "Measure salespeople against",
+                        _sr_mode_opts,
+                        index=(_sr_mode_opts.index(_sr_active_mode)
+                               if _sr_active_mode in _sr_mode_opts else 0),
+                        format_func=lambda m: _sr_mode_names.get(m, m),
+                        horizontal=True,
+                        key=f"sr_mode_{_sr_st_fy}_{_sr_st_mon}",
+                    )
+                    _sr_need_mt = (_SR_TARGET_MODES.get(_sr_new_mode) is not None
+                                   and _sr_monthly_tgt <= 0)
+                    if _sr_need_mt:
+                        st.info("Save the monthly target first to use 100% / 90%.")
+                    if st.button(
+                        f"🔁 Apply '{_sr_new_mode}' to {_sr_scope_lbl}",
+                        type="primary",
+                        use_container_width=True,
+                        key="sr_mode_apply",
+                        disabled=(_sr_new_mode == _sr_active_mode) or _sr_need_mt,
+                    ):
+                        with st.spinner("Updating salesperson targets…"):
+                            try:
+                                _sr_mres = _sr_set_store_target_mode(
+                                    _sr_st_fy, _sr_st_mon, _sr_new_mode)
+                            except Exception as _sr_exc:
+                                _sr_mres = {"ok": False, "msg": f"Failed: {_sr_exc}"}
+                        if _sr_mres.get("ok"):
+                            st.success("✅ " + _sr_mres.get("msg", "Updated."))
+                            st.cache_data.clear()
+                            st.rerun()
+                        else:
+                            st.error("❌ " + _sr_mres.get("msg", "Could not switch mode."))
+
 
         st.divider()
 
