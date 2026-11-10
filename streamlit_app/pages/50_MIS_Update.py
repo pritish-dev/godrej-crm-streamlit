@@ -204,8 +204,9 @@ c2.metric("To Be CREDITED STOCK (ZBF11T)", to_indian_number_string(to_be_credite
           help="Sum of SO Qty for negative stock items under warehouse ZBF11T")
 c3.metric("PENDING ORDER VALUE", fmt_inr(pending_order_val),
           help="Total Net Basic (all rows) minus Net Basic of negative SO Qty rows")
-c4.metric("COMMITTED ITEMS VALUE", fmt_inr(committed_items_val),
-          help="Sum of Net Basic Value for all items where Sales Order Committed Qty > 0")
+# Rendered after the filters are applied — when "Committed Order" is selected it
+# shows the value of the filtered committed orders instead of the default.
+c4_slot = c4.empty()
 
 # ─── Filters ──────────────────────────────────────────────────────────────────
 st.markdown("### 🔍 Filters")
@@ -291,6 +292,19 @@ elif commitment_filter != "All Items" and _committed_qty_col and _committed_qty_
         keep = comm_num <= 0
     filtered     = filtered[keep]
     filtered_msk = filtered_msk.loc[filtered.index] if not filtered_msk.empty else filtered_msk
+
+# ─── Committed Items Value metric (depends on the Commitment Status filter) ──
+if commitment_filter == "Committed Order":
+    _committed_order_val = money_sum(net_basic_num.loc[filtered.index]) if len(filtered) else 0.0
+    c4_slot.metric(
+        "COMMITTED ITEMS VALUE", fmt_inr(_committed_order_val),
+        help="Sum of Net Basic Value of the fully-committed orders in the current filtered list",
+    )
+else:
+    c4_slot.metric(
+        "COMMITTED ITEMS VALUE", fmt_inr(committed_items_val),
+        help="Sum of Net Basic Value for all items where Sales Order Committed Qty > 0",
+    )
 
 # ─── Data table ───────────────────────────────────────────────────────────────
 st.markdown(f"### 📋 PO Data — {to_indian_number_string(len(filtered), 0)} rows  ·  🟢 Green = Ready for Delivery")
