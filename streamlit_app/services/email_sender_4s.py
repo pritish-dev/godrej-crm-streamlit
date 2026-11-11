@@ -15,6 +15,7 @@ import os
 import pandas as pd
 
 from utils.helpers import to_indian_number_string
+from services.franchise_app_rules import payment_tolerance
 from services.payment_utils import MONEY_RECEIPTS_COL
 from datetime import datetime, timedelta, date
 from email.mime.text import MIMEText
@@ -998,8 +999,11 @@ def _compute_pending_due(df: pd.DataFrame) -> pd.DataFrame:
     else:
         money_receipts = 0
     diff = (d[COL_ORDER_AMOUNT] - d[COL_ADV_RECEIVED] - money_receipts).round(2)
-    # Treat tiny rounding residue as zero (advance exactly matches gross)
-    diff = diff.where(diff.abs() > 1.0, 0.0)
+    # Treat small residue as zero (paid amount matches the order value):
+    # ₹10 for app orders (B2C FRANCHISE APP tab, ordered ≥ 1 Jul 2026),
+    # ₹1 rounding residue for every other order.
+    tol = payment_tolerance(d)
+    diff = diff.where(diff.abs() > tol, 0.0)
     d[COL_PENDING_DUE] = diff.clip(lower=0)
     return d
 

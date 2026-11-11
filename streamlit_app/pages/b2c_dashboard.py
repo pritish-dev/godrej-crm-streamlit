@@ -35,6 +35,17 @@ from services.delivery_updates import (
 from services.dashboard_ticker import render_ticker
 from services.crm_mail import QUEUED_NOTICE
 from services.payment_utils import add_money_receipts_column, MONEY_RECEIPTS_COL
+from services.franchise_app_rules import (
+    is_franchise_app_sheet,
+    compute_app_order_flag,
+    awaiting_delivery_mask,
+    apply_rescheduled_dates,
+    payment_tolerance,
+    app_order_mask,
+    IS_FRANCHISE_APP_COL,
+    IS_APP_ORDER_COL,
+    AWAITING_COL,
+)
 from services.delivery_readiness import (
     customer_to_godrej_so,
     ready_so_set,
@@ -103,6 +114,8 @@ PENDING_DISPLAY_COLS = [
 # Payment-due rounding tolerance (₹). An order whose outstanding differential
 # (ORDER VALUE − amount paid) is this small or less is treated as fully paid and
 # is NOT shown in the Payment Due table nor counted in the headline Pending Due.
+# Legacy orders use ₹1; app orders (B2C FRANCHISE APP tab, ordered ≥ 1 Jul 2026)
+# use ₹10 — see services/franchise_app_rules.payment_tolerance.
 PENDING_DUE_TOLERANCE = 1
 
 
@@ -306,6 +319,10 @@ def load_b2c_data():
                 df = df.dropna(axis=1, how="all")
                 df["SOURCE"] = source_label
                 df["IS_NEW_FORMAT"] = is_new_format
+                # Rows from the ordering-app tab ("B2C FRANCHISE APP ORDER
+                # DETAILS 26-27") follow the app-specific delivery / payment
+                # rules for orders dated on or after 1 Jul 2026.
+                df[IS_FRANCHISE_APP_COL] = is_franchise_app_sheet(name)
                 dfs.append(df)
             except Exception as e:
                 st.warning(f"Could not load sheet '{name}': {e}")
@@ -469,9 +486,19 @@ def load_b2c_data():
             cleaned = col_data.astype(str).str.replace(r"[₹,\s]", "", regex=True)
             crm[col] = pd.to_numeric(cleaned, errors="coerce").fillna(0)
 
+    # ── Rescheduled for Delivery (app orders) → rescheduled date wins ───────
+    if IS_FRANCHISE_APP_COL not in crm.columns:
+        crm[IS_FRANCHISE_APP_COL] = False
+    crm[IS_FRANCHISE_APP_COL] = crm[IS_FRANCHISE_APP_COL].fillna(False).astype(bool)
+    if "DELIVERY STATUS" in crm.columns and "DELIVERY DATE" in crm.columns:
+        crm = apply_rescheduled_dates(crm, "DELIVERY DATE")
+
     # ── Date cleanup ─────────────────────────────────────────────────────────
     crm["ORDER DATE"]    = parse_mixed_dates(safe_col(crm, "ORDER DATE",    ""))
     crm["DELIVERY DATE"] = parse_mixed_dates(safe_col(crm, "DELIVERY DATE", ""))
+
+    # App order = ordering-app tab AND ORDER DATE on/after 1 Jul 2026.
+    crm[IS_APP_ORDER_COL] = compute_app_order_flag(crm, "ORDER DATE").values
 
     # ── Filter out zero-value / header rows ──────────────────────────────────
     crm = crm[crm["ORDER VALUE"] > 0].copy()
@@ -492,6 +519,13 @@ def load_b2c_data():
     # against the order value. On every other sheet (no such columns) this is
     # all zeros, leaving the legacy "ORDER VALUE − ADV RECEIVED" behaviour intact.
     add_money_receipts_column(crm)
+
+    # ── App-order delivery state (per line item) ─────────────────────────────
+    # True when an app-order line is still to be delivered: Pending / blank,
+    # Rescheduled for Delivery, or a Partial Delivery item not yet listed in
+    # DELIVERED ITEMS DATA. Installation Done / Delivered / Scheduled for
+    # Delivery lines are False. Always False for non-app rows (legacy rule).
+    crm[AWAITING_COL] = awaiting_delivery_mask(crm).values
 
     # ── Calculated column ────────────────────────────────────────────────────
     # Pending due = Gross Order Value (after discount + tax) − Advance Received
@@ -548,7 +582,8 @@ def group_by_order_no(df):
     for col in ["ORDER DATE", "GODREJ SO NO",
                 "CUSTOMER NAME", "CONTACT NUMBER", "EMAIL ADDRESS",
                 "CATEGORY", "SALES PERSON", "DELIVERY DATE",
-                "REVIEW", "REMARKS", "SOURCE", "IS_NEW_FORMAT"]:
+                "REVIEW", "REMARKS", "SOURCE", "IS_NEW_FORMAT",
+                IS_FRANCHISE_APP_COL, IS_APP_ORDER_COL]:
         if col in has_no.columns:
             agg[col] = "first"
 
@@ -754,6 +789,54 @@ def _is_free_stock(df: pd.DataFrame) -> "pd.Series":
     return pd.Series(False, index=df.index)
 
 
+def _delivery_pipeline_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """Line items that can appear in the Pending / Overdue delivery tables.
+
+    Legacy rows: every not-completed, non-cancelled, non-free-stock line (the
+    order-level PENDING filter in _keep_pending_orders does the rest).
+
+    App orders (B2C FRANCHISE APP ORDER DETAILS tab, ordered ≥ 1 Jul 2026):
+    only lines still awaiting delivery — Pending, Rescheduled for Delivery, or
+    the undelivered items of a Partial Delivery. Installation Done, Delivered
+    and Scheduled for Delivery lines (and delivered partial items) are dropped
+    BEFORE grouping, so the order shows only its outstanding items.
+    """
+    if df is None or df.empty:
+        return df
+    app = app_order_mask(df)
+    awaiting = df[AWAITING_COL].fillna(False).astype(bool) \
+        if AWAITING_COL in df.columns else pd.Series(False, index=df.index)
+    keep = active_mask(df) & ~_is_free_stock(df) & (~app | awaiting)
+    return df[keep].copy()
+
+
+def _keep_pending_orders(grouped: pd.DataFrame) -> pd.DataFrame:
+    """Order-level filter for the Pending / Overdue delivery tables.
+
+    App orders were already filtered line-by-line, so any that survived
+    grouping are awaiting delivery. Legacy orders keep the rule that their
+    rolled-up (least-progressed) status must still be PENDING.
+    """
+    if grouped is None or grouped.empty or "DELIVERY STATUS" not in grouped.columns:
+        return grouped
+    app = app_order_mask(grouped)
+    pending = grouped["DELIVERY STATUS"].map(norm_status) == "PENDING"
+    return grouped[app | pending].reset_index(drop=True)
+
+
+def _filter_payment_due(grouped: pd.DataFrame) -> pd.DataFrame:
+    """Keep orders whose outstanding balance exceeds the payment tolerance.
+
+    PENDING DUE = ORDER VALUE − (ADV RECEIVED + MONEY RECEIPT AMT 2 + 3 + …).
+    App orders count as Payment Done when that differential is within ₹10;
+    every other order keeps the ₹1 rounding tolerance.
+    """
+    if grouped is None or grouped.empty or "PENDING DUE" not in grouped.columns:
+        return grouped
+    tol = payment_tolerance(grouped)
+    return grouped[grouped["PENDING DUE"] > tol].copy()
+
+
 total_orders    = crm["ORDER NO"].nunique() if "ORDER NO" in crm.columns else len(crm)
 total_value     = crm["ORDER VALUE"].sum()
 # Headline "Pending Due" must tie out with the Payment Due table below, which
@@ -766,24 +849,19 @@ total_value     = crm["ORDER VALUE"].sum()
 _pending_grouped = group_by_order_no(
     crm[~cancelled_mask(crm) & ~_is_free_stock(crm)]
 )
-# Ignore ≤₹1 differentials (rounding artefacts) exactly as the Payment Due
-# table does, so the headline ties out with the sum of its rows.
-total_pending   = _pending_grouped.loc[
-    _pending_grouped["PENDING DUE"] > PENDING_DUE_TOLERANCE, "PENDING DUE"
-].sum()
+# Ignore differentials within the payment tolerance (₹10 for app orders, ₹1
+# otherwise) exactly as the Payment Due table does, so the headline ties out
+# with the sum of its rows.
+total_pending   = _filter_payment_due(_pending_grouped)["PENDING DUE"].sum()
 # Count orders still awaiting delivery — matches the Pending / Overdue delivery
 # tables below, which show ONLY orders whose rolled-up delivery status is still
 # PENDING. Orders that have moved further along the lifecycle (Scheduled for
 # Delivery, Delivered, Installation Done) are NOT pending and are excluded.
 # group_by_order_no rolls each order up to its least-progressed line-item
 # status, so a group tagged PENDING still has at least one un-progressed item.
-_pending_active = group_by_order_no(
-    crm[active_mask(crm) & ~_is_free_stock(crm)]
+_pending_active = _keep_pending_orders(
+    group_by_order_no(_delivery_pipeline_rows(crm))
 )
-if not _pending_active.empty and "DELIVERY STATUS" in _pending_active.columns:
-    _pending_active = _pending_active[
-        _pending_active["DELIVERY STATUS"].map(norm_status) == "PENDING"
-    ]
 pending_del_cnt = int(len(_pending_active))
 
 k1, k2, k3, k4 = st.columns(4)
@@ -991,10 +1069,9 @@ st.dataframe(_styled_sales, use_container_width=True, height=600)
 # Because free stock rows are removed BEFORE grouping, their QTY and ORDER VALUE
 # are never summed into the group totals. PENDING DUE = ORDER VALUE − ADV RECEIVED
 # is therefore already correct without any additional deduction step.
-_all_pending = crm[
-    active_mask(crm)
-    & ~_is_free_stock(crm)
-].copy()
+# App orders (≥ 1 Jul 2026 in the B2C FRANCHISE APP tab) are filtered per
+# line on DELIVERY STATUS / DELIVERY REMARKS — see _delivery_pipeline_rows.
+_all_pending = _delivery_pipeline_rows(crm)
 
 # Split by delivery date
 _del_dates_all       = pd.to_datetime(_all_pending["DELIVERY DATE"], errors="coerce").dt.date
@@ -1023,15 +1100,11 @@ overdue_grouped = (
 # group_by_order_no already rolls each order up to its least-progressed
 # line-item status, so a group tagged PENDING still has at least one
 # un-progressed item.
-if not pending_grouped.empty and "DELIVERY STATUS" in pending_grouped.columns:
-    pending_grouped = pending_grouped[
-        pending_grouped["DELIVERY STATUS"].map(norm_status) == "PENDING"
-    ].reset_index(drop=True)
-
-if not overdue_grouped.empty and "DELIVERY STATUS" in overdue_grouped.columns:
-    overdue_grouped = overdue_grouped[
-        overdue_grouped["DELIVERY STATUS"].map(norm_status) == "PENDING"
-    ].reset_index(drop=True)
+# App orders: Pending, Rescheduled for Delivery (on the rescheduled date) and
+# the undelivered items of a Partial Delivery stay; Scheduled for Delivery,
+# Delivered and Installation Done drop out.
+pending_grouped = _keep_pending_orders(pending_grouped)
+overdue_grouped = _keep_pending_orders(overdue_grouped)
 
 # ── Attach "Mis Comittment Date" — the last MIS commitment date once every
 #    item of the order is fully committed (see delivery_readiness.mis_commitment_date_map).
@@ -1921,7 +1994,9 @@ payment_grouped = group_by_order_no(_crm_no_freestock)
 # i.e. ADV RECEIVED + MONEY RECEIPTS). An order counts as a payment due only
 # when that differential exceeds ₹1 — a residual of ₹1 or less is a rounding
 # artefact and is treated as fully paid, so it is not shown as pending.
-payment_grouped = payment_grouped[payment_grouped["PENDING DUE"] > PENDING_DUE_TOLERANCE].copy()
+# App orders (B2C FRANCHISE APP tab, ordered ≥ 1 Jul 2026) are Payment Done
+# when ORDER AMOUNT − (ADV RECEIVED + MONEY RECEIPT AMT 2 + 3) is within ₹10.
+payment_grouped = _filter_payment_due(payment_grouped)
 payment_grouped = payment_grouped.sort_values(
     "DELIVERY DATE", ascending=False
 ).reset_index(drop=True)
