@@ -24,6 +24,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pandas as pd
 from services.sheets import get_df
 from services.email_sender_4s import send_combined_delivery_alert_email_4s
+from services.franchise_app_rules import (
+    is_franchise_app_sheet,
+    compute_app_order_flag,
+    awaiting_delivery_mask,
+    apply_rescheduled_dates,
+    merge_delivery_status_columns,
+    IS_FRANCHISE_APP_COL,
+    IS_APP_ORDER_COL,
+)
 
 # ── IST clock ─────────────────────────────────────────────────────────────────
 IST     = timezone(timedelta(hours=5, minutes=30))
@@ -76,7 +85,8 @@ def _group_by_order_no(df: pd.DataFrame) -> pd.DataFrame:
             agg[col] = "sum"
     for col in ("ORDER DATE", "CUSTOMER NAME", "CONTACT NUMBER", "EMAIL ADDRESS",
                 "CATEGORY", "SALES PERSON", "DELIVERY DATE",
-                "DELIVERY STATUS", "REMARKS", "SOURCE"):
+                "DELIVERY STATUS", "REMARKS", "SOURCE",
+                IS_FRANCHISE_APP_COL, IS_APP_ORDER_COL):
         if col in has_no.columns and col not in agg:
             agg[col] = "first"
 
@@ -115,9 +125,14 @@ def fetch_all_pending() -> pd.DataFrame:
                 df = get_df(name)
                 if df is None or df.empty:
                     continue
-                df.columns = [str(c).strip().upper() for c in df.columns]
+                df.columns = [" ".join(str(c).split()).upper() for c in df.columns]
                 df = df.loc[:, ~df.columns.duplicated()].dropna(axis=1, how="all")
+                # App tab: fold DELIVERY REMARKS into DELIVERY STATUS per sheet so
+                # the app's lifecycle statuses are read from both columns.
+                if is_franchise_app_sheet(name):
+                    df = merge_delivery_status_columns(df)
                 df["SOURCE"] = label
+                df[IS_FRANCHISE_APP_COL] = is_franchise_app_sheet(name)
                 dfs.append(df)
                 print(f"  → Loaded '{name}' ({label}): {len(df)} rows")
             except Exception as exc:
@@ -166,10 +181,16 @@ def fetch_all_pending() -> pd.DataFrame:
     if "ORDER VALUE" not in crm.columns and "GROSS AMT EX-TAX" in crm.columns:
         crm["ORDER VALUE"] = crm["GROSS AMT EX-TAX"]
 
+    # Rescheduled for Delivery (app orders) → rescheduled date wins
+    crm[IS_FRANCHISE_APP_COL] = crm[IS_FRANCHISE_APP_COL].fillna(False).astype(bool)
+    if "DELIVERY DATE" in crm.columns:
+        crm = apply_rescheduled_dates(crm, "DELIVERY DATE")
+
     # Date cleanup
     for date_col in ("ORDER DATE", "DELIVERY DATE"):
         if date_col in crm.columns:
             crm[date_col] = _parse_dates(crm[date_col])
+    crm[IS_APP_ORDER_COL] = compute_app_order_flag(crm, "ORDER DATE").values
 
     # Filter valid orders (positive value only)
     if "ORDER VALUE" in crm.columns:
@@ -186,9 +207,17 @@ def fetch_all_pending() -> pd.DataFrame:
     if "FREE STOCK" in crm.columns:
         crm = crm[crm["FREE STOCK"].astype(str).str.strip().str.upper() != "FREE STOCK"].copy()
 
-    # Keep only PENDING rows
-    pending = crm[
+    # Keep only rows still awaiting delivery:
+    #  • legacy orders  → DELIVERY STATUS == PENDING (unchanged)
+    #  • app orders (B2C FRANCHISE APP tab, ordered ≥ 1 Jul 2026) → Pending,
+    #    Rescheduled for Delivery, or undelivered items of a Partial Delivery.
+    #    Scheduled for Delivery / Delivered / Installation Done are excluded.
+    _app = crm[IS_APP_ORDER_COL].astype(bool)
+    _legacy_pending = (
         crm["DELIVERY STATUS"].astype(str).str.upper().str.strip() == "PENDING"
+    )
+    pending = crm[
+        (~_app & _legacy_pending) | (_app & awaiting_delivery_mask(crm))
     ].copy()
 
     print(f"  → {len(pending)} pending line-item(s) before grouping.")

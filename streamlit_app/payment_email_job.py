@@ -30,6 +30,12 @@ from services.email_sender_4s import (
     send_payment_due_reminder_email_4s,
 )
 from services.payment_utils import add_money_receipts_column, MONEY_RECEIPTS_COL
+from services.franchise_app_rules import (
+    is_franchise_app_sheet,
+    compute_app_order_flag,
+    IS_FRANCHISE_APP_COL,
+    IS_APP_ORDER_COL,
+)
 
 # ── IST time ──────────────────────────────────────────────────────────────────
 IST          = timezone(timedelta(hours=5, minutes=30))
@@ -83,7 +89,8 @@ def _group_by_order_no(df: pd.DataFrame) -> pd.DataFrame:
         if col in has_no.columns:
             agg[col] = "sum"
     for col in ["ORDER DATE", "CUSTOMER NAME", "CONTACT NUMBER", "EMAIL ADDRESS",
-                "CATEGORY", "SALES PERSON", "DELIVERY DATE", "DELIVERY STATUS", "SOURCE"]:
+                "CATEGORY", "SALES PERSON", "DELIVERY DATE", "DELIVERY STATUS", "SOURCE",
+                IS_FRANCHISE_APP_COL, IS_APP_ORDER_COL]:
         if col in has_no.columns and col not in agg:
             agg[col] = "first"
     if not agg:
@@ -124,6 +131,7 @@ def fetch_all_crm():
                 df = df.loc[:, ~df.columns.duplicated()]
                 df = df.dropna(axis=1, how="all")
                 df["SOURCE"] = source_label
+                df[IS_FRANCHISE_APP_COL] = is_franchise_app_sheet(name)
                 dfs.append(df)
                 print(f"  → Loaded '{name}' ({source_label}): {len(df)} rows")
             except Exception as e:
@@ -167,6 +175,11 @@ def fetch_all_crm():
     for date_col in ("ORDER DATE", "DELIVERY DATE"):
         if date_col in crm.columns:
             crm[date_col] = parse_mixed_dates(crm[date_col])
+    # App order = B2C FRANCHISE APP tab AND ordered on/after 1 Jul 2026 — these
+    # count as Payment Done when the balance is within ₹10 (see
+    # email_sender_4s._compute_pending_due).
+    crm[IS_FRANCHISE_APP_COL] = crm[IS_FRANCHISE_APP_COL].fillna(False).astype(bool)
+    crm[IS_APP_ORDER_COL] = compute_app_order_flag(crm, "ORDER DATE").values
 
     # Filter valid orders
     if "ORDER VALUE" in crm.columns:
