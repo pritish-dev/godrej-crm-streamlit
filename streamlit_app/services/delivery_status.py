@@ -76,6 +76,29 @@ def cancelled_mask(df: pd.DataFrame) -> pd.Series:
     )
 
 
+def is_scheduled(status) -> bool:
+    """True for "Scheduled for Delivery" (any spelling: "Schedule for Delivery",
+    "SCHEDULED FOR DELIVERY", …). "Rescheduled for Delivery" is NOT matched."""
+    return norm_status(status).startswith("SCHEDULE")
+
+
+def scheduled_mask(df: pd.DataFrame) -> pd.Series:
+    """Row-wise boolean Series: the line item is Scheduled for Delivery."""
+    if df is None or len(df) == 0 or "DELIVERY STATUS" not in df.columns:
+        idx = df.index if df is not None else None
+        n = 0 if df is None else len(df)
+        return pd.Series([False] * n, index=idx, dtype=bool)
+
+    status = df["DELIVERY STATUS"]
+    if isinstance(status, pd.DataFrame):          # collapse duplicate columns
+        status = status.bfill(axis=1).iloc[:, 0]
+
+    return pd.Series(
+        [is_scheduled(s) for s in status.tolist()],
+        index=df.index, dtype=bool,
+    )
+
+
 def is_completed(status, is_new_format: bool) -> bool:
     """True when this row/order is in its terminal completed state.
 

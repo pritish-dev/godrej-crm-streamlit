@@ -18,6 +18,8 @@ from services.delivery_status import (
     completed_mask,
     active_mask,
     cancelled_mask,
+    scheduled_mask,
+    is_scheduled,
     norm_status,
     STATUS_RANK,
 )
@@ -796,17 +798,22 @@ def _delivery_pipeline_rows(df: pd.DataFrame) -> pd.DataFrame:
     order-level PENDING filter in _keep_pending_orders does the rest).
 
     App orders (B2C FRANCHISE APP ORDER DETAILS tab, ordered ≥ 1 Jul 2026):
-    only lines still awaiting delivery — Pending, Rescheduled for Delivery, or
-    the undelivered items of a Partial Delivery. Installation Done, Delivered
-    and Scheduled for Delivery lines (and delivered partial items) are dropped
-    BEFORE grouping, so the order shows only its outstanding items.
+    only lines still awaiting delivery — Pending, Rescheduled for Delivery,
+    Scheduled for Delivery, or the undelivered items of a Partial Delivery.
+    Installation Done and Delivered lines (and delivered partial items) are
+    dropped BEFORE grouping, so the order shows only its outstanding items.
+
+    "Scheduled for Delivery" lines are always kept (for every sheet format),
+    whether or not the order is committed in MIS, so scheduled orders show in
+    the Pending Deliveries table until they are delivered.
     """
     if df is None or df.empty:
         return df
     app = app_order_mask(df)
     awaiting = df[AWAITING_COL].fillna(False).astype(bool) \
         if AWAITING_COL in df.columns else pd.Series(False, index=df.index)
-    keep = active_mask(df) & ~_is_free_stock(df) & (~app | awaiting)
+    sched = scheduled_mask(df)
+    keep = active_mask(df) & ~_is_free_stock(df) & (~app | awaiting | sched)
     return df[keep].copy()
 
 
@@ -815,13 +822,16 @@ def _keep_pending_orders(grouped: pd.DataFrame) -> pd.DataFrame:
 
     App orders were already filtered line-by-line, so any that survived
     grouping are awaiting delivery. Legacy orders keep the rule that their
-    rolled-up (least-progressed) status must still be PENDING.
+    rolled-up (least-progressed) status must still be PENDING — or
+    "Scheduled for Delivery", which always stays in the Pending Deliveries
+    table regardless of MIS commitment.
     """
     if grouped is None or grouped.empty or "DELIVERY STATUS" not in grouped.columns:
         return grouped
     app = app_order_mask(grouped)
     pending = grouped["DELIVERY STATUS"].map(norm_status) == "PENDING"
-    return grouped[app | pending].reset_index(drop=True)
+    sched = grouped["DELIVERY STATUS"].map(is_scheduled).astype(bool)
+    return grouped[app | pending | sched].reset_index(drop=True)
 
 
 def _filter_payment_due(grouped: pd.DataFrame) -> pd.DataFrame:
@@ -1073,10 +1083,20 @@ st.dataframe(_styled_sales, use_container_width=True, height=600)
 # line on DELIVERY STATUS / DELIVERY REMARKS — see _delivery_pipeline_rows.
 _all_pending = _delivery_pipeline_rows(crm)
 
-# Split by delivery date
+# Split by delivery date. Any order with a line "Scheduled for Delivery" always
+# goes to the Pending Deliveries table (never Overdue), whatever its delivery
+# date and whether or not it is committed in MIS.
 _del_dates_all       = pd.to_datetime(_all_pending["DELIVERY DATE"], errors="coerce").dt.date
-pending_upcoming_raw = _all_pending[_del_dates_all >= today].copy().reset_index(drop=True)
-pending_overdue_raw  = _all_pending[_del_dates_all <  today].copy().reset_index(drop=True)
+_sched_rows          = scheduled_mask(_all_pending)
+if "ORDER NO" in _all_pending.columns and _sched_rows.any():
+    _order_key   = _all_pending["ORDER NO"].astype(str).str.strip()
+    _sched_keys  = set(_order_key[_sched_rows & (_order_key != "")])
+    _sched_order = _sched_rows | (_order_key.isin(_sched_keys) & (_order_key != ""))
+else:
+    _sched_order = _sched_rows
+_is_upcoming         = (_del_dates_all >= today) | _sched_order
+pending_upcoming_raw = _all_pending[_is_upcoming].copy().reset_index(drop=True)
+pending_overdue_raw  = _all_pending[(_del_dates_all < today) & ~_sched_order].copy().reset_index(drop=True)
 
 # Pre-compute both grouped views so the combined-alert button in Section A
 # can reference overdue_grouped (defined logically in Section B).
@@ -1101,8 +1121,9 @@ overdue_grouped = (
 # line-item status, so a group tagged PENDING still has at least one
 # un-progressed item.
 # App orders: Pending, Rescheduled for Delivery (on the rescheduled date) and
-# the undelivered items of a Partial Delivery stay; Scheduled for Delivery,
-# Delivered and Installation Done drop out.
+# the undelivered items of a Partial Delivery stay; Delivered and Installation
+# Done drop out. EXCEPTION: "Scheduled for Delivery" orders (any sheet) always
+# stay in the Pending Deliveries table, committed in MIS or not.
 pending_grouped = _keep_pending_orders(pending_grouped)
 overdue_grouped = _keep_pending_orders(overdue_grouped)
 
