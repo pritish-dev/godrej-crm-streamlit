@@ -33,6 +33,7 @@ import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.webkit.WebViewAssetLoader
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import org.json.JSONObject
@@ -44,11 +45,11 @@ import kotlin.concurrent.thread
 /**
  * 4S CRM — native Android shell.
  *
- * Opens the shared app shell (GitHub Pages, the same page iPhone users add to
- * their home screen), which opens the LIVE Streamlit CRM. Nothing about the
- * dashboard is baked into the APK, so every change pushed to the CRM appears
- * here instantly. If the shell can't be reached, the app falls back to opening
- * the Streamlit site directly.
+ * Opens the app shell bundled inside the APK (crm_app/, served from the
+ * virtual https://appassets.androidplatform.net origin), which opens the LIVE
+ * Streamlit CRM full-screen. Nothing about the dashboard is baked into the APK,
+ * so every change pushed to the CRM appears here instantly — and the app never
+ * hands the user off to a browser.
  *
  * Native extras: launch splash, offline screen, downloads, file picker,
  * tel:/mailto:/WhatsApp hand-off, double-back-to-exit and an in-app updater
@@ -64,7 +65,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var crmUrl: String
     private val shellHost by lazy { Uri.parse(shellUrl).host.orEmpty() }
     private val crmHost by lazy { Uri.parse(crmUrl).host.orEmpty() }
-    private var usingFallback = false
+    private val assetLoader by lazy {
+        WebViewAssetLoader.Builder()
+            .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
+            .build()
+    }
 
     private var splashDone = false
     private var lastBackPress = 0L
@@ -115,15 +120,7 @@ class MainActivity : AppCompatActivity() {
         }
         offlineView.visibility = View.GONE
         webView.visibility = View.VISIBLE
-        usingFallback = false
         webView.loadUrl(shellUrl)
-    }
-
-    /** The shell isn't reachable (e.g. Pages not live yet) — open the CRM directly. */
-    private fun fallBackToCrm() {
-        if (usingFallback) return
-        usingFallback = true
-        webView.loadUrl(crmUrl)
     }
 
     private fun showOffline() {
@@ -172,12 +169,17 @@ class MainActivity : AppCompatActivity() {
                 }
                 if (!request.isForMainFrame) return false       // CRM navigating inside the iframe
                 val host = uri.host.orEmpty()
-                val ours = host == shellHost || host == crmHost || host.endsWith(".streamlit.app")
+                // Everything that belongs to the CRM / Streamlit stays inside the app.
+                val ours = host == shellHost || host == crmHost ||
+                    host.endsWith(".streamlit.app") || host.endsWith("streamlit.io")
                 if (ours) return false
                 // WhatsApp, Google Maps, websites… open in their own apps.
                 openExternally(uri.toString())
                 return true
             }
+
+            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
+                assetLoader.shouldInterceptRequest(request.url)
 
             override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
                 Handler(Looper.getMainLooper()).postDelayed({ splashDone = true }, 400)
@@ -189,14 +191,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
-                if (!request.isForMainFrame) return
-                if (!isOnline()) showOffline() else if (!usingFallback) fallBackToCrm() else showOffline()
-            }
-
-            override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, response: WebResourceResponse) {
-                if (request.isForMainFrame && !usingFallback && response.statusCode >= 400 &&
-                    request.url.host == shellHost
-                ) fallBackToCrm()
+                if (request.isForMainFrame) showOffline()
             }
         }
 
