@@ -51,9 +51,10 @@ ORDERING_APP_OPS_ID = "12RtOVqlOicoGlF2oLRBv3wB9eeludiz08AFKbhPcNqs"
 TOKEN_TTL_SEC = 30 * 24 * 3600          # stay signed in for 30 days
 COOKIE_NAME = "crm_session"
 QUERY_KEY = "t"
-# Origin of the installed-app shell (GitHub Pages). The token is posted ONLY to
-# this origin, so a page that frames the CRM elsewhere can never receive it.
-DEFAULT_SHELL_ORIGIN = "https://pritish-dev.github.io"
+# Origins of the installed-app shell: GitHub Pages (iPhone / Windows) and the
+# shell bundled inside the Android APK. The token is posted ONLY to these, so a
+# page that frames the CRM elsewhere can never receive it.
+DEFAULT_SHELL_ORIGINS = ("https://pritish-dev.github.io", "https://appassets.androidplatform.net")
 
 _SS_USER = "app_user"
 _SS_PENDING_TOKEN = "_crm_pending_token"
@@ -68,10 +69,10 @@ def _secret_value(section: str, key: str) -> str:
         return ""
 
 
-def _shell_origin() -> str:
-    return (_secret_value("app", "SHELL_ORIGIN")
-            or os.getenv("CRM_SHELL_ORIGIN", "").strip()
-            or DEFAULT_SHELL_ORIGIN).rstrip("/")
+def _shell_origins() -> list:
+    extra = (_secret_value("app", "SHELL_ORIGIN") or os.getenv("CRM_SHELL_ORIGIN", "")).strip()
+    origins = [o.strip().rstrip("/") for o in extra.split(",") if o.strip()]
+    return origins + [o for o in DEFAULT_SHELL_ORIGINS if o not in origins]
 
 
 @st.cache_resource
@@ -338,8 +339,10 @@ def _client_js(token: str | None) -> None:
     components.html(
         f"""<script>
 (function(){{
-  var msg = {json.dumps(msg)}, shell = {json.dumps(_shell_origin())};
-  try {{ if (window.top !== window.parent) window.top.postMessage(msg, shell); }} catch (e) {{}}
+  var msg = {json.dumps(msg)}, shells = {json.dumps(_shell_origins())};
+  if (window.top !== window.parent) shells.forEach(function (o) {{
+    try {{ window.top.postMessage(msg, o); }} catch (e) {{}}
+  }});
   try {{
     var d = window.parent.document, sec = location.protocol === 'https:' ? '; Secure' : '';
     d.cookie = {json.dumps(COOKIE_NAME)} + '=' + encodeURIComponent(msg.token || '') +

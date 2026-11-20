@@ -2,14 +2,13 @@
     <string name="app_name">4S CRM</string>
 
     <!-- ================================================================= -->
-    <!--  The app opens the shared app shell (GitHub Pages), which in turn  -->
-    <!--  opens the LIVE Streamlit CRM — the same page iPhone users add to  -->
-    <!--  their home screen, so Android and iOS are always identical.       -->
+    <!--  The app opens the app shell bundled in the APK (crm_app/, the     -->
+    <!--  same files iPhone users get from GitHub Pages), which opens the   -->
+    <!--  LIVE Streamlit CRM — so Android and iOS are always identical.     -->
     <!-- ================================================================= -->
-    <string name="app_url" translatable="false">https://pritish-dev.github.io/godrej-crm-streamlit/</string>
+    <string name="app_url" translatable="false">https://appassets.androidplatform.net/assets/index.html</string>
 
-    <!-- Live Streamlit dashboard. Used directly if the shell can't load    -->
-    <!-- (e.g. before GitHub Pages is enabled), and to recognise CRM links. -->
+    <!-- Live Streamlit dashboard (loaded inside the shell). -->
     <string name="crm_url" translatable="false">https://godrej-crm-app-4sinteriors.streamlit.app</string>
 
     <!-- In-app updater: the APK workflow publishes this next to the APK.  -->

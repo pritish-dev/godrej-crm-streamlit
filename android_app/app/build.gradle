@@ -52,6 +52,15 @@ android {
         viewBinding true
         buildConfig true
     }
+
+    // The app shell (crm_app/ — the same files GitHub Pages serves to iPhone
+    // users) is bundled inside the APK, so the Android app opens straight into
+    // the CRM with no dependency on any website besides the CRM itself.
+    sourceSets {
+        main {
+            assets.srcDirs += ['../../crm_app']
+        }
+    }
 }
 
 dependencies {

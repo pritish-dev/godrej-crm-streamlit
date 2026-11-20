@@ -17,9 +17,9 @@ as you set them inactive.
 ## How auto-update works
 
 ```
- Android APK ─┐
-              ├─► App shell (GitHub Pages, crm_app/) ─► LIVE Streamlit CRM
- iPhone icon ─┘
+ Android APK ── app shell bundled in the APK ──┐
+                                               ├─► LIVE Streamlit CRM
+ iPhone / Windows ── app shell on GitHub Pages ┘     (own username/password login)
 ```
 
 * **Dashboard changes (99% of changes)** — push to `master`. Streamlit Cloud
@@ -44,6 +44,12 @@ as you set them inactive.
 
 ## One-time setup (owner)
 
+0. **Streamlit Cloud sharing must be public.** On share.streamlit.io → your
+   app's ⋮ menu → **Settings → Sharing → Who can view this app** → choose
+   **"This app is public and searchable"**. While the app is private, Streamlit
+   itself forces a Google/GitHub sign-in before the CRM loads (and that page
+   can't run inside the app). The CRM is still protected: nothing loads until
+   the user signs in with their ordering-app username and password.
 1. Merge to `master`.
 2. Repo **Settings → Pages → Source: GitHub Actions** (the workflow tries to
    enable it automatically; do it by hand if the first run fails).
@@ -65,7 +71,6 @@ one more uninstall/reinstall on each phone.
 
 * CRM address → `crm_app/index.html` (`CRM_URL`) **and**
   `app/src/main/res/values/strings.xml` (`crm_url`).
-* Shell address → `strings.xml` (`app_url`).
 * If the shell ever moves off `https://pritish-dev.github.io`, set
   `[app] SHELL_ORIGIN` in the Streamlit secrets so sign-in tokens are sent to it.
 

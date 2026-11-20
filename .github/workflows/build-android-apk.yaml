@@ -20,6 +20,7 @@ on:
     branches: [master]
     paths:
       - "android_app/**"
+      - "crm_app/**"
       - ".github/workflows/build-android-apk.yaml"
 
 permissions:
