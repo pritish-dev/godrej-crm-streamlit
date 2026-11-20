@@ -22,6 +22,7 @@ from services.delivery_status import (
     is_scheduled,
     norm_status,
     STATUS_RANK,
+    BLANK_TOKENS,
 )
 from utils.helpers import to_indian_number_string
 from services.automation4s import get_alerts, generate_whatsapp_group_link, generate_whatsapp_web_link
@@ -44,6 +45,7 @@ from services.franchise_app_rules import (
     apply_rescheduled_dates,
     payment_tolerance,
     app_order_mask,
+    remarks_win_mask,
     IS_FRANCHISE_APP_COL,
     IS_APP_ORDER_COL,
     AWAITING_COL,
@@ -439,6 +441,18 @@ def load_b2c_data():
             _rem_done = _remarks_status.map(norm_status).isin(
                 ["DELIVERED", "INSTALLATION DONE"]
             )
+            # Orders dated on/after 1 Jul 2026: the delivery status lives in
+            # "DELIVERY REMARKS(DELIVERED/PENDING)". Whenever that cell is
+            # filled (Pending / Scheduled for Delivery / Delivered / …) it wins
+            # over DELIVERY STATUS, which is only a fallback for blank remarks.
+            _rem_wins = pd.Series(
+                remarks_win_mask(
+                    parse_mixed_dates(safe_col(crm, "ORDER DATE", ""))
+                ).values,
+                index=crm.index,
+            )
+            _rem_filled = ~_remarks_status.map(norm_status).isin(BLANK_TOKENS)
+            _rem_done = _rem_done | (_rem_wins & _rem_filled)
             _native_status = _native_status.where(~_rem_done, _remarks_status)
         crm["DELIVERY STATUS"] = _native_status
         if _remarks_cols:

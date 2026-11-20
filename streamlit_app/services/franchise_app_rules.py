@@ -7,14 +7,19 @@ Delivery / payment rules for orders captured by the 4S ordering app in the
 
 Delivery status
 ---------------
-The status is read from "DELIVERY STATUS" together with
-"DELIVERY REMARKS(DELIVERED/PENDING)" (the dashboard loader folds the two into
-a single DELIVERY STATUS column; a remarks value of Delivered / Installation
-Done overrides the native column). For app orders:
+For orders dated on or after 1 July 2026 the delivery status is read from
+"DELIVERY REMARKS(DELIVERED/PENDING)": whenever that column is filled
+(Pending / Scheduled for Delivery / Delivered / Installation Done / …) it is
+the source of truth, and "DELIVERY STATUS" is only used when the remarks cell
+is blank. Older orders keep the earlier rule — a native DELIVERY STATUS wins,
+except that a remarks value of Delivered / Installation Done overrides it. The
+loaders fold the two into a single DELIVERY STATUS column. For app orders:
 
     Installation Done        → completed           → NOT in Pending / Overdue
     Delivered                → delivered           → NOT in Pending / Overdue
-    Scheduled for Delivery   → scheduled           → NOT in Pending / Overdue
+    Scheduled for Delivery   → scheduled           → IN Pending Deliveries
+                                                     (never Overdue), whether
+                                                     or not MIS-committed
     Rescheduled for Delivery → still pending       → IN Pending / Overdue, on
                                                      the rescheduled date
     Partial Delivery         → items listed in "DELIVERED ITEMS DATA" are
@@ -103,7 +108,9 @@ def is_app_status_pending(status) -> bool:
 
     Pending / blank / Rescheduled → yes. Partial Delivery → yes at status level
     (individual delivered items are removed separately). Installation Done,
-    Delivered, Scheduled for Delivery, cancelled / refunded → no.
+    Delivered, Scheduled for Delivery, cancelled / refunded → no. (Scheduled
+    for Delivery lines are kept in the Pending Deliveries table separately —
+    see delivery_status.scheduled_mask.)
     """
     s = norm_status(status)
     if s in _BLANK or s == "PENDING" or s.startswith("PENDING"):
@@ -246,12 +253,24 @@ def payment_tolerance(df: pd.DataFrame) -> pd.Series:
 
 # ── Loader helper for the standalone email jobs ───────────────────────────────
 
-def merge_delivery_status_columns(df: pd.DataFrame) -> pd.DataFrame:
+def remarks_win_mask(order_dates) -> pd.Series:
+    """Row-wise: ORDER DATE is on/after 1 July 2026, so the
+    "DELIVERY REMARKS(DELIVERED/PENDING)" column is the authoritative delivery
+    status. ``order_dates`` must already be parsed to datetimes."""
+    od = pd.to_datetime(pd.Series(order_dates), errors="coerce").dt.date
+    return od.apply(
+        lambda d: bool(pd.notna(d) and d >= FRANCHISE_APP_CUTOFF)
+    ).astype(bool)
+
+
+def merge_delivery_status_columns(df: pd.DataFrame, remarks_win=None) -> pd.DataFrame:
     """Fold DELIVERY REMARKS(DELIVERED/PENDING) into DELIVERY STATUS.
 
     Mirrors the dashboard loader: a native DELIVERY STATUS value wins, blanks
     fall back to the remarks column, and a remarks value of Delivered /
-    Installation Done overrides the native status. The remarks column(s) are
+    Installation Done overrides the native status. Rows flagged in
+    ``remarks_win`` (orders from 1 Jul 2026, see remarks_win_mask) take ANY
+    filled remarks value over DELIVERY STATUS. The remarks column(s) are
     dropped afterwards. No-op when the sheet has no remarks column.
     Expects upper-cased, whitespace-collapsed headers.
     """
@@ -275,6 +294,9 @@ def merge_delivery_status_columns(df: pd.DataFrame) -> pd.DataFrame:
         blank = native.map(norm_status).isin(_BLANK)
         native = native.where(~blank, remarks)
         done = remarks.map(norm_status).isin(["DELIVERED", "INSTALLATION DONE"])
+        if remarks_win is not None:
+            wins = pd.Series(pd.Series(remarks_win).astype(bool).values, index=df.index)
+            done = done | (wins & ~remarks.map(norm_status).isin(_BLANK))
         native = native.where(~done, remarks)
     else:
         native = remarks

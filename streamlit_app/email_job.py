@@ -30,6 +30,7 @@ from services.franchise_app_rules import (
     awaiting_delivery_mask,
     apply_rescheduled_dates,
     merge_delivery_status_columns,
+    remarks_win_mask,
     IS_FRANCHISE_APP_COL,
     IS_APP_ORDER_COL,
 )
@@ -129,8 +130,13 @@ def fetch_all_pending() -> pd.DataFrame:
                 df = df.loc[:, ~df.columns.duplicated()].dropna(axis=1, how="all")
                 # App tab: fold DELIVERY REMARKS into DELIVERY STATUS per sheet so
                 # the app's lifecycle statuses are read from both columns.
+                # Orders from 1 Jul 2026: DELIVERY REMARKS(DELIVERED/PENDING)
+                # is the authoritative delivery status when filled.
                 if is_franchise_app_sheet(name):
-                    df = merge_delivery_status_columns(df)
+                    _wins = None
+                    if "ORDER DATE" in df.columns:
+                        _wins = remarks_win_mask(_parse_dates(df["ORDER DATE"])).values
+                    df = merge_delivery_status_columns(df, remarks_win=_wins)
                 df["SOURCE"] = label
                 df[IS_FRANCHISE_APP_COL] = is_franchise_app_sheet(name)
                 dfs.append(df)
