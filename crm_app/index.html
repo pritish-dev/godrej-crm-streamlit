@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!--
+  4S CRM — installable app shell (Android APK + iPhone "Add to Home Screen").
+
+  This page is tiny on purpose: it shows a branded splash, then opens the LIVE
+  Streamlit CRM full-screen. Because the CRM itself is always loaded live,
+  every change pushed to master reaches every phone automatically.
+
+  It also keeps users signed in: after login the CRM posts a signed token here
+  (postMessage, origin-checked); we store it and pass it back on next launch.
+
+  Deployed to GitHub Pages by .github/workflows/deploy-crm-web-app.yaml, which
+  stamps APP_V / version.json so open apps reload themselves after a deploy.
+-->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>4S CRM</title>
+<meta name="description" content="4S Interiors CRM — Interio by Godrej, Patia">
+<meta name="theme-color" content="#F08C1E">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="4S CRM">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" href="favicon-32.png">
+<style>
+  :root { --brand: #F08C1E; --brand-dark: #C9700F; --ink: #2b2b2b; --muted: #8a8a8a; --bg: #ffffff; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --ink: #eeeeee; --muted: #a0a0a0; --bg: #0e1117; }
+  }
+  :root[data-theme="dark"] { --ink: #eeeeee; --muted: #a0a0a0; --bg: #0e1117; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden;
+               font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--ink); }
+  body { padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  #crm { position: fixed; inset: env(safe-area-inset-top) 0 0 0; width: 100%;
+         height: calc(100% - env(safe-area-inset-top)); border: 0; background: var(--bg); }
+
+  .overlay { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column;
+             align-items: center; justify-content: center; gap: 18px; padding: 24px 16px;
+             background: var(--bg); text-align: center; transition: opacity .45s ease; }
+  .overlay.hide { opacity: 0; pointer-events: none; }
+  .logo { width: 112px; height: 112px; border-radius: 28px; box-shadow: 0 14px 40px rgba(240,140,30,.35);
+          animation: pop .6s ease-out both; }
+  .title { font-size: 22px; font-weight: 800; letter-spacing: -.3px; margin: 0; }
+  .sub { font-size: 14px; color: var(--muted); margin: 0; max-width: 300px; line-height: 1.45; }
+  .bar { width: 160px; height: 4px; border-radius: 4px; background: rgba(240,140,30,.18); overflow: hidden; }
+  .bar i { display: block; width: 40%; height: 100%; border-radius: 4px; background: var(--brand);
+           animation: slide 1.1s ease-in-out infinite; }
+  .btn { appearance: none; border: 0; border-radius: 12px; padding: 12px 26px; font-size: 15px; font-weight: 700;
+         color: #fff; background: linear-gradient(135deg, var(--brand), var(--brand-dark)); cursor: pointer; }
+  #offline { display: none; }
+  @keyframes slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(260%); } }
+  @keyframes pop { from { transform: scale(.85); opacity: 0; } to { transform: none; opacity: 1; } }
+</style>
+</head>
+<body>
+  <iframe id="crm" title="4S CRM" allow="clipboard-read; clipboard-write; fullscreen; camera; microphone; geolocation"
+          referrerpolicy="strict-origin-when-cross-origin"></iframe>
+
+  <div id="splash" class="overlay" aria-live="polite">
+    <img class="logo" src="logo.png" alt="4S Interiors">
+    <p class="title">4S CRM</p>
+    <p class="sub" id="splashMsg">Opening your dashboard…</p>
+    <div class="bar"><i></i></div>
+  </div>
+
+  <div id="offline" class="overlay">
+    <img class="logo" src="logo.png" alt="4S Interiors">
+    <p class="title">You're offline</p>
+    <p class="sub">Connect to the internet to open the CRM. It will reload automatically when you're back online.</p>
+    <button class="btn" id="retry" type="button">Try again</button>
+  </div>
+
+<script>
+(function () {
+  'use strict';
+  // ── Config ────────────────────────────────────────────────────────────────
+  var CRM_URL  = 'https://godrej-crm-app-4sinteriors.streamlit.app/';
+  var APP_V    = 'dev';            // stamped at deploy time (= version.json "v")
+  var TOKEN_KEY = 'crm_token_v1';
+
+  var CRM_ORIGIN = new URL(CRM_URL).origin;
+  var frame   = document.getElementById('crm');
+  var splash  = document.getElementById('splash');
+  var offline = document.getElementById('offline');
+  var msg     = document.getElementById('splashMsg');
+
+  function store(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (e) {} }
+  function load(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+
+  // Android APK passes its build number in the user agent ("GodrejCRMApp/<n>").
+  var inAndroidApp = /GodrejCRMApp\//.test(navigator.userAgent);
+  document.documentElement.classList.toggle('android-app', inAndroidApp);
+
+  function crmSrc() {
+    var u = new URL(CRM_URL);
+    u.searchParams.set('embed', 'true');
+    var t = load(TOKEN_KEY);
+    if (t) u.searchParams.set('t', t);
+    return u.toString();
+  }
+
+  var loaded = false, slowTimer = null;
+  function hideSplash() {
+    loaded = true;
+    clearTimeout(slowTimer);
+    setTimeout(function () { splash.classList.add('hide'); }, 700);
+  }
+  function openCrm() {
+    if (!navigator.onLine) { showOffline(); return; }
+    offline.style.display = 'none';
+    splash.classList.remove('hide');
+    msg.textContent = 'Opening your dashboard…';
+    loaded = false;
+    clearTimeout(slowTimer);
+    // Streamlit Cloud apps sleep when idle; the first open can take ~30 s.
+    slowTimer = setTimeout(function () {
+      if (!loaded) msg.textContent = 'Waking up the CRM server — this can take up to a minute the first time today…';
+    }, 6000);
+    frame.src = crmSrc();
+  }
+  function showOffline() {
+    splash.classList.add('hide');
+    offline.style.display = 'flex';
+  }
+
+  frame.addEventListener('load', hideSplash);
+  document.getElementById('retry').addEventListener('click', openCrm);
+  window.addEventListener('online', function () { if (offline.style.display === 'flex') openCrm(); });
+  window.addEventListener('offline', function () { if (!loaded) showOffline(); });
+
+  // ── Session hand-off from the CRM (origin-checked) ────────────────────────
+  window.addEventListener('message', function (e) {
+    if (e.origin !== CRM_ORIGIN || !e.data || typeof e.data !== 'object') return;
+    if (e.data.type === 'crm-auth' && typeof e.data.token === 'string' && e.data.token.length < 2048) {
+      store(TOKEN_KEY, e.data.token);
+    } else if (e.data.type === 'crm-logout') {
+      store(TOKEN_KEY, null);
+    }
+  });
+
+  // ── Auto-update: reload the shell when a newer version is deployed ────────
+  // (The CRM content itself is always live; this only refreshes this wrapper.)
+  var lastCheck = 0;
+  function checkForUpdate() {
+    if (APP_V === 'dev' || Date.now() - lastCheck < 60000) return;
+    lastCheck = Date.now();
+    fetch('version.json?ts=' + Date.now(), { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) { if (j && j.v && j.v !== APP_V) location.reload(); })
+      .catch(function () {});
+  }
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') checkForUpdate();
+  });
+
+  // Offline splash support (caches only this shell — never CRM data).
+  if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    navigator.serviceWorker.register('sw.js').catch(function () {});
+  }
+
+  // Native bridge for the Android app (pull-to-refresh / menu "Reload").
+  window.crmReload = openCrm;
+
+  openCrm();
+  checkForUpdate();
+})();
+</script>
+</body>
+</html>

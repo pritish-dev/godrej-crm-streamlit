@@ -3,6 +3,10 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+// CI passes -PappVersionCode=<run number>, so every build is newer than the
+// last and the in-app updater can tell when a fresh APK is out.
+def appVersionCode = (project.findProperty('appVersionCode') ?: '1').toString().toInteger()
+
 android {
     namespace 'com.godrej.crm'
     compileSdk 34
@@ -11,16 +15,29 @@ android {
         applicationId "com.godrej.crm"
         minSdk 26          // Android 8.0+ — covers ~99% of phones; enables vector adaptive icon
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        versionCode appVersionCode
+        versionName "2.${appVersionCode}"
+    }
+
+    // ONE fixed signing key for every build. Android only installs an update
+    // over an existing app when both are signed with the same key — a fresh
+    // random debug key per CI run would force everyone to uninstall first.
+    // Override with the ANDROID_KEYSTORE_* env vars (GitHub secrets) if you
+    // prefer to keep your own private key out of the repo.
+    signingConfigs {
+        release {
+            def envStore = System.getenv('ANDROID_KEYSTORE_PATH')
+            storeFile envStore ? file(envStore) : rootProject.file('keystore/crm-app.jks')
+            storePassword System.getenv('ANDROID_KEYSTORE_PASSWORD') ?: 'crm4sinteriors'
+            keyAlias System.getenv('ANDROID_KEY_ALIAS') ?: 'crm'
+            keyPassword System.getenv('ANDROID_KEY_PASSWORD') ?: 'crm4sinteriors'
+        }
     }
 
     buildTypes {
         release {
-            // Debug-signed release so the CI-built APK installs without a Play Store
-            // account or a custom keystore. Fine for internal/team distribution.
             minifyEnabled false
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.release
         }
     }
 
@@ -33,13 +50,14 @@ android {
     }
     buildFeatures {
         viewBinding true
+        buildConfig true
     }
 }
 
 dependencies {
     implementation 'androidx.core:core-ktx:1.13.1'
+    implementation 'androidx.core:core-splashscreen:1.0.1'
     implementation 'androidx.appcompat:appcompat:1.7.0'
     implementation 'com.google.android.material:material:1.12.0'
-    implementation 'androidx.swiperefreshlayout:swiperefreshlayout:1.1.0'
     implementation 'androidx.webkit:webkit:1.11.0'
 }

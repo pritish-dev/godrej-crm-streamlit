@@ -1,0 +1,66 @@
+name: Deploy CRM Web App (iPhone + Android shell)
+
+# Publishes crm_app/ (the installable app shell) to GitHub Pages:
+#   https://pritish-dev.github.io/godrej-crm-streamlit/
+#
+# • iPhone users open that link in Safari → Share → Add to Home Screen.
+# • The Android APK loads the same page, so both platforms are always identical.
+#
+# The shell opens the LIVE Streamlit CRM, so dashboard changes need no deploy
+# here at all — Streamlit Cloud redeploys the CRM on every push to master. This
+# workflow only runs when the shell itself changes; it stamps a fresh version so
+# already-open apps reload themselves onto the new shell.
+#
+# One-time: repo Settings → Pages → Source = "GitHub Actions" (the configure
+# step below tries to enable this automatically).
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "crm_app/**"
+      - ".github/workflows/deploy-crm-web-app.yaml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Stamp version (commit SHA) so open apps auto-reload
+        run: |
+          V="${GITHUB_SHA:0:7}"
+          mkdir -p _site
+          cp -a crm_app/. _site/
+          sed -i "s/var APP_V    = 'dev'/var APP_V    = '$V'/" _site/index.html
+          sed -i "s/const CACHE = 'crm-shell-dev'/const CACHE = 'crm-shell-$V'/" _site/sw.js
+          printf '{ "v": "%s" }\n' "$V" > _site/version.json
+          grep -q "APP_V    = '$V'" _site/index.html || { echo "::error::version stamp failed"; exit 1; }
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: Upload site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
