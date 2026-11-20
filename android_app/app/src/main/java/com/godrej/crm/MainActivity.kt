@@ -106,6 +106,12 @@ class MainActivity : AppCompatActivity() {
         configureWebView()
         setupBackNavigation()
 
+        // Drop cached CRM scripts on every cold start. After Streamlit Cloud
+        // updates the CRM, old cached files point at script chunks that no
+        // longer exist, which leaves a half-loaded page. (Sign-in survives:
+        // it lives in localStorage/cookies, not the HTTP cache.)
+        if (savedInstanceState == null) webView.clearCache(true)
+
         if (savedInstanceState == null || webView.restoreState(savedInstanceState) == null) {
             loadApp()
         }

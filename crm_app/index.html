@@ -99,6 +99,9 @@
   function crmSrc() {
     var u = new URL(CRM_URL);
     u.searchParams.set('embed', 'true');
+    // Fresh URL every launch so a cached page from before a CRM update never
+    // asks for script files that no longer exist ("Failed to fetch module").
+    u.searchParams.set('_v', Date.now().toString(36));
     var t = load(TOKEN_KEY);
     if (t) u.searchParams.set('t', t);
     return u.toString();
