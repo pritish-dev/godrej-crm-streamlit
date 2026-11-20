@@ -1,14 +1,29 @@
 package com.godrej.crm
 
 import android.annotation.SuppressLint
+import android.app.DownloadManager
+import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import android.util.Base64
 import android.view.View
 import android.webkit.CookieManager
+import android.webkit.URLUtil
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.ProgressBar
@@ -17,33 +32,63 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import com.google.android.material.button.MaterialButton
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import org.json.JSONObject
+import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+import kotlin.concurrent.thread
 
 /**
- * A thin native shell around the live Streamlit CRM.
+ * 4S CRM — native Android shell.
  *
- * The whole point: this app renders the exact same web dashboard, so any feature
- * added to the Streamlit app shows up here instantly with no app rebuild. The URL
- * it loads lives in one place only — res/values/strings.xml -> crm_url.
+ * Opens the shared app shell (GitHub Pages, the same page iPhone users add to
+ * their home screen), which opens the LIVE Streamlit CRM. Nothing about the
+ * dashboard is baked into the APK, so every change pushed to the CRM appears
+ * here instantly. If the shell can't be reached, the app falls back to opening
+ * the Streamlit site directly.
+ *
+ * Native extras: launch splash, offline screen, downloads, file picker,
+ * tel:/mailto:/WhatsApp hand-off, double-back-to-exit and an in-app updater
+ * for the (rare) native APK updates.
  */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
-    private lateinit var swipeRefresh: SwipeRefreshLayout
     private lateinit var progressBar: ProgressBar
+    private lateinit var offlineView: View
 
-    // Handles <input type="file"> so the Product Catalogue image upload works.
+    private lateinit var shellUrl: String
+    private lateinit var crmUrl: String
+    private val shellHost by lazy { Uri.parse(shellUrl).host.orEmpty() }
+    private val crmHost by lazy { Uri.parse(crmUrl).host.orEmpty() }
+    private var usingFallback = false
+
+    private var splashDone = false
+    private var lastBackPress = 0L
+
     private var fileChooserCallback: ValueCallback<Array<Uri>>? = null
     private lateinit var fileChooserLauncher: ActivityResultLauncher<Intent>
 
-    @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
+        val splash = installSplashScreen()
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        // Hold the native splash until the web splash is ready (max ~2.5 s).
+        val splashStart = SystemClock.uptimeMillis()
+        splash.setKeepOnScreenCondition {
+            !splashDone && SystemClock.uptimeMillis() - splashStart < 2500
+        }
+
+        shellUrl = getString(R.string.app_url)
+        crmUrl = getString(R.string.crm_url)
         webView = findViewById(R.id.webView)
-        swipeRefresh = findViewById(R.id.swipeRefresh)
         progressBar = findViewById(R.id.progressBar)
+        offlineView = findViewById(R.id.offlineView)
+        findViewById<MaterialButton>(R.id.retryButton).setOnClickListener { loadApp() }
 
         fileChooserLauncher = registerForActivityResult(
             ActivityResultContracts.StartActivityForResult()
@@ -54,53 +99,104 @@ class MainActivity : AppCompatActivity() {
         }
 
         configureWebView()
-        setupPullToRefresh()
         setupBackNavigation()
 
-        if (savedInstanceState == null) {
-            webView.loadUrl(getString(R.string.crm_url))
-        } else {
-            webView.restoreState(savedInstanceState)
+        if (savedInstanceState == null || webView.restoreState(savedInstanceState) == null) {
+            loadApp()
         }
+        checkForAppUpdate()
     }
 
+    // ── Loading ──────────────────────────────────────────────────────────────
+    private fun loadApp() {
+        if (!isOnline()) {
+            showOffline()
+            return
+        }
+        offlineView.visibility = View.GONE
+        webView.visibility = View.VISIBLE
+        usingFallback = false
+        webView.loadUrl(shellUrl)
+    }
+
+    /** The shell isn't reachable (e.g. Pages not live yet) — open the CRM directly. */
+    private fun fallBackToCrm() {
+        if (usingFallback) return
+        usingFallback = true
+        webView.loadUrl(crmUrl)
+    }
+
+    private fun showOffline() {
+        splashDone = true
+        progressBar.visibility = View.GONE
+        offlineView.visibility = View.VISIBLE
+    }
+
+    private fun isOnline(): Boolean {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
+    // ── WebView ──────────────────────────────────────────────────────────────
     @SuppressLint("SetJavaScriptEnabled")
     private fun configureWebView() {
         with(webView.settings) {
             javaScriptEnabled = true
-            domStorageEnabled = true          // Streamlit needs DOM storage
+            domStorageEnabled = true          // Streamlit + token storage
             databaseEnabled = true
             loadWithOverviewMode = true
             useWideViewPort = true
             builtInZoomControls = true
             displayZoomControls = false
-            cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
+            mediaPlaybackRequiresUserGesture = false
+            cacheMode = WebSettings.LOAD_DEFAULT
             javaScriptCanOpenWindowsAutomatically = true
-            setSupportMultipleWindows(false)
-            userAgentString = "$userAgentString GodrejCRMApp/1.0"
+            setSupportMultipleWindows(false)  // target=_blank opens in-place → routed below
+            userAgentString = "$userAgentString GodrejCRMApp/${BuildConfig.VERSION_CODE}"
         }
+        webView.overScrollMode = View.OVER_SCROLL_NEVER
 
-        // Persist the login session (cookies) between app launches.
         CookieManager.getInstance().setAcceptCookie(true)
+        // The CRM runs inside the shell's iframe → its cookies are third-party.
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
 
         webView.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(
-                view: WebView,
-                request: WebResourceRequest
-            ): Boolean {
-                val url = request.url.toString()
-                // Keep normal web pages inside the app; hand off phone/mail/whatsapp/etc.
-                return if (url.startsWith("http://") || url.startsWith("https://")) {
-                    false
-                } else {
-                    openExternally(url)
-                    true
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                val uri = request.url
+                val scheme = uri.scheme.orEmpty().lowercase()
+                if (scheme != "http" && scheme != "https") {
+                    if (scheme == "about" || scheme == "blob" || scheme == "data" || scheme == "javascript") return false
+                    openExternally(uri.toString())
+                    return true
                 }
+                if (!request.isForMainFrame) return false       // CRM navigating inside the iframe
+                val host = uri.host.orEmpty()
+                val ours = host == shellHost || host == crmHost || host.endsWith(".streamlit.app")
+                if (ours) return false
+                // WhatsApp, Google Maps, websites… open in their own apps.
+                openExternally(uri.toString())
+                return true
+            }
+
+            override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+                Handler(Looper.getMainLooper()).postDelayed({ splashDone = true }, 400)
             }
 
             override fun onPageFinished(view: WebView, url: String?) {
-                swipeRefresh.isRefreshing = false
+                splashDone = true
+                CookieManager.getInstance().flush()
+            }
+
+            override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
+                if (!request.isForMainFrame) return
+                if (!isOnline()) showOffline() else if (!usingFallback) fallBackToCrm() else showOffline()
+            }
+
+            override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, response: WebResourceResponse) {
+                if (request.isForMainFrame && !usingFallback && response.statusCode >= 400 &&
+                    request.url.host == shellHost
+                ) fallBackToCrm()
             }
         }
 
@@ -122,30 +218,66 @@ class MainActivity : AppCompatActivity() {
                     true
                 } catch (e: Exception) {
                     fileChooserCallback = null
-                    Toast.makeText(this@MainActivity, "Cannot open file picker", Toast.LENGTH_SHORT).show()
+                    toast("Cannot open file picker")
                     false
                 }
             }
         }
+
+        // Excel / CSV / PDF exports from the dashboard's download buttons.
+        webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
+            download(url, userAgent, contentDisposition, mimeType)
+        }
     }
 
-    private fun setupPullToRefresh() {
-        swipeRefresh.setOnRefreshListener { webView.reload() }
-        // Only allow pull-to-refresh when the page is already scrolled to the top,
-        // otherwise it fights with in-page scrolling of long tables.
-        webView.viewTreeObserver.addOnScrollChangedListener {
-            swipeRefresh.isEnabled = webView.scrollY == 0
+    private fun download(url: String, userAgent: String, contentDisposition: String?, mimeType: String?) {
+        try {
+            val name = URLUtil.guessFileName(url, contentDisposition, mimeType)
+            if (url.startsWith("data:")) {
+                val payload = url.substringAfter(",")
+                val bytes = if (url.substringBefore(",").endsWith(";base64"))
+                    Base64.decode(payload, Base64.DEFAULT) else Uri.decode(payload).toByteArray()
+                val dir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: filesDir
+                File(dir, name).writeBytes(bytes)
+                toast("Saved $name")
+                return
+            }
+            if (!url.startsWith("http")) {
+                toast("This download isn't supported in the app")
+                return
+            }
+            val req = DownloadManager.Request(Uri.parse(url)).apply {
+                setMimeType(mimeType)
+                addRequestHeader("User-Agent", userAgent)
+                CookieManager.getInstance().getCookie(url)?.let { addRequestHeader("Cookie", it) }
+                setTitle(name)
+                setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name)
+                } else {
+                    setDestinationInExternalFilesDir(this@MainActivity, Environment.DIRECTORY_DOWNLOADS, name)
+                }
+            }
+            (getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).enqueue(req)
+            toast(getString(R.string.downloading) + " $name")
+        } catch (e: Exception) {
+            toast("Download failed")
         }
     }
 
     private fun setupBackNavigation() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (webView.canGoBack()) {
+                if (offlineView.visibility != View.VISIBLE && webView.canGoBack()) {
                     webView.goBack()
+                    return
+                }
+                val now = SystemClock.uptimeMillis()
+                if (now - lastBackPress < 2000) {
+                    finish()
                 } else {
-                    isEnabled = false
-                    onBackPressedDispatcher.onBackPressed()
+                    lastBackPress = now
+                    toast(getString(R.string.press_back_again))
                 }
             }
         })
@@ -153,10 +285,63 @@ class MainActivity : AppCompatActivity() {
 
     private fun openExternally(url: String) {
         try {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            val intent = if (url.startsWith("intent:")) {
+                Intent.parseUri(url, Intent.URI_INTENT_SCHEME).apply {
+                    addCategory(Intent.CATEGORY_BROWSABLE)
+                    component = null
+                    selector = null
+                }
+            } else {
+                Intent(Intent.ACTION_VIEW, Uri.parse(url))
+            }
+            startActivity(intent)
         } catch (e: Exception) {
-            Toast.makeText(this, "No app found to open this link", Toast.LENGTH_SHORT).show()
+            toast("No app found to open this link")
         }
+    }
+
+    // ── In-app updater (native APK changes only — the CRM itself is always live) ──
+    private fun checkForAppUpdate() {
+        val prefs = getSharedPreferences("crm_app", MODE_PRIVATE)
+        val lastCheck = prefs.getLong("last_update_check", 0L)
+        if (System.currentTimeMillis() - lastCheck < 6 * 3600 * 1000L) return
+        thread(isDaemon = true) {
+            try {
+                val conn = URL(getString(R.string.update_manifest_url)).openConnection() as HttpURLConnection
+                conn.connectTimeout = 8000
+                conn.readTimeout = 8000
+                conn.instanceFollowRedirects = true
+                conn.setRequestProperty("Cache-Control", "no-cache")
+                if (conn.responseCode != 200) return@thread
+                val json = JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+                prefs.edit().putLong("last_update_check", System.currentTimeMillis()).apply()
+                val latest = json.optInt("versionCode", 0)
+                val apkUrl = json.optString("apkUrl", "")
+                if (latest > BuildConfig.VERSION_CODE && apkUrl.startsWith("https://")) {
+                    runOnUiThread { promptUpdate(apkUrl, json.optString("notes", "")) }
+                }
+            } catch (_: Exception) {
+                // Offline or no release yet — try again next launch.
+            }
+        }
+    }
+
+    private fun promptUpdate(apkUrl: String, notes: String) {
+        if (isFinishing || isDestroyed) return
+        val body = getString(R.string.update_body) + if (notes.isNotBlank()) "\n\n$notes" else ""
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.update_title)
+            .setMessage(body)
+            .setPositiveButton(R.string.update_now) { _, _ -> openExternally(apkUrl) }
+            .setNegativeButton(R.string.later, null)
+            .show()
+    }
+
+    private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+
+    override fun onPause() {
+        super.onPause()
+        CookieManager.getInstance().flush()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {

@@ -6,6 +6,7 @@ The first page listed is shown by default when the app loads.
 import streamlit as st
 
 from services.mobile import apply_mobile_optimizations
+from services.app_login import require_login, sidebar_account_box
 
 st.set_page_config(
     layout="wide",
@@ -18,12 +19,19 @@ st.set_page_config(
 # Purely additive CSS — desktop layout is unchanged. See services/mobile.py.
 apply_mobile_optimizations()
 
+# One login for web + Android + iPhone apps: same username/password as the
+# 4S ordering app (OPS sheet → APP_ORDERING_CREDS). See services/app_login.py.
+if require_login() is None:
+    st.stop()
+
 if "show_old_data_dashboard" not in st.session_state:
     st.session_state.show_old_data_dashboard = False
 if "show_ops_migration" not in st.session_state:
     st.session_state.show_ops_migration = False
 
 with st.sidebar:
+    sidebar_account_box()
+    st.markdown("---")
     st.markdown("### Page Settings")
     st.toggle(
         "Show Old Data Dashboard (Pre FY 26-27)",

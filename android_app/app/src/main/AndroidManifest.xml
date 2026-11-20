@@ -11,7 +11,7 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:usesCleartextTraffic="false"
-        android:theme="@style/Theme.GodrejCRM">
+        android:theme="@style/Theme.GodrejCRM.Starting">
 
         <activity
             android:name=".MainActivity"

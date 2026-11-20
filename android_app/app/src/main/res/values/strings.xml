@@ -2,11 +2,26 @@
     <string name="app_name">4S CRM</string>
 
     <!-- ================================================================= -->
-    <!--  👇  THIS IS THE ONLY LINE YOU NEED TO CHANGE                     -->
-    <!--  Paste your live Streamlit dashboard URL here (keep the https://). -->
-    <!--  Example: https://godrej-interio-patia-crm.streamlit.app          -->
-    <!--  After changing it, the next CI build produces an APK that opens   -->
-    <!--  this exact site — so the app always mirrors your web dashboard.   -->
+    <!--  The app opens the shared app shell (GitHub Pages), which in turn  -->
+    <!--  opens the LIVE Streamlit CRM — the same page iPhone users add to  -->
+    <!--  their home screen, so Android and iOS are always identical.       -->
     <!-- ================================================================= -->
+    <string name="app_url" translatable="false">https://pritish-dev.github.io/godrej-crm-streamlit/</string>
+
+    <!-- Live Streamlit dashboard. Used directly if the shell can't load    -->
+    <!-- (e.g. before GitHub Pages is enabled), and to recognise CRM links. -->
     <string name="crm_url" translatable="false">https://godrej-crm-app-4sinteriors.streamlit.app</string>
+
+    <!-- In-app updater: the APK workflow publishes this next to the APK.  -->
+    <string name="update_manifest_url" translatable="false">https://github.com/pritish-dev/godrej-crm-streamlit/releases/download/android-latest/version.json</string>
+
+    <string name="offline_title">Can\'t reach the CRM</string>
+    <string name="offline_body">Check your internet connection and try again.</string>
+    <string name="retry">Try again</string>
+    <string name="press_back_again">Press back again to exit</string>
+    <string name="update_title">Update available</string>
+    <string name="update_body">A new version of 4S CRM is ready. Update now for the latest features and fixes.</string>
+    <string name="update_now">Update</string>
+    <string name="later">Later</string>
+    <string name="downloading">Downloading…</string>
 </resources>

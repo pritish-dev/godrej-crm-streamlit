@@ -1,64 +1,78 @@
-# 4S CRM — Android App
+# 4S CRM — Android & iPhone apps
 
-A lightweight Android app that wraps the **live Streamlit CRM dashboard** in a
-native shell. It opens the same web dashboard full-screen with a home-screen
-icon, so **the app always shows exactly the same features as the web app** — any
-feature you add to Streamlit appears in the app instantly, with no app rebuild.
+One CRM, three ways to open it, always in sync:
 
-This is deliberately a thin wrapper (a WebView), not a re-implementation. That's
-what keeps the web app and the phone app permanently in sync from a single
-codebase, and it's why the whole thing is free to build and run.
+| Who | Link | How |
+|-----|------|-----|
+| **Android** | https://github.com/pritish-dev/godrej-crm-streamlit/releases/download/android-latest/4S-CRM.apk | Download → tap → allow "install unknown apps" (one-time) |
+| **iPhone / iPad** | https://pritish-dev.github.io/godrej-crm-streamlit/ | Open in **Safari** → Share → **Add to Home Screen** |
+| Desktop / any browser | https://godrej-crm-app-4sinteriors.streamlit.app | Just open it |
 
-## The only thing you need to configure
+Everyone signs in with the **same username and password as the 4S ordering
+app** (OPS sheet → `APP_ORDERING_CREDS` tab, with the `Staff` tab as fallback).
+Add, remove, deactivate or change passwords there — the CRM follows within ~2
+minutes. Users stay signed in for 30 days and are signed out everywhere as soon
+as you set them inactive.
 
-Open [`app/src/main/res/values/strings.xml`](app/src/main/res/values/strings.xml)
-and set **one line** — your live dashboard URL:
+## How auto-update works
 
-```xml
-<string name="crm_url">https://your-crm.streamlit.app</string>
+```
+ Android APK ─┐
+              ├─► App shell (GitHub Pages, crm_app/) ─► LIVE Streamlit CRM
+ iPhone icon ─┘
 ```
 
-That's it. Change it, push to `master`, and a fresh APK is built automatically.
+* **Dashboard changes (99% of changes)** — push to `master`. Streamlit Cloud
+  redeploys the CRM, and every phone shows the new version the next time the
+  app is opened. No APK rebuild, nothing to reinstall. Android and iPhone load
+  the very same page, so they can never drift apart.
+* **App shell changes** (`crm_app/`) — `Deploy CRM Web App` publishes to GitHub
+  Pages; open apps notice the new version and reload themselves.
+* **Native Android changes** (`android_app/`: icon, splash, URLs) — `Build
+  Android APK` publishes a new APK to the `android-latest` release. Installed
+  apps show an **"Update available"** prompt and download it in one tap.
 
-## How the APK is built (free)
+## What makes it feel like an app
 
-You do **not** need Android Studio or a Mac/PC toolchain. A GitHub Actions
-workflow ([`.github/workflows/build-android-apk.yaml`](../.github/workflows/build-android-apk.yaml))
-builds and signs the APK on GitHub's free runners.
+* Branded splash on launch (native on Android + web splash on both).
+* Full screen — no browser bars, no Streamlit toolbar (`?embed=true`).
+* Stays signed in between launches (signed token held by the app shell).
+* Friendly "Waking up the CRM" message when Streamlit Cloud is cold-starting,
+  and an offline screen that retries automatically.
+* Android: Excel/PDF downloads go to *Downloads*, `tel:` / `mailto:` /
+  WhatsApp / Maps links open in their own apps, double-back to exit.
 
-**To get the APK:**
-1. Go to the repo's **Actions** tab → **Build Android APK** → **Run workflow**
-   (or just push a change to `android_app/` on `master`).
-2. When it finishes, download it from either:
-   - the **Releases** page → *4S CRM Android App (latest)* → `app-release.apk`
-     (a stable link that always points at the newest build), or
-   - the workflow run's **Artifacts** section.
+## One-time setup (owner)
 
-## Installing on a phone
+1. Merge to `master`.
+2. Repo **Settings → Pages → Source: GitHub Actions** (the workflow tries to
+   enable it automatically; do it by hand if the first run fails).
+3. Actions → **Build Android APK** → *Run workflow* (or it runs automatically on
+   the merge). The APK link above goes live when it finishes.
+4. Phones that have the **old** 4S CRM APK installed must uninstall it once
+   before installing the new one (the old one was signed with a throw-away
+   key). After that, every future update installs over the top.
 
-1. Copy `app-release.apk` to the phone (WhatsApp/Drive/email link all work).
-2. Tap it. If Android warns about "unknown sources," allow it for your
-   file manager or browser (a one-time setting).
-3. Open **4S CRM** from the home screen.
+## Signing key
 
-The app is debug-signed, which is why it installs without a Google Play account
-— perfect for internal team distribution.
+`keystore/crm-app.jks` is a fixed signing key, committed so every CI build can
+update the previous one. To use your own private key instead, add these repo
+secrets: `ANDROID_KEYSTORE_BASE64` (base64 of the .jks), `ANDROID_KEYSTORE_PASSWORD`,
+`ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` — note that switching keys means
+one more uninstall/reinstall on each phone.
 
-## What the app does for you
+## Changing URLs
 
-- Full-screen, no browser address bar — feels like a real app.
-- Keeps you logged in between launches (persistent cookies).
-- Pull down to refresh.
-- Android back button navigates the dashboard's history.
-- Product Catalogue image uploads work (native file picker).
-- `tel:`, `mailto:`, and WhatsApp links open the right app.
+* CRM address → `crm_app/index.html` (`CRM_URL`) **and**
+  `app/src/main/res/values/strings.xml` (`crm_url`).
+* Shell address → `strings.xml` (`app_url`).
+* If the shell ever moves off `https://pritish-dev.github.io`, set
+  `[app] SHELL_ORIGIN` in the Streamlit secrets so sign-in tokens are sent to it.
 
 ## Building locally (optional)
 
-If you ever want to build on your own machine instead of CI:
-
 ```bash
 cd android_app
-gradle assembleRelease     # needs JDK 17 + Android SDK
-# APK lands in app/build/outputs/apk/release/app-release.apk
+gradle assembleRelease -PappVersionCode=200   # needs JDK 17 + Android SDK
+# → app/build/outputs/apk/release/app-release.apk
 ```
