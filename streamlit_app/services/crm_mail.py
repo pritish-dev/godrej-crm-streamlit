@@ -48,6 +48,7 @@ import os
 import smtplib
 import time
 import email
+import email.header
 from email.utils import parseaddr
 from datetime import datetime, timezone, timedelta
 
@@ -275,10 +276,77 @@ def _drafts_folder(mail: imaplib.IMAP4_SSL) -> str:
     return '"[Gmail]/Drafts"'
 
 
-def save_draft(msg, recipients: list[str]) -> str:
+def _imap_quote(s: str) -> str:
+    return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _delete_uids(mail: imaplib.IMAP4_SSL, uids: list) -> None:
+    uids = [u if isinstance(u, bytes) else str(u).encode() for u in (uids or []) if u]
+    if not uids:
+        return
+    mail.uid("store", b",".join(uids), "+FLAGS", "(\\Deleted)")
+    mail.expunge()
+
+
+def find_drafts(subject: str, recipients: list[str]) -> list[tuple[bytes, "email.message.Message"]]:
+    """
+    Gmail drafts whose Subject is exactly `subject`, in the account that mail to
+    `recipients` would be sent from (see credentials_for). Oldest → newest, as
+    (uid, parsed message). Raises on IMAP failure.
+    """
+    rcpts = [r for r in dict.fromkeys(r.strip() for r in recipients) if r]
+    sender, password = credentials_for(rcpts) if rcpts else sender_credentials()
+    if not sender or not password:
+        raise ValueError("EMAIL_SENDER / EMAIL_PASSWORD not set in env vars or secrets.")
+    out: list[tuple[bytes, email.message.Message]] = []
+    mail = _imap_login(sender, password)
+    try:
+        typ, _ = mail.select(_drafts_folder(mail))
+        if typ != "OK":
+            return out
+        _, data = mail.uid("search", None, "SUBJECT", _imap_quote(subject))
+        uids = sorted((data[0] or b"").split(), key=int)
+        want = " ".join(str(subject).split()).lower()
+        for uid in uids:
+            _, parts = mail.uid("fetch", uid, "(RFC822)")
+            raw = next((p[1] for p in parts if isinstance(p, tuple)), None)
+            if not raw:
+                continue
+            m = email.message_from_bytes(raw)
+            got = str(email.header.make_header(email.header.decode_header(m.get("Subject", ""))))
+            if " ".join(got.split()).lower() == want:
+                out.append((uid, m))
+    finally:
+        try:
+            mail.logout()
+        except Exception:
+            pass
+    return out
+
+
+def delete_drafts(uids: list, recipients: list[str]) -> None:
+    """Delete the given draft UIDs (from find_drafts) in the matching account."""
+    if not uids:
+        return
+    rcpts = [r for r in dict.fromkeys(r.strip() for r in recipients) if r]
+    sender, password = credentials_for(rcpts) if rcpts else sender_credentials()
+    mail = _imap_login(sender, password)
+    try:
+        mail.select(_drafts_folder(mail))
+        _delete_uids(mail, uids)
+    finally:
+        try:
+            mail.logout()
+        except Exception:
+            pass
+
+
+def save_draft(msg, recipients: list[str], replace_uids: list | None = None) -> str:
     """
     Save `msg` as a Gmail draft (not sent) in the account it would be sent from
     (see credentials_for). Returns that account's address; raises on failure.
+    replace_uids: UIDs of existing drafts (from find_drafts) that this draft
+    supersedes — they are deleted once the new draft is saved.
     """
     rcpts = [r for r in dict.fromkeys(r.strip() for r in recipients) if r]
     if not rcpts:
@@ -298,6 +366,12 @@ def save_draft(msg, recipients: list[str]) -> str:
                                 msg.as_bytes())
         if typ != "OK":
             raise RuntimeError(f"IMAP append to {folder} failed: {data}")
+        if replace_uids:
+            try:
+                mail.select(folder)
+                _delete_uids(mail, replace_uids)
+            except Exception as e:
+                print(f"[crm_mail] ⚠️ Could not remove the old draft(s): {e}")
     finally:
         try:
             mail.logout()
