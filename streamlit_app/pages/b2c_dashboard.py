@@ -1587,7 +1587,8 @@ def _selected_rows_for_email(edited: pd.DataFrame) -> list[dict]:
             "customer":        str(r.get("CUSTOMER NAME", "")).strip(),
             "godrej_so":       str(r.get("GODREJ SO NO", "")).strip(),
             "contact_number":  str(r.get("CONTACT NUMBER", "")).strip(),
-            "same_day":        bool(r.get("Same day Delivery and Installation")),
+            "same_day":        r.get("Same day Delivery and Installation") is True
+                               or str(r.get("Same day Delivery and Installation")).strip().lower() == "true",
             "order_no":        str(r.get("ORDER NO", "")).strip(),
             "sales_person":    str(r.get("SALES PERSON", "")).strip(),
         })
@@ -1602,40 +1603,47 @@ def _handle_schedule_delivery_button(edited_df: pd.DataFrame,
     Renders the 'Schedule Delivery Email' button with a PREVIEW step.
 
     Flow:
-      1. User clicks "Compose & Preview" → email is built (no send yet)
-      2. Subject, recipients, signature, attachments and HTML body are
-         shown in the page so the user can review.
-      3. User clicks "Confirm & Send" to actually send, or "Cancel" to abort.
+      1. "Preview" → the email is composed (no send yet). The delivery data is
+         in an Excel attachment; if today's delivery draft already exists in
+         Gmail Drafts, the selected orders are added to it.
+      2. Subject, recipients, Excel data, invoices and body are shown.
+      3. "Save as Draft" is always available (invoices found or not).
+         "Confirm & Send" is enabled only when every order has its invoice.
     """
     preview_state_key = f"{button_key}_preview"
     sent_flag_key     = f"{button_key}_sent_flag"
+    draft_flag_key    = f"{button_key}_draft_flag"
 
-    # ── If a previous send just succeeded, show the success banner once ──────
+    # ── One-time banners after a send / draft save ───────────────────────────
     if st.session_state.get(sent_flag_key):
-        res = st.session_state[sent_flag_key]
+        res = st.session_state.pop(sent_flag_key)
         if res.get("queued"):
             st.info(
-                f"{QUEUED_NOTICE} — {res.get('records', 0)} record(s), "
+                f"{QUEUED_NOTICE} — {res.get('records', 0)} order(s), "
                 f"{len(res.get('attachments', []))} invoice attachment(s)."
             )
         else:
             st.success(
-                f"✅ Delivery email sent — {res.get('records', 0)} record(s), "
+                f"✅ Delivery email sent — {res.get('records', 0)} order(s) in "
+                f"{res.get('excel_filename', 'the Excel')}, "
                 f"{len(res.get('attachments', []))} invoice attachment(s)."
             )
+        if res.get("draft_note"):
+            st.warning(res["draft_note"])
         with st.expander("📋 Send details", expanded=False):
             st.write(f"**To:** {', '.join(res.get('to', []))}")
             st.write(f"**Cc:** {', '.join(res.get('cc', []))}")
             st.write(f"**Bcc:** {', '.join(res.get('bcc', []))}")
             st.write(f"**Subject:** {res.get('subject', '')}")
             st.write(f"**Sales Person (signature):** {res.get('sales_person', '')}")
-            st.write(f"**Attachments:** {', '.join(res.get('attachments', []))}")
-        # Clear so the banner only shows once after the click
-        del st.session_state[sent_flag_key]
+            st.write(f"**Excel:** {res.get('excel_filename', '')}")
+            st.write(f"**Invoices:** {', '.join(res.get('attachments', []))}")
+    if st.session_state.get(draft_flag_key):
+        st.success(st.session_state.pop(draft_flag_key))
 
     prepared = st.session_state.get(preview_state_key)
 
-    # ── STAGE 1: no preview prepared yet → show "Compose & Preview" button ──
+    # ── STAGE 1: no preview prepared yet → show "Preview" button ─────────────
     if prepared is None:
         if st.button("📧 Schedule Delivery Email — Preview",
                      type="primary",
@@ -1648,7 +1656,7 @@ def _handle_schedule_delivery_button(edited_df: pd.DataFrame,
                 st.error("❌ MIS data unavailable. Run the 11 AM MIS import first.")
                 return
 
-            with st.spinner("Composing email and fetching invoices from Google Drive…"):
+            with st.spinner("Composing email, checking Gmail Drafts and fetching invoices from Google Drive…"):
                 prepared = compose_schedule_delivery_email(
                     rows, mis_df_local, subject=subject_default
                 )
@@ -1660,7 +1668,23 @@ def _handle_schedule_delivery_button(edited_df: pd.DataFrame,
     # ── STAGE 2: preview is prepared → show preview UI ───────────────────────
     st.markdown("#### 📧 Email Preview — review before sending")
 
-    # Surface invoice search outcome (if any)
+    # If composition failed (no recipients, …) — show error & back
+    if not prepared.get("ready"):
+        st.error(f"❌ Cannot prepare the email — {prepared.get('error', 'unknown error')}")
+        if st.button("🔙 Back", key=f"{button_key}_back_err",
+                     use_container_width=True):
+            del st.session_state[preview_state_key]
+            st.rerun()
+        return
+
+    if prepared.get("draft_found"):
+        st.info(
+            f"📝 A draft for this delivery date already exists in Gmail Drafts — "
+            f"{prepared.get('added', 0)} order(s) added, {prepared.get('updated', 0)} "
+            "already in the draft refreshed. Saving or sending replaces that draft."
+        )
+
+    # Surface invoice search outcome
     if prepared.get("invoice_status"):
         with st.expander("🧾 Invoice search details",
                          expanded=bool(prepared.get("missing_invoices"))):
@@ -1670,17 +1694,12 @@ def _handle_schedule_delivery_button(edited_df: pd.DataFrame,
     if prepared.get("missing_invoices"):
         st.warning(
             "⚠️ No invoices found for: **"
-            + ", ".join(prepared["missing_invoices"]) + "**"
+            + ", ".join(prepared["missing_invoices"]) + "** — the email can only "
+            "be saved to Drafts until all invoices are attached."
         )
-
-    # If composition failed (no invoices, no recipients, …) — show error & back
-    if not prepared.get("ready"):
-        st.error(f"❌ Cannot send — {prepared.get('error', 'unknown error')}")
-        if st.button("🔙 Back", key=f"{button_key}_back_err",
-                     use_container_width=True):
-            del st.session_state[preview_state_key]
-            st.rerun()
-        return
+    if prepared.get("mis_missing"):
+        st.warning("⚠️ No MIS line items found for: " + ", ".join(prepared["mis_missing"])
+                   + " — only the customer details were added to the Excel.")
 
     # Header info
     info_cols = st.columns(2)
@@ -1693,19 +1712,34 @@ def _handle_schedule_delivery_button(edited_df: pd.DataFrame,
             st.write(f"**Bcc:** {', '.join(prepared['bcc'])}")
     with info_cols[1]:
         st.write(f"**Sales Person (signature):** {prepared.get('sales_person', '') or '— none —'}")
-        st.write(f"**Records:** {prepared.get('records_count', 0)}")
+        st.write(f"**Orders in Excel:** {prepared.get('records_count', 0)}")
+        st.write(f"**Excel:** {prepared.get('excel_filename', '')}")
         if prepared.get("attachment_names"):
-            st.write(f"**Attachments ({len(prepared['attachment_names'])}):** "
+            st.write(f"**Invoices ({len(prepared['attachment_names'])}):** "
                      + ", ".join(prepared["attachment_names"]))
 
+    st.markdown(f"**📊 Excel attachment — {prepared.get('excel_filename', '')}**")
+    if prepared.get("excel_df") is not None:
+        st.dataframe(prepared["excel_df"], use_container_width=True, hide_index=True)
+    if prepared.get("excel_bytes"):
+        st.download_button(
+            "⬇️ Download Excel", data=prepared["excel_bytes"],
+            file_name=prepared.get("excel_filename", "delivery.xlsx"),
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"{button_key}_xlsx_dl",
+        )
+
     st.markdown("**Body:**")
-    components.html(prepared.get("html_body", ""), height=520, scrolling=True)
+    components.html(prepared.get("html_body", ""), height=320, scrolling=True)
 
     # Action buttons
-    btn_send, btn_cancel = st.columns(2)
+    can_send = bool(prepared.get("can_send"))
+    btn_send, btn_draft, btn_back = st.columns(3)
     with btn_send:
         if st.button("✅ Confirm & Send", type="primary",
                      use_container_width=True,
+                     disabled=not can_send,
+                     help=None if can_send else prepared.get("send_block_reason"),
                      key=f"{button_key}_confirm"):
             with st.spinner("Sending email…"):
                 res = send_prepared_delivery_email(prepared)
@@ -1715,15 +1749,18 @@ def _handle_schedule_delivery_button(edited_df: pd.DataFrame,
                 st.rerun()
             else:
                 st.error(f"❌ Email NOT sent — {res.get('error', 'unknown error')}")
-    with btn_cancel:
+    with btn_draft:
         if st.button("💾 Save as Draft", use_container_width=True,
                      key=f"{button_key}_cancel"):
             with st.spinner("Saving email to Gmail Drafts…"):
                 draft_res = save_delivery_email_as_draft(prepared)
             if draft_res.get("saved"):
-                st.success(
-                    "📝 Email saved to Gmail Drafts — you can review and send it "
-                    "directly from your inbox. Action logged in CRM."
+                st.session_state[draft_flag_key] = (
+                    f"📝 {'Draft updated' if prepared.get('draft_found') else 'Email saved'} in the "
+                    f"Gmail Drafts of **{draft_res.get('account', '')}** — "
+                    f"{prepared.get('records_count', 0)} order(s) in "
+                    f"{prepared.get('excel_filename', '')}. Schedule more orders later and "
+                    "they will be added to this draft."
                 )
                 del st.session_state[preview_state_key]
                 st.rerun()
@@ -1731,6 +1768,10 @@ def _handle_schedule_delivery_button(edited_df: pd.DataFrame,
                 st.error(
                     f"❌ Could not save to Drafts — {draft_res.get('error', 'unknown error')}"
                 )
+    with btn_back:
+        if st.button("🔙 Back", use_container_width=True, key=f"{button_key}_back"):
+            del st.session_state[preview_state_key]
+            st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════════════════════

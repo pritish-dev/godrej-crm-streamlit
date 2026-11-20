@@ -4,29 +4,28 @@ services/email_sender_delivery_schedule.py
 Composes and sends the "Schedule Delivery" email.
 
 For each ticked Pending/Overdue Delivery record (must already be GREEN = ready):
-  1. Pull GODREJ SO NO from the CRM row.
-  2. From the cached MIS (MIS_Daily sheet) collect ALL line items for that SO.
-  3. Build an HTML body whose layout mirrors the attached reference style:
-       Dear Sir,
-       Please deliver the materials as mentioned below.
-
-       1.   <line-item row 1 from MIS, no header, comma-separated>
-       2.   <line-item row 2 ...>
-       ...
-       (If "Same day Delivery and Installation" is ticked, append text
-        " — Same day Delivery and installation request" to that record's last cell.)
-
-  4. Look up customer invoices from Google Drive.
-     Drive folder structure:
-       <GOOGLE_DRIVE_INVOICES_FOLDER_ID>
-         └── <Month Name Year>   (e.g. "April 2026")
-               └── <Day>         (e.g. "21")
-                     └── <Customer Name>.pdf
-     Searches all month/day sub-folders for a PDF whose name matches the customer.
+  1. Pull GODREJ SO NO from the CRM row and collect ALL its line items from
+     the cached MIS (MIS_Daily sheet).
+  2. Write the delivery data into an Excel attachment laid out like the
+     "DOCO DELIVERY ORDER" sheet (one block per order, Sl no per order, blank
+     row between orders). "Same day Delivery and Installation" goes into the
+     REMARKS column. The file is named
+         DOCO DELIVERY ORDER - <tomorrow, e.g. 21st OF NOVEMBER 2026>.xlsx
+     (tomorrow in IST, so month/year roll over automatically at month end).
+  3. The email body is a short covering note + signature.
+  4. Look up customer invoices from Google Drive (root folder
+     GOOGLE_DRIVE_INVOICES_FOLDER_ID → month / day sub-folders →
+     <Customer Name>.pdf).
   5. Read recipients (To / CC / BCC) from the 'Delivery mail Recipients' sheet.
-  6. ABORT if no invoice attachments — caller should surface a clear warning.
-  7. "Cancel" on the preview screen saves the email to Gmail Drafts instead of
-     discarding it, and logs the action in the EMAIL_LOG sheet.
+  6. The email is always composed for preview and can always be saved to
+     Gmail Drafts — even when some invoices are missing.
+  7. If a draft for the same delivery date already exists, its orders and
+     invoices are carried over and the newly selected orders are added (an
+     order already in the draft is refreshed in place). Saving replaces the old
+     draft with the extended one.
+  8. Sending from the CRM dashboard is allowed only when an invoice is attached
+     for EVERY order; otherwise it can only be saved as a draft. After sending,
+     the draft it was built from is removed.
 """
 from __future__ import annotations
 
@@ -541,85 +540,8 @@ def fetch_invoice_from_drive(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# HELPERS — save email to Gmail Drafts (IMAP APPEND)
-# ──────────────────────────────────────────────────────────────────────────────
-
-def save_delivery_email_as_draft(prepared: dict) -> dict:
-    """
-    Save the composed delivery email to Gmail Drafts via IMAP APPEND
-    without sending it.  Also logs the action to the EMAIL_LOG sheet.
-
-    Returns {"saved": bool, "error": str}
-    """
-    if not SENDER_EMAIL or not SENDER_PASSWORD:
-        return {"saved": False, "error": "EMAIL_SENDER / EMAIL_PASSWORD not configured."}
-
-    subj = prepared.get("subject", "")
-    msg = EmailMessage()
-    msg["Subject"] = subj
-    msg["From"]    = SENDER_EMAIL
-    msg["To"]      = ", ".join(prepared.get("to", []))
-    if prepared.get("cc"):
-        msg["Cc"]  = ", ".join(prepared["cc"])
-    msg.set_content("Please view this email in HTML format.")
-    msg.add_alternative(prepared.get("html_body", ""), subtype="html")
-
-    for fn, payload in prepared.get("attachments", []):
-        msg.add_attachment(
-            payload, maintype="application", subtype="pdf", filename=fn
-        )
-
-    raw_msg = msg.as_bytes()
-
-    try:
-        mail = imaplib.IMAP4_SSL(IMAP_HOST)
-        mail.login(SENDER_EMAIL, SENDER_PASSWORD)
-        # Gmail's Drafts folder label
-        mail.append(
-            "[Gmail]/Drafts",
-            "\\Draft",
-            imaplib.Time2Internaldate(time.time()),
-            raw_msg,
-        )
-        mail.logout()
-    except Exception as e:
-        return {"saved": False, "error": f"IMAP draft save failed: {e}"}
-
-    # Audit log
-    all_rcpts = (
-        list(prepared.get("to", []))
-        + list(prepared.get("cc", []))
-        + list(prepared.get("bcc", []))
-    )
-    try:
-        from services.sheets import append_email_log
-        append_email_log(
-            job_name="Schedule Delivery Email",
-            records_count=prepared.get("records_count", 0),
-            recipients=all_rcpts,
-            status="draft",
-            error="Saved to Drafts (user cancelled send)",
-        )
-    except Exception:
-        pass
-
-    return {"saved": True, "error": ""}
-
-
-# ──────────────────────────────────────────────────────────────────────────────
 # HELPERS — pull MIS line items for a GODREJ SO
 # ──────────────────────────────────────────────────────────────────────────────
-
-# Default MIS column order shown in the email (no header row, per spec).
-EMAIL_MIS_COLS = [
-    "Sales Order No.", "Sales Order Position", "Item Code", "Item Description",
-    "Sales Order Qty", "Sales Order Warehouse", "Sales Order Committed Qty",
-    "Freight Order No", "FO Pos", "FO Firm Commitment Qty",
-    "Order Line Booking DateTime",
-    "Address Line 2(Ship To)", "Address Line 3(Ship To)", "Address Line 4(Ship To)",
-    "Customer Name", "Contact No",
-]
-
 
 def lines_for_so(mis_df: pd.DataFrame, godrej_so: str) -> pd.DataFrame:
     if mis_df is None or mis_df.empty or "Sales Order No." not in mis_df.columns:
@@ -632,19 +554,7 @@ def lines_for_so(mis_df: pd.DataFrame, godrej_so: str) -> pd.DataFrame:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# BUILD HTML BODY (numbered, no header row)
-# ──────────────────────────────────────────────────────────────────────────────
-
-def _row_to_cells(row: pd.Series) -> list[str]:
-    cells = []
-    for c in EMAIL_MIS_COLS:
-        v = row.get(c, "")
-        cells.append("" if v is None or (isinstance(v, float) and pd.isna(v)) else str(v))
-    return cells
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# HELPERS — subject formatting & sales-person picking
+# HELPERS — dates, subject, Excel filename
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _ordinal_suffix(n: int) -> str:
@@ -654,16 +564,26 @@ def _ordinal_suffix(n: int) -> str:
     return {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
 
 
+def _tomorrow() -> date:
+    """Tomorrow in IST (rolls over into the next month / year automatically)."""
+    return (datetime.now(crm_mail.IST) + timedelta(days=1)).date()
+
+
+def _day_month_year(d: date) -> str:
+    """'21st OF NOVEMBER 2026'"""
+    return f"{d.day}{_ordinal_suffix(d.day)} OF {d.strftime('%B').upper()} {d.year}"
+
+
 def _format_delivery_subject_date(d=None) -> str:
     """
     Format the date as 'DELIVERY ON 21st OF APRIL 2026'.
     If `d` is None, defaults to TOMORROW from current date.
     """
     if d is None:
-        d = (datetime.now() + timedelta(days=1)).date()
+        d = _tomorrow()
     elif isinstance(d, datetime):
         d = d.date()
-    return f"DELIVERY ON {d.day}{_ordinal_suffix(d.day)} OF {d.strftime('%B').upper()} {d.year}"
+    return f"DELIVERY ON {_day_month_year(d)}"
 
 
 def build_default_subject() -> str:
@@ -671,21 +591,50 @@ def build_default_subject() -> str:
     return _format_delivery_subject_date()
 
 
-def _pick_dominant_sales_person(selected_rows: list[dict]) -> str:
-    """
-    Pick the sales person responsible for the email signature.
-    Rule: when multiple sales persons are detected, choose the one with the
-    maximum number of orders being scheduled. Otherwise return the single
-    assigned sales person.
-    """
+def build_delivery_excel_filename(d: date | None = None) -> str:
+    """'DOCO DELIVERY ORDER - 21st OF NOVEMBER 2026.xlsx' (tomorrow by default)."""
+    return f"DOCO DELIVERY ORDER - {_day_month_year(d or _tomorrow())}.xlsx"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# HELPERS — sales person / signature
+# ──────────────────────────────────────────────────────────────────────────────
+
+H_SALES = "X-CRM-Sales-Persons"   # "Name=2; Other=1" — kept on the draft for merging
+
+
+def _sales_counter(selected_rows: list[dict]) -> Counter:
     counter: Counter = Counter()
     for r in selected_rows:
         sp = str(r.get("sales_person", "")).strip()
         if sp:
             counter[sp] += 1
-    if not counter:
-        return ""
-    return counter.most_common(1)[0][0]
+    return counter
+
+
+def _pick_dominant_sales_person(selected_rows: list[dict]) -> str:
+    """
+    Pick the sales person responsible for the email signature: the one with
+    the most orders being scheduled.
+    """
+    counter = _sales_counter(selected_rows)
+    return counter.most_common(1)[0][0] if counter else ""
+
+
+def _encode_sales(counter: Counter) -> str:
+    return "; ".join(f"{k.replace(';', ' ').replace('=', ' ')}={v}" for k, v in counter.items())
+
+
+def _decode_sales(s: str) -> Counter:
+    c: Counter = Counter()
+    for part in str(s or "").split(";"):
+        if "=" in part:
+            k, v = part.rsplit("=", 1)
+            try:
+                c[k.strip()] += int(v.strip())
+            except ValueError:
+                pass
+    return c
 
 
 def _build_signature_html(sales_person: str) -> str:
@@ -705,72 +654,297 @@ def _build_signature_html(sales_person: str) -> str:
     )
 
 
-def build_email_html(records: list[dict], sales_person: str = "") -> str:
-    """
-    records: list of
-        {
-          "customer": str,
-          "godrej_so": str,
-          "lines": pd.DataFrame   (MIS rows for the SO),
-          "same_day": bool,
-        }
-    sales_person: name to be shown in the email signature.
-
-    Layout:
-        <order index>
-        <table containing ALL line items for that order>
-
-        <next order index>
-        <table containing ALL line items for that next order>
-
-    Indexing increments PER ORDER, not per line item.
-    """
-    order_blocks: list[str] = []
-    order_idx = 0
-
-    for rec in records:
-        lines: pd.DataFrame = rec.get("lines", pd.DataFrame())
-        if lines is None or lines.empty:
-            continue
-
-        order_idx += 1
-        same_day = bool(rec.get("same_day", False))
-
-        # Build the rows for this single order's table
-        rows_html: list[str] = []
-        for _, r in lines.iterrows():
-            cells = _row_to_cells(r)
-            if same_day:
-                cells.append("Same day Delivery and installation request")
-            tds = "".join(
-                f"<td style='border:1px solid #999;padding:6px;'>{c}</td>"
-                for c in cells
-            )
-            rows_html.append(f"<tr>{tds}</tr>")
-
-        # One block = order number + the order's table
-        block = (
-            f"<p style='font-family:Arial,sans-serif;font-size:14px;"
-            f"font-weight:bold;margin:18px 0 6px 0;'>{order_idx}</p>"
-            "<table style='border-collapse:collapse;font-family:Arial,sans-serif;"
-            "font-size:13px;margin-bottom:18px;'>"
-            + "".join(rows_html) +
-            "</table>"
-        )
-        order_blocks.append(block)
-
-    body = (
+def build_email_html(excel_filename: str, orders_count: int, sales_person: str = "") -> str:
+    """Short covering note — the delivery data itself is in the attached Excel."""
+    return (
+        "<div style='font-family:Arial,sans-serif;font-size:14px;'>"
         "<p>Dear Sir,</p>"
-        "<p>Please deliver the materials as mentioned below.</p>"
-        + "".join(order_blocks)
+        "<p>Please deliver the materials as mentioned in the attached excel sheet "
+        f"<b>{excel_filename}</b> ({orders_count} order(s)).</p>"
+        "<p>Invoices for the orders are attached.</p>"
+        "</div>"
         + _build_signature_html(sales_person)
     )
-    return body
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# DELIVERY EXCEL  (layout mirrors the "DOCO DELIVERY ORDER" sheet)
+# ──────────────────────────────────────────────────────────────────────────────
+
+EXCEL_HEADERS = [
+    "Sl no", "Sales Order No.", "Sales Order Position", "Item Code",
+    "Item Description", "Sales Order Warehouse", "Sales Order Qty",
+    "Sales Order Committed Qty", "Freight Order No", "FO Pos",
+    "FO Firm Commitment Qty", "ADDRESS LINE 1", "ADDRESS LINE 2",
+    "ADDRESS LINE 3", "NAME &CONTACT NO", "Alternate NO",
+    "REMARKS IF ANY(SAME DAY INSTALLATION, PDI , DELIVERY PLACE, ETC)",
+]
+_EXCEL_WIDTHS = [11.3, 16, 20.4, 22.7, 45.1, 23.4, 16, 25.6, 16.9, 10.3,
+                 25.1, 43.6, 71, 49.7, 53.1, 23.6, 87.1]
+# MIS column feeding each Excel column B..N (index 1..13)
+_MIS_FOR_EXCEL = [
+    "Sales Order No.", "Sales Order Position", "Item Code", "Item Description",
+    "Sales Order Warehouse", "Sales Order Qty", "Sales Order Committed Qty",
+    "Freight Order No", "FO Pos", "FO Firm Commitment Qty",
+    "Address Line 2(Ship To)", "Address Line 3(Ship To)", "Address Line 4(Ship To)",
+]
+SAME_DAY_REMARK = "SAME DAY DELIVERY AND INSTALLATION"
+_COL_SO, _COL_NAME, _COL_ALT, _COL_REMARK = 1, 14, 15, 16
+
+
+def _clean(v) -> str:
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return ""
+    s = str(v).strip()
+    return "" if s.lower() in ("nan", "none", "nat") else s
+
+
+def _cell_val(v):
+    """Whole numbers (qty, positions, phone numbers) become ints, like the sample sheet."""
+    s = _clean(v)
+    if re.fullmatch(r"-?[1-9]\d{0,14}(\.0+)?|0(\.0+)?", s):
+        return int(float(s))
+    return s
+
+
+def _order_from_selection(sel: dict, mis_df: pd.DataFrame) -> dict:
+    """One CRM order → {so, customer, same_day, rows[[17 cells]], mis_found}."""
+    so    = _clean(sel.get("godrej_so"))
+    cust  = _clean(sel.get("customer"))
+    phone = _clean(sel.get("contact_number"))
+    sday  = bool(sel.get("same_day", False))
+    lines = lines_for_so(mis_df, so)
+
+    rows: list[list] = []
+    for _, r in (lines.iterrows() if not lines.empty else []):
+        row = [""] + [_cell_val(r.get(c, "")) for c in _MIS_FOR_EXCEL]
+        name = cust or _clean(r.get("Customer Name", ""))
+        row += [name, _cell_val(phone or r.get("Contact No", "")),
+                SAME_DAY_REMARK if sday else ""]
+        rows.append(row)
+    if not rows:   # no MIS lines — still list the order so it isn't dropped
+        rows.append(["", so] + [""] * 12 + [cust, _cell_val(phone),
+                                            SAME_DAY_REMARK if sday else ""])
+    return {"so": so, "customer": cust, "same_day": sday, "rows": rows,
+            "mis_found": not lines.empty}
+
+
+def build_delivery_excel(orders: list[dict]) -> bytes:
+    """Write the orders into the DOCO DELIVERY ORDER layout and return .xlsx bytes."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    thin = Side(style="thin")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    font = Font(name="Aptos Narrow", size=11)
+    center = Alignment(horizontal="center", vertical="center")
+
+    for ci, h in enumerate(EXCEL_HEADERS, start=1):
+        c = ws.cell(row=1, column=ci, value=h)
+        c.font = Font(name="Aptos Narrow", size=11, bold=True)
+        c.fill = PatternFill("solid", fgColor="FFC000")
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c.border = border
+        ws.column_dimensions[get_column_letter(ci)].width = _EXCEL_WIDTHS[ci - 1]
+
+    r = 2
+    for idx, order in enumerate(orders, start=1):
+        if idx > 1:
+            for ci in range(1, len(EXCEL_HEADERS) + 1):   # blank separator row
+                ws.cell(row=r, column=ci).border = border
+            r += 1
+        for li, row in enumerate(order["rows"]):
+            vals = list(row) + [""] * (len(EXCEL_HEADERS) - len(row))
+            vals[0] = idx if li == 0 else ""
+            if order.get("same_day") and not _clean(vals[_COL_REMARK]):
+                vals[_COL_REMARK] = SAME_DAY_REMARK
+            for ci, v in enumerate(vals[:len(EXCEL_HEADERS)], start=1):
+                c = ws.cell(row=r, column=ci, value=(v if v != "" else None))
+                c.font, c.alignment, c.border = font, center, border
+            r += 1
+    ws.freeze_panes = "A2"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def parse_delivery_excel(payload: bytes) -> list[dict]:
+    """Read orders back from a DOCO DELIVERY ORDER workbook (used to extend a draft)."""
+    from openpyxl import load_workbook
+    ws = load_workbook(io.BytesIO(payload), data_only=True).active
+    orders: list[dict] = []
+    cur: dict | None = None
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        vals = [("" if v is None else v) for v in row][:len(EXCEL_HEADERS)]
+        vals += [""] * (len(EXCEL_HEADERS) - len(vals))
+        if not any(_clean(v) for v in vals):
+            cur = None                       # separator row ends an order
+            continue
+        so = _clean(vals[_COL_SO])
+        if cur is None or _clean(vals[0]) or (so and so != cur["so"]):
+            cur = {"so": so, "customer": _clean(vals[_COL_NAME]),
+                   "same_day": False, "rows": [], "mis_found": True}
+            orders.append(cur)
+        if SAME_DAY_REMARK.lower() in _clean(vals[_COL_REMARK]).lower():
+            cur["same_day"] = True
+        if not cur["customer"]:
+            cur["customer"] = _clean(vals[_COL_NAME])
+        cur["rows"].append(vals)
+    return orders
+
+
+def merge_orders(existing: list[dict], new: list[dict]) -> tuple[list[dict], int, int]:
+    """
+    Existing draft orders + newly selected ones. A newly selected order whose
+    Sales Order No. is already in the draft replaces it in place (fresh MIS
+    data / same-day flag); others are appended. Returns (orders, added, updated).
+    """
+    merged = [dict(o) for o in existing]
+    index = {o["so"].upper(): i for i, o in enumerate(merged) if o.get("so")}
+    added = updated = 0
+    for o in new:
+        key = (o.get("so") or "").upper()
+        if key and key in index:
+            merged[index[key]] = o
+            updated += 1
+        else:
+            if key:
+                index[key] = len(merged)
+            merged.append(o)
+            added += 1
+    return merged, added, updated
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# HELPERS — existing draft lookup
+# ──────────────────────────────────────────────────────────────────────────────
+
+_XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _decode_filename(part) -> str:
+    fn = part.get_filename() or ""
+    try:
+        from email.header import decode_header, make_header
+        fn = str(make_header(decode_header(fn)))
+    except Exception:
+        pass
+    return fn.strip()
+
+
+def _find_existing_draft(subject: str, recipients: list[str], excel_filename: str) -> dict | None:
+    """
+    Newest Gmail draft with this subject that carries a delivery Excel.
+    Returns {uids, orders, pdfs[(fn, bytes)], sales: Counter} or None.
+    Older drafts in the result's `uids` are all replaced when the draft is re-saved.
+    """
+    found = crm_mail.find_drafts(subject, recipients)
+    best = None
+    uids = []
+    for uid, msg in found:
+        xlsx, pdfs = None, []
+        for part in msg.walk():
+            if part.is_multipart():
+                continue
+            fn = _decode_filename(part)
+            if not fn:
+                continue
+            payload = part.get_payload(decode=True) or b""
+            if fn.lower().endswith(".xlsx"):
+                if xlsx is None or fn == excel_filename:
+                    xlsx = payload
+            elif fn.lower().endswith(".pdf"):
+                pdfs.append((fn, payload))
+        if xlsx is None:
+            continue           # not one of ours (e.g. an old HTML-only draft) — leave it alone
+        try:
+            orders = parse_delivery_excel(xlsx)
+        except Exception:
+            continue
+        uids.append(uid)
+        best = {"orders": orders, "pdfs": pdfs, "sales": _decode_sales(msg.get(H_SALES, ""))}
+    if best is None:
+        return None
+    best["uids"] = uids
+    return best
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# MESSAGE BUILD / DRAFT / SEND
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _build_message(prepared: dict) -> EmailMessage:
+    msg = EmailMessage()
+    msg["Subject"] = prepared.get("subject", "")
+    msg["From"]    = SENDER_EMAIL or ""
+    msg["To"]      = ", ".join(prepared.get("to", []))
+    if prepared.get("cc"):
+        msg["Cc"]  = ", ".join(prepared["cc"])
+    if prepared.get("sales_counts"):
+        msg[H_SALES] = _encode_sales(prepared["sales_counts"])
+    msg.set_content(
+        "Dear Sir,\n\nPlease deliver the materials as mentioned in the attached "
+        f"excel sheet {prepared.get('excel_filename', '')}.\n"
+    )
+    msg.add_alternative(prepared.get("html_body", ""), subtype="html")
+    if prepared.get("excel_bytes"):
+        maintype, subtype = _XLSX_MIME.split("/", 1)
+        msg.add_attachment(prepared["excel_bytes"], maintype=maintype, subtype=subtype,
+                           filename=prepared.get("excel_filename") or build_delivery_excel_filename())
+    for fn, payload in prepared.get("attachments", []):
+        msg.add_attachment(payload, maintype="application", subtype="pdf", filename=fn)
+    return msg
+
+
+def _all_rcpts(prepared: dict) -> list[str]:
+    return (list(prepared.get("to", [])) + list(prepared.get("cc", []))
+            + list(prepared.get("bcc", [])))
+
+
+def save_delivery_email_as_draft(prepared: dict) -> dict:
+    """
+    Save the composed delivery email (Excel + whatever invoices were found) to
+    Gmail Drafts. If a draft for the same delivery date already existed it is
+    replaced by this one, which already contains its orders.
+    Returns {"saved": bool, "error": str, "account": str}
+    """
+    if not prepared or not prepared.get("ready"):
+        return {"saved": False, "error": (prepared or {}).get("error", "Email not composed.")}
+    all_rcpts = _all_rcpts(prepared)
+    try:
+        account = crm_mail.save_draft(_build_message(prepared), all_rcpts,
+                                      replace_uids=prepared.get("draft_uids") or None)
+    except Exception as e:
+        return {"saved": False, "error": f"Draft save failed: {e}"}
+
+    try:
+        from services.sheets import append_email_log
+        missing = prepared.get("missing_invoices", [])
+        append_email_log(
+            job_name="Schedule Delivery Email",
+            records_count=prepared.get("records_count", 0),
+            recipients=all_rcpts,
+            status="draft",
+            error=("Saved to Drafts" + (" (draft updated)" if prepared.get("draft_found") else "")
+                   + (f" — invoices missing: {', '.join(missing)}" if missing else "")),
+        )
+    except Exception:
+        pass
+    return {"saved": True, "error": "", "account": account}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # MAIN ENTRY-POINT
 # ──────────────────────────────────────────────────────────────────────────────
+
+def _invoice_for(customer: str, attachments: list[tuple[str, bytes]]) -> bool:
+    return bool(customer) and any(_name_matches(fn, customer) for fn, _ in attachments)
+
 
 def compose_schedule_delivery_email(
     selected_rows: list[dict],
@@ -780,103 +954,124 @@ def compose_schedule_delivery_email(
     """
     Prepare the Schedule-Delivery email WITHOUT sending it.
 
+    The delivery data goes into an Excel attachment (DOCO DELIVERY ORDER
+    layout). If a Gmail draft for the same delivery date already exists, its
+    orders and invoices are carried over and the new selection is added to it.
+
     Returns a dict with keys:
-        ready              : bool — True if every prerequisite is satisfied
+        ready              : bool — composed; can be previewed / saved as draft
+        can_send           : bool — ready AND an invoice is attached for every order
         error              : str  — populated when ready is False
-        subject            : str  — final subject line
-        html_body          : str  — full HTML body (preview-ready)
-        sales_person       : str  — name shown in the signature
+        send_block_reason  : str  — why sending is blocked (when can_send is False)
+        subject, html_body, sales_person, sales_counts
         to / cc / bcc      : list[str]
-        attachments        : list[tuple[str, bytes]]   (raw payloads)
-        attachment_names   : list[str]                 (filenames only)
+        excel_filename, excel_bytes, excel_df (preview)
+        attachments        : list[tuple[str, bytes]]   (invoice PDFs)
+        attachment_names   : list[str]
+        orders             : list[dict]
         missing_invoices   : list[str]
         invoice_status     : list[str]
-        records_count      : int
-        selected_rows      : echoed back
+        mis_missing        : list[str] — SOs with no MIS line items
+        draft_found, draft_uids, added, updated
+        records_count      : int  (orders in the Excel)
     """
     final_subject = subject or build_default_subject()
+    excel_filename = build_delivery_excel_filename()
+    base = {"ready": False, "can_send": False, "subject": final_subject,
+            "missing_invoices": [], "invoice_status": []}
 
     if not selected_rows:
-        return {
-            "ready": False,
-            "error": "No rows selected for scheduling.",
-            "missing_invoices": [],
-            "subject": final_subject,
-        }
+        return {**base, "error": "No rows selected for scheduling."}
 
-    # 1. Build per-record line items + same-day flag
-    rec_payload = []
-    missing_invoices: list[str] = []
-    all_attachments: list[tuple[str, bytes]] = []
-    invoice_status_per_customer: list[str] = []
-
-    for r in selected_rows:
-        cust = r.get("customer", "")
-        gso  = r.get("godrej_so", "")
-        cnum = r.get("contact_number", "")
-        sday = bool(r.get("same_day", False))
-
-        lines = lines_for_so(mis_df, gso)
-        rec_payload.append({
-            "customer": cust, "godrej_so": gso,
-            "lines": lines, "same_day": sday,
-        })
-
-        atts, msg = fetch_invoice_from_drive(cust)
-        invoice_status_per_customer.append(f"{cust}: {msg}")
-        if not atts:
-            missing_invoices.append(cust)
-        else:
-            all_attachments.extend(atts)
-
-    # De-duplicate attachments globally by filename (keep first occurrence)
-    seen_fn: set[str] = set()
-    deduped_attachments: list[tuple[str, bytes]] = []
-    for fn, payload in all_attachments:
-        if fn in seen_fn:
-            continue
-        seen_fn.add(fn)
-        deduped_attachments.append((fn, payload))
-
-    # 2. ABORT prep if no attachments at all
-    if not deduped_attachments:
-        return {
-            "ready": False,
-            "error": "No invoice attachments found — email NOT ready to send.",
-            "missing_invoices": missing_invoices,
-            "invoice_status": invoice_status_per_customer,
-            "subject": final_subject,
-        }
-
-    # 3. Recipients
+    # 1. Recipients (needed for the draft too — it lives in the sending account)
     rcpt = get_delivery_recipients()
     if not rcpt["to"]:
-        return {
-            "ready": False,
-            "error": rcpt.get("error") or "No recipients configured.",
-            "missing_invoices": missing_invoices,
-            "invoice_status": invoice_status_per_customer,
-            "subject": final_subject,
-        }
+        return {**base, "error": rcpt.get("error") or "No recipients configured."}
+    recipients = rcpt["to"] + rcpt["cc"] + rcpt["bcc"]
 
-    # 4. Pick sales person + build HTML body
-    sales_person = _pick_dominant_sales_person(selected_rows)
-    html_body = build_email_html(rec_payload, sales_person=sales_person)
+    # 2. Existing draft for the same delivery date → extend it
+    notes: list[str] = []
+    draft = None
+    try:
+        draft = _find_existing_draft(final_subject, recipients, excel_filename)
+    except Exception as e:
+        notes.append(f"Could not check Gmail Drafts for an existing delivery draft: {e}")
 
+    new_orders = [_order_from_selection(r, mis_df) for r in selected_rows]
+    if draft:
+        orders, added, updated = merge_orders(draft["orders"], new_orders)
+        attachments = list(draft["pdfs"])
+        sales = draft["sales"] + _sales_counter(selected_rows)
+    else:
+        orders, added, updated = new_orders, len(new_orders), 0
+        attachments = []
+        sales = _sales_counter(selected_rows)
+
+    # 3. Invoices — reuse ones already on the draft, search Drive for the rest
+    missing: list[str] = []
+    status: list[str] = []
+    for o in orders:
+        cust = o.get("customer", "")
+        label = cust or o.get("so", "?")
+        if _invoice_for(cust, attachments):
+            status.append(f"{label}: invoice already attached.")
+            continue
+        atts, msg = fetch_invoice_from_drive(cust)
+        status.append(f"{label}: {msg}")
+        if atts:
+            attachments.extend(atts)
+        else:
+            missing.append(label)
+
+    seen: set[str] = set()
+    deduped: list[tuple[str, bytes]] = []
+    for fn, payload in attachments:
+        if fn not in seen:
+            seen.add(fn)
+            deduped.append((fn, payload))
+
+    # 4. Excel + body
+    excel_bytes = build_delivery_excel(orders)
+    sales_person = sales.most_common(1)[0][0] if sales else ""
+    html_body = build_email_html(excel_filename, len(orders), sales_person)
+
+    preview_rows = []
+    for i, o in enumerate(orders, start=1):
+        for li, row in enumerate(o["rows"]):
+            vals = list(row) + [""] * (len(EXCEL_HEADERS) - len(row))
+            vals[0] = i if li == 0 else ""
+            if o.get("same_day") and not _clean(vals[_COL_REMARK]):
+                vals[_COL_REMARK] = SAME_DAY_REMARK
+            preview_rows.append([_clean(v) for v in vals[:len(EXCEL_HEADERS)]])
+    excel_df = pd.DataFrame(preview_rows, columns=EXCEL_HEADERS)
+
+    can_send = not missing
     return {
         "ready": True,
+        "can_send": can_send,
         "error": "",
+        "send_block_reason": "" if can_send else (
+            "Invoices are not attached for: " + ", ".join(missing)
+            + ". The email can only be saved to Drafts until every order has its invoice."),
         "subject": final_subject,
         "html_body": html_body,
         "sales_person": sales_person,
-        "to": rcpt["to"],
-        "cc": rcpt["cc"],
-        "bcc": rcpt["bcc"],
-        "attachments": deduped_attachments,
-        "attachment_names": [fn for fn, _ in deduped_attachments],
-        "missing_invoices": missing_invoices,
-        "invoice_status": invoice_status_per_customer,
-        "records_count": len(selected_rows),
+        "sales_counts": sales,
+        "to": rcpt["to"], "cc": rcpt["cc"], "bcc": rcpt["bcc"],
+        "excel_filename": excel_filename,
+        "excel_bytes": excel_bytes,
+        "excel_df": excel_df,
+        "attachments": deduped,
+        "attachment_names": [fn for fn, _ in deduped],
+        "orders": orders,
+        "missing_invoices": missing,
+        "invoice_status": notes + status,
+        "mis_missing": [o["so"] or o["customer"] for o in new_orders if not o["mis_found"]],
+        "draft_found": bool(draft),
+        "draft_uids": (draft or {}).get("uids", []),
+        "added": added,
+        "updated": updated,
+        "records_count": len(orders),
         "selected_rows": selected_rows,
     }
 
@@ -884,51 +1079,40 @@ def compose_schedule_delivery_email(
 def send_prepared_delivery_email(prepared: dict) -> dict:
     """
     Send a previously composed email returned by `compose_schedule_delivery_email`.
+    Refuses unless an invoice is attached for every order. On success the
+    draft it was built from (if any) is removed from Gmail Drafts.
     """
-    if not prepared or not prepared.get("ready"):
-        return {
-            "sent": False,
-            "error": (prepared or {}).get("error", "Email not ready to send."),
-            "missing_invoices": (prepared or {}).get("missing_invoices", []),
-            "invoice_status": (prepared or {}).get("invoice_status", []),
-            "subject": (prepared or {}).get("subject", ""),
-        }
+    prepared = prepared or {}
+    fail = {
+        "sent": False,
+        "missing_invoices": prepared.get("missing_invoices", []),
+        "invoice_status": prepared.get("invoice_status", []),
+        "subject": prepared.get("subject", ""),
+    }
+    if not prepared.get("ready"):
+        return {**fail, "error": prepared.get("error", "Email not ready to send.")}
+    if not prepared.get("can_send") or prepared.get("missing_invoices"):
+        return {**fail, "error": prepared.get("send_block_reason")
+                or "Invoices are not attached for every order — save it as a draft instead."}
 
-    subj = prepared["subject"]
-    msg = EmailMessage()
-    msg["Subject"] = subj
-    msg["From"]    = SENDER_EMAIL
-    msg["To"]      = ", ".join(prepared.get("to", []))
-    if prepared.get("cc"):
-        msg["Cc"]  = ", ".join(prepared["cc"])
-    msg.set_content("Please view this email in HTML format.")
-    msg.add_alternative(prepared["html_body"], subtype="html")
-
-    for fn, payload in prepared.get("attachments", []):
-        msg.add_attachment(payload, maintype="application", subtype="pdf", filename=fn)
-
-    all_rcpts = (
-        list(prepared.get("to", []))
-        + list(prepared.get("cc", []))
-        + list(prepared.get("bcc", []))
-    )
-
+    all_rcpts = _all_rcpts(prepared)
     try:
         # report=False: every delivery email is distinct, so a queued one is
         # never dropped in favour of a scheduled job's copy.
-        outcome = crm_mail.deliver(msg, all_rcpts, job_name="Schedule Delivery Email",
+        outcome = crm_mail.deliver(_build_message(prepared), all_rcpts,
+                                   job_name="Schedule Delivery Email",
                                    records_count=prepared.get("records_count", 0),
                                    report=False)
     except Exception as e:
-        return {
-            "sent": False,
-            "error": f"SMTP send failed: {e}",
-            "missing_invoices": prepared.get("missing_invoices", []),
-            "invoice_status": prepared.get("invoice_status", []),
-            "subject": subj,
-        }
+        return {**fail, "error": f"SMTP send failed: {e}"}
 
-    # Audit log
+    draft_note = ""
+    if prepared.get("draft_uids"):
+        try:
+            crm_mail.delete_drafts(prepared["draft_uids"], all_rcpts)
+        except Exception as e:
+            draft_note = f"Sent, but the old draft could not be removed: {e}"
+
     try:
         from services.sheets import append_email_log
         append_email_log(
@@ -947,12 +1131,14 @@ def send_prepared_delivery_email(prepared: dict) -> dict:
         "to": prepared.get("to", []),
         "cc": prepared.get("cc", []),
         "bcc": prepared.get("bcc", []),
-        "subject": subj,
+        "subject": prepared.get("subject", ""),
         "records": prepared.get("records_count", 0),
+        "excel_filename": prepared.get("excel_filename", ""),
         "attachments": prepared.get("attachment_names", []),
         "missing_invoices": prepared.get("missing_invoices", []),
         "invoice_status": prepared.get("invoice_status", []),
         "sales_person": prepared.get("sales_person", ""),
+        "draft_note": draft_note,
     }
 
 
@@ -967,12 +1153,4 @@ def send_schedule_delivery_email(
     when a preview step is desired.
     """
     prepared = compose_schedule_delivery_email(selected_rows, mis_df, subject)
-    if not prepared.get("ready"):
-        return {
-            "sent": False,
-            "error": prepared.get("error", "Email not ready."),
-            "missing_invoices": prepared.get("missing_invoices", []),
-            "invoice_status": prepared.get("invoice_status", []),
-            "subject": prepared.get("subject", subject or ""),
-        }
     return send_prepared_delivery_email(prepared)
