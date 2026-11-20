@@ -1327,7 +1327,8 @@ def _render_schedule_editor(grouped_df: pd.DataFrame,
                             ready_flags: pd.Series,
                             key_prefix: str,
                             base_color: str,
-                            include_overdue_columns: bool = False):
+                            include_overdue_columns: bool = False,
+                            allow_not_ready: bool = False):
     """
     Single-table editor (st.data_editor) — preserves the dashboard's
     original full-container width and auto-sized columns, with a 🚦
@@ -1354,7 +1355,9 @@ def _render_schedule_editor(grouped_df: pd.DataFrame,
           `_READY_FLAG_` so downstream callers can re-check it.
         — `illegal_order_nos` is the list of ORDER NOs that were ticked for
           Schedule despite the row not being ready (so the caller can warn
-          the user and disable the send button).
+          the user and disable the send button). Always empty when
+          allow_not_ready=True (Pending Deliveries: any order may be scheduled,
+          committed in MIS or not).
     """
     pend_cols = [c for c in PENDING_DISPLAY_COLS if c in grouped_df.columns]
     base = grouped_df[pend_cols].copy().reset_index(drop=True)
@@ -1427,7 +1430,9 @@ def _render_schedule_editor(grouped_df: pd.DataFrame,
         elif c == "Schedule for Delivery":
             col_cfg[c] = st.column_config.CheckboxColumn(
                 c, default=False,
-                help="Tick only on 🟢 rows — those are ready per MIS.",
+                help=("Tick any order to include it in the delivery email — "
+                      "committed in MIS (🟢) or not." if allow_not_ready
+                      else "Tick only on 🟢 rows — those are ready per MIS."),
             )
         elif c == "Same day Delivery and Installation":
             col_cfg[c] = st.column_config.CheckboxColumn(c, default=False)
@@ -1488,7 +1493,7 @@ def _render_schedule_editor(grouped_df: pd.DataFrame,
 
     # Enforce: only ready (green) rows may be ticked for "Schedule for Delivery"
     illegal_rows = []
-    for i, row in edited.iterrows():
+    for i, row in (edited.iterrows() if not allow_not_ready else []):
         if bool(row.get("Schedule for Delivery")) and not bool(row.get("_READY_FLAG_", False)):
             illegal_rows.append(str(row.get("ORDER NO", "")))
 
@@ -1625,6 +1630,7 @@ def _selected_rows_for_email(edited: pd.DataFrame) -> list[dict]:
             "same_day":        r.get("Same day Delivery and Installation") is True
                                or str(r.get("Same day Delivery and Installation")).strip().lower() == "true",
             "order_no":        str(r.get("ORDER NO", "")).strip(),
+            "committed":       bool(r.get("_READY_FLAG_", True)),
             "sales_person":    str(r.get("SALES PERSON", "")).strip(),
         })
     return out
@@ -1685,11 +1691,12 @@ def _handle_schedule_delivery_button(edited_df: pd.DataFrame,
                      use_container_width=True, key=button_key):
             rows = _selected_rows_for_email(edited_df)
             if not rows:
-                st.warning("⚠️ Tick at least one GREEN row's 'Schedule for Delivery' checkbox first.")
+                st.warning("⚠️ Tick at least one row's 'Schedule for Delivery' checkbox first.")
                 return
             if mis_df_local is None or mis_df_local.empty:
-                st.error("❌ MIS data unavailable. Run the 11 AM MIS import first.")
-                return
+                st.warning("⚠️ MIS data unavailable — the Excel will only carry the "
+                           "customer details. Run the 11 AM MIS import for full line items.")
+                mis_df_local = pd.DataFrame()
 
             with st.spinner("Composing email, checking Gmail Drafts and fetching invoices from Google Drive…"):
                 prepared = compose_schedule_delivery_email(
@@ -1732,6 +1739,13 @@ def _handle_schedule_delivery_button(edited_df: pd.DataFrame,
             + ", ".join(prepared["missing_invoices"]) + "** — the email can only "
             "be saved to Drafts until all invoices are attached."
         )
+    _not_committed = [
+        (r.get("customer") or r.get("order_no") or r.get("godrej_so"))
+        for r in prepared.get("selected_rows", []) if not r.get("committed", True)
+    ]
+    if _not_committed:
+        st.info("ℹ️ Included although not yet fully committed in MIS: "
+                + ", ".join(_not_committed))
     if prepared.get("mis_missing"):
         st.warning("⚠️ No MIS line items found for: " + ", ".join(prepared["mis_missing"])
                    + " — only the customer details were added to the Excel.")
@@ -1916,13 +1930,15 @@ if not pending_grouped.empty:
     st.caption(
         "🟢 Green row = Ready for delivery (MIS Sales Order Qty matches Committed Qty for all items).  "
         "🟠 Orange row = Pending but not yet ready.  "
-        "Tick **Schedule for Delivery** ONLY on green rows, then click *Schedule Delivery Email*."
+        "Tick **Schedule for Delivery** on any order (committed or not), then click *Schedule Delivery Email*."
     )
 
     # Single-table editor: green/orange row colour + checkbox cells in ONE grid.
+    # Pending Deliveries: any order can be scheduled, committed in MIS or not.
     pend_edited, pend_illegal = _render_schedule_editor(
         pending_grouped, pend_ready_flags,
         key_prefix="pend", base_color="orange",
+        allow_not_ready=True,
     )
 
     if pend_illegal:
