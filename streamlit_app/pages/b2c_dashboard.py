@@ -46,11 +46,18 @@ from services.franchise_app_rules import (
     payment_tolerance,
     app_order_mask,
     remarks_win_mask,
-    missing_app_headers,
     IS_FRANCHISE_APP_COL,
     IS_APP_ORDER_COL,
     AWAITING_COL,
 )
+# Imported separately so a stale, already-loaded copy of franchise_app_rules
+# (Streamlit keeps imported modules in memory across a code update) can never
+# stop the dashboard from loading — the header check just becomes a no-op.
+try:
+    from services.franchise_app_rules import missing_app_headers
+except ImportError:                                   # pragma: no cover
+    def missing_app_headers(columns) -> list:
+        return []
 from services.delivery_readiness import (
     customer_to_godrej_so,
     ready_so_set,
