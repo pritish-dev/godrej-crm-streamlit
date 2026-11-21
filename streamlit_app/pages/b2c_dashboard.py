@@ -46,6 +46,7 @@ from services.franchise_app_rules import (
     payment_tolerance,
     app_order_mask,
     remarks_win_mask,
+    missing_app_headers,
     IS_FRANCHISE_APP_COL,
     IS_APP_ORDER_COL,
     AWAITING_COL,
@@ -320,6 +321,12 @@ def load_b2c_data():
                 # (e.g. the Godrej purchase-bill date) are left untouched.
                 if "ORDER DATE" not in df.columns and "DATE" in df.columns:
                     df = df.rename(columns={"DATE": "ORDER DATE"})
+                # Check the July-2026 header layout BEFORE all-blank columns
+                # are dropped, so an empty-but-present column isn't reported.
+                _missing_hdrs = (
+                    missing_app_headers(df.columns)
+                    if is_franchise_app_sheet(name) else []
+                )
                 df = df.dropna(axis=1, how="all")
                 df["SOURCE"] = source_label
                 df["IS_NEW_FORMAT"] = is_new_format
@@ -327,6 +334,11 @@ def load_b2c_data():
                 # DETAILS 26-27") follow the app-specific delivery / payment
                 # rules for orders dated on or after 1 Jul 2026.
                 df[IS_FRANCHISE_APP_COL] = is_franchise_app_sheet(name)
+                if _missing_hdrs:
+                    st.warning(
+                        f"Sheet '{name}' is missing the July-2026 order "
+                        f"header(s): {', '.join(_missing_hdrs)}"
+                    )
                 dfs.append(df)
             except Exception as e:
                 st.warning(f"Could not load sheet '{name}': {e}")
@@ -848,6 +860,34 @@ def _keep_pending_orders(grouped: pd.DataFrame) -> pd.DataFrame:
     return grouped[app | pending | sched].reset_index(drop=True)
 
 
+def _keep_committed_or_scheduled(grouped: pd.DataFrame,
+                                 sched_rows: pd.Series,
+                                 line_rows: pd.DataFrame) -> pd.DataFrame:
+    """Pending Deliveries filter: keep orders committed in MIS (non-blank
+    "MIS COMMITMENT DATE") or Scheduled for Delivery (rolled-up status, or any
+    of the order's line items in ``line_rows`` flagged by ``sched_rows``)."""
+    if grouped is None or grouped.empty:
+        return grouped
+    committed = (
+        grouped["MIS COMMITMENT DATE"].astype(str).str.strip()
+        .replace({"nan": "", "NaT": "", "None": ""}) != ""
+        if "MIS COMMITMENT DATE" in grouped.columns
+        else pd.Series(False, index=grouped.index)
+    )
+    sched = (
+        grouped["DELIVERY STATUS"].map(is_scheduled).astype(bool)
+        if "DELIVERY STATUS" in grouped.columns
+        else pd.Series(False, index=grouped.index)
+    )
+    if ("ORDER NO" in grouped.columns and line_rows is not None
+            and "ORDER NO" in line_rows.columns and len(sched_rows)):
+        line_keys = line_rows["ORDER NO"].astype(str).str.strip()
+        sched_keys = set(line_keys[sched_rows.values & (line_keys != "").values])
+        grp_keys = grouped["ORDER NO"].astype(str).str.strip()
+        sched = sched | (grp_keys.isin(sched_keys) & (grp_keys != ""))
+    return grouped[committed | sched].reset_index(drop=True)
+
+
 def _filter_payment_due(grouped: pd.DataFrame) -> pd.DataFrame:
     """Keep orders whose outstanding balance exceeds the payment tolerance.
 
@@ -1151,6 +1191,16 @@ if not overdue_grouped.empty:
     overdue_grouped["MIS COMMITMENT DATE"] = _compute_commit_dates(
         overdue_grouped, cust_so_map_global, commit_date_map_global
     ).values
+
+# ── Pending Deliveries table = MIS-committed OR Scheduled for Delivery ───────
+# The Pending Deliveries table shows ONLY:
+#   • upcoming orders fully committed in MIS (non-blank MIS COMMITMENT DATE), and
+#   • orders "Scheduled for Delivery" (any line), committed in MIS or not.
+# Every other upcoming order is left out. The Overdue Delivery Orders table is
+# NOT filtered on MIS commitment — every order past its delivery date shows
+# there, committed in MIS or not.
+pending_grouped = _keep_committed_or_scheduled(pending_grouped, _sched_rows,
+                                               _all_pending)
 
 
 def _build_committed_reminder_df() -> pd.DataFrame:
@@ -1829,7 +1879,8 @@ def _handle_schedule_delivery_button(edited_df: pd.DataFrame,
 
 st.divider()
 st.subheader("🚚 Pending Deliveries")
-st.info("🟢 Green = Tomorrow's deliveries  |  Upcoming orders only — overdue orders shown separately below")
+st.info("🟢 Green = Tomorrow's deliveries  |  Shows upcoming orders committed in MIS, plus orders "
+        "Scheduled for Delivery — overdue orders (committed or not) are shown separately below")
 
 # ── Manual trigger — Comitted Delivery Reminder email ────────────────────────
 # Same email the daily 11 AM job sends: every PENDING order fully committed
@@ -1984,7 +2035,8 @@ else:
 st.divider()
 st.subheader("⚠️ Overdue Delivery Orders")
 st.error(
-    "🔴 All orders below have passed their scheduled delivery date and are still PENDING. "
+    "🔴 All orders below have passed their scheduled delivery date and are still PENDING "
+    "(whether or not they are committed in MIS). "
     "Use the *Schedule for Delivery* checkbox on GREEN rows OR enter a new "
     "*Updated Delivery Date* + *Remarks* and tick *Updated Customer* on RED rows."
 )

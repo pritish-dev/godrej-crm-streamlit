@@ -20,6 +20,10 @@ loaders fold the two into a single DELIVERY STATUS column. For app orders:
     Scheduled for Delivery   → scheduled           → IN Pending Deliveries
                                                      (never Overdue), whether
                                                      or not MIS-committed
+
+Dashboard tables (all orders): Pending Deliveries shows only upcoming orders
+committed in MIS plus Scheduled for Delivery orders; Overdue Delivery Orders
+shows every order past its delivery date, committed in MIS or not.
     Rescheduled for Delivery → still pending       → IN Pending / Overdue, on
                                                      the rescheduled date
     Partial Delivery         → items listed in "DELIVERED ITEMS DATA" are
@@ -65,6 +69,154 @@ DELIVERED_ITEMS_COLS = ("DELIVERED ITEMS DATA", "DELIVERED ITEMS")
 
 _BLANK = {"", "NAN", "NONE", "NAT"}
 _SPLIT_RE = re.compile(r"\s*(?:\|\||\||::|~|;|\t)\s*")
+
+
+# ── Sheet headers for orders dated on/after 1 July 2026 ───────────────────────
+# Column layout of the "B2C FRANCHISE APP ORDER DETAILS" tab, in sheet order.
+# The loaders upper-case and whitespace-collapse headers before use, so the
+# exact spelling / spacing below is the sheet's own.
+FRANCHISE_APP_HEADERS = [
+    'REIMBURSEMENT',
+    'SL NO.',
+    'Internal Oder No',
+    'ORDER DATE',
+    'ORDER NO',
+    'GODREJ SO NO',
+    'CUSTOMER NAME',
+    'CONTACT NUMBER',
+    'EMAIL ADDRESS',
+    'CATEGORY',
+    'PRODUCT NAME',
+    'CATEGORY TYPE',
+    'MRP/UNIT(AS PER PRICE LIST )',
+    'MRP',
+    'CPL',
+    'ORDER UNIT PRICE=(AFTER DISC + TAX)',
+    'QTY',
+    'GROSS ORDER VALUE(MRP)',
+    'ORDER AMOUNT (WITH TAX AND AFTER DISC )',
+    'DISC ALLOWED',
+    'DISCOUNT GIVEN',
+    'SALES INVOICE NO',
+    'SALES INVOICE DATE',
+    'INV AMT(BEFORE TAX)',
+    'CROSS CHECK GROSS AMT (Order Value Without Tax)',
+    'DIFF',
+    'GODREJ PURCHASE BILL NO',
+    'DATE',
+    'AMOUNT IN RS.(BASIC)',
+    'CUSTOMER DELIVERY DATE (TO BE)',
+    'SALES PERSON',
+    'ADV RECEIVED',
+    'REFERENCE ORDER NO.',
+    'DELIVERY REMARKS(DELIVERED/PENDING)',
+    'FREE STOCK',
+    'POSTED BY',
+    'PINELAB / BAJAJ',
+    'GIFT',
+    'REVIEW',
+    'ITEM CODE',
+    'DATE OF BIRTH',
+    'MARRIAGE ANNIVERSARY',
+    'HOW DID THEY COME TO KNOW ABOUT OUR SHOWROOM?',
+    'PURCHASE PATTERN',
+    'PURCHASING FOR',
+    'SOFA WIDTH',
+    'SOFA HEIGHT',
+    'SOFA DEPTH',
+    'LIFT HEIGHT',
+    'LIFT WIDTH',
+    'STAIRCASE WIDTH',
+    'STAIRCASE LANDING HEIGHT',
+    'CUSTOMER HOUSE ENTRY DOOR WIDTH',
+    'CUSTOMER HOUSE ENTRY DOOR HEIGHT',
+    'ORDER TYPE',
+    'LEAD SOURCE',
+    'CUSTOMER GST NO',
+    'ALT PHONE',
+    'BILLING ADDRESS',
+    'DELIVERY ADDRESS',
+    'FLOOR',
+    'LANDMARK',
+    'LIFT AVAILABLE',
+    'LIFT TYPE',
+    'CONTACT PERSON NAME',
+    'CONTACT PERSON NUMBER',
+    'CONTACT REMARK',
+    'ORDER DISCOUNT %',
+    'ITEM DISCOUNT %',
+    'PAYMENT MODE',
+    'FOLLOW-UP DATE',
+    'SPECIFIC INSTRUCTION',
+    'MONEY RECEIPT NO 1',
+    'MONEY RECEIPT DATE 1',
+    'MONEY RECEIPT NO 2',
+    'MONEY RECEIPT DATE 2',
+    'MONEY RECEIPT NO 3',
+    'MONEY RECEIPT DATE 3',
+    'DELIVERY STATUS',
+    'ORDER FORM RECEIPT NO',
+    'WARDROBE LENGTH',
+    'WARDROBE WIDTH',
+    'WARDROBE HEIGHT',
+    'STAIRCASE LENGTH',
+    'MODULAR FURNITURE MEASUREMENTS',
+    'ROOM MEASUREMENTS',
+    'SITE MEASUREMENTS DATA',
+    'LANDING AREA LENGTH',
+    'LANDING AREA WIDTH',
+    'LANDING AREA DEPTH',
+    'MANUAL ORDER',
+    'SI NO',
+    'PINCODE',
+    'DELIVERED ITEMS DATA',
+    'MONEY RECEIPT AMT 2',
+    'MONEY RECEIPT AMT 3',
+    'ORDER STATUS',
+    'WAREHOUSE',
+    'SERVICE FLAG',
+    'SERVICE ISSUE',
+    'SERVICE RAISED DATE',
+    'SERVICE ASSIGNEE',
+    'SERVICE RESOLVED DATE',
+    'SERVICE STATUS',
+    'CLIENT ORDER ID',
+    'WAREHOUSE SUB',
+    'SERVICE REMARKS DATA',
+    'GODREJ REIMBURSEMENT',
+    'GODREJ REIMBURSEMENT DATE',
+    'HAPPY CODE',
+    'HAPPY CODE DATE',
+    'SERVICE REQUEST NO',
+    'SERVICE HAPPY CODE',
+    'FINANCE PAYMENT DATA',
+    'GIFTS GIVEN',
+    'UPMODS TYPE',
+]
+
+# Headers the delivery / payment logic cannot work without. A missing one is
+# reported on the dashboard instead of silently dropping orders.
+FRANCHISE_APP_REQUIRED_HEADERS = [
+    "ORDER DATE", "ORDER NO", "GODREJ SO NO", "CUSTOMER NAME", "PRODUCT NAME",
+    "ITEM CODE", "QTY", "ORDER UNIT PRICE=(AFTER DISC + TAX)",
+    "ORDER AMOUNT (WITH TAX AND AFTER DISC )", "CUSTOMER DELIVERY DATE (TO BE)",
+    "SALES PERSON", "ADV RECEIVED", "DELIVERY REMARKS(DELIVERED/PENDING)",
+    "DELIVERY STATUS", "DELIVERED ITEMS DATA", "MONEY RECEIPT AMT 2",
+    "MONEY RECEIPT AMT 3",
+]
+
+
+def _norm_header(h) -> str:
+    return " ".join(str(h).split()).upper()
+
+
+def missing_app_headers(columns) -> list:
+    """Required July-2026 headers absent from ``columns`` (any case/spacing)."""
+    have = {_norm_header(c) for c in columns}
+    have_compact = {h.replace(" ", "") for h in have}
+    return [h for h in FRANCHISE_APP_REQUIRED_HEADERS
+            if _norm_header(h) not in have
+            and _norm_header(h).replace(" ", "") not in have_compact]
 
 
 # ── Identification ────────────────────────────────────────────────────────────
